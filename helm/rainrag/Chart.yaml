@@ -1,0 +1,13 @@
+apiVersion: v2
+name: rainrag
+description: A Helm chart for RainRAG - Local-first RAG pipeline for VTT subtitle processing
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - rag
+  - vector-search
+  - qdrant
+  - nlp
+maintainers:
+  - name: RainRAG Team

@@ -1,0 +1,168 @@
+{{- if .Values.ingestion.enabled }}
+{{- if .Values.ingestion.job.cron }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "rainrag.fullname" . }}-ingestion
+  labels:
+    {{- include "rainrag.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingestion
+spec:
+  schedule: {{ .Values.ingestion.job.schedule | quote }}
+  successfulJobsHistoryLimit: {{ .Values.ingestion.job.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.ingestion.job.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.ingestion.job.backoffLimit }}
+      template:
+        metadata:
+          labels:
+            {{- include "rainrag.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: ingestion
+        spec:
+          restartPolicy: {{ .Values.ingestion.job.restartPolicy }}
+          containers:
+          - name: ingestion
+            image: "{{ .Values.ingestion.image.repository }}:{{ .Values.ingestion.image.tag }}"
+            imagePullPolicy: {{ .Values.ingestion.image.pullPolicy }}
+            {{- if .Values.ingestion.pipeline.runFullPipeline }}
+            command: ["rainrag", "pipeline"]
+            {{- else }}
+            command: ["sh", "-c"]
+            args:
+              - |
+                {{- if .Values.ingestion.pipeline.runIngest }}
+                rainrag ingest
+                {{- end }}
+                {{- if .Values.ingestion.pipeline.runEmbed }}
+                rainrag embed
+                {{- end }}
+                {{- if .Values.ingestion.pipeline.runIndex }}
+                rainrag index {{ if .Values.ingestion.pipeline.recreateIndex }}--recreate{{ end }}
+                {{- end }}
+            {{- end }}
+            volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+            - name: archive
+              mountPath: {{ .Values.ingestion.volumes.archive.mountPath }}
+            - name: data
+              mountPath: {{ .Values.ingestion.volumes.data.mountPath }}
+            - name: embeddings
+              mountPath: {{ .Values.ingestion.volumes.embeddings.mountPath }}
+            resources:
+              {{- toYaml .Values.ingestion.resources | nindent 14 }}
+          volumes:
+          - name: config
+            configMap:
+              name: {{ include "rainrag.fullname" . }}-config
+          - name: archive
+            {{- if .Values.ingestion.volumes.archive.hostPath }}
+            hostPath:
+              path: {{ .Values.ingestion.volumes.archive.hostPath }}
+              type: Directory
+            {{- else }}
+            persistentVolumeClaim:
+              claimName: {{ .Values.ingestion.volumes.archive.persistentVolumeClaim }}
+            {{- end }}
+          - name: data
+            {{- if .Values.ingestion.volumes.data.hostPath }}
+            hostPath:
+              path: {{ .Values.ingestion.volumes.data.hostPath }}
+              type: DirectoryOrCreate
+            {{- else }}
+            persistentVolumeClaim:
+              claimName: {{ .Values.ingestion.volumes.data.persistentVolumeClaim }}
+            {{- end }}
+          - name: embeddings
+            {{- if .Values.ingestion.volumes.embeddings.hostPath }}
+            hostPath:
+              path: {{ .Values.ingestion.volumes.embeddings.hostPath }}
+              type: DirectoryOrCreate
+            {{- else }}
+            persistentVolumeClaim:
+              claimName: {{ .Values.ingestion.volumes.embeddings.persistentVolumeClaim }}
+            {{- end }}
+{{- else }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "rainrag.fullname" . }}-ingestion
+  labels:
+    {{- include "rainrag.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingestion
+spec:
+  backoffLimit: {{ .Values.ingestion.job.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "rainrag.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ingestion
+    spec:
+      restartPolicy: {{ .Values.ingestion.job.restartPolicy }}
+      containers:
+      - name: ingestion
+        image: "{{ .Values.ingestion.image.repository }}:{{ .Values.ingestion.image.tag }}"
+        imagePullPolicy: {{ .Values.ingestion.image.pullPolicy }}
+        {{- if .Values.ingestion.pipeline.runFullPipeline }}
+        command: ["rainrag", "pipeline"]
+        {{- else }}
+        command: ["sh", "-c"]
+        args:
+          - |
+            {{- if .Values.ingestion.pipeline.runIngest }}
+            rainrag ingest
+            {{- end }}
+            {{- if .Values.ingestion.pipeline.runEmbed }}
+            rainrag embed
+            {{- end }}
+            {{- if .Values.ingestion.pipeline.runIndex }}
+            rainrag index {{ if .Values.ingestion.pipeline.recreateIndex }}--recreate{{ end }}
+            {{- end }}
+        {{- end }}
+        volumeMounts:
+        - name: config
+          mountPath: /app/config.yaml
+          subPath: config.yaml
+        - name: archive
+          mountPath: {{ .Values.ingestion.volumes.archive.mountPath }}
+        - name: data
+          mountPath: {{ .Values.ingestion.volumes.data.mountPath }}
+        - name: embeddings
+          mountPath: {{ .Values.ingestion.volumes.embeddings.mountPath }}
+        resources:
+          {{- toYaml .Values.ingestion.resources | nindent 10 }}
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "rainrag.fullname" . }}-config
+      - name: archive
+        {{- if .Values.ingestion.volumes.archive.hostPath }}
+        hostPath:
+          path: {{ .Values.ingestion.volumes.archive.hostPath }}
+          type: Directory
+        {{- else }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.ingestion.volumes.archive.persistentVolumeClaim }}
+        {{- end }}
+      - name: data
+        {{- if .Values.ingestion.volumes.data.hostPath }}
+        hostPath:
+          path: {{ .Values.ingestion.volumes.data.hostPath }}
+          type: DirectoryOrCreate
+        {{- else }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.ingestion.volumes.data.persistentVolumeClaim }}
+        {{- end }}
+      - name: embeddings
+        {{- if .Values.ingestion.volumes.embeddings.hostPath }}
+        hostPath:
+          path: {{ .Values.ingestion.volumes.embeddings.hostPath }}
+          type: DirectoryOrCreate
+        {{- else }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.ingestion.volumes.embeddings.persistentVolumeClaim }}
+        {{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,20 @@
+[run]
+source = src/rainrag
+omit =
+    tests/*
+    */site-packages/*
+    */__pycache__/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    @abstractmethod
+precision = 2
+
+[html]
+directory = htmlcov

@@ -1,0 +1,39 @@
+{{- if .Values.ingestion.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rainrag.fullname" . }}-config
+  labels:
+    {{- include "rainrag.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    paths:
+      archive_root: {{ .Values.ingestion.config.paths.archive_root | quote }}
+      docs_output: {{ .Values.ingestion.config.paths.docs_output | quote }}
+      embeddings_cache: {{ .Values.ingestion.config.paths.embeddings_cache | quote }}
+
+    embedding:
+      model_name: {{ .Values.ingestion.config.embedding.model_name | quote }}
+      batch_size: {{ .Values.ingestion.config.embedding.batch_size }}
+      max_seq_length: {{ .Values.ingestion.config.embedding.max_seq_length }}
+      device: {{ .Values.ingestion.config.embedding.device | quote }}
+      normalize_embeddings: {{ .Values.ingestion.config.embedding.normalize_embeddings }}
+
+    qdrant:
+      host: {{ .Values.ingestion.config.qdrant.host | quote }}
+      port: {{ .Values.ingestion.config.qdrant.port }}
+      collection_name: {{ .Values.ingestion.config.qdrant.collection_name | quote }}
+      vector_size: {{ .Values.ingestion.config.qdrant.vector_size }}
+      distance: {{ .Values.ingestion.config.qdrant.distance | quote }}
+      recreate_collection: {{ .Values.ingestion.config.qdrant.recreate_collection }}
+
+    processing:
+      num_workers: {{ .Values.ingestion.config.processing.num_workers }}
+      max_file_size: {{ .Values.ingestion.config.processing.max_file_size }}
+      min_text_length: {{ .Values.ingestion.config.processing.min_text_length }}
+
+    logging:
+      level: {{ .Values.ingestion.config.logging.level | quote }}
+      format: {{ .Values.ingestion.config.logging.format | quote }}
+      log_file: {{ .Values.ingestion.config.logging.log_file | quote }}
+{{- end }}

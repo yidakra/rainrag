@@ -1,0 +1,54 @@
+{{- if .Values.qdrant.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rainrag.fullname" . }}-qdrant
+  labels:
+    {{- include "rainrag.qdrant.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "rainrag.qdrant.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rainrag.qdrant.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - name: qdrant
+        image: "{{ .Values.qdrant.image.repository }}:{{ .Values.qdrant.image.tag }}"
+        imagePullPolicy: {{ .Values.qdrant.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.qdrant.service.port }}
+          protocol: TCP
+        - name: grpc
+          containerPort: {{ .Values.qdrant.service.grpcPort }}
+          protocol: TCP
+        volumeMounts:
+        - name: qdrant-storage
+          mountPath: /qdrant/storage
+        resources:
+          {{- toYaml .Values.qdrant.resources | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: qdrant-storage
+        {{- if .Values.qdrant.persistence.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ include "rainrag.fullname" . }}-qdrant-pvc
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+{{- end }}
