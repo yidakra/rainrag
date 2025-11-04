@@ -1,4 +1,4 @@
-.PHONY: help install clean test format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop
+.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -17,8 +17,18 @@ clean: ## Clean up generated files and caches
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name '*.pyc' -delete
 
-test: ## Run tests
+test: ## Run all tests
 	poetry run pytest
+
+test-unit: ## Run unit tests only
+	poetry run pytest tests/unit -v
+
+test-integration: ## Run integration tests only
+	poetry run pytest tests/integration -v
+
+test-cov: ## Run tests with coverage report
+	poetry run pytest --cov=src/rainrag --cov-report=html --cov-report=term
+	@echo "Coverage report generated in htmlcov/index.html"
 
 format: ## Format code with black
 	poetry run black src/
