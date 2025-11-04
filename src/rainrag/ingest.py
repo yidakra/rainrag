@@ -27,9 +27,7 @@ class VTTParser:
     """Parser for WebVTT subtitle files."""
 
     # Pattern to match VTT timestamp lines (e.g., "00:00:00.000 --> 00:00:05.000")
-    TIMESTAMP_PATTERN = re.compile(
-        r"^\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*$"
-    )
+    TIMESTAMP_PATTERN = re.compile(r"^\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*$")
 
     # Pattern to match VTT cue identifiers
     # Only match pure numeric IDs to avoid false positives with subtitle text
