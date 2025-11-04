@@ -31,8 +31,9 @@ class VTTParser:
         r"^\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*$"
     )
 
-    # Pattern to match VTT cue identifiers (numeric or alphanumeric IDs)
-    CUE_ID_PATTERN = re.compile(r"^\d+$|^[a-zA-Z0-9_-]+$")
+    # Pattern to match VTT cue identifiers
+    # Only match pure numeric IDs to avoid false positives with subtitle text
+    CUE_ID_PATTERN = re.compile(r"^\d+$")
 
     # Pattern to remove VTT markup tags (e.g., <v Speaker>, <c>, positioning tags)
     MARKUP_PATTERN = re.compile(r"<[^>]+>")
@@ -107,32 +108,31 @@ class VTTParser:
                 return None
 
             text_lines = []
-            skip_next = False
+            in_cue = False  # Track if we're inside a cue (after timestamp)
 
             for line in lines[1:]:  # Skip the WEBVTT header
                 line = line.strip()
 
-                # Skip empty lines
+                # Skip empty lines (end of cue block)
                 if not line:
-                    skip_next = False
+                    in_cue = False
                     continue
 
-                # Skip timestamp lines
+                # Skip timestamp lines (start of cue block)
                 if cls.TIMESTAMP_PATTERN.match(line):
-                    skip_next = False
-                    continue
-
-                # Skip cue identifiers (lines that are just numbers or IDs)
-                if cls.CUE_ID_PATTERN.match(line) and skip_next is False:
-                    skip_next = True
+                    in_cue = True
                     continue
 
                 # Skip NOTE comments
                 if line.startswith("NOTE"):
                     continue
 
-                # This is actual subtitle text
-                if not skip_next:
+                # Skip cue identifiers (only before timestamps, i.e., when not in_cue)
+                if not in_cue and cls.CUE_ID_PATTERN.match(line):
+                    continue
+
+                # This is actual subtitle text (only capture when in_cue)
+                if in_cue:
                     cleaned = cls.clean_text(line)
                     if cleaned:
                         text_lines.append(cleaned)
