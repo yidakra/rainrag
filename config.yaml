@@ -1,0 +1,43 @@
+# RainRAG Configuration
+
+# Data paths
+paths:
+  # Root directory containing .vtt files
+  archive_root: "/data/archive"
+  # Output directory for parsed documents
+  docs_output: "./data/docs.jsonl"
+  # Directory for cached embeddings
+  embeddings_cache: "./embeddings"
+
+# Embedding model configuration
+embedding:
+  model_name: "intfloat/multilingual-e5-large"
+  batch_size: 32
+  max_seq_length: 512
+  device: "cuda"  # or "cpu"
+  normalize_embeddings: true
+
+# Qdrant vector store configuration
+qdrant:
+  host: "localhost"
+  port: 6333
+  collection_name: "broadcast_transcripts"
+  vector_size: 1024  # multilingual-e5-large embedding dimension
+  distance: "Cosine"
+  # Set to true to recreate collection on indexing
+  recreate_collection: false
+
+# Processing configuration
+processing:
+  # Number of worker threads for file processing
+  num_workers: 4
+  # Skip files larger than this (in bytes)
+  max_file_size: 10485760  # 10 MB
+  # Minimum text length to process (in characters)
+  min_text_length: 50
+
+# Logging configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+  log_file: "./logs/rainrag.log"

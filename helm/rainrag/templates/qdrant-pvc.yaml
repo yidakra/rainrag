@@ -1,0 +1,17 @@
+{{- if and .Values.qdrant.enabled .Values.qdrant.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "rainrag.fullname" . }}-qdrant-pvc
+  labels:
+    {{- include "rainrag.qdrant.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.qdrant.persistence.accessMode }}
+  {{- if .Values.qdrant.persistence.storageClass }}
+  storageClassName: {{ .Values.qdrant.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.qdrant.persistence.size }}
+{{- end }}
