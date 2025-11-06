@@ -3,7 +3,7 @@
 # Data paths
 paths:
   # Root directory containing .vtt files
-  archive_root: "/data/archive"
+  archive_root: "/mnt/vod/srv/storage/transcoded"
   # Output directory for parsed documents
   docs_output: "./data/docs.jsonl"
   # Directory for cached embeddings
