@@ -119,7 +119,9 @@ class Embedder:
 
         # Load model
         self.model = SentenceTransformer(
-            self.config.embedding.model_name, device=device
+            self.config.embedding.model_name,
+            device=device,
+            model_kwargs={"dtype": "auto"},  # Use dtype instead of deprecated torch_dtype
         )
 
         # Set max sequence length

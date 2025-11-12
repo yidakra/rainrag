@@ -41,6 +41,7 @@ class RAGQueryEngine:
         self.embedding_model = SentenceTransformer(
             self.config.embedding.model_name,
             device=self.config.embedding.device,
+            model_kwargs={"dtype": "auto"},  # Use dtype instead of deprecated torch_dtype
         )
 
         # Connect to Qdrant
