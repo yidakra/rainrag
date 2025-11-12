@@ -14,7 +14,7 @@ embedding:
   model_name: "intfloat/multilingual-e5-large"
   batch_size: 32
   max_seq_length: 512
-  device: "cuda"  # or "cpu"
+  device: "cpu"  # or "cpu"
   normalize_embeddings: true
 
 # Qdrant vector store configuration

@@ -143,10 +143,14 @@ class RAGQueryEngine:
         """
         # Build context from retrieved documents
         context_parts = []
+        max_chars_per_doc = 1200
         for doc in documents:
+            text = doc["text"]
+            if len(text) > max_chars_per_doc:
+                text = text[:max_chars_per_doc].rstrip() + "..."
             context_parts.append(f"[Document {doc['rank']}]")
             context_parts.append(f"Source: {doc['path']}")
-            context_parts.append(f"Text: {doc['text']}")
+            context_parts.append(f"Text: {text}")
             context_parts.append("")  # Empty line between documents
 
         context = "\n".join(context_parts)
