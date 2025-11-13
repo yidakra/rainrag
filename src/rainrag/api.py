@@ -268,8 +268,8 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
     try:
         logger.info(f"Received query: {request.question[:100]}... (language: {request.language})")
 
-        # Execute query
-        result = query_engine.query(question=request.question, top_k=request.top_k)
+        # Execute query with language parameter
+        result = query_engine.query(question=request.question, top_k=request.top_k, language=request.language)
 
         # Format response with video and VTT URLs
         context_chunks = []

@@ -154,13 +154,14 @@ class RAGQueryEngine:
             logger.error(f"Failed to retrieve documents: {e}")
             raise
 
-    def build_prompt(self, query: str, documents: List[Dict[str, Any]]) -> str:
+    def build_prompt(self, query: str, documents: List[Dict[str, Any]], language: str = "en") -> str:
         """
         Build the prompt for the LLM with retrieved context.
 
         Args:
             query: The user's question
             documents: List of retrieved documents
+            language: Language code (e.g., "en", "ru") for response
 
         Returns:
             The complete prompt string
@@ -179,15 +180,28 @@ class RAGQueryEngine:
 
         context = "\n".join(context_parts)
 
-        # Build the complete prompt
-        prompt = f"""You are an assistant that helps users understand video transcripts. You have been provided with relevant excerpts from video transcripts. Answer the user's question based on the provided context.
+        # Language-specific instructions
+        language_instructions = {
+            "ru": "ВАЖНО: Вы ДОЛЖНЫ отвечать ТОЛЬКО на русском языке. Весь ваш ответ должен быть на русском языке.",
+            "en": "IMPORTANT: You MUST answer ONLY in English. Your entire response must be in English.",
+        }
+
+        # Get language instruction (default to English if not found)
+        lang_instruction = language_instructions.get(language, language_instructions["en"])
+
+        # Build the complete prompt with strong language emphasis
+        prompt = f"""{lang_instruction}
+
+You are an assistant that helps users understand video transcripts. You have been provided with relevant excerpts from video transcripts. Answer the user's question based on the provided context.
 
 Context from video transcripts:
 {context}
 
 User Question: {query}
 
-Provide a detailed answer based on the context above. If the context doesn't contain enough information to fully answer the question, acknowledge this in your response. Answer in the same language as the question."""
+{lang_instruction}
+
+Provide a detailed answer based on the context above. If the context doesn't contain enough information to fully answer the question, acknowledge this in your response."""
 
         return prompt
 
@@ -258,13 +272,14 @@ Provide a detailed answer based on the context above. If the context doesn't con
             logger.error(f"Failed to generate answer: {e}")
             raise RuntimeError(f"Unexpected error during answer generation: {e}") from e
 
-    def query(self, question: str, top_k: int | None = None) -> Dict[str, Any]:
+    def query(self, question: str, top_k: int | None = None, language: str = "en") -> Dict[str, Any]:
         """
         Execute the complete query pipeline.
 
         Args:
             question: The user's question
             top_k: Number of documents to retrieve (defaults to config value)
+            language: Language code for response (e.g., "en", "ru")
 
         Returns:
             Dictionary containing the answer and metadata
@@ -272,7 +287,7 @@ Provide a detailed answer based on the context above. If the context doesn't con
         if top_k is None:
             top_k = self.config.vllm.top_k
 
-        logger.info(f"Processing query: {question[:100]}...")
+        logger.info(f"Processing query: {question[:100]}... (language: {language})")
 
         # Step 1: Embed the query
         query_vector = self.embed_query(question)
@@ -280,8 +295,8 @@ Provide a detailed answer based on the context above. If the context doesn't con
         # Step 2: Retrieve relevant documents
         documents = self.retrieve_documents(query_vector, top_k)
 
-        # Step 3: Build the prompt
-        prompt = self.build_prompt(question, documents)
+        # Step 3: Build the prompt with language specification
+        prompt = self.build_prompt(question, documents, language=language)
 
         # Step 4: Generate the answer
         answer = self.generate_answer(prompt)
