@@ -2,19 +2,22 @@
 
 from typing import Any, Dict, List, Optional
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from loguru import logger
 import os
 
-from rainrag.config import load_config
+from rainrag.config import load_config, Config
 from rainrag.query import RAGQueryEngine
 
 
-# Global query engine instance
+# Global query engine instance and config
 query_engine: Optional[RAGQueryEngine] = None
+config: Optional[Config] = None
 
 
 class QueryRequest(BaseModel):
@@ -38,6 +41,8 @@ class ContextChunk(BaseModel):
     score: float
     rank: int
     doc_id: str
+    video_url: Optional[str] = None
+    vtt_url: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -59,10 +64,49 @@ class HealthResponse(BaseModel):
     qdrant_collection: str
 
 
+def find_video_file(vtt_path: str) -> Optional[str]:
+    """
+    Find video file corresponding to a VTT file.
+
+    Looks for video files with the same base name as the VTT file.
+
+    Args:
+        vtt_path: Path to the VTT file
+
+    Returns:
+        Path to video file if found, None otherwise
+    """
+    if config is None or not config.video.enabled:
+        return None
+
+    vtt_file = Path(vtt_path)
+
+    # Determine the directory to search
+    video_root = config.paths.video_root if config.paths.video_root else config.paths.archive_root
+
+    # Get base name without VTT extension
+    base_name = vtt_file.stem
+    # Remove language suffixes like .en or .ru
+    for lang_suffix in [".en", ".ru"]:
+        if base_name.endswith(lang_suffix):
+            base_name = base_name[:-len(lang_suffix)]
+            break
+
+    # Search for video file in the same directory as VTT
+    vtt_dir = vtt_file.parent
+
+    for ext in config.video.extensions:
+        video_file = vtt_dir / f"{base_name}{ext}"
+        if video_file.exists():
+            return str(video_file)
+
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize the query engine on startup."""
-    global query_engine
+    global query_engine, config
 
     logger.info("Initializing RainRAG API...")
 
@@ -174,18 +218,47 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
         # Execute query
         result = query_engine.query(question=request.question, top_k=request.top_k)
 
-        # Format response
-        context_chunks = [
-            ContextChunk(
-                text=doc["text"],
-                filename=doc["path"],
-                language=doc.get("language", "unknown"),
-                score=doc["score"],
-                rank=doc["rank"],
-                doc_id=doc.get("doc_id", ""),
+        # Format response with video and VTT URLs
+        context_chunks = []
+        for doc in result["retrieved_documents"]:
+            vtt_path = doc["path"]
+
+            # Generate URLs for video and VTT files
+            video_url = None
+            vtt_url = None
+
+            if config and config.video.enabled:
+                # Find corresponding video file
+                video_file = find_video_file(vtt_path)
+                if video_file:
+                    # Create relative path from video_root
+                    video_root = config.paths.video_root if config.paths.video_root else config.paths.archive_root
+                    try:
+                        video_rel = Path(video_file).relative_to(video_root)
+                        video_url = f"/video/{video_rel}"
+                    except ValueError:
+                        logger.warning(f"Video file {video_file} is not under video_root")
+
+                # Create VTT URL
+                archive_root = config.paths.archive_root
+                try:
+                    vtt_rel = Path(vtt_path).relative_to(archive_root)
+                    vtt_url = f"/vtt/{vtt_rel}"
+                except ValueError:
+                    logger.warning(f"VTT file {vtt_path} is not under archive_root")
+
+            context_chunks.append(
+                ContextChunk(
+                    text=doc["text"],
+                    filename=doc["path"],
+                    language=doc.get("language", "unknown"),
+                    score=doc["score"],
+                    rank=doc["rank"],
+                    doc_id=doc.get("doc_id", ""),
+                    video_url=video_url,
+                    vtt_url=vtt_url,
+                )
             )
-            for doc in result["retrieved_documents"]
-        ]
 
         response = QueryResponse(
             answer=result["answer"],
@@ -213,9 +286,115 @@ async def root():
         "endpoints": {
             "POST /query": "Submit a question to the RAG system",
             "GET /health": "Check system health",
+            "GET /video/{file_path:path}": "Serve video files",
+            "GET /vtt/{file_path:path}": "Serve VTT subtitle files",
             "GET /docs": "OpenAPI documentation",
         },
     }
+
+
+@app.get("/video/{file_path:path}")
+async def serve_video(file_path: str):
+    """
+    Serve video files.
+
+    Args:
+        file_path: Path to the video file (relative to video_root)
+
+    Returns:
+        Video file as streaming response
+    """
+    verify_auth_token()
+
+    if config is None or not config.video.enabled:
+        raise HTTPException(status_code=404, detail="Video serving is disabled")
+
+    # Convert to absolute path
+    video_root = config.paths.video_root if config.paths.video_root else config.paths.archive_root
+    full_path = Path(video_root) / file_path
+
+    # Security check: ensure the path is within video_root
+    try:
+        full_path = full_path.resolve()
+        video_root_resolved = Path(video_root).resolve()
+        if not str(full_path).startswith(str(video_root_resolved)):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except Exception as e:
+        logger.error(f"Path resolution error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
+    # Check if file exists
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    # Check if file has valid video extension
+    if full_path.suffix.lower() not in config.video.extensions:
+        raise HTTPException(status_code=400, detail="Invalid video file type")
+
+    logger.info(f"Serving video file: {full_path}")
+
+    # Determine media type based on extension
+    media_types = {
+        ".mp4": "video/mp4",
+        ".mkv": "video/x-matroska",
+        ".webm": "video/webm",
+        ".avi": "video/x-msvideo",
+        ".mov": "video/quicktime",
+    }
+    media_type = media_types.get(full_path.suffix.lower(), "video/mp4")
+
+    return FileResponse(
+        path=str(full_path),
+        media_type=media_type,
+        filename=full_path.name,
+    )
+
+
+@app.get("/vtt/{file_path:path}")
+async def serve_vtt(file_path: str):
+    """
+    Serve VTT subtitle files.
+
+    Args:
+        file_path: Path to the VTT file (relative to archive_root)
+
+    Returns:
+        VTT file as text response
+    """
+    verify_auth_token()
+
+    if config is None:
+        raise HTTPException(status_code=503, detail="Server not initialized")
+
+    # Convert to absolute path
+    archive_root = config.paths.archive_root
+    full_path = Path(archive_root) / file_path
+
+    # Security check: ensure the path is within archive_root
+    try:
+        full_path = full_path.resolve()
+        archive_root_resolved = Path(archive_root).resolve()
+        if not str(full_path).startswith(str(archive_root_resolved)):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except Exception as e:
+        logger.error(f"Path resolution error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
+    # Check if file exists
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="VTT file not found")
+
+    # Check if file has valid VTT extension
+    if not any(str(full_path).endswith(ext) for ext in config.video.vtt_extensions):
+        raise HTTPException(status_code=400, detail="Invalid VTT file type")
+
+    logger.info(f"Serving VTT file: {full_path}")
+
+    return FileResponse(
+        path=str(full_path),
+        media_type="text/vtt",
+        filename=full_path.name,
+    )
 
 
 def start_server(

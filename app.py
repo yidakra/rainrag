@@ -48,6 +48,11 @@ TRANSLATIONS = {
         "auth_button": "Войти",
         "auth_invalid": "Неверный токен доступа",
         "health_check_failed": "Не удалось подключиться к API",
+        "video_label": "Видео",
+        "vtt_label": "Субтитры",
+        "download_vtt": "Скачать VTT",
+        "view_vtt": "Просмотр VTT",
+        "no_video": "Видео не найдено",
     },
     "en": {
         "title": "🎬 RainRAG - Video Transcript Search",
@@ -78,6 +83,11 @@ TRANSLATIONS = {
         "auth_button": "Login",
         "auth_invalid": "Invalid access token",
         "health_check_failed": "Failed to connect to API",
+        "video_label": "Video",
+        "vtt_label": "Subtitles",
+        "download_vtt": "Download VTT",
+        "view_vtt": "View VTT",
+        "no_video": "Video not found",
     },
 }
 
@@ -179,6 +189,29 @@ async def query_rag(question: str, language: str, top_k: int) -> Dict[str, Any]:
         return response.json()
 
 
+def fetch_vtt_content(vtt_url: str) -> Optional[str]:
+    """
+    Fetch VTT file content from the API.
+
+    Args:
+        vtt_url: VTT file URL (relative to API base URL)
+
+    Returns:
+        VTT file content as string, or None if failed
+    """
+    try:
+        import requests
+
+        vtt_full_url = f"{API_BASE_URL}{vtt_url}"
+        headers = get_api_headers()
+        response = requests.get(vtt_full_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.text
+    except Exception as e:
+        logger.error(f"Failed to fetch VTT content: {e}")
+        return None
+
+
 def format_context_chunk(chunk: Dict[str, Any], index: int, lang: str) -> str:
     """Format a context chunk for display."""
     filename = chunk.get("filename", "Unknown")
@@ -230,7 +263,54 @@ def render_message_bubble(message: Dict[str, Any], lang: str):
     if role == "assistant" and "context" in message:
         with st.expander(get_text("context_header", lang), expanded=False):
             for idx, chunk in enumerate(message["context"], 1):
+                # Display context chunk info
                 st.markdown(format_context_chunk(chunk, idx, lang))
+
+                # Display video if available
+                video_url = chunk.get("video_url")
+                if video_url:
+                    st.markdown(f"**🎥 {get_text('video_label', lang)}:**")
+                    video_full_url = f"{API_BASE_URL}{video_url}"
+                    try:
+                        st.video(video_full_url)
+                    except Exception as e:
+                        logger.warning(f"Could not load video: {e}")
+                        st.warning(get_text("no_video", lang))
+                else:
+                    st.info(get_text("no_video", lang))
+
+                # Display VTT download link and viewer if available
+                vtt_url = chunk.get("vtt_url")
+                if vtt_url:
+                    vtt_full_url = f"{API_BASE_URL}{vtt_url}"
+                    filename = chunk.get("filename", "subtitle.vtt")
+                    vtt_filename = filename.split("/")[-1]  # Get just the filename
+
+                    st.markdown(f"**📄 {get_text('vtt_label', lang)}:**")
+
+                    # Create columns for VTT actions
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.code(vtt_filename, language="text")
+                    with col2:
+                        st.markdown(
+                            f'<a href="{vtt_full_url}" download="{vtt_filename}" '
+                            f'style="display: inline-block; padding: 0.25rem 0.75rem; '
+                            f'background-color: #0084ff; color: white; text-decoration: none; '
+                            f'border-radius: 0.25rem; text-align: center;">'
+                            f'{get_text("download_vtt", lang)}</a>',
+                            unsafe_allow_html=True,
+                        )
+
+                    # Add expandable VTT content viewer
+                    with st.expander(get_text("view_vtt", lang)):
+                        vtt_content = fetch_vtt_content(vtt_url)
+                        if vtt_content:
+                            # Display VTT content with syntax highlighting
+                            st.code(vtt_content, language="vtt", line_numbers=True)
+                        else:
+                            st.error("Could not load VTT content")
+
                 if idx < len(message["context"]):
                     st.divider()
 

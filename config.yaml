@@ -50,3 +50,17 @@ logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
   format: "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
   log_file: "./logs/rainrag.log"
+
+# Video file serving configuration
+video:
+  enabled: true
+  extensions:
+    - ".mp4"
+    - ".mkv"
+    - ".webm"
+    - ".avi"
+    - ".mov"
+  vtt_extensions:
+    - ".vtt"
+    - ".en.vtt"
+    - ".ru.vtt"

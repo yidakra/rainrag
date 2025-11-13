@@ -13,6 +13,10 @@ class PathsConfig(BaseModel):
     archive_root: str = Field(description="Root directory containing .vtt files")
     docs_output: str = Field(description="Output path for parsed documents")
     embeddings_cache: str = Field(description="Directory for cached embeddings")
+    video_root: str = Field(
+        default="",
+        description="Root directory containing video files (same as archive_root if not specified)",
+    )
 
 
 class EmbeddingConfig(BaseModel):
@@ -65,6 +69,20 @@ class LoggingConfig(BaseModel):
     log_file: str = Field(default="./logs/rainrag.log")
 
 
+class VideoConfig(BaseModel):
+    """Configuration for video file serving."""
+
+    enabled: bool = Field(default=True, description="Enable video file serving")
+    extensions: list[str] = Field(
+        default=[".mp4", ".mkv", ".webm", ".avi", ".mov"],
+        description="Video file extensions to look for",
+    )
+    vtt_extensions: list[str] = Field(
+        default=[".vtt", ".en.vtt", ".ru.vtt"],
+        description="VTT file extensions to serve",
+    )
+
+
 class Config(BaseModel):
     """Main configuration model."""
 
@@ -74,6 +92,7 @@ class Config(BaseModel):
     vllm: VLLMConfig
     processing: ProcessingConfig
     logging: LoggingConfig
+    video: VideoConfig = Field(default_factory=VideoConfig)
 
 
 def load_config(config_path: str = "config.yaml") -> Config:
