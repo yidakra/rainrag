@@ -264,7 +264,7 @@ class TestRAGQueryEngine:
         assert call_args[0][0] == "http://localhost:8000/v1/completions"
 
         payload = call_args[1]["json"]
-        assert payload["model"] == "mistralai/Mistral-Small-3.2-24B-Instruct"
+        assert payload["model"] == "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
         assert payload["prompt"] == prompt
         assert payload["max_tokens"] == 512
         assert payload["temperature"] == 0.3

@@ -46,7 +46,7 @@ Before using the query functionality, you need:
    # Or locally with Docker
    docker run --gpus all -p 8000:8000 \
      vllm/vllm-openai:latest \
-     --model mistralai/Mistral-Small-3.2-24B-Instruct \
+     --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
      --port 8000
    ```
 
@@ -92,7 +92,7 @@ The query system is configured in `config.yaml`:
 vllm:
   host: "localhost"
   port: 8000
-  model_name: "mistralai/Mistral-Small-3.2-24B-Instruct"
+  model_name: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
   max_tokens: 512        # Maximum length of generated answer
   temperature: 0.3       # Lower = more focused, higher = more creative
   top_k: 5              # Number of documents to retrieve
@@ -105,7 +105,7 @@ When deploying with Helm, configure in `helm/rainrag/values.yaml`:
 ```yaml
 vllm:
   enabled: true
-  modelName: "mistralai/Mistral-Small-3.2-24B-Instruct"
+  modelName: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
   replicas: 1
 
   # GPU settings
@@ -260,7 +260,7 @@ rainrag index
 # 4. Start vLLM (in another terminal or via Helm)
 docker run --gpus all -p 8000:8000 \
   vllm/vllm-openai:latest \
-  --model mistralai/Mistral-Small-3.2-24B-Instruct
+  --model mistralai/Mistral-Small-3.2-24B-Instruct-2506
 
 # 5. Ask questions!
 rainrag ask "О чём говорили в выпуске про энергетику?" --verbose
@@ -293,7 +293,7 @@ Deploy the complete system with Helm:
 # Install with vLLM enabled
 helm install rainrag ./helm/rainrag \
   --set vllm.enabled=true \
-  --set vllm.modelName="mistralai/Mistral-Small-3.2-24B-Instruct"
+  --set vllm.modelName="mistralai/Mistral-Small-3.2-24B-Instruct-2506"
 
 # Check deployment status
 kubectl get pods

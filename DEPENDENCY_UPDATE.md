@@ -108,7 +108,7 @@ This document describes the dependency updates made to address security vulnerab
 
    # Start vLLM (optional - for query testing)
    docker run --gpus all -p 8000:8000 vllm/vllm-openai:latest \
-     --model mistralai/Mistral-Small-3.2-24B-Instruct
+     --model mistralai/Mistral-Small-3.2-24B-Instruct-2506
 
    # Test query functionality
    poetry run rainrag ask "Test question"

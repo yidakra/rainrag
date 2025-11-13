@@ -100,7 +100,7 @@ class TestVLLMConfig:
 
         assert config.host == "localhost"
         assert config.port == 8000
-        assert config.model_name == "mistralai/Mistral-Small-3.2-24B-Instruct"
+        assert config.model_name == "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
         assert config.max_tokens == 512
         assert config.temperature == 0.3
         assert config.top_k == 5
