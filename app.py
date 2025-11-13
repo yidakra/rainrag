@@ -16,6 +16,13 @@ DEFAULT_LANGUAGE = "ru"
 DEFAULT_TOP_K = 3
 REQUEST_TIMEOUT = 60.0  # 60 seconds timeout for API requests
 
+# Supported LLM models
+SUPPORTED_MODELS = {
+    "mistralai/Mistral-Small-3.2-24B-Instruct-2506": "Mistral Small 3.2 24B",
+    "google/gemma-2-27b-it": "Gemma 2 27B",
+    "gpt-oss:20b": "GPT-OSS 20B",
+}
+
 
 # Translations
 TRANSLATIONS = {
@@ -323,20 +330,90 @@ def render_message_bubble(message: Dict[str, Any], lang: str):
             grouped_chunks = group_chunks_by_video(message["context"])
 
             for group_idx, group in enumerate(grouped_chunks, 1):
-                # Display video once per group (all language versions share the same video)
-                video_url = group[0].get("video_url")
-                if video_url:
-                    st.markdown(f"**🎥 {get_text('video_label', lang)}:**")
-                    video_full_url = f"{API_BASE_URL}{video_url}"
-                    try:
-                        st.video(video_full_url)
-                    except Exception as e:
-                        logger.warning(f"Could not load video: {e}")
-                        st.warning(get_text("no_video", lang))
-                else:
-                    st.info(get_text("no_video", lang))
+                # Create 2/3 - 1/3 layout for video and VTT
+                video_col, vtt_col = st.columns([2, 1])
 
-                # Display each language version in the group
+                with video_col:
+                    # Display video (2/3 width on left)
+                    video_url = group[0].get("video_url")
+                    if video_url:
+                        st.markdown(f"**🎥 {get_text('video_label', lang)}:**")
+                        video_full_url = f"{API_BASE_URL}{video_url}"
+                        try:
+                            st.video(video_full_url)
+                        except Exception as e:
+                            logger.warning(f"Could not load video: {e}")
+                            st.warning(get_text("no_video", lang))
+                    else:
+                        st.info(get_text("no_video", lang))
+
+                with vtt_col:
+                    # Display VTT selector and viewer (1/3 width on right)
+                    st.markdown(f"**📄 {get_text('vtt_label', lang)}:**")
+
+                    # Create language selector if multiple VTT files exist for this group
+                    vtt_languages = {}
+                    for chunk in group:
+                        vtt_url = chunk.get("vtt_url")
+                        if vtt_url:
+                            chunk_lang = chunk.get("language", "unknown")
+                            vtt_languages[chunk_lang] = {
+                                "url": vtt_url,
+                                "filename": chunk.get("filename", "subtitle.vtt"),
+                                "chunk": chunk,
+                            }
+
+                    if vtt_languages:
+                        # Language selector for VTT
+                        if len(vtt_languages) > 1:
+                            lang_display = {"ru": "Русский 🇷🇺", "en": "English 🇬🇧"}
+                            selected_vtt_lang = st.radio(
+                                "Language",
+                                options=list(vtt_languages.keys()),
+                                format_func=lambda x: lang_display.get(x, x),
+                                horizontal=True,
+                                key=f"vtt_lang_{group_idx}",
+                                label_visibility="collapsed",
+                            )
+                        else:
+                            selected_vtt_lang = list(vtt_languages.keys())[0]
+
+                        # Get selected VTT info
+                        vtt_info = vtt_languages[selected_vtt_lang]
+                        vtt_url = vtt_info["url"]
+                        vtt_full_url = f"{API_BASE_URL}{vtt_url}"
+                        vtt_filename = vtt_info["filename"].split("/")[-1]
+
+                        # Download button
+                        st.markdown(
+                            f'<a href="{vtt_full_url}" download="{vtt_filename}" '
+                            f'style="display: inline-block; padding: 0.4rem 0.8rem; '
+                            f'background-color: #0084ff; color: white; text-decoration: none; '
+                            f'border-radius: 0.25rem; text-align: center; width: 100%; '
+                            f'box-sizing: border-box; margin-bottom: 0.5rem;">'
+                            f'⬇️ {get_text("download_vtt", lang)}</a>',
+                            unsafe_allow_html=True,
+                        )
+
+                        # VTT content viewer (scrollable)
+                        vtt_content = fetch_vtt_content(vtt_url)
+                        if vtt_content:
+                            # Display VTT in a scrollable container
+                            st.markdown(
+                                f'<div style="height: 400px; overflow-y: auto; '
+                                f'border: 1px solid #ddd; border-radius: 0.25rem; '
+                                f'padding: 0.5rem; background-color: #f8f9fa; '
+                                f'font-family: monospace; font-size: 0.8rem; '
+                                f'white-space: pre-wrap;">{vtt_content}</div>',
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.error("Could not load VTT")
+                    else:
+                        st.info("No VTT available")
+
+                # Display text context and metadata below the video/VTT layout
+                st.markdown("---")
                 for chunk_idx, chunk in enumerate(group):
                     # Display context chunk metadata
                     st.markdown(format_context_chunk(chunk, chunk_idx + 1, lang))
@@ -350,39 +427,6 @@ def render_message_bubble(message: Dict[str, Any], lang: str):
                         if is_truncated:
                             with st.expander("Show full text"):
                                 st.markdown(text)
-
-                    # Display VTT download link and viewer if available
-                    vtt_url = chunk.get("vtt_url")
-                    if vtt_url:
-                        vtt_full_url = f"{API_BASE_URL}{vtt_url}"
-                        filename = chunk.get("filename", "subtitle.vtt")
-                        vtt_filename = filename.split("/")[-1]  # Get just the filename
-                        chunk_lang = chunk.get("language", "unknown")
-
-                        st.markdown(f"**📄 {get_text('vtt_label', lang)} ({chunk_lang}):**")
-
-                        # Create columns for VTT actions
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.code(vtt_filename, language="text")
-                        with col2:
-                            st.markdown(
-                                f'<a href="{vtt_full_url}" download="{vtt_filename}" '
-                                f'style="display: inline-block; padding: 0.25rem 0.75rem; '
-                                f'background-color: #0084ff; color: white; text-decoration: none; '
-                                f'border-radius: 0.25rem; text-align: center;">'
-                                f'{get_text("download_vtt", lang)}</a>',
-                                unsafe_allow_html=True,
-                            )
-
-                        # Add expandable VTT content viewer
-                        with st.expander(get_text("view_vtt", lang)):
-                            vtt_content = fetch_vtt_content(vtt_url)
-                            if vtt_content:
-                                # Display VTT content with syntax highlighting
-                                st.code(vtt_content, language="vtt", line_numbers=True)
-                            else:
-                                st.error("Could not load VTT content")
 
                     # Add a small separator between language versions within a group
                     if chunk_idx < len(group) - 1:
@@ -433,8 +477,45 @@ def render_sidebar(lang: str):
                 if health_info:
                     status_color = "🟢" if health_info.get("status") == "healthy" else "🟡"
                     st.markdown(f"**{get_text('status_label', lang)}:** {status_color} {health_info.get('status', 'unknown').title()}")
+
+                    # Model selection dropdown
                     st.markdown(f"**{get_text('model_label', lang)}:**")
-                    st.code(health_info.get("vllm_model", "Unknown"), language="text")
+                    current_model = health_info.get("vllm_model", "Unknown")
+
+                    # Find the index of the current model, or use 0 as default
+                    model_names = list(SUPPORTED_MODELS.keys())
+                    try:
+                        current_index = model_names.index(current_model)
+                    except ValueError:
+                        # If current model not in supported list, add it temporarily
+                        if current_model != "Unknown":
+                            model_names.insert(0, current_model)
+                            temp_supported = {current_model: current_model}
+                            temp_supported.update(SUPPORTED_MODELS)
+                        else:
+                            temp_supported = SUPPORTED_MODELS
+                        current_index = 0
+                    else:
+                        temp_supported = SUPPORTED_MODELS
+
+                    selected_model = st.selectbox(
+                        "Select LLM Model",
+                        options=model_names,
+                        format_func=lambda x: f"{'✅ ' if x == current_model else ''}{temp_supported.get(x, x)}",
+                        index=current_index,
+                        key="model_select",
+                        label_visibility="collapsed",
+                    )
+
+                    # Show note if selected model differs from current
+                    if selected_model != current_model:
+                        note_text = (
+                            "⚠️ Для изменения модели обновите config.yaml и перезапустите API"
+                            if lang == "ru"
+                            else "⚠️ To change the model, update config.yaml and restart the API"
+                        )
+                        st.info(note_text)
+
                     st.markdown(f"**{get_text('collection_label', lang)}:**")
                     st.code(health_info.get("qdrant_collection", "Unknown"), language="text")
 

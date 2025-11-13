@@ -23,6 +23,15 @@ class TestRAGQueryEngine:
         assert engine.qdrant_client is None
         assert engine.vllm_url == "http://localhost:8000/v1/completions"
         assert engine.session is not None  # Verify session is created
+        assert engine.chat_template == "mistral"  # Default for Mistral model
+
+    def test_init_with_chat_completions(self, test_config: Config) -> None:
+        """Test engine initialization with chat completions API."""
+        test_config.vllm.use_chat_completions = True
+        engine = RAGQueryEngine(test_config)
+
+        assert engine.vllm_url == "http://localhost:8000/v1/chat/completions"
+        assert engine.use_chat_api is True
 
     def test_vllm_url_custom_config(self, test_config: Config) -> None:
         """Test vLLM URL construction with custom config."""
@@ -32,6 +41,105 @@ class TestRAGQueryEngine:
         engine = RAGQueryEngine(test_config)
 
         assert engine.vllm_url == "http://vllm-server:9000/v1/completions"
+
+    def test_detect_chat_template_mistral(self, test_config: Config) -> None:
+        """Test chat template detection for Mistral models."""
+        test_config.vllm.model_name = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+        test_config.vllm.chat_template = "auto"
+        engine = RAGQueryEngine(test_config)
+
+        assert engine.chat_template == "mistral"
+
+    def test_detect_chat_template_gemma(self, test_config: Config) -> None:
+        """Test chat template detection for Gemma models."""
+        test_config.vllm.model_name = "google/gemma-2-27b-it"
+        test_config.vllm.chat_template = "auto"
+        engine = RAGQueryEngine(test_config)
+
+        assert engine.chat_template == "gemma"
+
+    def test_detect_chat_template_gpt(self, test_config: Config) -> None:
+        """Test chat template detection for GPT/ChatML models."""
+        test_config.vllm.model_name = "gpt-oss:20b"
+        test_config.vllm.chat_template = "auto"
+        engine = RAGQueryEngine(test_config)
+
+        assert engine.chat_template == "chatml"
+
+    def test_detect_chat_template_generic(self, test_config: Config) -> None:
+        """Test chat template detection for unknown models."""
+        test_config.vllm.model_name = "unknown/custom-model"
+        test_config.vllm.chat_template = "auto"
+        engine = RAGQueryEngine(test_config)
+
+        assert engine.chat_template == "generic"
+
+    def test_detect_chat_template_manual_override(self, test_config: Config) -> None:
+        """Test manual chat template override."""
+        test_config.vllm.model_name = "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+        test_config.vllm.chat_template = "gemma"  # Manual override
+        engine = RAGQueryEngine(test_config)
+
+        assert engine.chat_template == "gemma"
+
+    def test_format_prompt_with_mistral_template(self, test_config: Config) -> None:
+        """Test prompt formatting with Mistral template."""
+        engine = RAGQueryEngine(test_config)
+        engine.chat_template = "mistral"
+
+        system_msg = "You are a helpful assistant."
+        user_msg = "What is energy?"
+        formatted = engine._format_prompt_with_template(system_msg, user_msg)
+
+        assert formatted.startswith("<s>[INST]")
+        assert "[/INST]" in formatted
+        assert system_msg in formatted
+        assert user_msg in formatted
+
+    def test_format_prompt_with_gemma_template(self, test_config: Config) -> None:
+        """Test prompt formatting with Gemma template."""
+        engine = RAGQueryEngine(test_config)
+        engine.chat_template = "gemma"
+
+        system_msg = "You are a helpful assistant."
+        user_msg = "What is energy?"
+        formatted = engine._format_prompt_with_template(system_msg, user_msg)
+
+        assert "<start_of_turn>user" in formatted
+        assert "<end_of_turn>" in formatted
+        assert "<start_of_turn>model" in formatted
+        assert system_msg in formatted
+        assert user_msg in formatted
+
+    def test_format_prompt_with_chatml_template(self, test_config: Config) -> None:
+        """Test prompt formatting with ChatML template."""
+        engine = RAGQueryEngine(test_config)
+        engine.chat_template = "chatml"
+
+        system_msg = "You are a helpful assistant."
+        user_msg = "What is energy?"
+        formatted = engine._format_prompt_with_template(system_msg, user_msg)
+
+        assert "<|im_start|>system" in formatted
+        assert "<|im_end|>" in formatted
+        assert "<|im_start|>user" in formatted
+        assert "<|im_start|>assistant" in formatted
+        assert system_msg in formatted
+        assert user_msg in formatted
+
+    def test_format_prompt_with_generic_template(self, test_config: Config) -> None:
+        """Test prompt formatting with generic template."""
+        engine = RAGQueryEngine(test_config)
+        engine.chat_template = "generic"
+
+        system_msg = "You are a helpful assistant."
+        user_msg = "What is energy?"
+        formatted = engine._format_prompt_with_template(system_msg, user_msg)
+
+        assert "System:" in formatted
+        assert "User:" in formatted
+        assert system_msg in formatted
+        assert user_msg in formatted
 
     @patch("rainrag.query.SentenceTransformer")
     @patch("rainrag.query.QdrantClient")
@@ -217,30 +325,51 @@ class TestRAGQueryEngine:
         ]
 
         question = "What is renewable energy?"
-        prompt = engine.build_prompt(question, documents)
+        system_message, user_message = engine.build_prompt(question, documents)
 
-        # Verify prompt structure
-        assert "You are an assistant" in prompt
-        assert "video transcripts" in prompt
-        assert question in prompt
+        # Verify system message
+        assert "You are an assistant" in system_message
+        assert "video transcripts" in system_message
 
-        # Verify context includes both documents
-        assert "[Document 1]" in prompt
-        assert "[Document 2]" in prompt
-        assert "Energy is important for sustainability." in prompt
-        assert "Renewable energy sources include solar and wind." in prompt
-        assert "/archive/energy_ep1.vtt" in prompt
-        assert "/archive/energy_ep2.vtt" in prompt
+        # Verify user message includes context and question
+        assert question in user_message
+        assert "[Document 1]" in user_message
+        assert "[Document 2]" in user_message
+        assert "Energy is important for sustainability." in user_message
+        assert "Renewable energy sources include solar and wind." in user_message
+        assert "/archive/energy_ep1.vtt" in user_message
+        assert "/archive/energy_ep2.vtt" in user_message
+
+    def test_build_prompt_with_russian_language(self, test_config: Config) -> None:
+        """Test prompt building with Russian language parameter."""
+        engine = RAGQueryEngine(test_config)
+
+        documents = [
+            {
+                "rank": 1,
+                "score": 0.95,
+                "text": "Энергия важна для устойчивого развития.",
+                "path": "/archive/energy_ep1.vtt",
+                "language": "ru",
+                "doc_id": "doc1",
+            },
+        ]
+
+        question = "Что такое возобновляемая энергия?"
+        system_message, user_message = engine.build_prompt(question, documents, language="ru")
+
+        # Verify Russian language in system message
+        assert "на русском языке" in system_message
 
     def test_build_prompt_empty_documents(self, test_config: Config) -> None:
         """Test prompt building with no documents."""
         engine = RAGQueryEngine(test_config)
 
-        prompt = engine.build_prompt("What is energy?", [])
+        system_message, user_message = engine.build_prompt("What is energy?", [])
 
-        assert "What is energy?" in prompt
+        assert "What is energy?" in user_message
         # Should still have prompt structure but no context
-        assert "You are an assistant" in prompt
+        assert "You are an assistant" in system_message
 
     def test_generate_answer(self, test_config: Config) -> None:
         """Test answer generation via vLLM."""
@@ -257,8 +386,9 @@ class TestRAGQueryEngine:
             mock_post.return_value = mock_response
 
             # Generate answer
-            prompt = "Test prompt with context"
-            answer = engine.generate_answer(prompt)
+            system_message = "You are a helpful assistant."
+            user_message = "Test prompt with context"
+            answer = engine.generate_answer(system_message, user_message)
 
             # Verify API call
             mock_post.assert_called_once()
@@ -267,7 +397,8 @@ class TestRAGQueryEngine:
 
             payload = call_args[1]["json"]
             assert payload["model"] == "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
-            assert payload["prompt"] == prompt
+            # For completions API, should use formatted prompt
+            assert "<s>[INST]" in payload["prompt"]
             assert payload["max_tokens"] == 512
             assert payload["temperature"] == 0.3
             assert payload["stream"] is False
@@ -275,6 +406,44 @@ class TestRAGQueryEngine:
 
             # Verify answer is stripped
             assert answer == "This is the generated answer."
+
+    def test_generate_answer_chat_api(self, test_config: Config) -> None:
+        """Test answer generation via vLLM chat completions API."""
+        test_config.vllm.use_chat_completions = True
+        engine = RAGQueryEngine(test_config)
+
+        # Mock the session.post method
+        with patch.object(engine.session, 'post') as mock_post:
+            # Mock successful vLLM chat response
+            mock_response = Mock()
+            mock_response.json.return_value = {
+                "choices": [{"message": {"content": "  Chat API answer.  "}}]
+            }
+            mock_response.raise_for_status.return_value = None
+            mock_post.return_value = mock_response
+
+            # Generate answer
+            system_message = "You are a helpful assistant."
+            user_message = "Test question"
+            answer = engine.generate_answer(system_message, user_message)
+
+            # Verify API call
+            mock_post.assert_called_once()
+            call_args = mock_post.call_args
+            assert call_args[0][0] == "http://localhost:8000/v1/chat/completions"
+
+            payload = call_args[1]["json"]
+            assert payload["model"] == "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+            assert "messages" in payload
+            assert len(payload["messages"]) == 1  # Combined message
+            assert "role" in payload["messages"][0]
+            assert payload["messages"][0]["role"] == "user"
+            assert payload["max_tokens"] == 512
+            assert payload["temperature"] == 0.3
+            assert payload["stream"] is False
+
+            # Verify answer is stripped
+            assert answer == "Chat API answer."
 
     def test_generate_answer_connection_error(self, test_config: Config) -> None:
         """Test answer generation with connection error and exception chaining."""
@@ -285,7 +454,7 @@ class TestRAGQueryEngine:
             mock_post.side_effect = original_error
 
             with pytest.raises(RuntimeError, match="Cannot connect to vLLM server") as exc_info:
-                engine.generate_answer("test prompt")
+                engine.generate_answer("system", "user prompt")
 
             # Verify exception chaining - original error is preserved
             assert exc_info.value.__cause__ is original_error
@@ -299,7 +468,7 @@ class TestRAGQueryEngine:
             mock_post.side_effect = original_error
 
             with pytest.raises(RuntimeError, match="timed out after 30 seconds") as exc_info:
-                engine.generate_answer("test prompt")
+                engine.generate_answer("system", "user prompt")
 
             # Verify exception chaining - original error is preserved
             assert exc_info.value.__cause__ is original_error
@@ -318,7 +487,7 @@ class TestRAGQueryEngine:
             mock_post.return_value = mock_response
 
             with pytest.raises(RuntimeError, match="vLLM server returned HTTP error") as exc_info:
-                engine.generate_answer("test prompt")
+                engine.generate_answer("system", "user prompt")
 
             # Verify exception chaining - original error is preserved
             assert exc_info.value.__cause__ is original_error

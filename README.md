@@ -411,15 +411,31 @@ Users will be prompted to enter the token when accessing the Streamlit interface
 
 ### Using the Web UI
 
-1. **Language Selection**: Use the sidebar to switch between Russian (Русский) and English
-2. **Adjust Context Chunks**: Set how many relevant transcript chunks to retrieve (1-10)
-3. **Ask Questions**: Type your question in Russian or English in the chat input
-4. **View Results**:
-   - The assistant's answer appears in a message bubble
-   - Expand the "Retrieved Context Chunks" section to see source transcripts
-   - Each chunk shows the filename, relevance score, and language
-   - Watch videos inline with the built-in video player
-   - Download or view VTT subtitle files
+#### Sidebar Controls
+
+1. **Language Selection**: Switch between Russian (Русский 🇷🇺) and English (English 🇬🇧)
+2. **Context Chunks**: Adjust how many relevant transcript chunks to retrieve (1-10)
+3. **Model Selection**: View the active LLM model and select from supported models:
+   - Mistral Small 3.2 24B (default)
+   - Gemma 2 27B
+   - GPT-OSS 20B
+   - Note: Changing models requires updating `config.yaml` and restarting the API
+
+#### Asking Questions
+
+- Type your question in Russian or English in the chat input
+- Questions can be about any topic covered in the indexed video transcripts
+
+#### Viewing Results
+
+- **Answer**: The assistant's response appears in a message bubble
+- **Context**: Expand "Retrieved Context Chunks" to see source material
+- **Video Player**: Videos display in a 2/3-width player on the left
+- **Subtitles**: VTT files appear in a scrollable viewer on the right (1/3 width)
+  - Language selector for videos with multiple subtitle languages (en/ru)
+  - Download button to save VTT files locally
+- **Text Preview**: Long text excerpts are collapsed with "Show full text" expansion
+- **Metadata**: Each chunk displays filename, relevance score, and language
 
 #### Example Queries (Russian)
 
