@@ -267,9 +267,10 @@ RainRAG includes a complete web-based query interface with:
 
 ### Prerequisites
 
-Before starting the web interface, you need a running vLLM server to generate answers:
+Before starting the web interface, you need a running LLM server (vLLM or Ollama) to generate answers:
 
-**See [VLLM_SETUP.md](VLLM_SETUP.md) for detailed vLLM server configuration and startup instructions.**
+**See [VLLM_SETUP.md](VLLM_SETUP.md) for vLLM server configuration and startup instructions.**
+**See [MODEL_CONFIGURATION.md](MODEL_CONFIGURATION.md) for multi-model support (Mistral, Gemma, GPT-OSS, etc.).**
 
 Quick vLLM startup (if already configured):
 ```bash
@@ -277,6 +278,13 @@ python -m vllm.entrypoints.openai.api_server \
   --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
   --host 0.0.0.0 \
   --port 8000
+```
+
+Or using Ollama:
+```bash
+ollama pull gemma3:27b
+# Ollama automatically serves on http://localhost:11434/v1
+# Update config.yaml port to 11434
 ```
 
 ### Quick Start (Local Development)

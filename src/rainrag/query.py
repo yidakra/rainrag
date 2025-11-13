@@ -49,6 +49,79 @@ class RAGQueryEngine:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
 
+        # Detect chat template
+        self.chat_template = self._detect_chat_template()
+        logger.info(f"Using chat template: {self.chat_template}")
+
+    def _detect_chat_template(self) -> str:
+        """
+        Detect the appropriate chat template based on model name.
+
+        Returns:
+            Template name: 'mistral', 'gemma', 'chatml', or 'generic'
+        """
+        template = self.config.vllm.chat_template.lower()
+
+        if template != "auto":
+            return template
+
+        model_name = self.config.vllm.model_name.lower()
+
+        # Auto-detect based on model name
+        if "mistral" in model_name:
+            return "mistral"
+        elif "gemma" in model_name:
+            return "gemma"
+        elif "gpt" in model_name or "chatml" in model_name:
+            return "chatml"
+        else:
+            return "generic"
+
+    def _format_prompt_with_template(self, system_message: str, user_message: str) -> str:
+        """
+        Format prompt according to the detected chat template.
+
+        Args:
+            system_message: System instruction
+            user_message: User query with context
+
+        Returns:
+            Formatted prompt string
+        """
+        if self.chat_template == "mistral":
+            # Mistral format: <s>[INST] system + user [/INST]
+            return f"<s>[INST] {system_message}\n\n{user_message}\n\nВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов. [/INST]"
+
+        elif self.chat_template == "gemma":
+            # Gemma format: <start_of_turn>user\n...<end_of_turn>\n<start_of_turn>model\n
+            return f"""<start_of_turn>user
+{system_message}
+
+{user_message}
+
+ВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов.<end_of_turn>
+<start_of_turn>model
+"""
+
+        elif self.chat_template == "chatml":
+            # ChatML format: <|im_start|>system\n...<|im_end|>\n<|im_start|>user\n...<|im_end|>
+            return f"""<|im_start|>system
+{system_message}<|im_end|>
+<|im_start|>user
+{user_message}
+
+ВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов.<|im_end|>
+<|im_start|>assistant
+"""
+
+        else:  # generic
+            # Generic format: System: ... User: ... Assistant:
+            return f"""System: {system_message}
+
+User: {user_message}
+
+ВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов."""
+
     def initialize(self) -> None:
         """Initialize the embedding model and Qdrant client."""
         logger.info("Initializing query engine...")
@@ -301,16 +374,12 @@ Question: {query}"""
             raise RuntimeError(f"Unexpected error during answer generation: {e}") from e
 
     def _generate_with_completions_api(self, system_message: str, user_message: str) -> str:
-        """Generate answer using completions API with Mistral instruction format."""
-        logger.info("Generating answer using vLLM completions API with instruction format...")
+        """Generate answer using completions API with model-specific chat template."""
+        logger.info(f"Generating answer using vLLM completions API ({self.chat_template} template)...")
 
-        # For Mistral instruct models, use the proper chat template format
+        # Use the appropriate chat template for the model
         # This ensures the model follows instructions even with the completions API
-        combined_prompt = f"""<s>[INST] {system_message}
-
-{user_message}
-
-ВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов. [/INST]"""
+        combined_prompt = self._format_prompt_with_template(system_message, user_message)
 
         payload = {
             "model": self.config.vllm.model_name,

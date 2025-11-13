@@ -54,6 +54,10 @@ class VLLMConfig(BaseModel):
         description="Use chat completions API (/v1/chat/completions) instead of completions API. "
         "Set to true for instruction-tuned models, false for base models or if chat API is not available.",
     )
+    chat_template: str = Field(
+        default="auto",
+        description="Chat template format: 'auto' (detect from model), 'mistral', 'gemma', 'chatml', or 'generic'",
+    )
 
 
 class ProcessingConfig(BaseModel):
