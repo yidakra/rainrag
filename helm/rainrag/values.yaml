@@ -109,6 +109,14 @@ ingestion:
       distance: "Cosine"
       recreate_collection: false
 
+    vllm:
+      host: "rainrag-vllm"
+      port: 8000
+      model_name: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+      max_tokens: 512
+      temperature: 0.3
+      top_k: 5
+
     processing:
       num_workers: 4
       max_file_size: 10485760
@@ -126,6 +134,49 @@ ingestion:
     limits:
       memory: "8Gi"
       cpu: "4000m"
+
+# vLLM inference server configuration
+vllm:
+  enabled: true
+  image:
+    repository: vllm/vllm-openai
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  # Model configuration
+  modelName: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+
+  # Number of replicas
+  replicas: 1
+
+  # vLLM specific settings
+  gpuMemoryUtilization: 0.9
+  maxModelLen: 8192
+  tensorParallelSize: 1
+
+  service:
+    type: ClusterIP
+    port: 8000
+
+  resources:
+    requests:
+      memory: "16Gi"
+      cpu: "4000m"
+    limits:
+      memory: "32Gi"
+      cpu: "8000m"
+      nvidia.com/gpu: 1
+
+  # Optional volume mounts for model cache
+  volumeMounts: []
+  # - name: hf-cache
+  #   mountPath: /root/.cache/huggingface
+
+  volumes: []
+  # - name: hf-cache
+  #   hostPath:
+  #     path: /data/huggingface-cache
+  #     type: DirectoryOrCreate
 
 # Global settings
 nameOverride: ""

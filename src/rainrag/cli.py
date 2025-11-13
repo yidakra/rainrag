@@ -10,6 +10,7 @@ from rainrag.config import load_config
 from rainrag.embed import run_embedding
 from rainrag.index import run_indexing
 from rainrag.ingest import run_ingestion
+from rainrag.query import run_query
 
 app = typer.Typer(
     name="rainrag",
@@ -237,6 +238,70 @@ def pipeline(
 
 
 @app.command()
+def ask(
+    question: str = typer.Argument(..., help="The question to ask"),
+    config: str = typer.Option(
+        "config.yaml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+    top_k: int = typer.Option(
+        None,
+        "--top-k",
+        "-k",
+        help="Number of documents to retrieve (default from config)",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show retrieved documents and sources",
+    ),
+) -> None:
+    """
+    Ask a question and get an answer based on the video transcripts.
+
+    This command will:
+    1. Embed your question using the same model as documents
+    2. Search Qdrant for the most relevant transcript chunks
+    3. Generate an answer using the Mistral model via vLLM
+
+    Example:
+        rainrag ask "О чём говорили в выпуске про энергетику?"
+    """
+    setup_logging(config)
+
+    try:
+        typer.echo("🔍 Processing your question...\n")
+
+        result = run_query(config, question, top_k)
+
+        # Display the answer
+        typer.echo("💡 Answer:")
+        typer.echo("=" * 70)
+        typer.echo(result["answer"])
+        typer.echo("=" * 70)
+
+        # Display metadata
+        typer.echo(f"\n📊 Retrieved {result['num_documents']} relevant documents")
+
+        # Display sources if verbose
+        if verbose:
+            typer.echo("\n📚 Sources:")
+            for doc in result["retrieved_documents"]:
+                typer.echo(f"\n  [{doc['rank']}] Score: {doc['score']:.4f}")
+                typer.echo(f"      Path: {doc['path']}")
+                typer.echo(f"      Language: {doc['language']}")
+                typer.echo(f"      Preview: {doc['text'][:200]}...")
+
+    except Exception as e:
+        logger.exception(f"Query failed: {e}")
+        typer.echo(f"❌ Query failed: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def info(
     config: str = typer.Option(
         "config.yaml",
@@ -273,6 +338,13 @@ def info(
         typer.echo(f"  Collection:        {cfg.qdrant.collection_name}")
         typer.echo(f"  Vector size:       {cfg.qdrant.vector_size}")
         typer.echo(f"  Distance metric:   {cfg.qdrant.distance}")
+
+        typer.echo(f"\nvLLM:")
+        typer.echo(f"  Host:              {cfg.vllm.host}:{cfg.vllm.port}")
+        typer.echo(f"  Model:             {cfg.vllm.model_name}")
+        typer.echo(f"  Max tokens:        {cfg.vllm.max_tokens}")
+        typer.echo(f"  Temperature:       {cfg.vllm.temperature}")
+        typer.echo(f"  Top-k docs:        {cfg.vllm.top_k}")
 
         # Try to get collection info
         try:

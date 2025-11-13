@@ -36,6 +36,17 @@ class QdrantConfig(BaseModel):
     recreate_collection: bool = Field(default=False)
 
 
+class VLLMConfig(BaseModel):
+    """Configuration for vLLM inference server."""
+
+    host: str = Field(default="localhost")
+    port: int = Field(default=8000)
+    model_name: str = Field(default="mistralai/Mistral-Small-3.2-24B-Instruct-2506")
+    max_tokens: int = Field(default=512)
+    temperature: float = Field(default=0.3)
+    top_k: int = Field(default=5, description="Number of documents to retrieve")
+
+
 class ProcessingConfig(BaseModel):
     """Configuration for data processing."""
 
@@ -60,6 +71,7 @@ class Config(BaseModel):
     paths: PathsConfig
     embedding: EmbeddingConfig
     qdrant: QdrantConfig
+    vllm: VLLMConfig
     processing: ProcessingConfig
     logging: LoggingConfig
 

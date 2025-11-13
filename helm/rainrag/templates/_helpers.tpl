@@ -68,3 +68,24 @@ Qdrant selector labels
 app.kubernetes.io/name: {{ include "rainrag.name" . }}-qdrant
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+vLLM labels
+*/}}
+{{- define "rainrag.vllm.labels" -}}
+helm.sh/chart: {{ include "rainrag.chart" . }}
+{{ include "rainrag.vllm.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/component: vllm
+{{- end }}
+
+{{/*
+vLLM selector labels
+*/}}
+{{- define "rainrag.vllm.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "rainrag.name" . }}-vllm
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

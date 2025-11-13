@@ -14,7 +14,7 @@ embedding:
   model_name: "intfloat/multilingual-e5-large"
   batch_size: 32
   max_seq_length: 512
-  device: "cuda"  # or "cpu"
+  device: "cpu"  # or "cpu"
   normalize_embeddings: true
 
 # Qdrant vector store configuration
@@ -26,6 +26,15 @@ qdrant:
   distance: "Cosine"
   # Set to true to recreate collection on indexing
   recreate_collection: false
+
+# vLLM inference server configuration
+vllm:
+  host: "localhost"
+  port: 8000
+  model_name: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+  max_tokens: 512
+  temperature: 0.3
+  top_k: 5  # Number of documents to retrieve for context
 
 # Processing configuration
 processing:

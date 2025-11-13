@@ -95,6 +95,14 @@ def test_config(temp_dir: Path) -> Config:
             "distance": "Cosine",
             "recreate_collection": False,
         },
+        vllm={
+            "host": "localhost",
+            "port": 8000,
+            "model_name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
         processing={
             "num_workers": 2,
             "max_file_size": 1048576,  # 1MB

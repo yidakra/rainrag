@@ -27,6 +27,14 @@ data:
       distance: {{ .Values.ingestion.config.qdrant.distance | quote }}
       recreate_collection: {{ .Values.ingestion.config.qdrant.recreate_collection }}
 
+    vllm:
+      host: {{ .Values.ingestion.config.vllm.host | quote }}
+      port: {{ .Values.ingestion.config.vllm.port }}
+      model_name: {{ .Values.ingestion.config.vllm.model_name | quote }}
+      max_tokens: {{ .Values.ingestion.config.vllm.max_tokens }}
+      temperature: {{ .Values.ingestion.config.vllm.temperature }}
+      top_k: {{ .Values.ingestion.config.vllm.top_k }}
+
     processing:
       num_workers: {{ .Values.ingestion.config.processing.num_workers }}
       max_file_size: {{ .Values.ingestion.config.processing.max_file_size }}

@@ -118,9 +118,18 @@ class Embedder:
             device = self.config.embedding.device
 
         # Load model
-        self.model = SentenceTransformer(
-            self.config.embedding.model_name, device=device
-        )
+        try:
+            self.model = SentenceTransformer(
+                self.config.embedding.model_name,
+                device=device,
+                model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
+            )
+        except TypeError:
+            # Older sentence-transformers versions don't accept model_kwargs
+            self.model = SentenceTransformer(
+                self.config.embedding.model_name,
+                device=device,
+            )
 
         # Set max sequence length
         self.model.max_seq_length = self.config.embedding.max_seq_length

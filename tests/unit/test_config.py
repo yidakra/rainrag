@@ -13,6 +13,7 @@ from rainrag.config import (
     PathsConfig,
     ProcessingConfig,
     QdrantConfig,
+    VLLMConfig,
     load_config,
 )
 
@@ -90,6 +91,39 @@ class TestQdrantConfig:
         assert config.distance == "Euclidean"
 
 
+class TestVLLMConfig:
+    """Tests for VLLMConfig model."""
+
+    def test_vllm_config_defaults(self) -> None:
+        """Test default vLLM configuration."""
+        config = VLLMConfig()
+
+        assert config.host == "localhost"
+        assert config.port == 8000
+        assert config.model_name == "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+        assert config.max_tokens == 512
+        assert config.temperature == 0.3
+        assert config.top_k == 5
+
+    def test_vllm_config_custom(self) -> None:
+        """Test custom vLLM configuration."""
+        config = VLLMConfig(
+            host="vllm-server",
+            port=8080,
+            model_name="mistralai/Mistral-7B-Instruct-v0.3",
+            max_tokens=1024,
+            temperature=0.7,
+            top_k=10,
+        )
+
+        assert config.host == "vllm-server"
+        assert config.port == 8080
+        assert config.model_name == "mistralai/Mistral-7B-Instruct-v0.3"
+        assert config.max_tokens == 1024
+        assert config.temperature == 0.7
+        assert config.top_k == 10
+
+
 class TestProcessingConfig:
     """Tests for ProcessingConfig model."""
 
@@ -126,6 +160,7 @@ class TestConfig:
             ),
             embedding=EmbeddingConfig(),
             qdrant=QdrantConfig(),
+            vllm=VLLMConfig(),
             processing=ProcessingConfig(),
             logging=LoggingConfig(),
         )
@@ -133,6 +168,8 @@ class TestConfig:
         assert config.paths.archive_root == "/data/archive"
         assert config.embedding.model_name == "intfloat/multilingual-e5-large"
         assert config.qdrant.host == "localhost"
+        assert config.vllm.host == "localhost"
+        assert config.vllm.port == 8000
         assert config.processing.num_workers == 4
         assert config.logging.level == "INFO"
 
@@ -163,6 +200,14 @@ class TestLoadConfig:
                 "distance": "Cosine",
                 "recreate_collection": True,
             },
+            "vllm": {
+                "host": "vllm-test",
+                "port": 8080,
+                "model_name": "test-model",
+                "max_tokens": 1024,
+                "temperature": 0.7,
+                "top_k": 10,
+            },
             "processing": {
                 "num_workers": 2,
                 "max_file_size": 1048576,
@@ -187,6 +232,9 @@ class TestLoadConfig:
             assert config.embedding.batch_size == 16
             assert config.qdrant.host == "test-host"
             assert config.qdrant.recreate_collection is True
+            assert config.vllm.host == "vllm-test"
+            assert config.vllm.port == 8080
+            assert config.vllm.temperature == 0.7
             assert config.processing.num_workers == 2
             assert config.logging.level == "DEBUG"
 
