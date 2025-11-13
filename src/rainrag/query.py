@@ -2,6 +2,8 @@
 
 from typing import List, Dict, Any
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from loguru import logger
@@ -31,6 +33,18 @@ class RAGQueryEngine:
         self.embedding_model: SentenceTransformer | None = None
         self.qdrant_client: QdrantClient | None = None
         self.vllm_url = f"http://{config.vllm.host}:{config.vllm.port}/v1/completions"
+
+        # Create a session with retry strategy for resilient HTTP requests
+        self.session = requests.Session()
+        retry_strategy = Retry(
+            total=3,  # Total number of retries
+            backoff_factor=1,  # Wait 1s, 2s, 4s between retries
+            status_forcelist=[429, 500, 502, 503, 504],  # Retry on these HTTP status codes
+            allowed_methods=["POST"],  # Retry POST requests (for vLLM API calls)
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
 
     def initialize(self) -> None:
         """Initialize the embedding model and Qdrant client."""
@@ -181,11 +195,17 @@ Provide a detailed answer based on the context above. If the context doesn't con
         """
         Generate an answer using the vLLM server.
 
+        Uses a requests session with automatic retry logic for transient failures.
+        Retries up to 3 times with exponential backoff on HTTP 429, 500, 502, 503, 504.
+
         Args:
             prompt: The complete prompt with context
 
         Returns:
             The generated answer text
+
+        Raises:
+            RuntimeError: If connection fails, request times out, or server returns error
         """
         logger.info("Generating answer using vLLM...")
 
@@ -198,10 +218,10 @@ Provide a detailed answer based on the context above. If the context doesn't con
         }
 
         try:
-            response = requests.post(
+            response = self.session.post(
                 self.vllm_url,
                 json=payload,
-                timeout=120,  # 2 minute timeout
+                timeout=30,  # 30 second timeout (reduced from 120s for better responsiveness)
             )
             response.raise_for_status()
 
@@ -211,18 +231,32 @@ Provide a detailed answer based on the context above. If the context doesn't con
             logger.info("Answer generated successfully")
             return answer
 
-        except requests.exceptions.ConnectionError:
-            logger.error(f"Failed to connect to vLLM server at {self.vllm_url}")
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Failed to connect to vLLM server at {self.vllm_url}: {e}")
             raise RuntimeError(
                 f"Cannot connect to vLLM server at {self.vllm_url}. "
                 "Make sure the vLLM server is running."
-            )
-        except requests.exceptions.Timeout:
-            logger.error("Request to vLLM server timed out")
-            raise RuntimeError("Request to vLLM server timed out after 120 seconds")
+            ) from e
+        except requests.exceptions.Timeout as e:
+            logger.error(f"Request to vLLM server timed out after 30 seconds: {e}")
+            raise RuntimeError(
+                "Request to vLLM server timed out after 30 seconds. "
+                "The model may be overloaded or the prompt may be too complex."
+            ) from e
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"vLLM server returned HTTP error: {e}")
+            raise RuntimeError(
+                f"vLLM server returned HTTP error: {e.response.status_code} - {e.response.text}"
+            ) from e
+        except (KeyError, IndexError) as e:
+            logger.error(f"Unexpected response format from vLLM server: {e}")
+            raise RuntimeError(
+                "vLLM server returned an unexpected response format. "
+                "The response may be missing expected fields."
+            ) from e
         except Exception as e:
             logger.error(f"Failed to generate answer: {e}")
-            raise
+            raise RuntimeError(f"Unexpected error during answer generation: {e}") from e
 
     def query(self, question: str, top_k: int | None = None) -> Dict[str, Any]:
         """

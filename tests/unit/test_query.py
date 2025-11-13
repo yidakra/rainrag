@@ -22,6 +22,7 @@ class TestRAGQueryEngine:
         assert engine.embedding_model is None
         assert engine.qdrant_client is None
         assert engine.vllm_url == "http://localhost:8000/v1/completions"
+        assert engine.session is not None  # Verify session is created
 
     def test_vllm_url_custom_config(self, test_config: Config) -> None:
         """Test vLLM URL construction with custom config."""
@@ -241,69 +242,86 @@ class TestRAGQueryEngine:
         # Should still have prompt structure but no context
         assert "You are an assistant" in prompt
 
-    @patch("rainrag.query.requests.post")
-    def test_generate_answer(self, mock_post: Mock, test_config: Config) -> None:
+    def test_generate_answer(self, test_config: Config) -> None:
         """Test answer generation via vLLM."""
         engine = RAGQueryEngine(test_config)
 
-        # Mock successful vLLM response
-        mock_response = Mock()
-        mock_response.json.return_value = {
-            "choices": [{"text": "  This is the generated answer.  "}]
-        }
-        mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
+        # Mock the session.post method
+        with patch.object(engine.session, 'post') as mock_post:
+            # Mock successful vLLM response
+            mock_response = Mock()
+            mock_response.json.return_value = {
+                "choices": [{"text": "  This is the generated answer.  "}]
+            }
+            mock_response.raise_for_status.return_value = None
+            mock_post.return_value = mock_response
 
-        # Generate answer
-        prompt = "Test prompt with context"
-        answer = engine.generate_answer(prompt)
+            # Generate answer
+            prompt = "Test prompt with context"
+            answer = engine.generate_answer(prompt)
 
-        # Verify API call
-        mock_post.assert_called_once()
-        call_args = mock_post.call_args
-        assert call_args[0][0] == "http://localhost:8000/v1/completions"
+            # Verify API call
+            mock_post.assert_called_once()
+            call_args = mock_post.call_args
+            assert call_args[0][0] == "http://localhost:8000/v1/completions"
 
-        payload = call_args[1]["json"]
-        assert payload["model"] == "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
-        assert payload["prompt"] == prompt
-        assert payload["max_tokens"] == 512
-        assert payload["temperature"] == 0.3
-        assert payload["stream"] is False
+            payload = call_args[1]["json"]
+            assert payload["model"] == "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+            assert payload["prompt"] == prompt
+            assert payload["max_tokens"] == 512
+            assert payload["temperature"] == 0.3
+            assert payload["stream"] is False
+            assert call_args[1]["timeout"] == 30  # Verify timeout is 30s
 
-        # Verify answer is stripped
-        assert answer == "This is the generated answer."
+            # Verify answer is stripped
+            assert answer == "This is the generated answer."
 
-    @patch("rainrag.query.requests.post")
-    def test_generate_answer_connection_error(self, mock_post: Mock, test_config: Config) -> None:
-        """Test answer generation with connection error."""
+    def test_generate_answer_connection_error(self, test_config: Config) -> None:
+        """Test answer generation with connection error and exception chaining."""
         engine = RAGQueryEngine(test_config)
 
-        mock_post.side_effect = requests.exceptions.ConnectionError("Connection failed")
+        with patch.object(engine.session, 'post') as mock_post:
+            original_error = requests.exceptions.ConnectionError("Connection failed")
+            mock_post.side_effect = original_error
 
-        with pytest.raises(RuntimeError, match="Cannot connect to vLLM server"):
-            engine.generate_answer("test prompt")
+            with pytest.raises(RuntimeError, match="Cannot connect to vLLM server") as exc_info:
+                engine.generate_answer("test prompt")
 
-    @patch("rainrag.query.requests.post")
-    def test_generate_answer_timeout(self, mock_post: Mock, test_config: Config) -> None:
-        """Test answer generation with timeout."""
+            # Verify exception chaining - original error is preserved
+            assert exc_info.value.__cause__ is original_error
+
+    def test_generate_answer_timeout(self, test_config: Config) -> None:
+        """Test answer generation with timeout and exception chaining."""
         engine = RAGQueryEngine(test_config)
 
-        mock_post.side_effect = requests.exceptions.Timeout("Timeout")
+        with patch.object(engine.session, 'post') as mock_post:
+            original_error = requests.exceptions.Timeout("Timeout")
+            mock_post.side_effect = original_error
 
-        with pytest.raises(RuntimeError, match="timed out"):
-            engine.generate_answer("test prompt")
+            with pytest.raises(RuntimeError, match="timed out after 30 seconds") as exc_info:
+                engine.generate_answer("test prompt")
 
-    @patch("rainrag.query.requests.post")
-    def test_generate_answer_http_error(self, mock_post: Mock, test_config: Config) -> None:
-        """Test answer generation with HTTP error."""
+            # Verify exception chaining - original error is preserved
+            assert exc_info.value.__cause__ is original_error
+
+    def test_generate_answer_http_error(self, test_config: Config) -> None:
+        """Test answer generation with HTTP error and exception chaining."""
         engine = RAGQueryEngine(test_config)
 
-        mock_response = Mock()
-        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("500 Error")
-        mock_post.return_value = mock_response
+        with patch.object(engine.session, 'post') as mock_post:
+            mock_response = Mock()
+            mock_response.status_code = 500
+            mock_response.text = "Internal Server Error"
+            original_error = requests.exceptions.HTTPError("500 Error")
+            original_error.response = mock_response
+            mock_response.raise_for_status.side_effect = original_error
+            mock_post.return_value = mock_response
 
-        with pytest.raises(Exception):
-            engine.generate_answer("test prompt")
+            with pytest.raises(RuntimeError, match="vLLM server returned HTTP error") as exc_info:
+                engine.generate_answer("test prompt")
+
+            # Verify exception chaining - original error is preserved
+            assert exc_info.value.__cause__ is original_error
 
     def test_query_full_pipeline(self, test_config: Config) -> None:
         """Test complete query pipeline."""
@@ -328,7 +346,7 @@ class TestRAGQueryEngine:
         engine.qdrant_client = mock_client
 
         # Mock vLLM
-        with patch("rainrag.query.requests.post") as mock_post:
+        with patch.object(engine.session, 'post') as mock_post:
             mock_response = Mock()
             mock_response.json.return_value = {"choices": [{"text": "Generated answer"}]}
             mock_response.raise_for_status.return_value = None
@@ -356,7 +374,7 @@ class TestRAGQueryEngine:
         mock_client.search.return_value = []
         engine.qdrant_client = mock_client
 
-        with patch("rainrag.query.requests.post") as mock_post:
+        with patch.object(engine.session, 'post') as mock_post:
             mock_response = Mock()
             mock_response.json.return_value = {"choices": [{"text": "Answer"}]}
             mock_response.raise_for_status.return_value = None
@@ -381,7 +399,7 @@ class TestRAGQueryEngine:
         mock_client.search.return_value = []
         engine.qdrant_client = mock_client
 
-        with patch("rainrag.query.requests.post") as mock_post:
+        with patch.object(engine.session, 'post') as mock_post:
             mock_response = Mock()
             mock_response.json.return_value = {"choices": [{"text": "Answer"}]}
             mock_response.raise_for_status.return_value = None
