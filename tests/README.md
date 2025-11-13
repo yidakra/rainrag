@@ -11,7 +11,9 @@ tests/
 │   ├── test_config.py       # Configuration system tests
 │   ├── test_ingest.py       # VTT parsing and ingestion tests
 │   ├── test_embed.py        # Embedding generation tests
-│   └── test_index.py        # Qdrant indexing tests
+│   ├── test_index.py        # Qdrant indexing tests
+│   ├── test_query.py        # Query engine tests
+│   └── test_api.py          # FastAPI backend tests
 ├── integration/             # Integration tests
 │   └── test_pipeline.py     # Full pipeline tests
 └── fixtures/                # Test data fixtures
@@ -123,6 +125,21 @@ The test suite includes:
 - ✅ Search functionality
 - ✅ Collection info retrieval
 - ✅ Error handling
+
+#### Query Engine (`test_query.py`)
+- ✅ Query embedding
+- ✅ Document retrieval
+- ✅ Prompt building
+- ✅ vLLM integration
+- ✅ Error handling
+
+#### API Backend (`test_api.py`)
+- ✅ Video file detection
+- ✅ Video file serving
+- ✅ VTT file serving
+- ✅ Path traversal security
+- ✅ API endpoint functionality
+- ✅ Authentication validation
 
 ### Integration Tests
 

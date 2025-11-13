@@ -14,6 +14,8 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 - **CLI Interface**: Easy-to-use command-line interface powered by Typer
 - **Vector Search**: Uses Qdrant for efficient similarity search
 - **Web UI**: Streamlit-based chat interface with FastAPI backend
+- **Video Playback**: Inline video player for retrieved content
+- **Subtitle Access**: Download and view VTT files directly in the UI
 - **Network Access**: Accessible from other devices on the same network with optional token authentication
 - **LLM Integration**: Query interface powered by Mistral-Small via vLLM
 
@@ -393,7 +395,9 @@ Users will be prompted to enter the token when accessing the Streamlit interface
 4. **View Results**:
    - The assistant's answer appears in a message bubble
    - Expand the "Retrieved Context Chunks" section to see source transcripts
-   - Each chunk shows the filename, relevance score, and timestamp
+   - Each chunk shows the filename, relevance score, and language
+   - Watch videos inline with the built-in video player
+   - Download or view VTT subtitle files
 
 #### Example Queries (Russian)
 
@@ -454,7 +458,9 @@ Response:
       "filename": "episode_001.vtt",
       "language": "en",
       "score": 0.89,
-      "rank": 1
+      "rank": 1,
+      "video_url": "/video/path/to/episode_001.mp4",
+      "vtt_url": "/vtt/path/to/episode_001.vtt"
     }
   ],
   "question": "What topics were discussed?",
@@ -473,6 +479,18 @@ curl -X POST http://localhost:8001/query \
     "language": "ru",
     "top_k": 5
   }'
+```
+
+#### Serve Video Files
+
+```bash
+curl http://localhost:8001/video/path/to/episode.mp4 -o episode.mp4
+```
+
+#### Serve VTT Files
+
+```bash
+curl http://localhost:8001/vtt/path/to/episode.vtt -o episode.vtt
 ```
 
 ### Advanced Configuration
@@ -736,6 +754,7 @@ rainrag/
 - `archive_root`: Root directory containing VTT files
 - `docs_output`: Output path for parsed documents (JSONL)
 - `embeddings_cache`: Directory for cached embeddings
+- `video_root`: Root directory containing video files (defaults to archive_root if not specified)
 
 ### Embedding
 
@@ -759,6 +778,12 @@ rainrag/
 - `num_workers`: Number of parallel workers for file processing
 - `max_file_size`: Maximum VTT file size in bytes
 - `min_text_length`: Minimum text length to process (characters)
+
+### Video
+
+- `enabled`: Enable video file serving (default: true)
+- `extensions`: List of supported video file extensions
+- `vtt_extensions`: List of supported VTT file extensions
 
 ## Development
 
