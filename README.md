@@ -415,11 +415,12 @@ Users will be prompted to enter the token when accessing the Streamlit interface
 
 1. **Language Selection**: Switch between Russian (Русский 🇷🇺) and English (English 🇬🇧)
 2. **Context Chunks**: Adjust how many relevant transcript chunks to retrieve (1-10)
-3. **Model Selection**: View the active LLM model and select from supported models:
+3. **Model Selection**: Seamlessly switch between LLM models:
    - Mistral Small 3.2 24B (default)
    - Gemma 2 27B
    - GPT-OSS 20B
-   - Note: Changing models requires updating `config.yaml` and restarting the API
+   - Changes apply instantly without requiring restarts
+   - Ensure vLLM is running with the desired model
 
 #### Asking Questions
 

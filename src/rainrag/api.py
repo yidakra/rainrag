@@ -65,6 +65,32 @@ class HealthResponse(BaseModel):
     qdrant_collection: str
 
 
+class ModelInfo(BaseModel):
+    """Model information."""
+
+    name: str
+    display_name: str
+    chat_template: str
+    is_active: bool
+
+
+class ModelsResponse(BaseModel):
+    """Response model for models endpoint."""
+
+    models: List[ModelInfo]
+    current_model: str
+
+
+class SwitchModelRequest(BaseModel):
+    """Request model for switching models."""
+
+    model_name: str = Field(..., description="Full model name to switch to")
+    chat_template: str = Field(
+        default="auto",
+        description="Chat template to use (auto, mistral, gemma, chatml, generic)",
+    )
+
+
 def find_video_file(vtt_path: str) -> Optional[str]:
     """
     Find video file corresponding to a VTT file.
@@ -245,6 +271,109 @@ async def health_check():
         vllm_model=query_engine.config.vllm.model_name,
         qdrant_collection=query_engine.config.qdrant.collection_name,
     )
+
+
+# Supported models configuration
+SUPPORTED_MODELS = {
+    "mistralai/Mistral-Small-3.2-24B-Instruct-2506": {
+        "display_name": "Mistral Small 3.2 24B",
+        "chat_template": "mistral",
+    },
+    "google/gemma-2-27b-it": {
+        "display_name": "Gemma 2 27B",
+        "chat_template": "gemma",
+    },
+    "gpt-oss:20b": {
+        "display_name": "GPT-OSS 20B",
+        "chat_template": "chatml",
+    },
+}
+
+
+@app.get("/models", response_model=ModelsResponse)
+async def list_models():
+    """
+    List available LLM models.
+
+    Returns:
+        List of supported models with metadata
+    """
+    if query_engine is None or config is None:
+        raise HTTPException(status_code=503, detail="Query engine not initialized")
+
+    current_model = config.vllm.model_name
+    models = []
+
+    for model_name, model_info in SUPPORTED_MODELS.items():
+        models.append(
+            ModelInfo(
+                name=model_name,
+                display_name=model_info["display_name"],
+                chat_template=model_info["chat_template"],
+                is_active=(model_name == current_model),
+            )
+        )
+
+    return ModelsResponse(models=models, current_model=current_model)
+
+
+@app.post("/models/switch")
+async def switch_model(request: SwitchModelRequest):
+    """
+    Switch to a different LLM model dynamically.
+
+    Args:
+        request: Model switch request with model name and optional chat template
+
+    Returns:
+        Success status with new model information
+    """
+    global query_engine, config
+
+    if query_engine is None or config is None:
+        raise HTTPException(status_code=503, detail="Query engine not initialized")
+
+    # Validate model name
+    if request.model_name not in SUPPORTED_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported model: {request.model_name}. "
+            f"Supported models: {list(SUPPORTED_MODELS.keys())}",
+        )
+
+    try:
+        logger.info(f"Switching model from {config.vllm.model_name} to {request.model_name}")
+
+        # Update config with new model
+        config.vllm.model_name = request.model_name
+        config.vllm.chat_template = request.chat_template
+
+        # Reinitialize query engine with new model
+        # Note: We keep the same embedding model and Qdrant client
+        old_embedding_model = query_engine.embedding_model
+        old_qdrant_client = query_engine.qdrant_client
+
+        # Create new query engine with updated config
+        query_engine = RAGQueryEngine(config)
+
+        # Reuse existing connections
+        query_engine.embedding_model = old_embedding_model
+        query_engine.qdrant_client = old_qdrant_client
+
+        logger.info(f"Successfully switched to model: {request.model_name}")
+
+        return {
+            "status": "success",
+            "message": f"Switched to {SUPPORTED_MODELS[request.model_name]['display_name']}",
+            "model_name": request.model_name,
+            "chat_template": query_engine.chat_template,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to switch model: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to switch model: {str(e)}"
+        )
 
 
 @app.post("/query", response_model=QueryResponse)
