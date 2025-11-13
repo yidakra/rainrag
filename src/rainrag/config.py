@@ -49,6 +49,11 @@ class VLLMConfig(BaseModel):
     max_tokens: int = Field(default=512)
     temperature: float = Field(default=0.3)
     top_k: int = Field(default=5, description="Number of documents to retrieve")
+    use_chat_completions: bool = Field(
+        default=True,
+        description="Use chat completions API (/v1/chat/completions) instead of completions API. "
+        "Set to true for instruction-tuned models, false for base models or if chat API is not available.",
+    )
 
 
 class ProcessingConfig(BaseModel):

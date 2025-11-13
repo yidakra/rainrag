@@ -32,8 +32,10 @@ class RAGQueryEngine:
         self.config = config
         self.embedding_model: SentenceTransformer | None = None
         self.qdrant_client: QdrantClient | None = None
-        # Use chat completions for instruct models (better instruction following)
-        self.vllm_url = f"http://{config.vllm.host}:{config.vllm.port}/v1/chat/completions"
+        # Select API endpoint based on configuration
+        endpoint = "chat/completions" if config.vllm.use_chat_completions else "completions"
+        self.vllm_url = f"http://{config.vllm.host}:{config.vllm.port}/v1/{endpoint}"
+        self.use_chat_api = config.vllm.use_chat_completions
 
         # Create a session with retry strategy for resilient HTTP requests
         self.session = requests.Session()
@@ -208,7 +210,7 @@ Question: {query}"""
 
     def generate_answer(self, system_message: str, user_message: str) -> str:
         """
-        Generate an answer using the vLLM server (chat completions API).
+        Generate an answer using the vLLM server.
 
         Uses a requests session with automatic retry logic for transient failures.
         Retries up to 3 times with exponential backoff on HTTP 429, 500, 502, 503, 504.
@@ -223,7 +225,29 @@ Question: {query}"""
         Raises:
             RuntimeError: If connection fails, request times out, or server returns error
         """
-        logger.info("Generating answer using vLLM chat completions...")
+        # Try chat completions API first if enabled
+        if self.use_chat_api:
+            try:
+                return self._generate_with_chat_api(system_message, user_message)
+            except requests.exceptions.HTTPError as e:
+                # If chat API fails with 404 or 422, fall back to completions API
+                if e.response.status_code in [404, 422]:
+                    logger.warning(
+                        f"Chat completions API failed ({e.response.status_code}), "
+                        "falling back to completions API"
+                    )
+                    self.use_chat_api = False
+                    # Update URL for future requests
+                    self.vllm_url = f"http://{self.config.vllm.host}:{self.config.vllm.port}/v1/completions"
+                else:
+                    raise
+
+        # Use completions API (either configured or as fallback)
+        return self._generate_with_completions_api(system_message, user_message)
+
+    def _generate_with_chat_api(self, system_message: str, user_message: str) -> str:
+        """Generate answer using chat completions API."""
+        logger.info("Generating answer using vLLM chat completions API...")
 
         payload = {
             "model": self.config.vllm.model_name,
@@ -240,14 +264,14 @@ Question: {query}"""
             response = self.session.post(
                 self.vllm_url,
                 json=payload,
-                timeout=30,  # 30 second timeout (reduced from 120s for better responsiveness)
+                timeout=30,
             )
             response.raise_for_status()
 
             result = response.json()
             answer = result["choices"][0]["message"]["content"].strip()
 
-            logger.info("Answer generated successfully")
+            logger.info("Answer generated successfully (chat API)")
             return answer
 
         except requests.exceptions.ConnectionError as e:
@@ -263,9 +287,65 @@ Question: {query}"""
                 "The model may be overloaded or the prompt may be too complex."
             ) from e
         except requests.exceptions.HTTPError as e:
-            logger.error(f"vLLM server returned HTTP error: {e}")
+            error_details = e.response.text if hasattr(e.response, 'text') else str(e)
+            logger.error(f"vLLM chat API error {e.response.status_code}: {error_details}")
+            raise  # Re-raise to allow fallback logic in generate_answer
+        except (KeyError, IndexError) as e:
+            logger.error(f"Unexpected response format from vLLM server: {e}")
             raise RuntimeError(
-                f"vLLM server returned HTTP error: {e.response.status_code} - {e.response.text}"
+                "vLLM server returned an unexpected response format. "
+                "The response may be missing expected fields."
+            ) from e
+        except Exception as e:
+            logger.error(f"Failed to generate answer: {e}")
+            raise RuntimeError(f"Unexpected error during answer generation: {e}") from e
+
+    def _generate_with_completions_api(self, system_message: str, user_message: str) -> str:
+        """Generate answer using completions API (fallback for older vLLM versions)."""
+        logger.info("Generating answer using vLLM completions API...")
+
+        # Combine system and user messages into a single prompt
+        combined_prompt = f"{system_message}\n\n{user_message}\n\nAnswer:"
+
+        payload = {
+            "model": self.config.vllm.model_name,
+            "prompt": combined_prompt,
+            "max_tokens": self.config.vllm.max_tokens,
+            "temperature": self.config.vllm.temperature,
+            "stream": False,
+        }
+
+        try:
+            response = self.session.post(
+                self.vllm_url,
+                json=payload,
+                timeout=30,
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            answer = result["choices"][0]["text"].strip()
+
+            logger.info("Answer generated successfully (completions API)")
+            return answer
+
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Failed to connect to vLLM server at {self.vllm_url}: {e}")
+            raise RuntimeError(
+                f"Cannot connect to vLLM server at {self.vllm_url}. "
+                "Make sure the vLLM server is running."
+            ) from e
+        except requests.exceptions.Timeout as e:
+            logger.error(f"Request to vLLM server timed out after 30 seconds: {e}")
+            raise RuntimeError(
+                "Request to vLLM server timed out after 30 seconds. "
+                "The model may be overloaded or the prompt may be too complex."
+            ) from e
+        except requests.exceptions.HTTPError as e:
+            error_details = e.response.text if hasattr(e.response, 'text') else str(e)
+            logger.error(f"vLLM completions API error {e.response.status_code}: {error_details}")
+            raise RuntimeError(
+                f"vLLM server returned HTTP error: {e.response.status_code} - {error_details}"
             ) from e
         except (KeyError, IndexError) as e:
             logger.error(f"Unexpected response format from vLLM server: {e}")
