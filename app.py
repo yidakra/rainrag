@@ -244,18 +244,44 @@ def group_chunks_by_video(chunks: List[Dict[str, Any]]) -> List[List[Dict[str, A
 
 
 def format_context_chunk(chunk: Dict[str, Any], index: int, lang: str) -> str:
-    """Format a context chunk for display."""
+    """Format a context chunk metadata for display (without text content)."""
     filename = chunk.get("filename", "Unknown")
     score = chunk.get("score", 0.0)
-    text = chunk.get("text", "")
     chunk_lang = chunk.get("language", "unknown")
 
     return f"""
 **{get_text("source_label", lang)}:** `{filename}`
 **{get_text("score_label", lang)}:** {score:.3f} | **{get_text("language_field", lang)}:** {chunk_lang}
-
-{text}
 """
+
+
+def get_text_preview(text: str, max_lines: int = 3, max_chars: int = 200) -> tuple[str, bool]:
+    """
+    Get a preview of text content.
+
+    Args:
+        text: Full text content
+        max_lines: Maximum number of lines to show in preview
+        max_chars: Maximum number of characters to show in preview
+
+    Returns:
+        Tuple of (preview_text, is_truncated)
+    """
+    lines = text.split('\n')
+    preview_lines = lines[:max_lines]
+    preview_text = '\n'.join(preview_lines)
+
+    # Check if we need to truncate by character count
+    if len(preview_text) > max_chars:
+        preview_text = preview_text[:max_chars] + "..."
+        is_truncated = True
+    elif len(lines) > max_lines:
+        preview_text += "..."
+        is_truncated = True
+    else:
+        is_truncated = len(text) > len(preview_text)
+
+    return preview_text, is_truncated
 
 
 def render_message_bubble(message: Dict[str, Any], lang: str):
@@ -312,8 +338,18 @@ def render_message_bubble(message: Dict[str, Any], lang: str):
 
                 # Display each language version in the group
                 for chunk_idx, chunk in enumerate(group):
-                    # Display context chunk info
+                    # Display context chunk metadata
                     st.markdown(format_context_chunk(chunk, chunk_idx + 1, lang))
+
+                    # Display text content with preview/expand
+                    text = chunk.get("text", "")
+                    if text:
+                        preview_text, is_truncated = get_text_preview(text, max_lines=2, max_chars=200)
+                        st.markdown(preview_text)
+
+                        if is_truncated:
+                            with st.expander("Show full text"):
+                                st.markdown(text)
 
                     # Display VTT download link and viewer if available
                     vtt_url = chunk.get("vtt_url")
