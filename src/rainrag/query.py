@@ -326,11 +326,14 @@ Question: {query}"""
         """Generate answer using chat completions API."""
         logger.info("Generating answer using vLLM chat completions API...")
 
+        # Combine system message and user message into a single user message
+        # because some vLLM models don't support the "system" role
+        combined_message = f"{system_message}\n\n{user_message}"
+
         payload = {
             "model": self.config.vllm.model_name,
             "messages": [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
+                {"role": "user", "content": combined_message}
             ],
             "max_tokens": self.config.vllm.max_tokens,
             "temperature": self.config.vllm.temperature,
