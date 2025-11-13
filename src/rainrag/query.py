@@ -32,7 +32,8 @@ class RAGQueryEngine:
         self.config = config
         self.embedding_model: SentenceTransformer | None = None
         self.qdrant_client: QdrantClient | None = None
-        self.vllm_url = f"http://{config.vllm.host}:{config.vllm.port}/v1/completions"
+        # Use chat completions for instruct models (better instruction following)
+        self.vllm_url = f"http://{config.vllm.host}:{config.vllm.port}/v1/chat/completions"
 
         # Create a session with retry strategy for resilient HTTP requests
         self.session = requests.Session()
@@ -154,9 +155,9 @@ class RAGQueryEngine:
             logger.error(f"Failed to retrieve documents: {e}")
             raise
 
-    def build_prompt(self, query: str, documents: List[Dict[str, Any]], language: str = "en") -> str:
+    def build_prompt(self, query: str, documents: List[Dict[str, Any]], language: str = "en") -> tuple[str, str]:
         """
-        Build the prompt for the LLM with retrieved context.
+        Build the system and user prompts for the chat LLM with retrieved context.
 
         Args:
             query: The user's question
@@ -164,7 +165,7 @@ class RAGQueryEngine:
             language: Language code (e.g., "en", "ru") for response
 
         Returns:
-            The complete prompt string
+            Tuple of (system_message, user_message)
         """
         # Build context from retrieved documents
         context_parts = []
@@ -180,40 +181,41 @@ class RAGQueryEngine:
 
         context = "\n".join(context_parts)
 
-        # Language-specific instructions
-        language_instructions = {
-            "ru": "ВАЖНО: Вы ДОЛЖНЫ отвечать ТОЛЬКО на русском языке. Весь ваш ответ должен быть на русском языке.",
-            "en": "IMPORTANT: You MUST answer ONLY in English. Your entire response must be in English.",
+        # Language-specific system messages
+        system_messages = {
+            "ru": """Вы помощник, который помогает пользователям понимать видео-транскрипты. КРИТИЧЕСКИ ВАЖНО: Вы ДОЛЖНЫ отвечать ТОЛЬКО на русском языке. Каждое слово вашего ответа должно быть на русском языке.
+
+Вам предоставлены релевантные фрагменты видео-транскриптов. Отвечайте на вопрос пользователя на основе предоставленного контекста. Если контекста недостаточно для полного ответа, укажите это в ответе.
+
+ПОВТОРЯЮ: Отвечайте ТОЛЬКО на русском языке.""",
+            "en": """You are an assistant that helps users understand video transcripts. CRITICAL: You MUST answer ONLY in English. Every word of your response must be in English.
+
+You have been provided with relevant excerpts from video transcripts. Answer the user's question based on the provided context. If the context doesn't contain enough information to fully answer the question, acknowledge this in your response.
+
+REPEATING: Answer ONLY in English.""",
         }
 
-        # Get language instruction (default to English if not found)
-        lang_instruction = language_instructions.get(language, language_instructions["en"])
+        # Get system message (default to English if not found)
+        system_message = system_messages.get(language, system_messages["en"])
 
-        # Build the complete prompt with strong language emphasis
-        prompt = f"""{lang_instruction}
-
-You are an assistant that helps users understand video transcripts. You have been provided with relevant excerpts from video transcripts. Answer the user's question based on the provided context.
-
-Context from video transcripts:
+        # Build user message with context and question
+        user_message = f"""Context from video transcripts:
 {context}
 
-User Question: {query}
+Question: {query}"""
 
-{lang_instruction}
+        return system_message, user_message
 
-Provide a detailed answer based on the context above. If the context doesn't contain enough information to fully answer the question, acknowledge this in your response."""
-
-        return prompt
-
-    def generate_answer(self, prompt: str) -> str:
+    def generate_answer(self, system_message: str, user_message: str) -> str:
         """
-        Generate an answer using the vLLM server.
+        Generate an answer using the vLLM server (chat completions API).
 
         Uses a requests session with automatic retry logic for transient failures.
         Retries up to 3 times with exponential backoff on HTTP 429, 500, 502, 503, 504.
 
         Args:
-            prompt: The complete prompt with context
+            system_message: The system instruction message
+            user_message: The user's question with context
 
         Returns:
             The generated answer text
@@ -221,11 +223,14 @@ Provide a detailed answer based on the context above. If the context doesn't con
         Raises:
             RuntimeError: If connection fails, request times out, or server returns error
         """
-        logger.info("Generating answer using vLLM...")
+        logger.info("Generating answer using vLLM chat completions...")
 
         payload = {
             "model": self.config.vllm.model_name,
-            "prompt": prompt,
+            "messages": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ],
             "max_tokens": self.config.vllm.max_tokens,
             "temperature": self.config.vllm.temperature,
             "stream": False,
@@ -240,7 +245,7 @@ Provide a detailed answer based on the context above. If the context doesn't con
             response.raise_for_status()
 
             result = response.json()
-            answer = result["choices"][0]["text"].strip()
+            answer = result["choices"][0]["message"]["content"].strip()
 
             logger.info("Answer generated successfully")
             return answer
@@ -296,10 +301,10 @@ Provide a detailed answer based on the context above. If the context doesn't con
         documents = self.retrieve_documents(query_vector, top_k)
 
         # Step 3: Build the prompt with language specification
-        prompt = self.build_prompt(question, documents, language=language)
+        system_message, user_message = self.build_prompt(question, documents, language=language)
 
         # Step 4: Generate the answer
-        answer = self.generate_answer(prompt)
+        answer = self.generate_answer(system_message, user_message)
 
         return {
             "question": question,
