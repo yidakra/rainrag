@@ -301,11 +301,16 @@ Question: {query}"""
             raise RuntimeError(f"Unexpected error during answer generation: {e}") from e
 
     def _generate_with_completions_api(self, system_message: str, user_message: str) -> str:
-        """Generate answer using completions API (fallback for older vLLM versions)."""
-        logger.info("Generating answer using vLLM completions API...")
+        """Generate answer using completions API with Mistral instruction format."""
+        logger.info("Generating answer using vLLM completions API with instruction format...")
 
-        # Combine system and user messages into a single prompt
-        combined_prompt = f"{system_message}\n\n{user_message}\n\nAnswer:"
+        # For Mistral instruct models, use the proper chat template format
+        # This ensures the model follows instructions even with the completions API
+        combined_prompt = f"""<s>[INST] {system_message}
+
+{user_message}
+
+ВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов. [/INST]"""
 
         payload = {
             "model": self.config.vllm.model_name,
