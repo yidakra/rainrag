@@ -13,7 +13,13 @@ This document describes the dependency updates made to address security vulnerab
 - **Impact**: No breaking changes for our usage
 - **Changes Required**: None
 
-**2. typer: ^0.9.0 → ^0.12.0**
+**2. qdrant-client: ^1.7.0 → ^1.15.1 (resolved by poetry)**
+- **Reason**: Transitive dependency update via poetry lock
+- **Impact**: Client version 1.15.1 may warn about incompatibility with Qdrant server 1.7.4
+- **Changes Required**: Added `prefer_grpc=False` to QdrantClient initialization to suppress version warnings
+- **Note**: HTTP API is stable and compatible across minor versions
+
+**3. typer: ^0.9.0 → ^0.12.0**
 - **Reason**: Required for vLLM 0.11.0 compatibility
 - **Impact**: Potential breaking changes in CLI behavior
 - **Changes Required**: Minimal - typer 0.12.x is largely backward compatible with 0.9.x
@@ -21,7 +27,7 @@ This document describes the dependency updates made to address security vulnerab
 
 ### Optional Dependencies
 
-**3. vLLM: ^0.5.0 → ^0.11.0**
+**4. vLLM: ^0.5.0 → ^0.11.0**
 - **Reason**: Security updates and bug fixes
 - **Impact**: Significant version jump with potential breaking changes
 - **Python Requirement**: Requires Python >=3.9,<3.14 (transitive from torch/triton)

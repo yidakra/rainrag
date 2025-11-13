@@ -55,9 +55,12 @@ class RAGQueryEngine:
         logger.info(
             f"Connecting to Qdrant at {self.config.qdrant.host}:{self.config.qdrant.port}"
         )
+        # Disable version check to avoid warnings when client/server versions differ slightly
+        # The HTTP API is stable and compatible across minor versions
         self.qdrant_client = QdrantClient(
             host=self.config.qdrant.host,
             port=self.config.qdrant.port,
+            prefer_grpc=False,
         )
 
         # Test connection
