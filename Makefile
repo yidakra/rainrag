@@ -1,4 +1,4 @@
-.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop
+.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop api streamlit up down api-bg streamlit-bg
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -59,6 +59,39 @@ qdrant-stop: ## Stop local Qdrant instance
 
 qdrant-logs: ## View Qdrant logs
 	docker logs -f rainrag-qdrant
+
+# Web frontend commands
+api: ## Start FastAPI backend server
+	@echo "Starting FastAPI backend at http://localhost:8001"
+	@echo "API docs: http://localhost:8001/docs"
+	poetry run python -m uvicorn rainrag.api:app --host 0.0.0.0 --port 8001 --reload
+
+streamlit: ## Start Streamlit frontend
+	@echo "Starting Streamlit frontend at http://localhost:7860"
+	@echo "Note: Make sure API is running (make api) or set RAINRAG_API_URL"
+	poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860
+
+up: qdrant-start api-bg streamlit-bg ## Start all services (Qdrant, API, Streamlit)
+	@echo ""
+	@echo "All services started:"
+	@echo "  - Qdrant:    http://localhost:6333"
+	@echo "  - API:       http://localhost:8001"
+	@echo "  - Streamlit: http://localhost:7860"
+
+down: qdrant-stop ## Stop all services
+	@pkill -f "uvicorn rainrag.api" || true
+	@pkill -f "streamlit run app.py" || true
+	@echo "All services stopped"
+
+api-bg: ## Start API in background
+	@poetry run python -m uvicorn rainrag.api:app --host 0.0.0.0 --port 8001 > /tmp/rainrag-api.log 2>&1 &
+	@sleep 2
+	@echo "API started in background (logs: /tmp/rainrag-api.log)"
+
+streamlit-bg: ## Start Streamlit in background
+	@poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860 > /tmp/rainrag-streamlit.log 2>&1 &
+	@sleep 2
+	@echo "Streamlit started in background (logs: /tmp/rainrag-streamlit.log)"
 
 # CLI shortcuts
 ingest: ## Run ingestion pipeline

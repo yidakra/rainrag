@@ -1,0 +1,90 @@
+{{- if .Values.api.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rainrag.fullname" . }}-api
+  labels:
+    {{- include "rainrag.api.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      {{- include "rainrag.api.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rainrag.api.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - name: api
+        image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+        imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+        command:
+          - python
+          - -m
+          - uvicorn
+          - rainrag.api:app
+          - --host
+          - "0.0.0.0"
+          - --port
+          - "{{ .Values.api.service.port }}"
+        ports:
+        - name: http
+          containerPort: {{ .Values.api.service.port }}
+          protocol: TCP
+        env:
+        - name: RAINRAG_CONFIG
+          value: "/config/config.yaml"
+        {{- if .Values.api.authToken }}
+        - name: RAINRAG_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "rainrag.fullname" . }}-api-secret
+              key: auth-token
+        {{- end }}
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: data
+          mountPath: /data/rainrag
+        - name: embeddings
+          mountPath: /data/embeddings
+        resources:
+          {{- toYaml .Values.api.resources | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "rainrag.fullname" . }}-config
+      - name: data
+        {{- if .Values.ingestion.volumes.data.persistentVolumeClaim }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.ingestion.volumes.data.persistentVolumeClaim }}
+        {{- else }}
+        hostPath:
+          path: {{ .Values.ingestion.volumes.data.hostPath }}
+          type: DirectoryOrCreate
+        {{- end }}
+      - name: embeddings
+        {{- if .Values.ingestion.volumes.embeddings.persistentVolumeClaim }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.ingestion.volumes.embeddings.persistentVolumeClaim }}
+        {{- else }}
+        hostPath:
+          path: {{ .Values.ingestion.volumes.embeddings.hostPath }}
+          type: DirectoryOrCreate
+        {{- end }}
+{{- end }}

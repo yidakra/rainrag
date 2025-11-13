@@ -1,0 +1,62 @@
+{{- if .Values.streamlit.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rainrag.fullname" . }}-streamlit
+  labels:
+    {{- include "rainrag.streamlit.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.streamlit.replicas }}
+  selector:
+    matchLabels:
+      {{- include "rainrag.streamlit.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rainrag.streamlit.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - name: streamlit
+        image: "{{ .Values.streamlit.image.repository }}:{{ .Values.streamlit.image.tag }}"
+        imagePullPolicy: {{ .Values.streamlit.image.pullPolicy }}
+        command:
+          - streamlit
+          - run
+          - app.py
+          - --server.address
+          - "0.0.0.0"
+          - --server.port
+          - "{{ .Values.streamlit.service.port }}"
+          - --server.headless
+          - "true"
+        ports:
+        - name: http
+          containerPort: {{ .Values.streamlit.service.port }}
+          protocol: TCP
+        env:
+        - name: RAINRAG_API_URL
+          value: "http://{{ include "rainrag.fullname" . }}-api:{{ .Values.api.service.port }}"
+        {{- if .Values.streamlit.authToken }}
+        - name: STREAMLIT_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "rainrag.fullname" . }}-streamlit-secret
+              key: auth-token
+        {{- end }}
+        resources:
+          {{- toYaml .Values.streamlit.resources | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+{{- end }}
