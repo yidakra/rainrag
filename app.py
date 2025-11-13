@@ -212,6 +212,37 @@ def fetch_vtt_content(vtt_url: str) -> Optional[str]:
         return None
 
 
+def group_chunks_by_video(chunks: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """
+    Group context chunks by their group_id (same video, different languages).
+
+    Args:
+        chunks: List of context chunks
+
+    Returns:
+        List of groups, where each group contains chunks for the same video
+    """
+    from collections import defaultdict
+
+    groups = defaultdict(list)
+    for chunk in chunks:
+        group_id = chunk.get("group_id")
+        if group_id:
+            groups[group_id].append(chunk)
+        else:
+            # If no group_id, treat as standalone
+            groups[chunk.get("filename", "unknown")].append(chunk)
+
+    # Sort groups by the best score in each group
+    sorted_groups = sorted(
+        groups.values(),
+        key=lambda g: max(c.get("score", 0.0) for c in g),
+        reverse=True,
+    )
+
+    return sorted_groups
+
+
 def format_context_chunk(chunk: Dict[str, Any], index: int, lang: str) -> str:
     """Format a context chunk for display."""
     filename = chunk.get("filename", "Unknown")
@@ -262,12 +293,12 @@ def render_message_bubble(message: Dict[str, Any], lang: str):
     # Show context if available
     if role == "assistant" and "context" in message:
         with st.expander(get_text("context_header", lang), expanded=False):
-            for idx, chunk in enumerate(message["context"], 1):
-                # Display context chunk info
-                st.markdown(format_context_chunk(chunk, idx, lang))
+            # Group chunks by video (to show en/ru versions together)
+            grouped_chunks = group_chunks_by_video(message["context"])
 
-                # Display video if available
-                video_url = chunk.get("video_url")
+            for group_idx, group in enumerate(grouped_chunks, 1):
+                # Display video once per group (all language versions share the same video)
+                video_url = group[0].get("video_url")
                 if video_url:
                     st.markdown(f"**🎥 {get_text('video_label', lang)}:**")
                     video_full_url = f"{API_BASE_URL}{video_url}"
@@ -279,39 +310,50 @@ def render_message_bubble(message: Dict[str, Any], lang: str):
                 else:
                     st.info(get_text("no_video", lang))
 
-                # Display VTT download link and viewer if available
-                vtt_url = chunk.get("vtt_url")
-                if vtt_url:
-                    vtt_full_url = f"{API_BASE_URL}{vtt_url}"
-                    filename = chunk.get("filename", "subtitle.vtt")
-                    vtt_filename = filename.split("/")[-1]  # Get just the filename
+                # Display each language version in the group
+                for chunk_idx, chunk in enumerate(group):
+                    # Display context chunk info
+                    st.markdown(format_context_chunk(chunk, chunk_idx + 1, lang))
 
-                    st.markdown(f"**📄 {get_text('vtt_label', lang)}:**")
+                    # Display VTT download link and viewer if available
+                    vtt_url = chunk.get("vtt_url")
+                    if vtt_url:
+                        vtt_full_url = f"{API_BASE_URL}{vtt_url}"
+                        filename = chunk.get("filename", "subtitle.vtt")
+                        vtt_filename = filename.split("/")[-1]  # Get just the filename
+                        chunk_lang = chunk.get("language", "unknown")
 
-                    # Create columns for VTT actions
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.code(vtt_filename, language="text")
-                    with col2:
-                        st.markdown(
-                            f'<a href="{vtt_full_url}" download="{vtt_filename}" '
-                            f'style="display: inline-block; padding: 0.25rem 0.75rem; '
-                            f'background-color: #0084ff; color: white; text-decoration: none; '
-                            f'border-radius: 0.25rem; text-align: center;">'
-                            f'{get_text("download_vtt", lang)}</a>',
-                            unsafe_allow_html=True,
-                        )
+                        st.markdown(f"**📄 {get_text('vtt_label', lang)} ({chunk_lang}):**")
 
-                    # Add expandable VTT content viewer
-                    with st.expander(get_text("view_vtt", lang)):
-                        vtt_content = fetch_vtt_content(vtt_url)
-                        if vtt_content:
-                            # Display VTT content with syntax highlighting
-                            st.code(vtt_content, language="vtt", line_numbers=True)
-                        else:
-                            st.error("Could not load VTT content")
+                        # Create columns for VTT actions
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.code(vtt_filename, language="text")
+                        with col2:
+                            st.markdown(
+                                f'<a href="{vtt_full_url}" download="{vtt_filename}" '
+                                f'style="display: inline-block; padding: 0.25rem 0.75rem; '
+                                f'background-color: #0084ff; color: white; text-decoration: none; '
+                                f'border-radius: 0.25rem; text-align: center;">'
+                                f'{get_text("download_vtt", lang)}</a>',
+                                unsafe_allow_html=True,
+                            )
 
-                if idx < len(message["context"]):
+                        # Add expandable VTT content viewer
+                        with st.expander(get_text("view_vtt", lang)):
+                            vtt_content = fetch_vtt_content(vtt_url)
+                            if vtt_content:
+                                # Display VTT content with syntax highlighting
+                                st.code(vtt_content, language="vtt", line_numbers=True)
+                            else:
+                                st.error("Could not load VTT content")
+
+                    # Add a small separator between language versions within a group
+                    if chunk_idx < len(group) - 1:
+                        st.markdown("---")
+
+                # Add a larger divider between groups
+                if group_idx < len(grouped_chunks):
                     st.divider()
 
 

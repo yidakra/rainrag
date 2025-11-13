@@ -43,6 +43,7 @@ class ContextChunk(BaseModel):
     doc_id: str
     video_url: Optional[str] = None
     vtt_url: Optional[str] = None
+    group_id: Optional[str] = None  # Base name for grouping multilingual versions
 
 
 class QueryResponse(BaseModel):
@@ -127,6 +128,32 @@ def find_video_file(vtt_path: str) -> Optional[str]:
         logger.warning(f"Error searching for video files: {e}")
 
     return None
+
+
+def get_video_base_name(vtt_path: str) -> str:
+    """
+    Extract the base name from a VTT file path for grouping.
+
+    Removes language suffixes (.en, .ru) to group multilingual versions together.
+
+    Args:
+        vtt_path: Path to the VTT file
+
+    Returns:
+        Base name without language suffix
+    """
+    vtt_file = Path(vtt_path)
+    base_name = vtt_file.stem
+
+    # Remove language suffixes like .en or .ru
+    for lang_suffix in [".en", ".ru"]:
+        if base_name.endswith(lang_suffix):
+            base_name = base_name[:-len(lang_suffix)]
+            break
+
+    # Include the parent directory to make it unique across different videos
+    # This creates a group_id like "archive/subdir/hash"
+    return f"{vtt_file.parent.name}/{base_name}"
 
 
 @asynccontextmanager
@@ -273,6 +300,9 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
                 except ValueError:
                     logger.warning(f"VTT file {vtt_path} is not under archive_root")
 
+            # Get group ID for grouping multilingual versions
+            group_id = get_video_base_name(vtt_path)
+
             context_chunks.append(
                 ContextChunk(
                     text=doc["text"],
@@ -283,6 +313,7 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
                     doc_id=doc.get("doc_id", ""),
                     video_url=video_url,
                     vtt_url=vtt_url,
+                    group_id=group_id,
                 )
             )
 

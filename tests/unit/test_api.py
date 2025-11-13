@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rainrag.config import Config
-from rainrag.api import app, config as api_config, query_engine as api_query_engine, find_video_file
+from rainrag.api import app, config as api_config, query_engine as api_query_engine, find_video_file, get_video_base_name
 
 
 @pytest.fixture
@@ -80,13 +80,21 @@ def archive_with_videos(temp_dir: Path, sample_vtt_en: str) -> Path:
     test_dir = archive_dir / "test_videos"
     test_dir.mkdir()
 
-    # Create VTT files
-    (test_dir / "video1.en.vtt").write_text(sample_vtt_en)
-    (test_dir / "video2.ru.vtt").write_text(sample_vtt_en)
+    # Create multi-resolution video setup (like the actual archive)
+    hash_name = "3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd"
+    (test_dir / f"{hash_name}.en.vtt").write_text(sample_vtt_en)
+    (test_dir / f"{hash_name}.ru.vtt").write_text(sample_vtt_en)
 
-    # Create corresponding video files (empty files for testing)
-    (test_dir / "video1.mp4").write_bytes(b"fake video content")
-    (test_dir / "video2.mkv").write_bytes(b"fake video content")
+    # Create multiple resolution video files
+    (test_dir / f"{hash_name}_1080p.mp4").write_bytes(b"1080p video")
+    (test_dir / f"{hash_name}_720p.mp4").write_bytes(b"720p video")
+    (test_dir / f"{hash_name}_480p.mp4").write_bytes(b"480p video")
+    (test_dir / f"{hash_name}_360p.mp4").write_bytes(b"360p video")
+    (test_dir / f"{hash_name}_180p.mp4").write_bytes(b"180p video")
+
+    # Create VTT files with old-style naming (exact match)
+    (test_dir / "video1.en.vtt").write_text(sample_vtt_en)
+    (test_dir / "video1.mp4").write_bytes(b"old style video")
 
     # Create VTT without video
     (test_dir / "video3.vtt").write_text(sample_vtt_en)
@@ -315,3 +323,79 @@ def test_video_disabled(temp_dir: Path):
         assert "disabled" in response.json()["detail"].lower()
     finally:
         api_module.config = original_config
+
+
+def test_find_video_file_multi_resolution(temp_dir: Path, archive_with_videos: Path):
+    """Test finding highest resolution video file for VTT (prefers 1080p)."""
+    import rainrag.api as api_module
+    original_config = api_module.config
+
+    test_cfg = Config(
+        paths={
+            "archive_root": str(archive_with_videos),
+            "docs_output": "./data/docs.jsonl",
+            "embeddings_cache": "./embeddings",
+            "video_root": str(archive_with_videos),
+        },
+        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
+        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
+        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+    )
+
+    api_module.config = test_cfg
+
+    try:
+        # Test with English VTT
+        hash_name = "3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd"
+        vtt_path_en = str(archive_with_videos / "test_videos" / f"{hash_name}.en.vtt")
+        video_file_en = find_video_file(vtt_path_en)
+
+        assert video_file_en is not None
+        assert f"{hash_name}_1080p.mp4" in video_file_en  # Should prefer 1080p
+        assert Path(video_file_en).exists()
+
+        # Test with Russian VTT (should find same video)
+        vtt_path_ru = str(archive_with_videos / "test_videos" / f"{hash_name}.ru.vtt")
+        video_file_ru = find_video_file(vtt_path_ru)
+
+        assert video_file_ru is not None
+        assert f"{hash_name}_1080p.mp4" in video_file_ru
+        assert video_file_en == video_file_ru  # Same video for both languages
+    finally:
+        api_module.config = original_config
+
+
+def test_get_video_base_name_english():
+    """Test extracting base name from English VTT file."""
+    vtt_path = "/mnt/vod/srv/storage/transcoded/3b/10/f9/3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd.en.vtt"
+    base_name = get_video_base_name(vtt_path)
+
+    # Should remove .en suffix and include parent directory
+    assert "3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd" in base_name
+    assert ".en" not in base_name
+
+
+def test_get_video_base_name_russian():
+    """Test extracting base name from Russian VTT file."""
+    vtt_path = "/mnt/vod/srv/storage/transcoded/3b/10/f9/3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd.ru.vtt"
+    base_name = get_video_base_name(vtt_path)
+
+    # Should remove .ru suffix and include parent directory
+    assert "3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd" in base_name
+    assert ".ru" not in base_name
+
+
+def test_get_video_base_name_grouping():
+    """Test that English and Russian versions get the same base name."""
+    vtt_path_en = "/archive/videos/test_hash.en.vtt"
+    vtt_path_ru = "/archive/videos/test_hash.ru.vtt"
+
+    base_name_en = get_video_base_name(vtt_path_en)
+    base_name_ru = get_video_base_name(vtt_path_ru)
+
+    # Both should have the same base name for grouping
+    assert base_name_en == base_name_ru
+    assert "test_hash" in base_name_en
