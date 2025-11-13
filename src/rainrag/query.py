@@ -50,8 +50,12 @@ class RAGQueryEngine:
         self.session.mount("https://", adapter)
 
         # Detect chat template
-        self.chat_template = self._detect_chat_template()
-        logger.info(f"Using chat template: {self.chat_template}")
+        try:
+            self.chat_template = self._detect_chat_template()
+            logger.info(f"Using chat template: {self.chat_template}")
+        except Exception as e:
+            logger.error(f"Failed to detect chat template: {e}, falling back to 'mistral'")
+            self.chat_template = "mistral"
 
     def _detect_chat_template(self) -> str:
         """
@@ -379,7 +383,11 @@ Question: {query}"""
 
         # Use the appropriate chat template for the model
         # This ensures the model follows instructions even with the completions API
-        combined_prompt = self._format_prompt_with_template(system_message, user_message)
+        try:
+            combined_prompt = self._format_prompt_with_template(system_message, user_message)
+        except Exception as e:
+            logger.error(f"Failed to format prompt with template: {e}, using simple format")
+            combined_prompt = f"{system_message}\n\n{user_message}\n\nAnswer:"
 
         payload = {
             "model": self.config.vllm.model_name,

@@ -329,7 +329,10 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
         return response
 
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
         logger.error(f"Query failed: {e}")
+        logger.error(f"Full traceback:\n{error_details}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 
