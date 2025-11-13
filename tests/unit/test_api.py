@@ -1,0 +1,305 @@
+"""Tests for the FastAPI backend."""
+
+import tempfile
+from pathlib import Path
+from typing import Generator
+import pytest
+from fastapi.testclient import TestClient
+
+from rainrag.config import Config
+from rainrag.api import app, config as api_config, query_engine as api_query_engine, find_video_file
+
+
+@pytest.fixture
+def test_config_with_video(temp_dir: Path) -> Config:
+    """Create a test configuration with video settings."""
+    archive_dir = temp_dir / "archive"
+    archive_dir.mkdir()
+
+    data_dir = temp_dir / "data"
+    data_dir.mkdir()
+
+    embeddings_dir = temp_dir / "embeddings"
+    embeddings_dir.mkdir()
+
+    return Config(
+        paths={
+            "archive_root": str(archive_dir),
+            "docs_output": str(data_dir / "docs.jsonl"),
+            "embeddings_cache": str(embeddings_dir),
+            "video_root": str(archive_dir),
+        },
+        embedding={
+            "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+            "batch_size": 8,
+            "max_seq_length": 128,
+            "device": "cpu",
+            "normalize_embeddings": True,
+        },
+        qdrant={
+            "host": "localhost",
+            "port": 6333,
+            "collection_name": "test_collection",
+            "vector_size": 384,
+            "distance": "Cosine",
+            "recreate_collection": False,
+        },
+        vllm={
+            "host": "localhost",
+            "port": 8000,
+            "model_name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        processing={
+            "num_workers": 2,
+            "max_file_size": 1048576,
+            "min_text_length": 10,
+        },
+        logging={
+            "level": "ERROR",
+            "format": "{message}",
+            "log_file": str(temp_dir / "test.log"),
+        },
+        video={
+            "enabled": True,
+            "extensions": [".mp4", ".mkv", ".webm"],
+            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+        },
+    )
+
+
+@pytest.fixture
+def archive_with_videos(temp_dir: Path, sample_vtt_en: str) -> Path:
+    """Create an archive directory with VTT files and corresponding videos."""
+    archive_dir = temp_dir / "archive"
+    archive_dir.mkdir()
+
+    # Create a directory with VTT and video files
+    test_dir = archive_dir / "test_videos"
+    test_dir.mkdir()
+
+    # Create VTT files
+    (test_dir / "video1.en.vtt").write_text(sample_vtt_en)
+    (test_dir / "video2.ru.vtt").write_text(sample_vtt_en)
+
+    # Create corresponding video files (empty files for testing)
+    (test_dir / "video1.mp4").write_bytes(b"fake video content")
+    (test_dir / "video2.mkv").write_bytes(b"fake video content")
+
+    # Create VTT without video
+    (test_dir / "video3.vtt").write_text(sample_vtt_en)
+
+    return archive_dir
+
+
+def test_find_video_file_mp4(temp_dir: Path, archive_with_videos: Path):
+    """Test finding MP4 video file for VTT."""
+    from rainrag.api import config as api_cfg
+
+    # Set up config
+    test_cfg = Config(
+        paths={
+            "archive_root": str(archive_with_videos),
+            "docs_output": "./data/docs.jsonl",
+            "embeddings_cache": "./embeddings",
+            "video_root": str(archive_with_videos),
+        },
+        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
+        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
+        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+    )
+
+    # Temporarily set the global config
+    import rainrag.api as api_module
+    original_config = api_module.config
+    api_module.config = test_cfg
+
+    try:
+        vtt_path = str(archive_with_videos / "test_videos" / "video1.en.vtt")
+        video_file = find_video_file(vtt_path)
+
+        assert video_file is not None
+        assert video_file.endswith("video1.mp4")
+        assert Path(video_file).exists()
+    finally:
+        api_module.config = original_config
+
+
+def test_find_video_file_mkv(temp_dir: Path, archive_with_videos: Path):
+    """Test finding MKV video file for VTT."""
+    import rainrag.api as api_module
+    original_config = api_module.config
+
+    test_cfg = Config(
+        paths={
+            "archive_root": str(archive_with_videos),
+            "docs_output": "./data/docs.jsonl",
+            "embeddings_cache": "./embeddings",
+            "video_root": str(archive_with_videos),
+        },
+        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
+        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
+        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+    )
+
+    api_module.config = test_cfg
+
+    try:
+        vtt_path = str(archive_with_videos / "test_videos" / "video2.ru.vtt")
+        video_file = find_video_file(vtt_path)
+
+        assert video_file is not None
+        assert video_file.endswith("video2.mkv")
+        assert Path(video_file).exists()
+    finally:
+        api_module.config = original_config
+
+
+def test_find_video_file_not_found(temp_dir: Path, archive_with_videos: Path):
+    """Test when video file doesn't exist."""
+    import rainrag.api as api_module
+    original_config = api_module.config
+
+    test_cfg = Config(
+        paths={
+            "archive_root": str(archive_with_videos),
+            "docs_output": "./data/docs.jsonl",
+            "embeddings_cache": "./embeddings",
+            "video_root": str(archive_with_videos),
+        },
+        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
+        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
+        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+    )
+
+    api_module.config = test_cfg
+
+    try:
+        vtt_path = str(archive_with_videos / "test_videos" / "video3.vtt")
+        video_file = find_video_file(vtt_path)
+
+        assert video_file is None
+    finally:
+        api_module.config = original_config
+
+
+def test_api_root_endpoint():
+    """Test the root endpoint returns API information."""
+    client = TestClient(app)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "RainRAG API"
+    assert "endpoints" in data
+    assert "/query" in data["endpoints"]["POST /query"]
+
+
+def test_video_endpoint_security(temp_dir: Path, archive_with_videos: Path):
+    """Test that video endpoint prevents path traversal attacks."""
+    import rainrag.api as api_module
+    original_config = api_module.config
+
+    test_cfg = Config(
+        paths={
+            "archive_root": str(archive_with_videos),
+            "docs_output": "./data/docs.jsonl",
+            "embeddings_cache": "./embeddings",
+            "video_root": str(archive_with_videos),
+        },
+        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
+        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
+        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+    )
+
+    api_module.config = test_cfg
+
+    try:
+        client = TestClient(app)
+
+        # Try path traversal attack
+        response = client.get("/video/../../../etc/passwd")
+        assert response.status_code in [400, 403]  # Should be rejected
+
+        # Try another path traversal
+        response = client.get("/video/../../sensitive_file.txt")
+        assert response.status_code in [400, 403]  # Should be rejected
+    finally:
+        api_module.config = original_config
+
+
+def test_vtt_endpoint_security(temp_dir: Path, archive_with_videos: Path):
+    """Test that VTT endpoint prevents path traversal attacks."""
+    import rainrag.api as api_module
+    original_config = api_module.config
+
+    test_cfg = Config(
+        paths={
+            "archive_root": str(archive_with_videos),
+            "docs_output": "./data/docs.jsonl",
+            "embeddings_cache": "./embeddings",
+            "video_root": str(archive_with_videos),
+        },
+        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
+        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
+        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+    )
+
+    api_module.config = test_cfg
+
+    try:
+        client = TestClient(app)
+
+        # Try path traversal attack
+        response = client.get("/vtt/../../../etc/passwd")
+        assert response.status_code in [400, 403]  # Should be rejected
+    finally:
+        api_module.config = original_config
+
+
+def test_video_disabled(temp_dir: Path):
+    """Test video serving when disabled in config."""
+    import rainrag.api as api_module
+    original_config = api_module.config
+
+    test_cfg = Config(
+        paths={
+            "archive_root": str(temp_dir),
+            "docs_output": "./data/docs.jsonl",
+            "embeddings_cache": "./embeddings",
+            "video_root": str(temp_dir),
+        },
+        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
+        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
+        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        video={"enabled": False, "extensions": [".mp4"], "vtt_extensions": [".vtt"]},
+    )
+
+    api_module.config = test_cfg
+
+    try:
+        client = TestClient(app)
+        response = client.get("/video/test.mp4")
+        assert response.status_code == 404
+        assert "disabled" in response.json()["detail"].lower()
+    finally:
+        api_module.config = original_config
