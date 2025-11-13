@@ -288,14 +288,16 @@ Multi-model setup (run all 3 for seamless switching):
 python -m vllm.entrypoints.openai.api_server \
   --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 --port 8000
 
-# Terminal 2: Gemma on port 8001
+# Terminal 2: Gemma on port 8002
 python -m vllm.entrypoints.openai.api_server \
-  --model google/gemma-2-27b-it --port 8001
+  --model google/gemma-2-27b-it --port 8002
 
-# Terminal 3: GPT-OSS on port 8002
+# Terminal 3: GPT-OSS on port 8003
 python -m vllm.entrypoints.openai.api_server \
-  --model gpt-oss:20b --port 8002
+  --model gpt-oss:20b --port 8003
 ```
+
+**Or use `make up` to start everything at once!**
 
 ### Quick Start (Local Development)
 
@@ -427,8 +429,8 @@ Users will be prompted to enter the token when accessing the Streamlit interface
 2. **Context Chunks**: Adjust how many relevant transcript chunks to retrieve (1-10)
 3. **Model Selection**: Seamlessly switch between LLM models:
    - Mistral Small 3.2 24B (Port 8000)
-   - Gemma 2 27B (Port 8001)
-   - GPT-OSS 20B (Port 8002)
+   - Gemma 2 27B (Port 8002)
+   - GPT-OSS 20B (Port 8003)
    - Changes apply instantly - each model runs on its own vLLM instance
    - See [MULTI_MODEL_SETUP.md](MULTI_MODEL_SETUP.md) for running all 3 models simultaneously
 

@@ -11,8 +11,10 @@ RainRAG supports running multiple vLLM instances on different ports, allowing yo
 | Model | Display Name | Port | Chat Template |
 |-------|-------------|------|---------------|
 | `mistralai/Mistral-Small-3.2-24B-Instruct-2506` | Mistral Small 3.2 24B | 8000 | mistral |
-| `google/gemma-2-27b-it` | Gemma 2 27B | 8001 | gemma |
-| `gpt-oss:20b` | GPT-OSS 20B | 8002 | chatml |
+| `google/gemma-2-27b-it` | Gemma 2 27B | 8002 | gemma |
+| `gpt-oss:20b` | GPT-OSS 20B | 8003 | chatml |
+
+**Note:** Port 8001 is reserved for the RainRAG API server.
 
 ## Quick Start: Run All 3 Models
 
@@ -30,21 +32,21 @@ python -m vllm.entrypoints.openai.api_server \
   --dtype auto
 # Detach: Ctrl+A, D
 
-# Terminal 2: Gemma (Port 8001)
+# Terminal 2: Gemma (Port 8002)
 screen -S vllm-gemma
 python -m vllm.entrypoints.openai.api_server \
   --model google/gemma-2-27b-it \
   --host 0.0.0.0 \
-  --port 8001 \
+  --port 8002 \
   --dtype auto
 # Detach: Ctrl+A, D
 
-# Terminal 3: GPT-OSS (Port 8002)
+# Terminal 3: GPT-OSS (Port 8003)
 screen -S vllm-gptoss
 python -m vllm.entrypoints.openai.api_server \
   --model gpt-oss:20b \
   --host 0.0.0.0 \
-  --port 8002 \
+  --port 8003 \
   --dtype auto
 # Detach: Ctrl+A, D
 ```
@@ -98,7 +100,7 @@ Environment="PATH=/home/youruser/.local/bin:/usr/bin"
 ExecStart=/usr/bin/python3 -m vllm.entrypoints.openai.api_server \
   --model google/gemma-2-27b-it \
   --host 0.0.0.0 \
-  --port 8001 \
+  --port 8002 \
   --dtype auto
 Restart=on-failure
 RestartSec=10
@@ -122,7 +124,7 @@ Environment="PATH=/home/youruser/.local/bin:/usr/bin"
 ExecStart=/usr/bin/python3 -m vllm.entrypoints.openai.api_server \
   --model gpt-oss:20b \
   --host 0.0.0.0 \
-  --port 8002 \
+  --port 8003 \
   --dtype auto
 Restart=on-failure
 RestartSec=10
@@ -180,11 +182,11 @@ services:
     image: vllm/vllm-openai:latest
     container_name: vllm-gemma
     ports:
-      - "8001:8001"
+      - "8002:8002"
     command: >
       --model google/gemma-2-27b-it
       --host 0.0.0.0
-      --port 8001
+      --port 8002
       --dtype auto
     deploy:
       resources:
@@ -199,11 +201,11 @@ services:
     image: vllm/vllm-openai:latest
     container_name: vllm-gptoss
     ports:
-      - "8002:8002"
+      - "8003:8003"
     command: >
       --model gpt-oss:20b
       --host 0.0.0.0
-      --port 8002
+      --port 8003
       --dtype auto
     deploy:
       resources:
@@ -233,11 +235,11 @@ Test each vLLM instance is running:
 # Test Mistral (Port 8000)
 curl http://localhost:8000/v1/models
 
-# Test Gemma (Port 8001)
-curl http://localhost:8001/v1/models
-
-# Test GPT-OSS (Port 8002)
+# Test Gemma (Port 8002)
 curl http://localhost:8002/v1/models
+
+# Test GPT-OSS (Port 8003)
+curl http://localhost:8003/v1/models
 ```
 
 ## Using with RainRAG
@@ -280,12 +282,12 @@ CUDA_VISIBLE_DEVICES=0 python -m vllm.entrypoints.openai.api_server \
 # Gemma on GPU 1
 CUDA_VISIBLE_DEVICES=1 python -m vllm.entrypoints.openai.api_server \
   --model google/gemma-2-27b-it \
-  --port 8001
+  --port 8002
 
 # GPT-OSS on GPU 2
 CUDA_VISIBLE_DEVICES=2 python -m vllm.entrypoints.openai.api_server \
   --model gpt-oss:20b \
-  --port 8002
+  --port 8003
 ```
 
 **Option 2: Use tensor parallelism**
@@ -299,7 +301,7 @@ python -m vllm.entrypoints.openai.api_server \
 # Gemma on GPU 2,3
 python -m vllm.entrypoints.openai.api_server \
   --model google/gemma-2-27b-it \
-  --port 8001 \
+  --port 8002 \
   --tensor-parallel-size 2
 ```
 

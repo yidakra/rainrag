@@ -275,6 +275,7 @@ async def health_check():
 
 # Supported models configuration with dedicated ports
 # Each model runs on its own vLLM instance for seamless switching
+# Note: API runs on port 8001, so vLLM uses 8000, 8002, 8003
 SUPPORTED_MODELS = {
     "mistralai/Mistral-Small-3.2-24B-Instruct-2506": {
         "display_name": "Mistral Small 3.2 24B",
@@ -284,12 +285,12 @@ SUPPORTED_MODELS = {
     "google/gemma-2-27b-it": {
         "display_name": "Gemma 2 27B",
         "chat_template": "gemma",
-        "port": 8001,  # vLLM instance 2
+        "port": 8002,  # vLLM instance 2 (8001 is used by API)
     },
     "gpt-oss:20b": {
         "display_name": "GPT-OSS 20B",
         "chat_template": "chatml",
-        "port": 8002,  # vLLM instance 3
+        "port": 8003,  # vLLM instance 3
     },
 }
 

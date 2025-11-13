@@ -1,4 +1,4 @@
-.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop api streamlit up down api-bg streamlit-bg
+.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop api streamlit up down api-bg streamlit-bg vllm-mistral vllm-gemma vllm-gptoss vllm-mistral-bg vllm-gemma-bg vllm-gptoss-bg vllm-start vllm-stop vllm-logs
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -71,14 +71,30 @@ streamlit: ## Start Streamlit frontend
 	@echo "Note: Make sure API is running (make api) or set RAINRAG_API_URL"
 	poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860
 
-up: qdrant-start api-bg streamlit-bg ## Start all services (Qdrant, API, Streamlit)
+up: qdrant-start vllm-start api-bg streamlit-bg ## Start all services (Qdrant, vLLM, API, Streamlit)
 	@echo ""
-	@echo "All services started:"
-	@echo "  - Qdrant:    http://localhost:6333"
-	@echo "  - API:       http://localhost:8001"
-	@echo "  - Streamlit: http://localhost:7860"
+	@echo "=== All Services Started ==="
+	@echo ""
+	@echo "Infrastructure:"
+	@echo "  - Qdrant:              http://localhost:6333"
+	@echo ""
+	@echo "LLM Models (vLLM):"
+	@echo "  - Mistral Small 24B:   http://localhost:8000"
+	@echo "  - Gemma 2 27B:         http://localhost:8002"
+	@echo "  - GPT-OSS 20B:         http://localhost:8003"
+	@echo ""
+	@echo "Application:"
+	@echo "  - API:                 http://localhost:8001 (docs: /docs)"
+	@echo "  - Streamlit UI:        http://localhost:7860"
+	@echo ""
+	@echo "Logs:"
+	@echo "  - API:       /tmp/rainrag-api.log"
+	@echo "  - Streamlit: /tmp/rainrag-streamlit.log"
+	@echo "  - vLLM:      Use 'make vllm-logs' to view all model logs"
+	@echo ""
+	@echo "Switch between models seamlessly in the Streamlit UI!"
 
-down: qdrant-stop ## Stop all services
+down: vllm-stop qdrant-stop ## Stop all services
 	@pkill -f "uvicorn rainrag.api" || true
 	@pkill -f "streamlit run app.py" || true
 	@echo "All services stopped"
@@ -92,6 +108,82 @@ streamlit-bg: ## Start Streamlit in background
 	@poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860 > /tmp/rainrag-streamlit.log 2>&1 &
 	@sleep 2
 	@echo "Streamlit started in background (logs: /tmp/rainrag-streamlit.log)"
+
+# vLLM model servers
+vllm-mistral: ## Start Mistral vLLM server (foreground)
+	@echo "Starting Mistral Small 3.2 24B on port 8000"
+	poetry run python -m vllm.entrypoints.openai.api_server \
+		--model mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
+		--host 0.0.0.0 \
+		--port 8000 \
+		--dtype auto
+
+vllm-gemma: ## Start Gemma vLLM server (foreground)
+	@echo "Starting Gemma 2 27B on port 8002"
+	poetry run python -m vllm.entrypoints.openai.api_server \
+		--model google/gemma-2-27b-it \
+		--host 0.0.0.0 \
+		--port 8002 \
+		--dtype auto
+
+vllm-gptoss: ## Start GPT-OSS vLLM server (foreground)
+	@echo "Starting GPT-OSS 20B on port 8003"
+	poetry run python -m vllm.entrypoints.openai.api_server \
+		--model gpt-oss:20b \
+		--host 0.0.0.0 \
+		--port 8003 \
+		--dtype auto
+
+vllm-mistral-bg: ## Start Mistral vLLM server in background
+	@poetry run python -m vllm.entrypoints.openai.api_server \
+		--model mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
+		--host 0.0.0.0 \
+		--port 8000 \
+		--dtype auto > /tmp/rainrag-vllm-mistral.log 2>&1 &
+	@echo "Mistral vLLM started on port 8000 (logs: /tmp/rainrag-vllm-mistral.log)"
+
+vllm-gemma-bg: ## Start Gemma vLLM server in background
+	@poetry run python -m vllm.entrypoints.openai.api_server \
+		--model google/gemma-2-27b-it \
+		--host 0.0.0.0 \
+		--port 8002 \
+		--dtype auto > /tmp/rainrag-vllm-gemma.log 2>&1 &
+	@echo "Gemma vLLM started on port 8002 (logs: /tmp/rainrag-vllm-gemma.log)"
+
+vllm-gptoss-bg: ## Start GPT-OSS vLLM server in background
+	@poetry run python -m vllm.entrypoints.openai.api_server \
+		--model gpt-oss:20b \
+		--host 0.0.0.0 \
+		--port 8003 \
+		--dtype auto > /tmp/rainrag-vllm-gptoss.log 2>&1 &
+	@echo "GPT-OSS vLLM started on port 8003 (logs: /tmp/rainrag-vllm-gptoss.log)"
+
+vllm-start: vllm-mistral-bg vllm-gemma-bg vllm-gptoss-bg ## Start all 3 vLLM servers in background
+	@sleep 5
+	@echo ""
+	@echo "All vLLM servers started:"
+	@echo "  - Mistral Small 3.2 24B: http://localhost:8000"
+	@echo "  - Gemma 2 27B:           http://localhost:8002"
+	@echo "  - GPT-OSS 20B:           http://localhost:8003"
+	@echo ""
+	@echo "Logs available at:"
+	@echo "  - /tmp/rainrag-vllm-mistral.log"
+	@echo "  - /tmp/rainrag-vllm-gemma.log"
+	@echo "  - /tmp/rainrag-vllm-gptoss.log"
+
+vllm-stop: ## Stop all vLLM servers
+	@pkill -f "vllm.entrypoints.openai.api_server" || true
+	@echo "All vLLM servers stopped"
+
+vllm-logs: ## Show logs from all vLLM servers
+	@echo "=== Mistral Logs ==="
+	@tail -20 /tmp/rainrag-vllm-mistral.log 2>/dev/null || echo "No Mistral logs found"
+	@echo ""
+	@echo "=== Gemma Logs ==="
+	@tail -20 /tmp/rainrag-vllm-gemma.log 2>/dev/null || echo "No Gemma logs found"
+	@echo ""
+	@echo "=== GPT-OSS Logs ==="
+	@tail -20 /tmp/rainrag-vllm-gptoss.log 2>/dev/null || echo "No GPT-OSS logs found"
 
 # CLI shortcuts
 ingest: ## Run ingestion pipeline
