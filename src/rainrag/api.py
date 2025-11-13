@@ -69,6 +69,7 @@ def find_video_file(vtt_path: str) -> Optional[str]:
     Find video file corresponding to a VTT file.
 
     Looks for video files with the same base name as the VTT file.
+    Supports multiple resolutions (prefers 1080p > 720p > 480p > 360p > 180p).
 
     Args:
         vtt_path: Path to the VTT file
@@ -95,10 +96,35 @@ def find_video_file(vtt_path: str) -> Optional[str]:
     # Search for video file in the same directory as VTT
     vtt_dir = vtt_file.parent
 
+    # Quality preference order (highest to lowest)
+    quality_order = ["1080p", "720p", "480p", "360p", "180p"]
+
+    # First, try to find video files with quality suffixes
+    for quality in quality_order:
+        for ext in config.video.extensions:
+            # Try with underscore separator (e.g., hash_1080p.mp4)
+            video_file = vtt_dir / f"{base_name}_{quality}{ext}"
+            if video_file.exists():
+                return str(video_file)
+
+    # If no quality-suffixed video found, look for exact match
     for ext in config.video.extensions:
         video_file = vtt_dir / f"{base_name}{ext}"
         if video_file.exists():
             return str(video_file)
+
+    # Finally, try to find any video file that starts with the base name
+    try:
+        for video_file in vtt_dir.iterdir():
+            if not video_file.is_file():
+                continue
+
+            # Check if file starts with base name and has a video extension
+            if video_file.name.startswith(base_name):
+                if any(video_file.suffix.lower() == ext for ext in config.video.extensions):
+                    return str(video_file)
+    except Exception as e:
+        logger.warning(f"Error searching for video files: {e}")
 
     return None
 
