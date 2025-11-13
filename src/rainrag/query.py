@@ -38,11 +38,18 @@ class RAGQueryEngine:
 
         # Load embedding model
         logger.info(f"Loading embedding model: {self.config.embedding.model_name}")
-        self.embedding_model = SentenceTransformer(
-            self.config.embedding.model_name,
-            device=self.config.embedding.device,
-            model_kwargs={"dtype": "auto"},  # Use dtype instead of deprecated torch_dtype
-        )
+        try:
+            self.embedding_model = SentenceTransformer(
+                self.config.embedding.model_name,
+                device=self.config.embedding.device,
+                model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
+            )
+        except TypeError:
+            # Older sentence-transformers versions don't accept model_kwargs
+            self.embedding_model = SentenceTransformer(
+                self.config.embedding.model_name,
+                device=self.config.embedding.device,
+            )
 
         # Connect to Qdrant
         logger.info(
