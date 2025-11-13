@@ -7,7 +7,7 @@ readme = "README.md"
 packages = [{include = "rainrag", from = "src"}]
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = ">=3.10,<3.14"
 torch = "^2.1.0"
 transformers = "^4.35.0"
 sentence-transformers = "^2.2.2"
@@ -15,12 +15,13 @@ qdrant-client = "^1.7.0"
 pydantic = "^2.5.0"
 loguru = "^0.7.2"
 tqdm = "^4.66.0"
-typer = {extras = ["all"], version = "^0.9.0"}
+typer = {extras = ["all"], version = "^0.12.0"}
 pyyaml = "^6.0.1"
 numpy = "^1.24.0"
-requests = "^2.31.0"
+requests = "^2.32.4"
 # Optional: vLLM for query functionality (install separately: pip install vllm)
-vllm = {version = "^0.5.0", optional = true}
+# Note: vLLM requires Python <3.14
+vllm = {version = "^0.11.0", optional = true, python = ">=3.10,<3.14"}
 
 [tool.poetry.extras]
 query = ["vllm"]
