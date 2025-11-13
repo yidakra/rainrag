@@ -265,6 +265,20 @@ RainRAG includes a complete web-based query interface with:
 - **Multilingual Support**: Interface available in Russian and English
 - **Network Access**: Accessible from other devices on your LAN
 
+### Prerequisites
+
+Before starting the web interface, you need a running vLLM server to generate answers:
+
+**See [VLLM_SETUP.md](VLLM_SETUP.md) for detailed vLLM server configuration and startup instructions.**
+
+Quick vLLM startup (if already configured):
+```bash
+python -m vllm.entrypoints.openai.api_server \
+  --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
+  --host 0.0.0.0 \
+  --port 8000
+```
+
 ### Quick Start (Local Development)
 
 #### Option 1: Using Make (Recommended)
