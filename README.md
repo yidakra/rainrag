@@ -267,24 +267,34 @@ RainRAG includes a complete web-based query interface with:
 
 ### Prerequisites
 
-Before starting the web interface, you need a running LLM server (vLLM or Ollama) to generate answers:
+Before starting the web interface, you need running LLM server(s) to generate answers:
 
-**See [VLLM_SETUP.md](VLLM_SETUP.md) for vLLM server configuration and startup instructions.**
-**See [MODEL_CONFIGURATION.md](MODEL_CONFIGURATION.md) for multi-model support (Mistral, Gemma, GPT-OSS, etc.).**
+**See [MULTI_MODEL_SETUP.md](MULTI_MODEL_SETUP.md) for running all 3 models simultaneously (recommended)**
+**See [VLLM_SETUP.md](VLLM_SETUP.md) for single vLLM server configuration**
+**See [MODEL_CONFIGURATION.md](MODEL_CONFIGURATION.md) for detailed model-specific configurations**
 
-Quick vLLM startup (if already configured):
+Quick single-model startup:
 ```bash
+# Mistral on port 8000 (default)
 python -m vllm.entrypoints.openai.api_server \
   --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
   --host 0.0.0.0 \
   --port 8000
 ```
 
-Or using Ollama:
+Multi-model setup (run all 3 for seamless switching):
 ```bash
-ollama pull gemma3:27b
-# Ollama automatically serves on http://localhost:11434/v1
-# Update config.yaml port to 11434
+# Terminal 1: Mistral on port 8000
+python -m vllm.entrypoints.openai.api_server \
+  --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 --port 8000
+
+# Terminal 2: Gemma on port 8001
+python -m vllm.entrypoints.openai.api_server \
+  --model google/gemma-2-27b-it --port 8001
+
+# Terminal 3: GPT-OSS on port 8002
+python -m vllm.entrypoints.openai.api_server \
+  --model gpt-oss:20b --port 8002
 ```
 
 ### Quick Start (Local Development)
@@ -416,11 +426,11 @@ Users will be prompted to enter the token when accessing the Streamlit interface
 1. **Language Selection**: Switch between Russian (Русский 🇷🇺) and English (English 🇬🇧)
 2. **Context Chunks**: Adjust how many relevant transcript chunks to retrieve (1-10)
 3. **Model Selection**: Seamlessly switch between LLM models:
-   - Mistral Small 3.2 24B (default)
-   - Gemma 2 27B
-   - GPT-OSS 20B
-   - Changes apply instantly without requiring restarts
-   - Ensure vLLM is running with the desired model
+   - Mistral Small 3.2 24B (Port 8000)
+   - Gemma 2 27B (Port 8001)
+   - GPT-OSS 20B (Port 8002)
+   - Changes apply instantly - each model runs on its own vLLM instance
+   - See [MULTI_MODEL_SETUP.md](MULTI_MODEL_SETUP.md) for running all 3 models simultaneously
 
 #### Asking Questions
 

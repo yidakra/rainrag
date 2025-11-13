@@ -273,19 +273,23 @@ async def health_check():
     )
 
 
-# Supported models configuration
+# Supported models configuration with dedicated ports
+# Each model runs on its own vLLM instance for seamless switching
 SUPPORTED_MODELS = {
     "mistralai/Mistral-Small-3.2-24B-Instruct-2506": {
         "display_name": "Mistral Small 3.2 24B",
         "chat_template": "mistral",
+        "port": 8000,  # vLLM instance 1
     },
     "google/gemma-2-27b-it": {
         "display_name": "Gemma 2 27B",
         "chat_template": "gemma",
+        "port": 8001,  # vLLM instance 2
     },
     "gpt-oss:20b": {
         "display_name": "GPT-OSS 20B",
         "chat_template": "chatml",
+        "port": 8002,  # vLLM instance 3
     },
 }
 
@@ -342,31 +346,39 @@ async def switch_model(request: SwitchModelRequest):
         )
 
     try:
-        logger.info(f"Switching model from {config.vllm.model_name} to {request.model_name}")
+        model_info = SUPPORTED_MODELS[request.model_name]
+        logger.info(
+            f"Switching model from {config.vllm.model_name} (port {config.vllm.port}) "
+            f"to {request.model_name} (port {model_info['port']})"
+        )
 
-        # Update config with new model
+        # Update config with new model and its dedicated port
         config.vllm.model_name = request.model_name
+        config.vllm.port = model_info["port"]
         config.vllm.chat_template = request.chat_template
 
-        # Reinitialize query engine with new model
+        # Reinitialize query engine with new model configuration
         # Note: We keep the same embedding model and Qdrant client
         old_embedding_model = query_engine.embedding_model
         old_qdrant_client = query_engine.qdrant_client
 
-        # Create new query engine with updated config
+        # Create new query engine with updated config (new vLLM URL with different port)
         query_engine = RAGQueryEngine(config)
 
         # Reuse existing connections
         query_engine.embedding_model = old_embedding_model
         query_engine.qdrant_client = old_qdrant_client
 
-        logger.info(f"Successfully switched to model: {request.model_name}")
+        logger.info(
+            f"Successfully switched to model: {request.model_name} on port {model_info['port']}"
+        )
 
         return {
             "status": "success",
-            "message": f"Switched to {SUPPORTED_MODELS[request.model_name]['display_name']}",
+            "message": f"Switched to {model_info['display_name']}",
             "model_name": request.model_name,
             "chat_template": query_engine.chat_template,
+            "port": model_info["port"],
         }
 
     except Exception as e:
