@@ -185,6 +185,12 @@ vllm-logs: ## Show logs from all vLLM servers
 	@echo "=== GPT-OSS Logs ==="
 	@tail -20 /tmp/rainrag-vllm-gptoss.log 2>/dev/null || echo "No GPT-OSS logs found"
 
+# Model management
+download-models: ## Download and cache required models (requires internet)
+	@echo "Downloading embedding models..."
+	@echo "This requires internet access and may take several minutes"
+	poetry run python scripts/download_models.py
+
 # CLI shortcuts
 ingest: ## Run ingestion pipeline
 	poetry run rainrag ingest

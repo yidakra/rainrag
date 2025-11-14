@@ -442,10 +442,12 @@ def render_message_bubble(message: Dict[str, Any], lang: str):
                         vtt_content = fetch_vtt_content(vtt_url)
                         if vtt_content:
                             # Display VTT in a scrollable container
+                            # Use dark background that works in both light and dark modes
                             st.markdown(
                                 f'<div style="height: 400px; overflow-y: auto; '
-                                f'border: 1px solid #ddd; border-radius: 0.25rem; '
-                                f'padding: 0.5rem; background-color: #f8f9fa; '
+                                f'border: 1px solid #4a4a4a; border-radius: 0.25rem; '
+                                f'padding: 0.5rem; background-color: #1e1e1e; '
+                                f'color: #e0e0e0; '
                                 f'font-family: monospace; font-size: 0.8rem; '
                                 f'white-space: pre-wrap;">{vtt_content}</div>',
                                 unsafe_allow_html=True,

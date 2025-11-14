@@ -133,17 +133,31 @@ User: {user_message}
         # Load embedding model
         logger.info(f"Loading embedding model: {self.config.embedding.model_name}")
         try:
-            self.embedding_model = SentenceTransformer(
-                self.config.embedding.model_name,
-                device=self.config.embedding.device,
-                model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
+            try:
+                self.embedding_model = SentenceTransformer(
+                    self.config.embedding.model_name,
+                    device=self.config.embedding.device,
+                    model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
+                )
+            except TypeError:
+                # Older sentence-transformers versions don't accept model_kwargs
+                self.embedding_model = SentenceTransformer(
+                    self.config.embedding.model_name,
+                    device=self.config.embedding.device,
+                )
+        except OSError as e:
+            # Handle offline mode / model not cached
+            error_msg = (
+                f"Failed to load embedding model '{self.config.embedding.model_name}'. "
+                f"The model is not cached locally and cannot be downloaded. "
+                f"\n\nTo fix this:"
+                f"\n1. Connect to the internet"
+                f"\n2. Run: python scripts/download_models.py"
+                f"\n3. Or run: poetry run python scripts/download_models.py"
+                f"\n\nOriginal error: {e}"
             )
-        except TypeError:
-            # Older sentence-transformers versions don't accept model_kwargs
-            self.embedding_model = SentenceTransformer(
-                self.config.embedding.model_name,
-                device=self.config.embedding.device,
-            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
 
         # Connect to Qdrant
         logger.info(

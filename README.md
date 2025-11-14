@@ -112,6 +112,18 @@ poetry install
 poetry shell
 ```
 
+4. **Download required models** (requires internet connection)
+
+```bash
+# Download and cache the embedding model
+make download-models
+
+# Or manually:
+poetry run python scripts/download_models.py
+```
+
+**Important:** This step downloads the `multilingual-e5-large` embedding model (~2GB) and caches it locally. This is required before you can run RainRAG. You only need to do this once.
+
 ### Configuration
 
 Edit `config.yaml` to customize paths and settings:
