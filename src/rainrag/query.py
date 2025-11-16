@@ -32,7 +32,10 @@ class RAGQueryEngine:
         self.config = config
         self.embedding_model: SentenceTransformer | None = None
         self.qdrant_client: QdrantClient | None = None
-        self.vllm_url = f"http://{config.vllm.host}:{config.vllm.port}/v1/completions"
+        # Select API endpoint based on configuration
+        endpoint = "chat/completions" if config.vllm.use_chat_completions else "completions"
+        self.vllm_url = f"http://{config.vllm.host}:{config.vllm.port}/v1/{endpoint}"
+        self.use_chat_api = config.vllm.use_chat_completions
 
         # Create a session with retry strategy for resilient HTTP requests
         self.session = requests.Session()
@@ -46,6 +49,83 @@ class RAGQueryEngine:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
 
+        # Detect chat template
+        try:
+            self.chat_template = self._detect_chat_template()
+            logger.info(f"Using chat template: {self.chat_template}")
+        except Exception as e:
+            logger.error(f"Failed to detect chat template: {e}, falling back to 'mistral'")
+            self.chat_template = "mistral"
+
+    def _detect_chat_template(self) -> str:
+        """
+        Detect the appropriate chat template based on model name.
+
+        Returns:
+            Template name: 'mistral', 'gemma', 'chatml', or 'generic'
+        """
+        template = self.config.vllm.chat_template.lower()
+
+        if template != "auto":
+            return template
+
+        model_name = self.config.vllm.model_name.lower()
+
+        # Auto-detect based on model name
+        if "mistral" in model_name:
+            return "mistral"
+        elif "gemma" in model_name:
+            return "gemma"
+        elif "gpt" in model_name or "chatml" in model_name:
+            return "chatml"
+        else:
+            return "generic"
+
+    def _format_prompt_with_template(self, system_message: str, user_message: str) -> str:
+        """
+        Format prompt according to the detected chat template.
+
+        Args:
+            system_message: System instruction
+            user_message: User query with context
+
+        Returns:
+            Formatted prompt string
+        """
+        if self.chat_template == "mistral":
+            # Mistral format: <s>[INST] system + user [/INST]
+            return f"<s>[INST] {system_message}\n\n{user_message}\n\nВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов. [/INST]"
+
+        elif self.chat_template == "gemma":
+            # Gemma format: <start_of_turn>user\n...<end_of_turn>\n<start_of_turn>model\n
+            return f"""<start_of_turn>user
+{system_message}
+
+{user_message}
+
+ВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов.<end_of_turn>
+<start_of_turn>model
+"""
+
+        elif self.chat_template == "chatml":
+            # ChatML format: <|im_start|>system\n...<|im_end|>\n<|im_start|>user\n...<|im_end|>
+            return f"""<|im_start|>system
+{system_message}<|im_end|>
+<|im_start|>user
+{user_message}
+
+ВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов.<|im_end|>
+<|im_start|>assistant
+"""
+
+        else:  # generic
+            # Generic format: System: ... User: ... Assistant:
+            return f"""System: {system_message}
+
+User: {user_message}
+
+ВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов."""
+
     def initialize(self) -> None:
         """Initialize the embedding model and Qdrant client."""
         logger.info("Initializing query engine...")
@@ -53,17 +133,31 @@ class RAGQueryEngine:
         # Load embedding model
         logger.info(f"Loading embedding model: {self.config.embedding.model_name}")
         try:
-            self.embedding_model = SentenceTransformer(
-                self.config.embedding.model_name,
-                device=self.config.embedding.device,
-                model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
+            try:
+                self.embedding_model = SentenceTransformer(
+                    self.config.embedding.model_name,
+                    device=self.config.embedding.device,
+                    model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
+                )
+            except TypeError:
+                # Older sentence-transformers versions don't accept model_kwargs
+                self.embedding_model = SentenceTransformer(
+                    self.config.embedding.model_name,
+                    device=self.config.embedding.device,
+                )
+        except OSError as e:
+            # Handle offline mode / model not cached
+            error_msg = (
+                f"Failed to load embedding model '{self.config.embedding.model_name}'. "
+                f"The model is not cached locally and cannot be downloaded. "
+                f"\n\nTo fix this:"
+                f"\n1. Connect to the internet"
+                f"\n2. Run: python scripts/download_models.py"
+                f"\n3. Or run: poetry run python scripts/download_models.py"
+                f"\n\nOriginal error: {e}"
             )
-        except TypeError:
-            # Older sentence-transformers versions don't accept model_kwargs
-            self.embedding_model = SentenceTransformer(
-                self.config.embedding.model_name,
-                device=self.config.embedding.device,
-            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
 
         # Connect to Qdrant
         logger.info(
@@ -154,16 +248,17 @@ class RAGQueryEngine:
             logger.error(f"Failed to retrieve documents: {e}")
             raise
 
-    def build_prompt(self, query: str, documents: List[Dict[str, Any]]) -> str:
+    def build_prompt(self, query: str, documents: List[Dict[str, Any]], language: str = "en") -> tuple[str, str]:
         """
-        Build the prompt for the LLM with retrieved context.
+        Build the system and user prompts for the chat LLM with retrieved context.
 
         Args:
             query: The user's question
             documents: List of retrieved documents
+            language: Language code (e.g., "en", "ru") for response
 
         Returns:
-            The complete prompt string
+            Tuple of (system_message, user_message)
         """
         # Build context from retrieved documents
         context_parts = []
@@ -179,19 +274,32 @@ class RAGQueryEngine:
 
         context = "\n".join(context_parts)
 
-        # Build the complete prompt
-        prompt = f"""You are an assistant that helps users understand video transcripts. You have been provided with relevant excerpts from video transcripts. Answer the user's question based on the provided context.
+        # Language-specific system messages
+        system_messages = {
+            "ru": """Вы помощник, который помогает пользователям понимать видео-транскрипты. КРИТИЧЕСКИ ВАЖНО: Вы ДОЛЖНЫ отвечать ТОЛЬКО на русском языке. Каждое слово вашего ответа должно быть на русском языке.
 
-Context from video transcripts:
+Вам предоставлены релевантные фрагменты видео-транскриптов. Отвечайте на вопрос пользователя на основе предоставленного контекста. Если контекста недостаточно для полного ответа, укажите это в ответе.
+
+ПОВТОРЯЮ: Отвечайте ТОЛЬКО на русском языке.""",
+            "en": """You are an assistant that helps users understand video transcripts. CRITICAL: You MUST answer ONLY in English. Every word of your response must be in English.
+
+You have been provided with relevant excerpts from video transcripts. Answer the user's question based on the provided context. If the context doesn't contain enough information to fully answer the question, acknowledge this in your response.
+
+REPEATING: Answer ONLY in English.""",
+        }
+
+        # Get system message (default to English if not found)
+        system_message = system_messages.get(language, system_messages["en"])
+
+        # Build user message with context and question
+        user_message = f"""Context from video transcripts:
 {context}
 
-User Question: {query}
+Question: {query}"""
 
-Provide a detailed answer based on the context above. If the context doesn't contain enough information to fully answer the question, acknowledge this in your response. Answer in the same language as the question."""
+        return system_message, user_message
 
-        return prompt
-
-    def generate_answer(self, prompt: str) -> str:
+    def generate_answer(self, system_message: str, user_message: str) -> str:
         """
         Generate an answer using the vLLM server.
 
@@ -199,7 +307,8 @@ Provide a detailed answer based on the context above. If the context doesn't con
         Retries up to 3 times with exponential backoff on HTTP 429, 500, 502, 503, 504.
 
         Args:
-            prompt: The complete prompt with context
+            system_message: The system instruction message
+            user_message: The user's question with context
 
         Returns:
             The generated answer text
@@ -207,11 +316,39 @@ Provide a detailed answer based on the context above. If the context doesn't con
         Raises:
             RuntimeError: If connection fails, request times out, or server returns error
         """
-        logger.info("Generating answer using vLLM...")
+        # Try chat completions API first if enabled
+        if self.use_chat_api:
+            try:
+                return self._generate_with_chat_api(system_message, user_message)
+            except requests.exceptions.HTTPError as e:
+                # If chat API fails with 404 or 422, fall back to completions API
+                if e.response.status_code in [404, 422]:
+                    logger.warning(
+                        f"Chat completions API failed ({e.response.status_code}), "
+                        "falling back to completions API"
+                    )
+                    self.use_chat_api = False
+                    # Update URL for future requests
+                    self.vllm_url = f"http://{self.config.vllm.host}:{self.config.vllm.port}/v1/completions"
+                else:
+                    raise
+
+        # Use completions API (either configured or as fallback)
+        return self._generate_with_completions_api(system_message, user_message)
+
+    def _generate_with_chat_api(self, system_message: str, user_message: str) -> str:
+        """Generate answer using chat completions API."""
+        logger.info("Generating answer using vLLM chat completions API...")
+
+        # Combine system message and user message into a single user message
+        # because some vLLM models don't support the "system" role
+        combined_message = f"{system_message}\n\n{user_message}"
 
         payload = {
             "model": self.config.vllm.model_name,
-            "prompt": prompt,
+            "messages": [
+                {"role": "user", "content": combined_message}
+            ],
             "max_tokens": self.config.vllm.max_tokens,
             "temperature": self.config.vllm.temperature,
             "stream": False,
@@ -221,14 +358,14 @@ Provide a detailed answer based on the context above. If the context doesn't con
             response = self.session.post(
                 self.vllm_url,
                 json=payload,
-                timeout=30,  # 30 second timeout (reduced from 120s for better responsiveness)
+                timeout=30,
             )
             response.raise_for_status()
 
             result = response.json()
-            answer = result["choices"][0]["text"].strip()
+            answer = result["choices"][0]["message"]["content"].strip()
 
-            logger.info("Answer generated successfully")
+            logger.info("Answer generated successfully (chat API)")
             return answer
 
         except requests.exceptions.ConnectionError as e:
@@ -244,9 +381,70 @@ Provide a detailed answer based on the context above. If the context doesn't con
                 "The model may be overloaded or the prompt may be too complex."
             ) from e
         except requests.exceptions.HTTPError as e:
-            logger.error(f"vLLM server returned HTTP error: {e}")
+            error_details = e.response.text if hasattr(e.response, 'text') else str(e)
+            logger.error(f"vLLM chat API error {e.response.status_code}: {error_details}")
+            raise  # Re-raise to allow fallback logic in generate_answer
+        except (KeyError, IndexError) as e:
+            logger.error(f"Unexpected response format from vLLM server: {e}")
             raise RuntimeError(
-                f"vLLM server returned HTTP error: {e.response.status_code} - {e.response.text}"
+                "vLLM server returned an unexpected response format. "
+                "The response may be missing expected fields."
+            ) from e
+        except Exception as e:
+            logger.error(f"Failed to generate answer: {e}")
+            raise RuntimeError(f"Unexpected error during answer generation: {e}") from e
+
+    def _generate_with_completions_api(self, system_message: str, user_message: str) -> str:
+        """Generate answer using completions API with model-specific chat template."""
+        logger.info(f"Generating answer using vLLM completions API ({self.chat_template} template)...")
+
+        # Use the appropriate chat template for the model
+        # This ensures the model follows instructions even with the completions API
+        try:
+            combined_prompt = self._format_prompt_with_template(system_message, user_message)
+        except Exception as e:
+            logger.error(f"Failed to format prompt with template: {e}, using simple format")
+            combined_prompt = f"{system_message}\n\n{user_message}\n\nAnswer:"
+
+        payload = {
+            "model": self.config.vllm.model_name,
+            "prompt": combined_prompt,
+            "max_tokens": self.config.vllm.max_tokens,
+            "temperature": self.config.vllm.temperature,
+            "stream": False,
+        }
+
+        try:
+            response = self.session.post(
+                self.vllm_url,
+                json=payload,
+                timeout=30,
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            answer = result["choices"][0]["text"].strip()
+
+            logger.info("Answer generated successfully (completions API)")
+            return answer
+
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Failed to connect to vLLM server at {self.vllm_url}: {e}")
+            raise RuntimeError(
+                f"Cannot connect to vLLM server at {self.vllm_url}. "
+                "Make sure the vLLM server is running."
+            ) from e
+        except requests.exceptions.Timeout as e:
+            logger.error(f"Request to vLLM server timed out after 30 seconds: {e}")
+            raise RuntimeError(
+                "Request to vLLM server timed out after 30 seconds. "
+                "The model may be overloaded or the prompt may be too complex."
+            ) from e
+        except requests.exceptions.HTTPError as e:
+            error_details = e.response.text if hasattr(e.response, 'text') else str(e)
+            logger.error(f"vLLM completions API error {e.response.status_code}: {error_details}")
+            raise RuntimeError(
+                f"vLLM server returned HTTP error: {e.response.status_code} - {error_details}"
             ) from e
         except (KeyError, IndexError) as e:
             logger.error(f"Unexpected response format from vLLM server: {e}")
@@ -258,13 +456,14 @@ Provide a detailed answer based on the context above. If the context doesn't con
             logger.error(f"Failed to generate answer: {e}")
             raise RuntimeError(f"Unexpected error during answer generation: {e}") from e
 
-    def query(self, question: str, top_k: int | None = None) -> Dict[str, Any]:
+    def query(self, question: str, top_k: int | None = None, language: str = "en") -> Dict[str, Any]:
         """
         Execute the complete query pipeline.
 
         Args:
             question: The user's question
             top_k: Number of documents to retrieve (defaults to config value)
+            language: Language code for response (e.g., "en", "ru")
 
         Returns:
             Dictionary containing the answer and metadata
@@ -272,7 +471,7 @@ Provide a detailed answer based on the context above. If the context doesn't con
         if top_k is None:
             top_k = self.config.vllm.top_k
 
-        logger.info(f"Processing query: {question[:100]}...")
+        logger.info(f"Processing query: {question[:100]}... (language: {language})")
 
         # Step 1: Embed the query
         query_vector = self.embed_query(question)
@@ -280,11 +479,11 @@ Provide a detailed answer based on the context above. If the context doesn't con
         # Step 2: Retrieve relevant documents
         documents = self.retrieve_documents(query_vector, top_k)
 
-        # Step 3: Build the prompt
-        prompt = self.build_prompt(question, documents)
+        # Step 3: Build the prompt with language specification
+        system_message, user_message = self.build_prompt(question, documents, language=language)
 
         # Step 4: Generate the answer
-        answer = self.generate_answer(prompt)
+        answer = self.generate_answer(system_message, user_message)
 
         return {
             "question": question,

@@ -104,6 +104,8 @@ class TestVLLMConfig:
         assert config.max_tokens == 512
         assert config.temperature == 0.3
         assert config.top_k == 5
+        assert config.use_chat_completions is True
+        assert config.chat_template == "auto"
 
     def test_vllm_config_custom(self) -> None:
         """Test custom vLLM configuration."""
@@ -114,6 +116,8 @@ class TestVLLMConfig:
             max_tokens=1024,
             temperature=0.7,
             top_k=10,
+            use_chat_completions=False,
+            chat_template="mistral",
         )
 
         assert config.host == "vllm-server"
@@ -122,6 +126,14 @@ class TestVLLMConfig:
         assert config.max_tokens == 1024
         assert config.temperature == 0.7
         assert config.top_k == 10
+        assert config.use_chat_completions is False
+        assert config.chat_template == "mistral"
+
+    def test_vllm_config_chat_template_options(self) -> None:
+        """Test different chat template options."""
+        for template in ["auto", "mistral", "gemma", "chatml", "generic"]:
+            config = VLLMConfig(chat_template=template)
+            assert config.chat_template == template
 
 
 class TestProcessingConfig:

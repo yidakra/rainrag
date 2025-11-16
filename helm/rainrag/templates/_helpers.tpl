@@ -89,3 +89,45 @@ vLLM selector labels
 app.kubernetes.io/name: {{ include "rainrag.name" . }}-vllm
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+API labels
+*/}}
+{{- define "rainrag.api.labels" -}}
+helm.sh/chart: {{ include "rainrag.chart" . }}
+{{ include "rainrag.api.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/component: api
+{{- end }}
+
+{{/*
+API selector labels
+*/}}
+{{- define "rainrag.api.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "rainrag.name" . }}-api
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Streamlit labels
+*/}}
+{{- define "rainrag.streamlit.labels" -}}
+helm.sh/chart: {{ include "rainrag.chart" . }}
+{{ include "rainrag.streamlit.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/component: streamlit
+{{- end }}
+
+{{/*
+Streamlit selector labels
+*/}}
+{{- define "rainrag.streamlit.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "rainrag.name" . }}-streamlit
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

@@ -178,6 +178,59 @@ vllm:
   #     path: /data/huggingface-cache
   #     type: DirectoryOrCreate
 
+# FastAPI backend configuration
+api:
+  enabled: true
+  image:
+    repository: rainrag
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  # Number of replicas
+  replicas: 1
+
+  service:
+    type: ClusterIP
+    port: 8001
+
+  # Optional authentication token
+  authToken: ""  # Set to enable token-based authentication
+
+  resources:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+
+# Streamlit frontend configuration
+streamlit:
+  enabled: true
+  image:
+    repository: rainrag
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  # Number of replicas
+  replicas: 1
+
+  service:
+    type: NodePort  # Use NodePort for LAN access, or LoadBalancer for cloud
+    port: 7860
+    nodePort: 30786  # Fixed port for easy access (30000-32767 range)
+
+  # Optional authentication token (should match api.authToken if used)
+  authToken: ""  # Set to enable token-based authentication
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
 # Global settings
 nameOverride: ""
 fullnameOverride: ""

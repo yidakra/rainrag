@@ -146,6 +146,10 @@ print(f"Retrieved {result['num_documents']} documents")
 
 for doc in result['retrieved_documents']:
     print(f"- {doc['path']} (score: {doc['score']:.4f})")
+    if doc.get('video_url'):
+        print(f"  Video: {doc['video_url']}")
+    if doc.get('vtt_url'):
+        print(f"  VTT: {doc['vtt_url']}")
 ```
 
 ## How It Works
@@ -304,13 +308,18 @@ kubectl port-forward svc/rainrag-vllm 8000:8000
 curl http://localhost:8000/v1/models
 ```
 
-## Next Steps
+## Web Interface
 
-- Integrate the query API into a web interface (e.g., Streamlit)
-- Add support for streaming responses
-- Implement query history and caching
-- Add multi-turn conversation support
-- Create REST API wrapper for the query engine
+The system includes a complete web interface with:
+
+- Streamlit chat UI for asking questions
+- FastAPI backend for query processing
+- Video playback for retrieved content
+- VTT file download and viewing
+- Multilingual support (Russian/English)
+- Token-based authentication
+
+See the main README for setup and usage instructions.
 
 ## References
 
