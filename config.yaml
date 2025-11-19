@@ -12,7 +12,7 @@ paths:
 # Embedding model configuration
 embedding:
   # Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API
-  provider: "local"
+  provider: "mistral"
   model_name: "intfloat/multilingual-e5-large"
   batch_size: 32
   max_seq_length: 512
