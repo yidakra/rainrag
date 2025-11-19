@@ -106,11 +106,31 @@ up: qdrant-start ## Start all services (Qdrant, API, Streamlit)
 	@echo "  - API:                 http://localhost:8001 (docs: /docs)"
 	@echo "  - Streamlit UI:        http://localhost:7860"
 	@echo ""
+	@echo "Configuration:"
+	@LLM_PROVIDER=$$(grep -A3 "^llm:" config.yaml | grep "^  provider:" | awk '{print $$2}' | tr -d '"'); \
+	LLM_MODEL=""; \
+	if [ "$$LLM_PROVIDER" = "mistral" ]; then \
+		LLM_MODEL=$$(grep -A5 "^mistral:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
+	elif [ "$$LLM_PROVIDER" = "openai" ]; then \
+		LLM_MODEL=$$(grep -A5 "^openai:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
+	fi; \
+	EMBED_PROVIDER=$$(grep -A5 "^embedding:" config.yaml | grep "^  provider:" | awk '{print $$2}' | tr -d '"'); \
+	EMBED_MODEL=""; \
+	if [ "$$EMBED_PROVIDER" = "local" ]; then \
+		EMBED_MODEL=$$(grep -A5 "^embedding:" config.yaml | grep "^  model_name:" | awk '{print $$2}' | tr -d '"'); \
+	elif [ "$$EMBED_PROVIDER" = "mistral" ]; then \
+		EMBED_MODEL="mistral-embed"; \
+	elif [ "$$EMBED_PROVIDER" = "openai" ]; then \
+		EMBED_MODEL=$$(grep -A5 "^openai:" config.yaml | grep "^  embedding_model:" | awk '{print $$2}' | tr -d '"'); \
+	fi; \
+	echo "  - LLM Provider:        $$LLM_PROVIDER ($$LLM_MODEL)"; \
+	echo "  - Embedding Provider:  $$EMBED_PROVIDER ($$EMBED_MODEL)"
+	@echo ""
 	@echo "Logs:"
 	@echo "  - API:       /tmp/rainrag-api.log"
 	@echo "  - Streamlit: /tmp/rainrag-streamlit.log"
 	@echo ""
-	@echo "Note: Set MISTRAL_API_KEY environment variable or in config.yaml"
+	@echo "Note: Set MISTRAL_API_KEY and/or OPENAI_API_KEY in .env file"
 
 down: qdrant-stop ## Stop all services
 	@pkill -f "[u]vicorn rainrag.api" || true
