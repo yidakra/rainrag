@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 
@@ -112,6 +113,9 @@ def load_config(config_path: str = "config.yaml") -> Config:
     Returns:
         Config object
     """
+    # Load environment variables from .env file if it exists
+    load_dotenv()
+
     config_file = Path(config_path)
 
     if not config_file.exists():
