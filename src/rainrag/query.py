@@ -83,6 +83,8 @@ class RAGQueryEngine:
             host=self.config.qdrant.host,
             port=self.config.qdrant.port,
             prefer_grpc=False,
+            api_key=None,  # No authentication for local Qdrant
+            timeout=60,
         )
 
         # Test connection
@@ -154,11 +156,11 @@ class RAGQueryEngine:
         logger.info(f"Searching for top {top_k} documents...")
 
         try:
-            results = self.qdrant_client.search(
+            results = self.qdrant_client.query_points(
                 collection_name=self.config.qdrant.collection_name,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=top_k,
-            )
+            ).points
 
             documents = []
             for idx, hit in enumerate(results):
