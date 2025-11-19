@@ -111,7 +111,7 @@ poetry install
 poetry shell
 ```
 
-4. **Download required models** (requires internet connection)
+4. **Download required models** (only needed if using local embeddings)
 
 ```bash
 # Download and cache the embedding model
@@ -121,7 +121,7 @@ make download-models
 poetry run python scripts/download_models.py
 ```
 
-**Important:** This step downloads the `multilingual-e5-large` embedding model (~2GB) and caches it locally. This is required before you can run RainRAG. You only need to do this once.
+**Note:** This step downloads the `multilingual-e5-large` embedding model (~2GB) and caches it locally. This is only required if you're using `provider: "local"` in your embedding configuration. If you're using `provider: "mistral"` for Mistral API embeddings, you can skip this step.
 
 ### Configuration
 
@@ -149,8 +149,9 @@ paths:
   embeddings_cache: "./embeddings"
 
 embedding:
+  provider: "local"  # "local" for local model, "mistral" for Mistral API embeddings
   model_name: "intfloat/multilingual-e5-large"
-  device: "cuda"  # or "cpu"
+  device: "cuda"  # or "cpu" (only used with local provider)
   batch_size: 32
 
 qdrant:
@@ -165,6 +166,28 @@ mistral:
   temperature: 0.3
   top_k: 5
 ```
+
+### Choosing an Embedding Provider
+
+RainRAG supports two embedding providers:
+
+**Local Embeddings (`provider: "local"`)**
+- Uses `intfloat/multilingual-e5-large` model running locally
+- Requires downloading ~2GB model (one-time setup)
+- Requires GPU/CPU resources to run the model
+- Free to use (no API costs)
+- Best for: High-volume queries, air-gapped environments, or when you have sufficient compute resources
+
+**Mistral API Embeddings (`provider: "mistral"`)**
+- Uses Mistral's `mistral-embed` model via API
+- No local model download required
+- Minimal compute resources needed
+- Requires Mistral API key and incurs API costs
+- Best for: Quick setup, limited compute resources, or testing
+
+To use Mistral embeddings, simply change `provider: "mistral"` in your `config.yaml` embedding section.
+
+**Important:** If you switch embedding providers after indexing, you must re-run the entire pipeline (`rainrag embed` and `rainrag index`) because the embedding dimensions differ between providers.
 
 ### Running Qdrant Locally
 

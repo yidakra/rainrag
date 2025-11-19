@@ -95,6 +95,7 @@ ingestion:
       embeddings_cache: "/data/embeddings"
 
     embedding:
+      provider: "local"  # Options: "local" for local model, "mistral" for Mistral API
       model_name: "intfloat/multilingual-e5-large"
       batch_size: 32
       max_seq_length: 512

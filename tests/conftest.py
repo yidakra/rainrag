@@ -81,6 +81,7 @@ def test_config(temp_dir: Path) -> Config:
             "embeddings_cache": str(embeddings_dir),
         },
         embedding={
+            "provider": "local",  # Use local model for tests
             "model_name": "sentence-transformers/all-MiniLM-L6-v2",  # Smaller model for testing
             "batch_size": 8,
             "max_seq_length": 128,

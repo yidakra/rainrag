@@ -23,6 +23,10 @@ class PathsConfig(BaseModel):
 class EmbeddingConfig(BaseModel):
     """Configuration for embedding generation."""
 
+    provider: str = Field(
+        default="local",
+        description="Embedding provider: 'local' for local model, 'mistral' for Mistral API"
+    )
     model_name: str = Field(default="intfloat/multilingual-e5-large")
     batch_size: int = Field(default=32)
     max_seq_length: int = Field(default=512)

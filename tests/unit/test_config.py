@@ -41,6 +41,7 @@ class TestEmbeddingConfig:
         """Test default embedding configuration."""
         config = EmbeddingConfig()
 
+        assert config.provider == "local"
         assert config.model_name == "intfloat/multilingual-e5-large"
         assert config.batch_size == 32
         assert config.max_seq_length == 512
@@ -183,6 +184,7 @@ class TestLoadConfig:
                 "embeddings_cache": "/test/embeddings",
             },
             "embedding": {
+                "provider": "local",
                 "model_name": "test-model",
                 "batch_size": 16,
                 "max_seq_length": 256,

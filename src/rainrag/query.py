@@ -39,34 +39,39 @@ class RAGQueryEngine:
         """Initialize the embedding model and Qdrant client."""
         logger.info("Initializing query engine...")
 
-        # Load embedding model
-        logger.info(f"Loading embedding model: {self.config.embedding.model_name}")
-        try:
+        # Load embedding model only if using local provider
+        if self.config.embedding.provider == "local":
+            logger.info(f"Loading local embedding model: {self.config.embedding.model_name}")
             try:
-                self.embedding_model = SentenceTransformer(
-                    self.config.embedding.model_name,
-                    device=self.config.embedding.device,
-                    model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
+                try:
+                    self.embedding_model = SentenceTransformer(
+                        self.config.embedding.model_name,
+                        device=self.config.embedding.device,
+                        model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
+                    )
+                except TypeError:
+                    # Older sentence-transformers versions don't accept model_kwargs
+                    self.embedding_model = SentenceTransformer(
+                        self.config.embedding.model_name,
+                        device=self.config.embedding.device,
+                    )
+            except OSError as e:
+                # Handle offline mode / model not cached
+                error_msg = (
+                    f"Failed to load embedding model '{self.config.embedding.model_name}'. "
+                    f"The model is not cached locally and cannot be downloaded. "
+                    f"\n\nTo fix this:"
+                    f"\n1. Connect to the internet"
+                    f"\n2. Run: python scripts/download_models.py"
+                    f"\n3. Or run: poetry run python scripts/download_models.py"
+                    f"\n\nOriginal error: {e}"
                 )
-            except TypeError:
-                # Older sentence-transformers versions don't accept model_kwargs
-                self.embedding_model = SentenceTransformer(
-                    self.config.embedding.model_name,
-                    device=self.config.embedding.device,
-                )
-        except OSError as e:
-            # Handle offline mode / model not cached
-            error_msg = (
-                f"Failed to load embedding model '{self.config.embedding.model_name}'. "
-                f"The model is not cached locally and cannot be downloaded. "
-                f"\n\nTo fix this:"
-                f"\n1. Connect to the internet"
-                f"\n2. Run: python scripts/download_models.py"
-                f"\n3. Or run: poetry run python scripts/download_models.py"
-                f"\n\nOriginal error: {e}"
-            )
-            logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
+                logger.error(error_msg)
+                raise RuntimeError(error_msg) from e
+        elif self.config.embedding.provider == "mistral":
+            logger.info("Using Mistral API for embeddings (mistral-embed)")
+        else:
+            raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
 
         # Connect to Qdrant
         logger.info(
@@ -92,7 +97,7 @@ class RAGQueryEngine:
 
     def embed_query(self, query: str) -> List[float]:
         """
-        Embed the query text using the same model as documents.
+        Embed the query text using configured provider.
 
         Args:
             query: The query text
@@ -100,19 +105,37 @@ class RAGQueryEngine:
         Returns:
             List of floats representing the query embedding
         """
-        if self.embedding_model is None:
-            raise RuntimeError("Embedding model not initialized. Call initialize() first.")
+        if self.config.embedding.provider == "mistral":
+            # Use Mistral API embeddings
+            logger.debug(f"Embedding query using Mistral API: {query[:100]}...")
+            try:
+                response = self.mistral_client.embeddings.create(
+                    model="mistral-embed",
+                    inputs=[query]
+                )
+                return response.data[0].embedding
+            except Exception as e:
+                logger.error(f"Failed to generate embeddings with Mistral API: {e}")
+                raise RuntimeError(f"Mistral embeddings API error: {e}") from e
 
-        # Add "query: " prefix for E5 model (improves retrieval performance)
-        prefixed_query = f"query: {query}"
+        elif self.config.embedding.provider == "local":
+            # Use local SentenceTransformer model
+            if self.embedding_model is None:
+                raise RuntimeError("Embedding model not initialized. Call initialize() first.")
 
-        logger.debug(f"Embedding query: {query[:100]}...")
-        embedding = self.embedding_model.encode(
-            prefixed_query,
-            normalize_embeddings=self.config.embedding.normalize_embeddings,
-        )
+            # Add "query: " prefix for E5 model (improves retrieval performance)
+            prefixed_query = f"query: {query}"
 
-        return embedding.tolist()
+            logger.debug(f"Embedding query using local model: {query[:100]}...")
+            embedding = self.embedding_model.encode(
+                prefixed_query,
+                normalize_embeddings=self.config.embedding.normalize_embeddings,
+            )
+
+            return embedding.tolist()
+
+        else:
+            raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
 
     def retrieve_documents(self, query_vector: List[float], top_k: int) -> List[Dict[str, Any]]:
         """
