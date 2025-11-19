@@ -32,15 +32,29 @@ class RAGQueryEngine:
         self.embedding_model: SentenceTransformer | None = None
         self.qdrant_client: QdrantClient | None = None
 
-        # Initialize LLM client based on provider
-        if config.llm.provider == "mistral":
+        # Initialize clients based on what's needed for LLM and embeddings
+        needs_mistral = config.llm.provider == "mistral" or config.embedding.provider == "mistral"
+        needs_openai = config.llm.provider == "openai" or config.embedding.provider == "openai"
+
+        # Initialize Mistral client if needed
+        if needs_mistral:
             self.mistral_client = Mistral(api_key=config.mistral.api_key)
-            self.openai_client = None
-            logger.info(f"Initialized Mistral client with model: {config.mistral.model_name}")
-        elif config.llm.provider == "openai":
-            self.openai_client = OpenAI(api_key=config.openai.api_key)
+            logger.info("Initialized Mistral client")
+        else:
             self.mistral_client = None
-            logger.info(f"Initialized OpenAI client with model: {config.openai.model_name}")
+
+        # Initialize OpenAI client if needed
+        if needs_openai:
+            self.openai_client = OpenAI(api_key=config.openai.api_key)
+            logger.info("Initialized OpenAI client")
+        else:
+            self.openai_client = None
+
+        # Log which provider is being used for LLM
+        if config.llm.provider == "mistral":
+            logger.info(f"Using Mistral for LLM: {config.mistral.model_name}")
+        elif config.llm.provider == "openai":
+            logger.info(f"Using OpenAI for LLM: {config.openai.model_name}")
         else:
             raise ValueError(f"Unknown LLM provider: {config.llm.provider}")
 
