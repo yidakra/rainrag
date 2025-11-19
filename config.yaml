@@ -11,7 +11,7 @@ paths:
 
 # Embedding model configuration
 embedding:
-  model_name: "sentence-transformers/all-MiniLM-L6-v2"  # Smaller model, less memory
+  model_name: "intfloat/multilingual-e5-large"
   batch_size: 32
   max_seq_length: 512
   device: "cpu"
@@ -22,7 +22,7 @@ qdrant:
   host: "localhost"
   port: 6333
   collection_name: "broadcast_transcripts"
-  vector_size: 384  # all-MiniLM-L6-v2 embedding dimension (changed from 1024)
+  vector_size: 1024  # multilingual-e5-large embedding dimension
   distance: "Cosine"
   # Set to true to recreate collection on indexing
   recreate_collection: false
