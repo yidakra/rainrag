@@ -61,8 +61,13 @@ class HealthResponse(BaseModel):
     status: str
     qdrant_connected: bool
     model_loaded: bool
-    mistral_model: str
+    llm_provider: str
+    llm_model: str
+    embedding_provider: str
+    embedding_model: str
     qdrant_collection: str
+    # Deprecated fields (kept for backwards compatibility)
+    mistral_model: str
 
 
 
@@ -238,14 +243,39 @@ async def health_check():
         raise HTTPException(status_code=503, detail="Query engine not initialized")
 
     qdrant_connected = query_engine.qdrant_client is not None
-    model_loaded = query_engine.embedding_model is not None
+    model_loaded = query_engine.embedding_model is not None or query_engine.config.embedding.provider in ["mistral", "openai"]
+
+    # Get LLM model based on provider
+    llm_provider = query_engine.config.llm.provider
+    if llm_provider == "mistral":
+        llm_model = query_engine.config.mistral.model_name
+    elif llm_provider == "openai":
+        llm_model = query_engine.config.openai.model_name
+    else:
+        llm_model = "unknown"
+
+    # Get embedding model based on provider
+    embedding_provider = query_engine.config.embedding.provider
+    if embedding_provider == "local":
+        embedding_model = query_engine.config.embedding.model_name
+    elif embedding_provider == "mistral":
+        embedding_model = "mistral-embed"
+    elif embedding_provider == "openai":
+        embedding_model = query_engine.config.openai.embedding_model
+    else:
+        embedding_model = "unknown"
 
     return HealthResponse(
         status="healthy" if (qdrant_connected and model_loaded) else "degraded",
         qdrant_connected=qdrant_connected,
         model_loaded=model_loaded,
-        mistral_model=query_engine.config.mistral.model_name,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
         qdrant_collection=query_engine.config.qdrant.collection_name,
+        # Deprecated field (kept for backwards compatibility)
+        mistral_model=llm_model,
     )
 
 

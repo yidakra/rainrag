@@ -27,6 +27,7 @@ TRANSLATIONS = {
         "num_chunks_label": "Количество контекстных фрагментов",
         "system_info_label": "Информация о системе",
         "model_label": "Модель LLM",
+        "embedding_label": "Модель эмбеддингов",
         "collection_label": "Коллекция Qdrant",
         "status_label": "Статус",
         "connected": "Подключено",
@@ -62,6 +63,7 @@ TRANSLATIONS = {
         "num_chunks_label": "Number of context chunks",
         "system_info_label": "System Information",
         "model_label": "LLM Model",
+        "embedding_label": "Embedding Model",
         "collection_label": "Qdrant Collection",
         "status_label": "Status",
         "connected": "Connected",
@@ -474,10 +476,17 @@ def render_sidebar(lang: str):
                     status_color = "🟢" if health_info.get("status") == "healthy" else "🟡"
                     st.markdown(f"**{get_text('status_label', lang)}:** {status_color} {health_info.get('status', 'unknown').title()}")
 
-                    # Display current Mistral model
+                    # Display current LLM model
                     st.markdown(f"**{get_text('model_label', lang)}:**")
-                    current_model = health_info.get("mistral_model", "Unknown")
-                    st.code(current_model, language="text")
+                    llm_provider = health_info.get("llm_provider", "Unknown")
+                    llm_model = health_info.get("llm_model", "Unknown")
+                    st.code(f"{llm_provider} ({llm_model})", language="text")
+
+                    # Display current embedding model
+                    st.markdown(f"**{get_text('embedding_label', lang)}:**")
+                    embedding_provider = health_info.get("embedding_provider", "Unknown")
+                    embedding_model = health_info.get("embedding_model", "Unknown")
+                    st.code(f"{embedding_provider} ({embedding_model})", language="text")
 
                     st.markdown(f"**{get_text('collection_label', lang)}:**")
                     st.code(health_info.get("qdrant_collection", "Unknown"), language="text")
