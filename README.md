@@ -1,12 +1,11 @@
 # RainRAG
 
-**Local-first Retrieval-Augmented Generation (RAG) Pipeline for VTT Subtitle Processing**
+**Retrieval-Augmented Generation (RAG) Pipeline for VTT Subtitle Processing**
 
-RainRAG is a modular, open-source backend system for building a semantic search engine over VTT subtitle files. It uses state-of-the-art multilingual embeddings and vector search to enable efficient retrieval of broadcast transcripts in Russian and English.
+RainRAG is a modular, open-source backend system for building a semantic search engine over VTT subtitle files. It uses state-of-the-art multilingual embeddings and vector search to enable efficient retrieval of broadcast transcripts in Russian and English, powered by Mistral AI.
 
 ## Features
 
-- **Local-first**: No external API calls, all processing runs locally
 - **Multilingual**: Supports Russian and English subtitles with `intfloat/multilingual-e5-large` embeddings
 - **Modular Pipeline**: Separate stages for ingestion, embedding, and indexing
 - **Production Ready**: Includes Helm charts for Kubernetes deployment
@@ -17,7 +16,7 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 - **Video Playback**: Inline video player for retrieved content
 - **Subtitle Access**: Download and view VTT files directly in the UI
 - **Network Access**: Accessible from other devices on the same network with optional token authentication
-- **LLM Integration**: Query interface powered by Mistral-Small via vLLM
+- **LLM Integration**: Query interface powered by Mistral AI API
 
 ## Architecture
 
@@ -71,10 +70,10 @@ RainRAG is a modular, open-source backend system for building a semantic search 
          ├──────────┐
          │          │
          ▼          ▼
-   ┌─────────┐  ┌─────────┐
-   │ Qdrant  │  │  vLLM   │
-   │ Search  │  │ Mistral │
-   └─────────┘  └─────────┘
+   ┌─────────┐  ┌──────────────┐
+   │ Qdrant  │  │  Mistral AI  │
+   │ Search  │  │     API      │
+   └─────────┘  └──────────────┘
          │          │
          └────┬─────┘
               ▼
@@ -126,7 +125,22 @@ poetry run python scripts/download_models.py
 
 ### Configuration
 
-Edit `config.yaml` to customize paths and settings:
+1. **Set up Mistral API Key**
+
+Get your API key from [Mistral AI Console](https://console.mistral.ai/) and set it as an environment variable:
+
+```bash
+export MISTRAL_API_KEY=your_api_key_here
+```
+
+Or add it to your `.env` file:
+
+```bash
+cp .env.example .env
+# Edit .env and add your MISTRAL_API_KEY
+```
+
+2. **Edit `config.yaml`** to customize paths and settings:
 
 ```yaml
 paths:
@@ -143,6 +157,13 @@ qdrant:
   host: "localhost"
   port: 6333
   collection_name: "broadcast_transcripts"
+
+mistral:
+  api_key: ""  # Leave empty to use MISTRAL_API_KEY environment variable
+  model_name: "mistral-small-latest"  # or mistral-medium-latest, mistral-large-latest
+  max_tokens: 512
+  temperature: 0.3
+  top_k: 5
 ```
 
 ### Running Qdrant Locally

@@ -95,10 +95,9 @@ def test_config(temp_dir: Path) -> Config:
             "distance": "Cosine",
             "recreate_collection": False,
         },
-        vllm={
-            "host": "localhost",
-            "port": 8000,
-            "model_name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        mistral={
+            "api_key": "test-api-key",
+            "model_name": "mistral-small-latest",
             "max_tokens": 512,
             "temperature": 0.3,
             "top_k": 5,

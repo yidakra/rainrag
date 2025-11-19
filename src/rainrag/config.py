@@ -1,5 +1,6 @@
 """Configuration management for RainRAG."""
 
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -40,24 +41,17 @@ class QdrantConfig(BaseModel):
     recreate_collection: bool = Field(default=False)
 
 
-class VLLMConfig(BaseModel):
-    """Configuration for vLLM inference server."""
+class MistralConfig(BaseModel):
+    """Configuration for Mistral API."""
 
-    host: str = Field(default="localhost")
-    port: int = Field(default=8000)
-    model_name: str = Field(default="mistralai/Mistral-Small-3.2-24B-Instruct-2506")
+    api_key: str = Field(description="Mistral API key")
+    model_name: str = Field(
+        default="mistral-small-latest",
+        description="Mistral model to use: mistral-small-latest, mistral-medium-latest, mistral-large-latest, etc.",
+    )
     max_tokens: int = Field(default=512)
     temperature: float = Field(default=0.3)
     top_k: int = Field(default=5, description="Number of documents to retrieve")
-    use_chat_completions: bool = Field(
-        default=True,
-        description="Use chat completions API (/v1/chat/completions) instead of completions API. "
-        "Set to true for instruction-tuned models, false for base models or if chat API is not available.",
-    )
-    chat_template: str = Field(
-        default="auto",
-        description="Chat template format: 'auto' (detect from model), 'mistral', 'gemma', 'chatml', or 'generic'",
-    )
 
 
 class ProcessingConfig(BaseModel):
@@ -98,7 +92,7 @@ class Config(BaseModel):
     paths: PathsConfig
     embedding: EmbeddingConfig
     qdrant: QdrantConfig
-    vllm: VLLMConfig
+    mistral: MistralConfig
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
@@ -121,5 +115,12 @@ def load_config(config_path: str = "config.yaml") -> Config:
 
     with open(config_file, "r") as f:
         config_data: Dict[str, Any] = yaml.safe_load(f)
+
+    # Override Mistral API key from environment variable if set
+    mistral_api_key = os.getenv("MISTRAL_API_KEY")
+    if mistral_api_key:
+        if "mistral" not in config_data:
+            config_data["mistral"] = {}
+        config_data["mistral"]["api_key"] = mistral_api_key
 
     return Config(**config_data)

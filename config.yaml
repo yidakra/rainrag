@@ -27,16 +27,13 @@ qdrant:
   # Set to true to recreate collection on indexing
   recreate_collection: false
 
-# vLLM inference server configuration
-vllm:
-  host: "localhost"
-  port: 8000
-  model_name: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+# Mistral API configuration
+mistral:
+  api_key: ""  # Set your Mistral API key here or via MISTRAL_API_KEY environment variable
+  model_name: "mistral-small-latest"  # Options: mistral-small-latest, mistral-medium-latest, mistral-large-latest
   max_tokens: 512
   temperature: 0.3
   top_k: 5  # Number of documents to retrieve for context
-  use_chat_completions: true  # Set to true for better instruction following (will fallback to completions if not available)
-  chat_template: "auto"  # Chat template: auto (detect), mistral, gemma, chatml, or generic
 
 # Processing configuration
 processing:
