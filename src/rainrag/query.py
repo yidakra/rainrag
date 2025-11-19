@@ -1,10 +1,11 @@
-"""Query interface for RainRAG using Mistral API and Qdrant."""
+"""Query interface for RainRAG using Mistral/OpenAI API and Qdrant."""
 
 from typing import List, Dict, Any
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from loguru import logger
 from mistralai import Mistral
+from openai import OpenAI
 
 from rainrag.config import Config
 
@@ -31,9 +32,17 @@ class RAGQueryEngine:
         self.embedding_model: SentenceTransformer | None = None
         self.qdrant_client: QdrantClient | None = None
 
-        # Initialize Mistral client
-        self.mistral_client = Mistral(api_key=config.mistral.api_key)
-        logger.info(f"Initialized Mistral client with model: {config.mistral.model_name}")
+        # Initialize LLM client based on provider
+        if config.llm.provider == "mistral":
+            self.mistral_client = Mistral(api_key=config.mistral.api_key)
+            self.openai_client = None
+            logger.info(f"Initialized Mistral client with model: {config.mistral.model_name}")
+        elif config.llm.provider == "openai":
+            self.openai_client = OpenAI(api_key=config.openai.api_key)
+            self.mistral_client = None
+            logger.info(f"Initialized OpenAI client with model: {config.openai.model_name}")
+        else:
+            raise ValueError(f"Unknown LLM provider: {config.llm.provider}")
 
     def initialize(self) -> None:
         """Initialize the embedding model and Qdrant client."""
@@ -70,6 +79,8 @@ class RAGQueryEngine:
                 raise RuntimeError(error_msg) from e
         elif self.config.embedding.provider == "mistral":
             logger.info("Using Mistral API for embeddings (mistral-embed)")
+        elif self.config.embedding.provider == "openai":
+            logger.info(f"Using OpenAI API for embeddings ({self.config.openai.embedding_model})")
         else:
             raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
 
@@ -135,6 +146,19 @@ class RAGQueryEngine:
             )
 
             return embedding.tolist()
+
+        elif self.config.embedding.provider == "openai":
+            # Use OpenAI API embeddings
+            logger.debug(f"Embedding query using OpenAI API: {query[:100]}...")
+            try:
+                response = self.openai_client.embeddings.create(
+                    model=self.config.openai.embedding_model,
+                    input=query
+                )
+                return response.data[0].embedding
+            except Exception as e:
+                logger.error(f"Failed to generate embeddings with OpenAI API: {e}")
+                raise RuntimeError(f"OpenAI embeddings API error: {e}") from e
 
         else:
             raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
@@ -239,7 +263,7 @@ Question: {query}"""
 
     def generate_answer(self, messages: List[Dict[str, str]]) -> str:
         """
-        Generate an answer using the Mistral API.
+        Generate an answer using configured LLM provider.
 
         Args:
             messages: List of message dictionaries for the chat
@@ -250,23 +274,40 @@ Question: {query}"""
         Raises:
             RuntimeError: If API call fails
         """
-        logger.info("Generating answer using Mistral API...")
+        if self.config.llm.provider == "mistral":
+            logger.info("Generating answer using Mistral API...")
+            try:
+                response = self.mistral_client.chat.complete(
+                    model=self.config.mistral.model_name,
+                    messages=messages,
+                    max_tokens=self.config.mistral.max_tokens,
+                    temperature=self.config.mistral.temperature,
+                )
+                answer = response.choices[0].message.content.strip()
+                logger.info("Answer generated successfully")
+                return answer
+            except Exception as e:
+                logger.error(f"Failed to generate answer with Mistral API: {e}")
+                raise RuntimeError(f"Mistral API error: {e}") from e
 
-        try:
-            response = self.mistral_client.chat.complete(
-                model=self.config.mistral.model_name,
-                messages=messages,
-                max_tokens=self.config.mistral.max_tokens,
-                temperature=self.config.mistral.temperature,
-            )
+        elif self.config.llm.provider == "openai":
+            logger.info("Generating answer using OpenAI API...")
+            try:
+                response = self.openai_client.chat.completions.create(
+                    model=self.config.openai.model_name,
+                    messages=messages,
+                    max_tokens=self.config.openai.max_tokens,
+                    temperature=self.config.openai.temperature,
+                )
+                answer = response.choices[0].message.content.strip()
+                logger.info("Answer generated successfully")
+                return answer
+            except Exception as e:
+                logger.error(f"Failed to generate answer with OpenAI API: {e}")
+                raise RuntimeError(f"OpenAI API error: {e}") from e
 
-            answer = response.choices[0].message.content.strip()
-            logger.info("Answer generated successfully")
-            return answer
-
-        except Exception as e:
-            logger.error(f"Failed to generate answer with Mistral API: {e}")
-            raise RuntimeError(f"Mistral API error: {e}") from e
+        else:
+            raise ValueError(f"Unknown LLM provider: {self.config.llm.provider}")
 
     def query(self, question: str, top_k: int | None = None, language: str = "en") -> Dict[str, Any]:
         """
@@ -281,7 +322,13 @@ Question: {query}"""
             Dictionary containing the answer and metadata
         """
         if top_k is None:
-            top_k = self.config.mistral.top_k
+            # Get top_k from the appropriate LLM config
+            if self.config.llm.provider == "mistral":
+                top_k = self.config.mistral.top_k
+            elif self.config.llm.provider == "openai":
+                top_k = self.config.openai.top_k
+            else:
+                top_k = 5  # Default fallback
 
         logger.info(f"Processing query: {question[:100]}... (language: {language})")
 

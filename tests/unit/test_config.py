@@ -9,11 +9,13 @@ import yaml
 from rainrag.config import (
     Config,
     EmbeddingConfig,
+    LLMConfig,
     LoggingConfig,
+    MistralConfig,
+    OpenAIConfig,
     PathsConfig,
     ProcessingConfig,
     QdrantConfig,
-    MistralConfig,
     load_config,
 )
 
@@ -122,6 +124,55 @@ class TestMistralConfig:
         assert config.top_k == 10
 
 
+class TestOpenAIConfig:
+    """Tests for OpenAIConfig model."""
+
+    def test_openai_config_defaults(self) -> None:
+        """Test default OpenAI configuration."""
+        config = OpenAIConfig(api_key="test-key")
+
+        assert config.api_key == "test-key"
+        assert config.model_name == "gpt-4o-mini"
+        assert config.embedding_model == "text-embedding-3-small"
+        assert config.max_tokens == 512
+        assert config.temperature == 0.3
+        assert config.top_k == 5
+
+    def test_openai_config_custom(self) -> None:
+        """Test custom OpenAI configuration."""
+        config = OpenAIConfig(
+            api_key="custom-key",
+            model_name="gpt-4o",
+            embedding_model="text-embedding-3-large",
+            max_tokens=1024,
+            temperature=0.7,
+            top_k=10,
+        )
+
+        assert config.api_key == "custom-key"
+        assert config.model_name == "gpt-4o"
+        assert config.embedding_model == "text-embedding-3-large"
+        assert config.max_tokens == 1024
+        assert config.temperature == 0.7
+        assert config.top_k == 10
+
+
+class TestLLMConfig:
+    """Tests for LLMConfig model."""
+
+    def test_llm_config_defaults(self) -> None:
+        """Test default LLM configuration."""
+        config = LLMConfig()
+
+        assert config.provider == "mistral"
+
+    def test_llm_config_custom(self) -> None:
+        """Test custom LLM configuration."""
+        config = LLMConfig(provider="openai")
+
+        assert config.provider == "openai"
+
+
 class TestProcessingConfig:
     """Tests for ProcessingConfig model."""
 
@@ -158,7 +209,9 @@ class TestConfig:
             ),
             embedding=EmbeddingConfig(),
             qdrant=QdrantConfig(),
+            llm=LLMConfig(),
             mistral=MistralConfig(api_key="test-key"),
+            openai=OpenAIConfig(api_key="test-openai-key"),
             processing=ProcessingConfig(),
             logging=LoggingConfig(),
         )
@@ -199,9 +252,20 @@ class TestLoadConfig:
                 "distance": "Cosine",
                 "recreate_collection": True,
             },
+            "llm": {
+                "provider": "mistral",
+            },
             "mistral": {
                 "api_key": "test-key",
                 "model_name": "mistral-large-latest",
+                "max_tokens": 1024,
+                "temperature": 0.7,
+                "top_k": 10,
+            },
+            "openai": {
+                "api_key": "test-openai-key",
+                "model_name": "gpt-4o",
+                "embedding_model": "text-embedding-3-large",
                 "max_tokens": 1024,
                 "temperature": 0.7,
                 "top_k": 10,

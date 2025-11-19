@@ -96,9 +96,20 @@ def test_config(temp_dir: Path) -> Config:
             "distance": "Cosine",
             "recreate_collection": False,
         },
+        llm={
+            "provider": "mistral",
+        },
         mistral={
             "api_key": "test-api-key",
             "model_name": "mistral-small-latest",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        openai={
+            "api_key": "test-api-key",
+            "model_name": "gpt-4o-mini",
+            "embedding_model": "text-embedding-3-small",
             "max_tokens": 512,
             "temperature": 0.3,
             "top_k": 5,

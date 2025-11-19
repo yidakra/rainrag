@@ -26,7 +26,7 @@ class EmbeddingConfig(BaseModel):
 
     provider: str = Field(
         default="local",
-        description="Embedding provider: 'local' for local model, 'mistral' for Mistral API"
+        description="Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API"
     )
     model_name: str = Field(default="intfloat/multilingual-e5-large")
     batch_size: int = Field(default=32)
@@ -57,6 +57,32 @@ class MistralConfig(BaseModel):
     max_tokens: int = Field(default=512)
     temperature: float = Field(default=0.3)
     top_k: int = Field(default=5, description="Number of documents to retrieve")
+
+
+class OpenAIConfig(BaseModel):
+    """Configuration for OpenAI API."""
+
+    api_key: str = Field(description="OpenAI API key")
+    model_name: str = Field(
+        default="gpt-4o-mini",
+        description="OpenAI model to use: gpt-4o, gpt-4o-mini, gpt-3.5-turbo, etc.",
+    )
+    embedding_model: str = Field(
+        default="text-embedding-3-small",
+        description="OpenAI embedding model: text-embedding-3-small, text-embedding-3-large, etc.",
+    )
+    max_tokens: int = Field(default=512)
+    temperature: float = Field(default=0.3)
+    top_k: int = Field(default=5, description="Number of documents to retrieve")
+
+
+class LLMConfig(BaseModel):
+    """Configuration for LLM provider selection."""
+
+    provider: str = Field(
+        default="mistral",
+        description="LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API"
+    )
 
 
 class ProcessingConfig(BaseModel):
@@ -97,7 +123,9 @@ class Config(BaseModel):
     paths: PathsConfig
     embedding: EmbeddingConfig
     qdrant: QdrantConfig
+    llm: LLMConfig
     mistral: MistralConfig
+    openai: OpenAIConfig
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
@@ -130,5 +158,12 @@ def load_config(config_path: str = "config.yaml") -> Config:
         if "mistral" not in config_data:
             config_data["mistral"] = {}
         config_data["mistral"]["api_key"] = mistral_api_key
+
+    # Override OpenAI API key from environment variable if set
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if openai_api_key:
+        if "openai" not in config_data:
+            config_data["openai"] = {}
+        config_data["openai"]["api_key"] = openai_api_key
 
     return Config(**config_data)
