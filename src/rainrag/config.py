@@ -147,6 +147,17 @@ class VideoConfig(BaseModel):
     )
 
 
+class MCPConfig(BaseModel):
+    """Configuration for MCP server."""
+
+    transport: str = Field(
+        default="stdio",
+        description="Transport protocol: 'stdio', 'sse', or 'streamable-http'",
+    )
+    host: str = Field(default="localhost", description="Host for HTTP-based transports")
+    port: int = Field(default=8000, description="Port for HTTP-based transports")
+
+
 class Config(BaseModel):
     """Main configuration model."""
 
@@ -161,6 +172,7 @@ class Config(BaseModel):
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
 
 
 def load_config(config_path: str = "config.yaml") -> Config:

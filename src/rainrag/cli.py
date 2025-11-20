@@ -384,6 +384,95 @@ def info(
         raise typer.Exit(code=1)
 
 
+@app.command()
+def mcp(
+    config: str = typer.Option(
+        "config.yaml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+    transport: str = typer.Option(
+        None,
+        "--transport",
+        "-t",
+        help="Transport protocol (stdio, sse, streamable-http). Defaults to config value.",
+    ),
+    host: str = typer.Option(
+        None,
+        "--host",
+        "-h",
+        help="Host for HTTP-based transports. Defaults to config value.",
+    ),
+    port: int = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port for HTTP-based transports. Defaults to config value.",
+    ),
+) -> None:
+    """
+    Run the MCP (Model Context Protocol) server.
+
+    This exposes the RainRAG system as an MCP server that can be used by
+    AI assistants like Claude Desktop, ChatGPT, and Cursor.
+
+    The server provides two main tools:
+    - query_rag: Full RAG pipeline (retrieve + generate answer)
+    - retrieve_documents: Retrieval only (no LLM generation)
+
+    Transport options:
+    - stdio: Standard input/output (for Claude Desktop, Cursor)
+    - streamable-http: HTTP server (for remote connections)
+    - sse: Server-Sent Events
+
+    Examples:
+        # Run with stdio transport (default for Claude Desktop)
+        rainrag mcp
+
+        # Run with HTTP transport on custom port
+        rainrag mcp --transport streamable-http --port 8080
+
+        # Run with specific config file
+        rainrag mcp --config custom-config.yaml
+    """
+    setup_logging(config)
+
+    try:
+        from rainrag.config import load_config
+        from rainrag.mcp_server import run_server
+
+        # Load config to get defaults
+        cfg = load_config(config)
+
+        # Use CLI args if provided, otherwise use config values
+        transport_to_use = transport or cfg.mcp.transport
+        host_to_use = host or cfg.mcp.host
+        port_to_use = port or cfg.mcp.port
+
+        typer.echo("🚀 Starting MCP server...")
+        typer.echo(f"   Transport: {transport_to_use}")
+        if transport_to_use != "stdio":
+            typer.echo(f"   Address: {host_to_use}:{port_to_use}")
+        typer.echo("")
+
+        # Run the MCP server (this will block)
+        run_server(
+            config_path=config,
+            transport=transport_to_use,
+            host=host_to_use,
+            port=port_to_use,
+        )
+
+    except KeyboardInterrupt:
+        typer.echo("\n\n⏹️  MCP server stopped")
+        raise typer.Exit(code=0)
+    except Exception as e:
+        logger.exception(f"MCP server failed: {e}")
+        typer.echo(f"❌ MCP server failed: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
 def main() -> None:
     """Main entry point."""
     app()

@@ -96,3 +96,13 @@ video:
     - ".vtt"
     - ".en.vtt"
     - ".ru.vtt"
+
+# MCP server configuration
+mcp:
+  # Transport protocol: "stdio" for local CLI tools (Claude Desktop, Cursor),
+  # "streamable-http" for HTTP-based connections, "sse" for Server-Sent Events
+  transport: "stdio"
+  # Host for HTTP-based transports (ignored for stdio)
+  host: "localhost"
+  # Port for HTTP-based transports (ignored for stdio)
+  port: 8000

@@ -13,6 +13,7 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 - **CLI Interface**: Easy-to-use command-line interface powered by Typer
 - **Vector Search**: Uses Qdrant for efficient similarity search
 - **Web UI**: Streamlit-based chat interface with FastAPI backend
+- **MCP Server**: Deploy as Model Context Protocol server for Claude Desktop, ChatGPT, and Cursor integration
 - **Video Playback**: Inline video player for retrieved content
 - **Subtitle Access**: Download and view VTT files directly in the UI
 - **Network Access**: Accessible from other devices on the same network with optional token authentication
@@ -379,6 +380,41 @@ Display configuration and collection statistics:
 ```bash
 rainrag info
 ```
+
+#### 7. Run MCP Server
+
+Deploy RainRAG as an MCP (Model Context Protocol) server for integration with AI assistants like Claude Desktop, ChatGPT, and Cursor:
+
+```bash
+# Run with default settings (stdio transport for local tools)
+rainrag mcp
+
+# Run with HTTP transport for remote connections
+rainrag mcp --transport streamable-http --port 8000
+```
+
+The MCP server exposes your RAG system as tools that AI assistants can use:
+- `query_rag`: Full RAG pipeline (retrieve + generate answer)
+- `retrieve_documents`: Retrieval only (no LLM generation)
+
+**Setup with Claude Desktop:**
+
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "rainrag": {
+      "command": "rainrag",
+      "args": ["mcp", "--config", "/absolute/path/to/config.yaml"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop and you can now query your video transcripts directly from Claude!
+
+**For detailed setup instructions** including Cursor and ChatGPT integration, see [docs/MCP_SETUP.md](docs/MCP_SETUP.md).
 
 ### Python API
 
