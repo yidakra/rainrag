@@ -152,4 +152,3 @@ Users reading the README will think:
 - "There's no way to use ChatGPT or Claude" ❌
 
 But the code actually supports all of these! Users with limited compute resources could use cheap API providers, but the docs don't tell them they can.
-

@@ -77,7 +77,7 @@ The RainRAG documentation has **significant gaps** between documented functional
 Supports 4 providers:
 1. **Mistral** - ✅ Documented in README
 2. **OpenAI** - ❌ NOT documented
-3. **Claude** - ❌ NOT documented  
+3. **Claude** - ❌ NOT documented
 4. **Gemini** - ❌ NOT documented
 
 #### In Documentation:
@@ -96,7 +96,7 @@ class ClaudeConfig(BaseModel):
         default="claude-3-5-sonnet-20240620",
         description="Claude model to use"
     )
-    
+
 class GeminiConfig(BaseModel):
     api_key: str = Field(default="", description="Google API key")
     model_name: str = Field(
@@ -133,7 +133,7 @@ class GeminiConfig(BaseModel):
 embedding:
   provider: str = Field(
     default="local",
-    description="'local' for local model, 'mistral' for Mistral API, 
+    description="'local' for local model, 'mistral' for Mistral API,
                  'openai' for OpenAI API, 'gemini' for Google Gemini API"
   )
 
@@ -286,7 +286,7 @@ llm:
 #### Issue #3: MODEL_CONFIGURATION.md is Outdated
 **Current content**: Only describes vLLM chat templates (mistral, gemma, chatml)
 
-**Should cover**: 
+**Should cover**:
 - API provider configuration
 - Model selection per provider
 - Embedding model options
@@ -443,7 +443,7 @@ config = load_config("config.yaml")
 engine = RAGQueryEngine(config)
 ```
 
-**Missing**: 
+**Missing**:
 - Examples for each provider
 - Error handling examples
 - Batching queries
@@ -768,4 +768,3 @@ The disconnect between "Powered by Mistral AI" in the README and the actual mult
 - [ ] PROVIDER_COMPARISON.md
 - [ ] PROVIDER_TROUBLESHOOTING.md
 - [ ] CLI_REFERENCE.md
-

@@ -129,11 +129,11 @@ def test_process_file_success(self):
 - ❌ **Mistral API embeddings** (config.embedding.provider == "mistral")
   - No tests for mistral_client.embeddings.create()
   - No error handling tests for Mistral API failures
-  
+
 - ❌ **OpenAI API embeddings** (config.embedding.provider == "openai")
   - No tests for openai_client.embeddings.create()
   - No error handling tests for OpenAI API failures
-  
+
 - ❌ **Gemini API embeddings** (config.embedding.provider == "gemini")
   - No tests for genai.embed_content()
   - No error handling tests for Gemini API failures
@@ -291,25 +291,25 @@ def embed_query(self, query):
 - ❌ /health endpoint comprehensive testing
   - No tests verifying all provider fields in response
   - No tests for various provider combinations
-  
+
 - ❌ /query endpoint with different providers
   - No tests for OpenAI, Claude, Gemini response handling
   - No tests for Mistral/OpenAI embedding provider paths
-  
+
 - ❌ Authentication/authorization testing
   - verify_auth_token() not tested
   - Bearer token validation not tested
-  
+
 - ❌ Error handling in query endpoint
   - Timeout scenarios
   - Invalid request formats
-  
+
 - ❌ Video serving endpoint (/video/{path})
   - Actually untested despite security tests
-  
+
 - ❌ VTT serving endpoint (/vtt/{path})
   - Actually untested despite security tests
-  
+
 - ❌ CORS configuration
 - ❌ Request size limits
 - ❌ Response time validation
@@ -353,7 +353,7 @@ def embed_query(self, query):
 
 **Where Implemented:**
 - `src/rainrag/config.py`: OpenAIConfig class with api_key, model_name, embedding_model
-- `src/rainrag/query.py`: 
+- `src/rainrag/query.py`:
   - Line 39, 52: OpenAI client initialization
   - Line 186-197: embed_query() with OpenAI embeddings
   - Line 343-357: generate_answer() with OpenAI chat completions
@@ -535,7 +535,7 @@ gemini = {...}                # Configured but NOT tested
 ### 5.1 CLI Module (cli.py)
 **Status:** ❌ NOT TESTED
 
-**Implementation:** 
+**Implementation:**
 - `src/rainrag/cli.py`: ~150 LOC
 - Commands: ingest, embed, index, query, serve
 - Uses typer framework
@@ -697,4 +697,3 @@ The RainRAG test suite demonstrates **excellent coverage for core data processin
 4. Document provider-specific behavior and error codes
 
 **Estimated Effort:** 60-80 hours of test development to reach 85%+ coverage.
-

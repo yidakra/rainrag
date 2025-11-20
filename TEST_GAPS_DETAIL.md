@@ -6,7 +6,7 @@
 
 #### Implementation Locations:
 - **Config:** `src/rainrag/config.py:62-77` (OpenAIConfig class)
-- **Query Module:** 
+- **Query Module:**
   - `src/rainrag/query.py:39, 52` (client initialization)
   - `src/rainrag/query.py:186-197` (embed_query with OpenAI)
   - `src/rainrag/query.py:343-357` (generate_answer with OpenAI)
@@ -481,4 +481,3 @@ class TestPipelineProviders:
 ## Total Estimated New Tests: 76-92 tests
 
 This would bring total from 121 to ~200+ tests and increase overall coverage to 80%+ with provider coverage at 85%+.
-

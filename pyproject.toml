@@ -38,6 +38,8 @@ black = "^23.11.0"
 ruff = "^0.1.6"
 mypy = "^1.7.0"
 types-pyyaml = "^6.0.12"
+pre-commit = "^4.4.0"
+bandit = "^1.9.1"
 
 [tool.poetry.scripts]
 rainrag = "rainrag.cli:app"
@@ -147,3 +149,7 @@ module = [
     "uvicorn.*",
 ]
 ignore_missing_imports = true
+
+[tool.bandit]
+exclude_dirs = ["tests/", "build/", "dist/", ".venv/"]
+skips = ["B101", "B601"]  # B101: assert_used (fine in tests), B601: paramiko (not used)

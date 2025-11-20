@@ -8,7 +8,7 @@ QUICK FACTS:
   Total Test Lines: 2,686 LOC
   Total Test Methods: 121 tests
   Overall Estimated Coverage: 70%
-  
+
 FILES GENERATED:
   1. /home/user/rainrag/TEST_COVERAGE_REPORT.md - Main comprehensive report
   2. /home/user/rainrag/TEST_GAPS_DETAIL.md - Detailed code locations and gaps
@@ -30,11 +30,11 @@ PARTIALLY TESTED:
   ⚠️ Embedding (test_embed.py) - 11 tests, ~65% coverage
      - Local provider well tested
      - API providers (OpenAI, Gemini, Mistral) completely untested
-  
+
   ⚠️ Query Engine (test_query.py) - 48 tests, ~60% coverage
      - vLLM well tested
      - Cloud providers (OpenAI, Claude, Gemini) completely untested
-  
+
   ⚠️ API (test_api.py) - 12 tests, ~60% coverage
      - Video serving tested
      - Query endpoint untested with cloud providers
@@ -54,13 +54,13 @@ OPENAI PROVIDER:
     - Config: src/rainrag/config.py:62-77
     - Query: src/rainrag/query.py:39,52,186-197,343-357
     - API: src/rainrag/api.py:246,252-253,267-268
-  
+
   Test Status: ❌ NOT TESTED
     - No embedding tests (openai_client.embeddings.create)
     - No LLM tests (openai_client.chat.completions.create)
     - No error handling tests
     - No integration tests
-  
+
   Risk Level: 🔴 HIGH - Production code completely untested
 
 CLAUDE PROVIDER:
@@ -68,13 +68,13 @@ CLAUDE PROVIDER:
     - Config: src/rainrag/config.py:79-90
     - Query: src/rainrag/query.py:40,58,359-383
     - API: src/rainrag/api.py:254-255
-  
+
   Test Status: ❌ NOT TESTED
     - No message.create() tests
     - No system message extraction tests
     - No message format conversion tests
     - No error handling tests
-  
+
   Risk Level: 🔴 HIGH - Production code completely untested
 
 GEMINI PROVIDER:
@@ -82,25 +82,25 @@ GEMINI PROVIDER:
     - Config: src/rainrag/config.py:92-108
     - Query: src/rainrag/query.py:41,64,199-211,385-422
     - API: src/rainrag/api.py:256-257,269-270
-  
+
   Test Status: ❌ NOT TESTED
     - No genai.embed_content() tests
     - No genai.GenerativeModel() tests
     - No message conversion tests
     - No error handling tests
-  
+
   Risk Level: 🔴 HIGH - Production code completely untested
 
 MISTRAL PROVIDER:
   Implementation:
     - Query: src/rainrag/query.py:157-168 (embeddings)
     - Config tested, but API not tested
-  
+
   Test Status: ⚠️ PARTIALLY TESTED
     - Configuration tested
     - mistral_client.embeddings.create() NOT tested
     - No error handling tests
-  
+
   Risk Level: 🟠 MEDIUM - Core embedding API untested
 
 ================================================================================
