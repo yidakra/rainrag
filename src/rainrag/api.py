@@ -251,6 +251,8 @@ async def health_check():
         llm_model = query_engine.config.mistral.model_name
     elif llm_provider == "openai":
         llm_model = query_engine.config.openai.model_name
+    elif llm_provider == "claude":
+        llm_model = query_engine.config.claude.model_name
     else:
         llm_model = "unknown"
 

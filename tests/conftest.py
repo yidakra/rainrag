@@ -114,6 +114,13 @@ def test_config(temp_dir: Path) -> Config:
             "temperature": 0.3,
             "top_k": 5,
         },
+        claude={
+            "api_key": "test-api-key",
+            "model_name": "claude-3-5-sonnet-20241022",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
         processing={
             "num_workers": 2,
             "max_file_size": 1048576,  # 1MB

@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from rainrag.config import (
+    ClaudeConfig,
     Config,
     EmbeddingConfig,
     LLMConfig,
@@ -152,6 +153,36 @@ class TestOpenAIConfig:
         assert config.api_key == "custom-key"
         assert config.model_name == "gpt-4o"
         assert config.embedding_model == "text-embedding-3-large"
+        assert config.max_tokens == 1024
+        assert config.temperature == 0.7
+        assert config.top_k == 10
+
+
+class TestClaudeConfig:
+    """Tests for ClaudeConfig model."""
+
+    def test_claude_config_defaults(self) -> None:
+        """Test default Claude configuration."""
+        config = ClaudeConfig()
+
+        assert config.api_key == ""
+        assert config.model_name == "claude-3-5-sonnet-20241022"
+        assert config.max_tokens == 512
+        assert config.temperature == 0.3
+        assert config.top_k == 5
+
+    def test_claude_config_custom(self) -> None:
+        """Test custom Claude configuration."""
+        config = ClaudeConfig(
+            api_key="custom-key",
+            model_name="claude-3-opus-20240229",
+            max_tokens=1024,
+            temperature=0.7,
+            top_k=10,
+        )
+
+        assert config.api_key == "custom-key"
+        assert config.model_name == "claude-3-opus-20240229"
         assert config.max_tokens == 1024
         assert config.temperature == 0.7
         assert config.top_k == 10

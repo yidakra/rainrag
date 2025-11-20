@@ -76,12 +76,25 @@ class OpenAIConfig(BaseModel):
     top_k: int = Field(default=5, description="Number of documents to retrieve")
 
 
+class ClaudeConfig(BaseModel):
+    """Configuration for Anthropic Claude API."""
+
+    api_key: str = Field(default="", description="Anthropic API key")
+    model_name: str = Field(
+        default="claude-3-5-sonnet-20241022",
+        description="Claude model to use: claude-3-5-sonnet-20241022, claude-3-opus-20240229, claude-3-haiku-20240307, etc.",
+    )
+    max_tokens: int = Field(default=512)
+    temperature: float = Field(default=0.3)
+    top_k: int = Field(default=5, description="Number of documents to retrieve")
+
+
 class LLMConfig(BaseModel):
     """Configuration for LLM provider selection."""
 
     provider: str = Field(
         default="mistral",
-        description="LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API"
+        description="LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API, 'claude' for Anthropic Claude API"
     )
 
 
@@ -126,6 +139,7 @@ class Config(BaseModel):
     llm: LLMConfig
     mistral: MistralConfig
     openai: OpenAIConfig
+    claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
@@ -165,5 +179,12 @@ def load_config(config_path: str = "config.yaml") -> Config:
         if "openai" not in config_data:
             config_data["openai"] = {}
         config_data["openai"]["api_key"] = openai_api_key
+
+    # Override Anthropic API key from environment variable if set
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    if anthropic_api_key:
+        if "claude" not in config_data:
+            config_data["claude"] = {}
+        config_data["claude"]["api_key"] = anthropic_api_key
 
     return Config(**config_data)

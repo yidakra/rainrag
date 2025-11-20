@@ -113,6 +113,8 @@ up: qdrant-start ## Start all services (Qdrant, API, Streamlit)
 		LLM_MODEL=$$(grep -A5 "^mistral:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
 	elif [ "$$LLM_PROVIDER" = "openai" ]; then \
 		LLM_MODEL=$$(grep -A5 "^openai:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
+	elif [ "$$LLM_PROVIDER" = "claude" ]; then \
+		LLM_MODEL=$$(grep -A5 "^claude:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
 	fi; \
 	EMBED_PROVIDER=$$(grep -A5 "^embedding:" config.yaml | grep "^  provider:" | awk '{print $$2}' | tr -d '"'); \
 	EMBED_MODEL=""; \
@@ -130,7 +132,7 @@ up: qdrant-start ## Start all services (Qdrant, API, Streamlit)
 	@echo "  - API:       /tmp/rainrag-api.log"
 	@echo "  - Streamlit: /tmp/rainrag-streamlit.log"
 	@echo ""
-	@echo "Note: Set MISTRAL_API_KEY and/or OPENAI_API_KEY in .env file"
+	@echo "Note: Set MISTRAL_API_KEY, OPENAI_API_KEY, and/or ANTHROPIC_API_KEY in .env file"
 
 down: qdrant-stop ## Stop all services
 	@pkill -f "[u]vicorn rainrag.api" || true

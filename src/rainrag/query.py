@@ -1,4 +1,4 @@
-"""Query interface for RainRAG using Mistral/OpenAI API and Qdrant."""
+"""Query interface for RainRAG using Mistral/OpenAI/Claude API and Qdrant."""
 
 from typing import List, Dict, Any
 from sentence_transformers import SentenceTransformer
@@ -6,6 +6,7 @@ from qdrant_client import QdrantClient
 from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
+from anthropic import Anthropic
 
 from rainrag.config import Config
 
@@ -35,6 +36,7 @@ class RAGQueryEngine:
         # Initialize clients based on what's needed for LLM and embeddings
         needs_mistral = config.llm.provider == "mistral" or config.embedding.provider == "mistral"
         needs_openai = config.llm.provider == "openai" or config.embedding.provider == "openai"
+        needs_claude = config.llm.provider == "claude"  # Claude only supports LLM, not embeddings
 
         # Initialize Mistral client if needed
         if needs_mistral:
@@ -50,11 +52,20 @@ class RAGQueryEngine:
         else:
             self.openai_client = None
 
+        # Initialize Claude client if needed
+        if needs_claude:
+            self.claude_client = Anthropic(api_key=config.claude.api_key)
+            logger.info("Initialized Claude client")
+        else:
+            self.claude_client = None
+
         # Log which provider is being used for LLM
         if config.llm.provider == "mistral":
             logger.info(f"Using Mistral for LLM: {config.mistral.model_name}")
         elif config.llm.provider == "openai":
             logger.info(f"Using OpenAI for LLM: {config.openai.model_name}")
+        elif config.llm.provider == "claude":
+            logger.info(f"Using Claude for LLM: {config.claude.model_name}")
         else:
             raise ValueError(f"Unknown LLM provider: {config.llm.provider}")
 
@@ -320,6 +331,32 @@ Question: {query}"""
                 logger.error(f"Failed to generate answer with OpenAI API: {e}")
                 raise RuntimeError(f"OpenAI API error: {e}") from e
 
+        elif self.config.llm.provider == "claude":
+            logger.info("Generating answer using Claude API...")
+            try:
+                # Extract system message and user messages for Claude API
+                system_message = ""
+                claude_messages = []
+                for msg in messages:
+                    if msg["role"] == "system":
+                        system_message = msg["content"]
+                    else:
+                        claude_messages.append(msg)
+
+                response = self.claude_client.messages.create(
+                    model=self.config.claude.model_name,
+                    max_tokens=self.config.claude.max_tokens,
+                    temperature=self.config.claude.temperature,
+                    system=system_message,
+                    messages=claude_messages,
+                )
+                answer = response.content[0].text.strip()
+                logger.info("Answer generated successfully")
+                return answer
+            except Exception as e:
+                logger.error(f"Failed to generate answer with Claude API: {e}")
+                raise RuntimeError(f"Claude API error: {e}") from e
+
         else:
             raise ValueError(f"Unknown LLM provider: {self.config.llm.provider}")
 
@@ -341,6 +378,8 @@ Question: {query}"""
                 top_k = self.config.mistral.top_k
             elif self.config.llm.provider == "openai":
                 top_k = self.config.openai.top_k
+            elif self.config.llm.provider == "claude":
+                top_k = self.config.claude.top_k
             else:
                 top_k = 5  # Default fallback
 
