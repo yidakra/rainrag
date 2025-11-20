@@ -243,7 +243,7 @@ async def health_check():
         raise HTTPException(status_code=503, detail="Query engine not initialized")
 
     qdrant_connected = query_engine.qdrant_client is not None
-    model_loaded = query_engine.embedding_model is not None or query_engine.config.embedding.provider in ["mistral", "openai"]
+    model_loaded = query_engine.embedding_model is not None or query_engine.config.embedding.provider in ["mistral", "openai", "gemini"]
 
     # Get LLM model based on provider
     llm_provider = query_engine.config.llm.provider
@@ -253,6 +253,8 @@ async def health_check():
         llm_model = query_engine.config.openai.model_name
     elif llm_provider == "claude":
         llm_model = query_engine.config.claude.model_name
+    elif llm_provider == "gemini":
+        llm_model = query_engine.config.gemini.model_name
     else:
         llm_model = "unknown"
 
@@ -264,6 +266,8 @@ async def health_check():
         embedding_model = "mistral-embed"
     elif embedding_provider == "openai":
         embedding_model = query_engine.config.openai.embedding_model
+    elif embedding_provider == "gemini":
+        embedding_model = query_engine.config.gemini.embedding_model
     else:
         embedding_model = "unknown"
 

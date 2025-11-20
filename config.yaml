@@ -11,7 +11,7 @@ paths:
 
 # Embedding model configuration
 embedding:
-  # Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API
+  # Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API, 'gemini' for Google Gemini API
   provider: "mistral"
   model_name: "intfloat/multilingual-e5-large"
   batch_size: 32
@@ -31,7 +31,7 @@ qdrant:
 
 # LLM provider configuration
 llm:
-  # LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API, 'claude' for Anthropic Claude API
+  # LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API, 'claude' for Anthropic Claude API, 'gemini' for Google Gemini API
   provider: "claude"
 
 # Mistral API configuration
@@ -55,6 +55,15 @@ openai:
 claude:
   api_key: ""  # Set your Anthropic API key here or via ANTHROPIC_API_KEY environment variable
   model_name: "claude-haiku-4-5-20251001"
+  max_tokens: 512
+  temperature: 0.3
+  top_k: 5  # Number of documents to retrieve for context
+
+# Google Gemini API configuration
+gemini:
+  api_key: ""  # Set your Google API key here or via GOOGLE_API_KEY environment variable
+  model_name: "gemini-1.5-flash"  # Options: gemini-1.5-flash, gemini-1.5-pro, gemini-2.0-flash-exp, etc.
+  embedding_model: "models/text-embedding-004"  # Options: models/text-embedding-004, models/embedding-001, etc.
   max_tokens: 512
   temperature: 0.3
   top_k: 5  # Number of documents to retrieve for context

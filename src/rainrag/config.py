@@ -26,7 +26,7 @@ class EmbeddingConfig(BaseModel):
 
     provider: str = Field(
         default="local",
-        description="Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API"
+        description="Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API, 'gemini' for Google Gemini API"
     )
     model_name: str = Field(default="intfloat/multilingual-e5-large")
     batch_size: int = Field(default=32)
@@ -89,12 +89,29 @@ class ClaudeConfig(BaseModel):
     top_k: int = Field(default=5, description="Number of documents to retrieve")
 
 
+class GeminiConfig(BaseModel):
+    """Configuration for Google Gemini API."""
+
+    api_key: str = Field(default="", description="Google API key")
+    model_name: str = Field(
+        default="gemini-1.5-flash",
+        description="Gemini model to use: gemini-1.5-flash, gemini-1.5-pro, gemini-2.0-flash-exp, etc.",
+    )
+    embedding_model: str = Field(
+        default="models/text-embedding-004",
+        description="Gemini embedding model: models/text-embedding-004, models/embedding-001, etc.",
+    )
+    max_tokens: int = Field(default=512)
+    temperature: float = Field(default=0.3)
+    top_k: int = Field(default=5, description="Number of documents to retrieve")
+
+
 class LLMConfig(BaseModel):
     """Configuration for LLM provider selection."""
 
     provider: str = Field(
         default="mistral",
-        description="LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API, 'claude' for Anthropic Claude API"
+        description="LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API, 'claude' for Anthropic Claude API, 'gemini' for Google Gemini API"
     )
 
 
@@ -140,6 +157,7 @@ class Config(BaseModel):
     mistral: MistralConfig
     openai: OpenAIConfig
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
+    gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
@@ -186,5 +204,12 @@ def load_config(config_path: str = "config.yaml") -> Config:
         if "claude" not in config_data:
             config_data["claude"] = {}
         config_data["claude"]["api_key"] = anthropic_api_key
+
+    # Override Google API key from environment variable if set
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    if google_api_key:
+        if "gemini" not in config_data:
+            config_data["gemini"] = {}
+        config_data["gemini"]["api_key"] = google_api_key
 
     return Config(**config_data)

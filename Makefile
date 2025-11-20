@@ -115,6 +115,8 @@ up: qdrant-start ## Start all services (Qdrant, API, Streamlit)
 		LLM_MODEL=$$(grep -A5 "^openai:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
 	elif [ "$$LLM_PROVIDER" = "claude" ]; then \
 		LLM_MODEL=$$(grep -A5 "^claude:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
+	elif [ "$$LLM_PROVIDER" = "gemini" ]; then \
+		LLM_MODEL=$$(grep -A5 "^gemini:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
 	fi; \
 	EMBED_PROVIDER=$$(grep -A5 "^embedding:" config.yaml | grep "^  provider:" | awk '{print $$2}' | tr -d '"'); \
 	EMBED_MODEL=""; \
@@ -124,6 +126,8 @@ up: qdrant-start ## Start all services (Qdrant, API, Streamlit)
 		EMBED_MODEL="mistral-embed"; \
 	elif [ "$$EMBED_PROVIDER" = "openai" ]; then \
 		EMBED_MODEL=$$(grep -A5 "^openai:" config.yaml | grep "^  embedding_model:" | awk '{print $$2}' | tr -d '"'); \
+	elif [ "$$EMBED_PROVIDER" = "gemini" ]; then \
+		EMBED_MODEL=$$(grep -A5 "^gemini:" config.yaml | grep "^  embedding_model:" | awk '{print $$2}' | tr -d '"'); \
 	fi; \
 	echo "  - LLM Provider:        $$LLM_PROVIDER ($$LLM_MODEL)"; \
 	echo "  - Embedding Provider:  $$EMBED_PROVIDER ($$EMBED_MODEL)"
@@ -132,7 +136,7 @@ up: qdrant-start ## Start all services (Qdrant, API, Streamlit)
 	@echo "  - API:       /tmp/rainrag-api.log"
 	@echo "  - Streamlit: /tmp/rainrag-streamlit.log"
 	@echo ""
-	@echo "Note: Set MISTRAL_API_KEY, OPENAI_API_KEY, and/or ANTHROPIC_API_KEY in .env file"
+	@echo "Note: Set MISTRAL_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, and/or GOOGLE_API_KEY in .env file"
 
 down: qdrant-stop ## Stop all services
 	@pkill -f "[u]vicorn rainrag.api" || true

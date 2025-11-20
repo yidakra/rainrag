@@ -10,6 +10,7 @@ from rainrag.config import (
     ClaudeConfig,
     Config,
     EmbeddingConfig,
+    GeminiConfig,
     LLMConfig,
     LoggingConfig,
     MistralConfig,
@@ -183,6 +184,39 @@ class TestClaudeConfig:
 
         assert config.api_key == "custom-key"
         assert config.model_name == "claude-3-opus-20240229"
+        assert config.max_tokens == 1024
+        assert config.temperature == 0.7
+        assert config.top_k == 10
+
+
+class TestGeminiConfig:
+    """Tests for GeminiConfig model."""
+
+    def test_gemini_config_defaults(self) -> None:
+        """Test default Gemini configuration."""
+        config = GeminiConfig()
+
+        assert config.api_key == ""
+        assert config.model_name == "gemini-1.5-flash"
+        assert config.embedding_model == "models/text-embedding-004"
+        assert config.max_tokens == 512
+        assert config.temperature == 0.3
+        assert config.top_k == 5
+
+    def test_gemini_config_custom(self) -> None:
+        """Test custom Gemini configuration."""
+        config = GeminiConfig(
+            api_key="custom-key",
+            model_name="gemini-1.5-pro",
+            embedding_model="models/embedding-001",
+            max_tokens=1024,
+            temperature=0.7,
+            top_k=10,
+        )
+
+        assert config.api_key == "custom-key"
+        assert config.model_name == "gemini-1.5-pro"
+        assert config.embedding_model == "models/embedding-001"
         assert config.max_tokens == 1024
         assert config.temperature == 0.7
         assert config.top_k == 10

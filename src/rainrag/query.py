@@ -1,4 +1,4 @@
-"""Query interface for RainRAG using Mistral/OpenAI/Claude API and Qdrant."""
+"""Query interface for RainRAG using Mistral/OpenAI/Claude/Gemini API and Qdrant."""
 
 from typing import List, Dict, Any
 from sentence_transformers import SentenceTransformer
@@ -7,6 +7,7 @@ from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
 from anthropic import Anthropic
+import google.generativeai as genai
 
 from rainrag.config import Config
 
@@ -37,6 +38,7 @@ class RAGQueryEngine:
         needs_mistral = config.llm.provider == "mistral" or config.embedding.provider == "mistral"
         needs_openai = config.llm.provider == "openai" or config.embedding.provider == "openai"
         needs_claude = config.llm.provider == "claude"  # Claude only supports LLM, not embeddings
+        needs_gemini = config.llm.provider == "gemini" or config.embedding.provider == "gemini"
 
         # Initialize Mistral client if needed
         if needs_mistral:
@@ -59,6 +61,11 @@ class RAGQueryEngine:
         else:
             self.claude_client = None
 
+        # Initialize Gemini client if needed
+        if needs_gemini:
+            genai.configure(api_key=config.gemini.api_key)
+            logger.info("Initialized Gemini client")
+
         # Log which provider is being used for LLM
         if config.llm.provider == "mistral":
             logger.info(f"Using Mistral for LLM: {config.mistral.model_name}")
@@ -66,6 +73,8 @@ class RAGQueryEngine:
             logger.info(f"Using OpenAI for LLM: {config.openai.model_name}")
         elif config.llm.provider == "claude":
             logger.info(f"Using Claude for LLM: {config.claude.model_name}")
+        elif config.llm.provider == "gemini":
+            logger.info(f"Using Gemini for LLM: {config.gemini.model_name}")
         else:
             raise ValueError(f"Unknown LLM provider: {config.llm.provider}")
 
@@ -106,6 +115,8 @@ class RAGQueryEngine:
             logger.info("Using Mistral API for embeddings (mistral-embed)")
         elif self.config.embedding.provider == "openai":
             logger.info(f"Using OpenAI API for embeddings ({self.config.openai.embedding_model})")
+        elif self.config.embedding.provider == "gemini":
+            logger.info(f"Using Gemini API for embeddings ({self.config.gemini.embedding_model})")
         else:
             raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
 
@@ -184,6 +195,20 @@ class RAGQueryEngine:
             except Exception as e:
                 logger.error(f"Failed to generate embeddings with OpenAI API: {e}")
                 raise RuntimeError(f"OpenAI embeddings API error: {e}") from e
+
+        elif self.config.embedding.provider == "gemini":
+            # Use Gemini API embeddings
+            logger.debug(f"Embedding query using Gemini API: {query[:100]}...")
+            try:
+                result = genai.embed_content(
+                    model=self.config.gemini.embedding_model,
+                    content=query,
+                    task_type="retrieval_query"
+                )
+                return result['embedding']
+            except Exception as e:
+                logger.error(f"Failed to generate embeddings with Gemini API: {e}")
+                raise RuntimeError(f"Gemini embeddings API error: {e}") from e
 
         else:
             raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
@@ -357,6 +382,45 @@ Question: {query}"""
                 logger.error(f"Failed to generate answer with Claude API: {e}")
                 raise RuntimeError(f"Claude API error: {e}") from e
 
+        elif self.config.llm.provider == "gemini":
+            logger.info("Generating answer using Gemini API...")
+            try:
+                # Convert messages to Gemini format
+                model = genai.GenerativeModel(self.config.gemini.model_name)
+
+                # Extract system message and build conversation
+                system_instruction = ""
+                conversation_parts = []
+                for msg in messages:
+                    if msg["role"] == "system":
+                        system_instruction = msg["content"]
+                    elif msg["role"] == "user":
+                        conversation_parts.append(msg["content"])
+                    elif msg["role"] == "assistant":
+                        # Gemini doesn't use explicit assistant messages in the same way
+                        # For now, we'll skip assistant messages or handle them differently
+                        pass
+
+                # Combine system instruction with user message
+                if system_instruction:
+                    prompt = f"{system_instruction}\n\n{conversation_parts[-1]}"
+                else:
+                    prompt = conversation_parts[-1]
+
+                response = model.generate_content(
+                    prompt,
+                    generation_config=genai.GenerationConfig(
+                        max_output_tokens=self.config.gemini.max_tokens,
+                        temperature=self.config.gemini.temperature,
+                    )
+                )
+                answer = response.text.strip()
+                logger.info("Answer generated successfully")
+                return answer
+            except Exception as e:
+                logger.error(f"Failed to generate answer with Gemini API: {e}")
+                raise RuntimeError(f"Gemini API error: {e}") from e
+
         else:
             raise ValueError(f"Unknown LLM provider: {self.config.llm.provider}")
 
@@ -380,6 +444,8 @@ Question: {query}"""
                 top_k = self.config.openai.top_k
             elif self.config.llm.provider == "claude":
                 top_k = self.config.claude.top_k
+            elif self.config.llm.provider == "gemini":
+                top_k = self.config.gemini.top_k
             else:
                 top_k = 5  # Default fallback
 
