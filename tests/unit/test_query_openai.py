@@ -101,16 +101,19 @@ def mock_qdrant_client():
     """Mock Qdrant client."""
     client = MagicMock()
 
-    # Mock search results
-    search_result = MagicMock()
-    search_result.id = "doc1"
-    search_result.score = 0.95
-    search_result.payload = {
+    # Mock query_points results (not search)
+    query_result = MagicMock()
+    point = MagicMock()
+    point.id = "doc1"
+    point.score = 0.95
+    point.payload = {
         "text": "Test document content",
         "language": "en",
-        "path": "/test/doc1.vtt"
+        "path": "/test/doc1.vtt",
+        "doc_id": "doc1"
     }
-    client.search.return_value = [search_result]
+    query_result.points = [point]
+    client.query_points.return_value = query_result
 
     return client
 
@@ -209,13 +212,12 @@ def test_generate_answer_openai_success(openai_config, mock_openai_client, mock_
             engine.initialize()
 
             # Generate answer
-            prompt = "Test prompt"
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": "What is AI?"}
             ]
 
-            answer = engine.generate_answer(prompt, messages)
+            answer = engine.generate_answer(messages)
 
             # Verify
             assert answer == "This is a test response from OpenAI."
@@ -239,7 +241,7 @@ def test_generate_answer_openai_different_model(openai_config, mock_openai_clien
             engine.initialize()
 
             messages = [{"role": "user", "content": "test"}]
-            engine.generate_answer("test", messages)
+            engine.generate_answer(messages)
 
             # Verify correct model was used
             call_args = mock_openai_client.chat.completions.create.call_args
@@ -257,7 +259,7 @@ def test_generate_answer_openai_custom_params(openai_config, mock_openai_client,
             engine.initialize()
 
             messages = [{"role": "user", "content": "test"}]
-            engine.generate_answer("test", messages)
+            engine.generate_answer(messages)
 
             # Verify parameters
             call_args = mock_openai_client.chat.completions.create.call_args
@@ -275,7 +277,7 @@ def test_generate_answer_openai_error(openai_config, mock_openai_client, mock_qd
             engine.initialize()
 
             with pytest.raises(RuntimeError) as exc_info:
-                engine.generate_answer("test", [{"role": "user", "content": "test"}])
+                engine.generate_answer([{"role": "user", "content": "test"}])
 
             assert "OpenAI API error" in str(exc_info.value)
 
@@ -292,7 +294,7 @@ def test_generate_answer_openai_empty_response(openai_config, mock_openai_client
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
-            answer = engine.generate_answer("test", [{"role": "user", "content": "test"}])
+            answer = engine.generate_answer([{"role": "user", "content": "test"}])
 
             # Should return empty string after strip
             assert answer == ""
@@ -346,17 +348,20 @@ def test_query_openai_russian_language(openai_config, mock_openai_client, mock_q
             # Verify result
             assert result["answer"] is not None
 
-            # Verify system prompt included Russian instruction
+            # Verify system prompt included Russian instruction (in Cyrillic)
             call_args = mock_openai_client.chat.completions.create.call_args
             messages = call_args[1]["messages"]
             system_message = next(m for m in messages if m["role"] == "system")
-            assert "Russian" in system_message["content"] or "russian" in system_message["content"]
+            # Check for Russian text (the word "русском" means "Russian" in Russian)
+            assert "русском" in system_message["content"]
 
 
 def test_query_openai_no_documents_retrieved(openai_config, mock_openai_client, mock_qdrant_client):
     """Test OpenAI query when no documents are retrieved."""
-    # Mock empty search results
-    mock_qdrant_client.search.return_value = []
+    # Mock empty query_points results
+    query_result = MagicMock()
+    query_result.points = []
+    mock_qdrant_client.query_points.return_value = query_result
 
     with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
         with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):

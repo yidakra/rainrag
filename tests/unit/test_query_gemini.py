@@ -60,6 +60,15 @@ def gemini_config():
             distance="Cosine"
         ),
         llm=LLMConfig(provider="gemini"),
+        mistral=MistralConfig(
+            api_key="test-mistral-key",
+            model_name="mistral-small-latest"
+        ),
+        openai=OpenAIConfig(
+            api_key="test-openai-key",
+            model_name="gpt-4o-mini",
+            embedding_model="text-embedding-3-small"
+        ),
         gemini=GeminiConfig(
             api_key="test-gemini-key",
             model_name="gemini-2.5-flash",
@@ -92,16 +101,19 @@ def mock_qdrant_client():
     """Mock Qdrant client."""
     client = MagicMock()
 
-    # Mock search results
-    search_result = MagicMock()
-    search_result.id = "doc1"
-    search_result.score = 0.95
-    search_result.payload = {
+    # Mock query_points results (not search)
+    query_result = MagicMock()
+    point = MagicMock()
+    point.id = "doc1"
+    point.score = 0.95
+    point.payload = {
         "text": "Test document content about AI.",
         "language": "en",
-        "path": "/test/doc1.vtt"
+        "path": "/test/doc1.vtt",
+        "doc_id": "doc1"
     }
-    client.search.return_value = [search_result]
+    query_result.points = [point]
+    client.query_points.return_value = query_result
 
     return client
 
@@ -212,7 +224,7 @@ def test_generate_answer_gemini_success(gemini_config, mock_gemini_model, mock_q
                 {"role": "user", "content": "What is AI?"}
             ]
 
-            answer = engine.generate_answer("test", messages)
+            answer = engine.generate_answer(messages)
 
             # Verify
             assert answer == "This is a test response from Gemini."
@@ -238,7 +250,7 @@ def test_generate_answer_gemini_system_message_handling(gemini_config, mock_gemi
                 {"role": "user", "content": "Explain neural networks."}
             ]
 
-            engine.generate_answer("test", messages)
+            engine.generate_answer(messages)
 
             # Verify system message was combined with user prompt
             call_args = mock_gemini_model.generate_content.call_args
@@ -263,7 +275,7 @@ def test_generate_answer_gemini_no_system_message(gemini_config, mock_gemini_mod
                 {"role": "user", "content": "What is AI?"}
             ]
 
-            engine.generate_answer("test", messages)
+            engine.generate_answer(messages)
 
             # Verify only user message is in prompt
             call_args = mock_gemini_model.generate_content.call_args
@@ -287,7 +299,7 @@ def test_generate_answer_gemini_config_params(gemini_config, mock_gemini_model, 
             engine.initialize()
 
             messages = [{"role": "user", "content": "test"}]
-            engine.generate_answer("test", messages)
+            engine.generate_answer(messages)
 
             # Verify GenerationConfig was created with correct params
             mock_genai.GenerationConfig.assert_called_with(
@@ -310,7 +322,7 @@ def test_generate_answer_gemini_different_model(gemini_config, mock_gemini_model
             engine.initialize()
 
             messages = [{"role": "user", "content": "test"}]
-            engine.generate_answer("test", messages)
+            engine.generate_answer(messages)
 
             # Verify correct model was used
             mock_genai.GenerativeModel.assert_called_with("gemini-2.5-pro")
@@ -329,7 +341,7 @@ def test_generate_answer_gemini_error(gemini_config, mock_gemini_model, mock_qdr
             engine.initialize()
 
             with pytest.raises(RuntimeError) as exc_info:
-                engine.generate_answer("test", [{"role": "user", "content": "test"}])
+                engine.generate_answer([{"role": "user", "content": "test"}])
 
             assert "Gemini API error" in str(exc_info.value)
 
@@ -349,7 +361,7 @@ def test_generate_answer_gemini_empty_response(gemini_config, mock_gemini_model,
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
 
-            answer = engine.generate_answer("test", [{"role": "user", "content": "test"}])
+            answer = engine.generate_answer([{"role": "user", "content": "test"}])
 
             # Should return empty string after strip
             assert answer == ""
@@ -413,18 +425,22 @@ def test_query_gemini_russian_language(gemini_config, mock_gemini_model, mock_qd
             # Verify result
             assert result["answer"] is not None
 
-            # Verify system prompt included Russian instruction
+            # Verify system prompt included Russian instruction (in Cyrillic)
             call_args = mock_gemini_model.generate_content.call_args
             prompt = call_args[0][0]
-            assert "Russian" in prompt or "russian" in prompt.lower()
+            # Check for Russian text (the word "русском" means "Russian" in Russian)
+            assert "русском" in prompt
 
 
 def test_query_gemini_no_documents_retrieved(gemini_config, mock_gemini_model, mock_qdrant_client):
     """Test Gemini query when no documents are retrieved."""
+    # Mock empty query_points results
+    query_result = MagicMock()
+    query_result.points = []
+    mock_qdrant_client.query_points.return_value = query_result
+
     with patch('src.rainrag.query.genai') as mock_genai:
         with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
-            # Mock empty search results
-            mock_qdrant_client.search.return_value = []
 
             mock_genai.GenerativeModel.return_value = mock_gemini_model
             mock_genai.GenerationConfig = MagicMock()

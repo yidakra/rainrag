@@ -60,6 +60,15 @@ def claude_config():
             distance="Cosine"
         ),
         llm=LLMConfig(provider="claude"),
+        mistral=MistralConfig(
+            api_key="test-mistral-key",
+            model_name="mistral-small-latest"
+        ),
+        openai=OpenAIConfig(
+            api_key="test-openai-key",
+            model_name="gpt-4o-mini",
+            embedding_model="text-embedding-3-small"
+        ),
         claude=ClaudeConfig(
             api_key="test-claude-key",
             model_name="claude-haiku-4-5-20251001",
@@ -91,16 +100,19 @@ def mock_qdrant_client():
     """Mock Qdrant client."""
     client = MagicMock()
 
-    # Mock search results
-    search_result = MagicMock()
-    search_result.id = "doc1"
-    search_result.score = 0.95
-    search_result.payload = {
+    # Mock query_points results (not search)
+    query_result = MagicMock()
+    point = MagicMock()
+    point.id = "doc1"
+    point.score = 0.95
+    point.payload = {
         "text": "Test document content about AI and machine learning.",
         "language": "en",
-        "path": "/test/doc1.vtt"
+        "path": "/test/doc1.vtt",
+        "doc_id": "doc1"
     }
-    client.search.return_value = [search_result]
+    query_result.points = [point]
+    client.query_points.return_value = query_result
 
     return client
 
@@ -133,7 +145,7 @@ def test_generate_answer_claude_success(claude_config, mock_claude_client, mock_
                 {"role": "user", "content": "What is AI?"}
             ]
 
-            answer = engine.generate_answer(prompt, messages)
+            answer = engine.generate_answer(messages)
 
             # Verify
             assert answer == "This is a test response from Claude."
@@ -160,7 +172,7 @@ def test_generate_answer_claude_system_message_extraction(claude_config, mock_cl
                 {"role": "user", "content": "Tell me more."}
             ]
 
-            engine.generate_answer("test", messages)
+            engine.generate_answer(messages)
 
             # Verify system message was extracted
             call_args = mock_claude_client.messages.create.call_args
@@ -184,7 +196,7 @@ def test_generate_answer_claude_no_system_message(claude_config, mock_claude_cli
                 {"role": "user", "content": "What is AI?"}
             ]
 
-            engine.generate_answer("test", messages)
+            engine.generate_answer(messages)
 
             # Verify system parameter is empty string
             call_args = mock_claude_client.messages.create.call_args
@@ -201,7 +213,7 @@ def test_generate_answer_claude_different_model(claude_config, mock_claude_clien
             engine.initialize()
 
             messages = [{"role": "user", "content": "test"}]
-            engine.generate_answer("test", messages)
+            engine.generate_answer(messages)
 
             # Verify correct model was used
             call_args = mock_claude_client.messages.create.call_args
@@ -219,7 +231,7 @@ def test_generate_answer_claude_custom_params(claude_config, mock_claude_client,
             engine.initialize()
 
             messages = [{"role": "user", "content": "test"}]
-            engine.generate_answer("test", messages)
+            engine.generate_answer(messages)
 
             # Verify parameters
             call_args = mock_claude_client.messages.create.call_args
@@ -237,7 +249,7 @@ def test_generate_answer_claude_error(claude_config, mock_claude_client, mock_qd
             engine.initialize()
 
             with pytest.raises(RuntimeError) as exc_info:
-                engine.generate_answer("test", [{"role": "user", "content": "test"}])
+                engine.generate_answer([{"role": "user", "content": "test"}])
 
             assert "Claude API error" in str(exc_info.value)
 
@@ -252,7 +264,7 @@ def test_generate_answer_claude_rate_limit(claude_config, mock_claude_client, mo
             engine.initialize()
 
             with pytest.raises(RuntimeError) as exc_info:
-                engine.generate_answer("test", [{"role": "user", "content": "test"}])
+                engine.generate_answer([{"role": "user", "content": "test"}])
 
             assert "Rate limit exceeded" in str(exc_info.value)
 
@@ -269,7 +281,7 @@ def test_generate_answer_claude_empty_response(claude_config, mock_claude_client
             engine = RAGQueryEngine(claude_config)
             engine.initialize()
 
-            answer = engine.generate_answer("test", [{"role": "user", "content": "test"}])
+            answer = engine.generate_answer([{"role": "user", "content": "test"}])
 
             # Should return empty string after strip
             assert answer == ""
@@ -322,27 +334,32 @@ def test_query_claude_russian_language(claude_config, mock_claude_client, mock_q
             # Verify result
             assert result["answer"] is not None
 
-            # Verify system prompt included Russian instruction
+            # Verify system prompt included Russian instruction (in Cyrillic)
             call_args = mock_claude_client.messages.create.call_args
             system_message = call_args[1]["system"]
-            assert "Russian" in system_message or "russian" in system_message.lower()
+            # Check for Russian text (the word "русском" means "Russian" in Russian)
+            assert "русском" in system_message
 
 
 def test_query_claude_with_context(claude_config, mock_claude_client, mock_qdrant_client, mock_sentence_transformer):
     """Test Claude query with retrieved context documents."""
-    # Mock multiple search results
-    results = []
+    # Mock multiple query_points results
+    points = []
     for i in range(3):
-        result = MagicMock()
-        result.id = f"doc{i}"
-        result.score = 0.9 - (i * 0.1)
-        result.payload = {
+        point = MagicMock()
+        point.id = f"doc{i}"
+        point.score = 0.9 - (i * 0.1)
+        point.payload = {
             "text": f"Document {i} content about machine learning.",
             "language": "en",
-            "path": f"/test/doc{i}.vtt"
+            "path": f"/test/doc{i}.vtt",
+            "doc_id": f"doc{i}"
         }
-        results.append(result)
-    mock_qdrant_client.search.return_value = results
+        points.append(point)
+
+    query_result = MagicMock()
+    query_result.points = points
+    mock_qdrant_client.query_points.return_value = query_result
 
     with patch('src.rainrag.query.Anthropic', return_value=mock_claude_client):
         with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
@@ -368,8 +385,10 @@ def test_query_claude_with_context(claude_config, mock_claude_client, mock_qdran
 
 def test_query_claude_no_documents_retrieved(claude_config, mock_claude_client, mock_qdrant_client, mock_sentence_transformer):
     """Test Claude query when no documents are retrieved."""
-    # Mock empty search results
-    mock_qdrant_client.search.return_value = []
+    # Mock empty query_points results
+    query_result = MagicMock()
+    query_result.points = []
+    mock_qdrant_client.query_points.return_value = query_result
 
     with patch('src.rainrag.query.Anthropic', return_value=mock_claude_client):
         with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
