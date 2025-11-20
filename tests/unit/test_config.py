@@ -293,8 +293,18 @@ class TestConfig:
 class TestLoadConfig:
     """Tests for load_config function."""
 
-    def test_load_config_from_file(self) -> None:
+    def test_load_config_from_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test loading configuration from YAML file."""
+        # Mock load_dotenv to prevent loading from .env file
+        import rainrag.config
+        monkeypatch.setattr(rainrag.config, "load_dotenv", lambda: None)
+
+        # Clear environment variables that would override config values
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
         config_data = {
             "paths": {
                 "archive_root": "/test/archive",

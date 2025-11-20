@@ -265,7 +265,7 @@ def ask(
     This command will:
     1. Embed your question using the same model as documents
     2. Search Qdrant for the most relevant transcript chunks
-    3. Generate an answer using the Mistral model via vLLM
+    3. Generate an answer using the configured LLM provider (Mistral/OpenAI/Claude/Gemini)
 
     Example:
         rainrag ask "О чём говорили в выпуске про энергетику?"
@@ -329,8 +329,10 @@ def info(
         typer.echo(f"  Embeddings cache:  {cfg.paths.embeddings_cache}")
 
         typer.echo(f"\nEmbedding:")
+        typer.echo(f"  Provider:          {cfg.embedding.provider}")
         typer.echo(f"  Model:             {cfg.embedding.model_name}")
-        typer.echo(f"  Device:            {cfg.embedding.device}")
+        if cfg.embedding.provider == "local":
+            typer.echo(f"  Device:            {cfg.embedding.device}")
         typer.echo(f"  Batch size:        {cfg.embedding.batch_size}")
 
         typer.echo(f"\nQdrant:")
@@ -339,12 +341,29 @@ def info(
         typer.echo(f"  Vector size:       {cfg.qdrant.vector_size}")
         typer.echo(f"  Distance metric:   {cfg.qdrant.distance}")
 
-        typer.echo(f"\nvLLM:")
-        typer.echo(f"  Host:              {cfg.vllm.host}:{cfg.vllm.port}")
-        typer.echo(f"  Model:             {cfg.vllm.model_name}")
-        typer.echo(f"  Max tokens:        {cfg.vllm.max_tokens}")
-        typer.echo(f"  Temperature:       {cfg.vllm.temperature}")
-        typer.echo(f"  Top-k docs:        {cfg.vllm.top_k}")
+        typer.echo(f"\nLLM Provider:")
+        typer.echo(f"  Provider:          {cfg.llm.provider}")
+
+        if cfg.llm.provider == "mistral":
+            typer.echo(f"  Model:             {cfg.mistral.model_name}")
+            typer.echo(f"  Max tokens:        {cfg.mistral.max_tokens}")
+            typer.echo(f"  Temperature:       {cfg.mistral.temperature}")
+            typer.echo(f"  Top-k docs:        {cfg.mistral.top_k}")
+        elif cfg.llm.provider == "openai":
+            typer.echo(f"  Model:             {cfg.openai.model_name}")
+            typer.echo(f"  Max tokens:        {cfg.openai.max_tokens}")
+            typer.echo(f"  Temperature:       {cfg.openai.temperature}")
+            typer.echo(f"  Top-k docs:        {cfg.openai.top_k}")
+        elif cfg.llm.provider == "claude":
+            typer.echo(f"  Model:             {cfg.claude.model_name}")
+            typer.echo(f"  Max tokens:        {cfg.claude.max_tokens}")
+            typer.echo(f"  Temperature:       {cfg.claude.temperature}")
+            typer.echo(f"  Top-k docs:        {cfg.claude.top_k}")
+        elif cfg.llm.provider == "gemini":
+            typer.echo(f"  Model:             {cfg.gemini.model_name}")
+            typer.echo(f"  Max tokens:        {cfg.gemini.max_tokens}")
+            typer.echo(f"  Temperature:       {cfg.gemini.temperature}")
+            typer.echo(f"  Top-k docs:        {cfg.gemini.top_k}")
 
         # Try to get collection info
         try:
