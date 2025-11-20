@@ -2,13 +2,11 @@
 
 import json
 from pathlib import Path
-from typing import List, Optional
 
 import numpy as np
 import torch
 from loguru import logger
 from sentence_transformers import SentenceTransformer
-from tqdm import tqdm
 
 from rainrag.config import Config
 from rainrag.ingest import Document
@@ -30,9 +28,7 @@ class EmbeddingCache:
         self.embeddings_file = self.cache_dir / "embeddings.npy"
         self.metadata_file = self.cache_dir / "metadata.jsonl"
 
-    def save(
-        self, embeddings: np.ndarray, documents: List[Document]
-    ) -> None:
+    def save(self, embeddings: np.ndarray, documents: list[Document]) -> None:
         """
         Save embeddings and metadata to cache.
 
@@ -54,7 +50,7 @@ class EmbeddingCache:
 
         logger.info(f"Metadata saved to {self.metadata_file}")
 
-    def load(self) -> tuple[Optional[np.ndarray], Optional[List[Document]]]:
+    def load(self) -> tuple[np.ndarray | None, list[Document] | None]:
         """
         Load embeddings and metadata from cache.
 
@@ -73,7 +69,7 @@ class EmbeddingCache:
 
         # Load metadata
         documents = []
-        with open(self.metadata_file, "r", encoding="utf-8") as f:
+        with open(self.metadata_file, encoding="utf-8") as f:
             for line in f:
                 doc_dict = json.loads(line)
                 documents.append(Document(**doc_dict))
@@ -104,7 +100,7 @@ class Embedder:
         """
         self.config = config
         self.cache = EmbeddingCache(config.paths.embeddings_cache)
-        self.model: Optional[SentenceTransformer] = None
+        self.model: SentenceTransformer | None = None
 
     def load_model(self) -> None:
         """Load the sentence-transformers model."""
@@ -136,7 +132,7 @@ class Embedder:
 
         logger.info(f"Model loaded on device: {device}")
 
-    def load_documents(self, docs_path: str) -> List[Document]:
+    def load_documents(self, docs_path: str) -> list[Document]:
         """
         Load documents from JSONL file.
 
@@ -154,7 +150,7 @@ class Embedder:
         logger.info(f"Loading documents from {docs_path}")
 
         documents = []
-        with open(docs_file, "r", encoding="utf-8") as f:
+        with open(docs_file, encoding="utf-8") as f:
             for line in f:
                 doc_dict = json.loads(line)
                 documents.append(Document(**doc_dict))
@@ -163,7 +159,7 @@ class Embedder:
         return documents
 
     def generate_embeddings(
-        self, documents: List[Document], show_progress: bool = True
+        self, documents: list[Document], show_progress: bool = True
     ) -> np.ndarray:
         """
         Generate embeddings for a list of documents.
@@ -198,7 +194,7 @@ class Embedder:
 
         return embeddings
 
-    def embed(self, force_regenerate: bool = False) -> tuple[np.ndarray, List[Document]]:
+    def embed(self, force_regenerate: bool = False) -> tuple[np.ndarray, list[Document]]:
         """
         Run the embedding pipeline.
 
@@ -239,7 +235,7 @@ class Embedder:
 
 def run_embedding(
     config_path: str = "config.yaml", force_regenerate: bool = False
-) -> tuple[np.ndarray, List[Document]]:
+) -> tuple[np.ndarray, list[Document]]:
     """
     Run the embedding generation pipeline.
 

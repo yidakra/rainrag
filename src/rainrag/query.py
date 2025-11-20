@@ -1,13 +1,14 @@
 """Query interface for RainRAG using Mistral/OpenAI/Claude/Gemini API and Qdrant."""
 
-from typing import List, Dict, Any
-from sentence_transformers import SentenceTransformer
-from qdrant_client import QdrantClient
+from typing import Any
+
+import google.generativeai as genai
+from anthropic import Anthropic
 from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
-from anthropic import Anthropic
-import google.generativeai as genai
+from qdrant_client import QdrantClient
+from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
 
@@ -121,9 +122,7 @@ class RAGQueryEngine:
             raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
 
         # Connect to Qdrant
-        logger.info(
-            f"Connecting to Qdrant at {self.config.qdrant.host}:{self.config.qdrant.port}"
-        )
+        logger.info(f"Connecting to Qdrant at {self.config.qdrant.host}:{self.config.qdrant.port}")
         # Disable version check to avoid warnings when client/server versions differ slightly
         # The HTTP API is stable and compatible across minor versions
         self.qdrant_client = QdrantClient(
@@ -137,14 +136,16 @@ class RAGQueryEngine:
         # Test connection
         try:
             collections = self.qdrant_client.get_collections()
-            logger.info(f"Connected to Qdrant. Available collections: {len(collections.collections)}")
+            logger.info(
+                f"Connected to Qdrant. Available collections: {len(collections.collections)}"
+            )
         except Exception as e:
             logger.error(f"Failed to connect to Qdrant: {e}")
             raise
 
         logger.info("Query engine initialized successfully")
 
-    def embed_query(self, query: str) -> List[float]:
+    def embed_query(self, query: str) -> list[float]:
         """
         Embed the query text using configured provider.
 
@@ -159,8 +160,7 @@ class RAGQueryEngine:
             logger.debug(f"Embedding query using Mistral API: {query[:100]}...")
             try:
                 response = self.mistral_client.embeddings.create(
-                    model="mistral-embed",
-                    inputs=[query]
+                    model="mistral-embed", inputs=[query]
                 )
                 return response.data[0].embedding
             except Exception as e:
@@ -188,8 +188,7 @@ class RAGQueryEngine:
             logger.debug(f"Embedding query using OpenAI API: {query[:100]}...")
             try:
                 response = self.openai_client.embeddings.create(
-                    model=self.config.openai.embedding_model,
-                    input=query
+                    model=self.config.openai.embedding_model, input=query
                 )
                 return response.data[0].embedding
             except Exception as e:
@@ -203,9 +202,9 @@ class RAGQueryEngine:
                 result = genai.embed_content(
                     model=self.config.gemini.embedding_model,
                     content=query,
-                    task_type="retrieval_query"
+                    task_type="retrieval_query",
                 )
-                return result['embedding']
+                return result["embedding"]
             except Exception as e:
                 logger.error(f"Failed to generate embeddings with Gemini API: {e}")
                 raise RuntimeError(f"Gemini embeddings API error: {e}") from e
@@ -213,7 +212,7 @@ class RAGQueryEngine:
         else:
             raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
 
-    def retrieve_documents(self, query_vector: List[float], top_k: int) -> List[Dict[str, Any]]:
+    def retrieve_documents(self, query_vector: list[float], top_k: int) -> list[dict[str, Any]]:
         """
         Retrieve the most relevant documents from Qdrant.
 
@@ -256,7 +255,9 @@ class RAGQueryEngine:
             logger.error(f"Failed to retrieve documents: {e}")
             raise
 
-    def build_prompt(self, query: str, documents: List[Dict[str, Any]], language: str = "en") -> List[Dict[str, str]]:
+    def build_prompt(
+        self, query: str, documents: list[dict[str, Any]], language: str = "en"
+    ) -> list[dict[str, str]]:
         """
         Build the messages for the chat LLM with retrieved context.
 
@@ -308,10 +309,10 @@ Question: {query}"""
         # Return messages in Mistral API format
         return [
             {"role": "system", "content": system_message},
-            {"role": "user", "content": user_message}
+            {"role": "user", "content": user_message},
         ]
 
-    def generate_answer(self, messages: List[Dict[str, str]]) -> str:
+    def generate_answer(self, messages: list[dict[str, str]]) -> str:
         """
         Generate an answer using configured LLM provider.
 
@@ -412,7 +413,7 @@ Question: {query}"""
                     generation_config=genai.GenerationConfig(
                         max_output_tokens=self.config.gemini.max_tokens,
                         temperature=self.config.gemini.temperature,
-                    )
+                    ),
                 )
                 answer = response.text.strip()
                 logger.info("Answer generated successfully")
@@ -424,7 +425,9 @@ Question: {query}"""
         else:
             raise ValueError(f"Unknown LLM provider: {self.config.llm.provider}")
 
-    def query(self, question: str, top_k: int | None = None, language: str = "en") -> Dict[str, Any]:
+    def query(
+        self, question: str, top_k: int | None = None, language: str = "en"
+    ) -> dict[str, Any]:
         """
         Execute the complete query pipeline.
 
@@ -471,7 +474,7 @@ Question: {query}"""
         }
 
 
-def run_query(config_path: str, question: str, top_k: int | None = None) -> Dict[str, Any]:
+def run_query(config_path: str, question: str, top_k: int | None = None) -> dict[str, Any]:
     """
     Run a query against the RAG system.
 

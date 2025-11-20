@@ -105,7 +105,7 @@ class TestMistralConfig:
 
         assert config.api_key == "test-key"
         assert config.model_name == "mistral-small-latest"
-        assert config.max_tokens == 512
+        assert config.max_tokens == 2048
         assert config.temperature == 0.3
         assert config.top_k == 5
 
@@ -136,7 +136,7 @@ class TestOpenAIConfig:
         assert config.api_key == "test-key"
         assert config.model_name == "gpt-4o-mini"
         assert config.embedding_model == "text-embedding-3-small"
-        assert config.max_tokens == 512
+        assert config.max_tokens == 2048
         assert config.temperature == 0.3
         assert config.top_k == 5
 
@@ -168,7 +168,7 @@ class TestClaudeConfig:
 
         assert config.api_key == ""
         assert config.model_name == "claude-3-5-sonnet-20240620"
-        assert config.max_tokens == 512
+        assert config.max_tokens == 2048
         assert config.temperature == 0.3
         assert config.top_k == 5
 
@@ -199,7 +199,7 @@ class TestGeminiConfig:
         assert config.api_key == ""
         assert config.model_name == "gemini-1.5-flash"
         assert config.embedding_model == "models/text-embedding-004"
-        assert config.max_tokens == 512
+        assert config.max_tokens == 2048
         assert config.temperature == 0.3
         assert config.top_k == 5
 
@@ -293,8 +293,19 @@ class TestConfig:
 class TestLoadConfig:
     """Tests for load_config function."""
 
-    def test_load_config_from_file(self) -> None:
+    def test_load_config_from_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test loading configuration from YAML file."""
+        # Mock load_dotenv to prevent loading from .env file
+        import rainrag.config
+
+        monkeypatch.setattr(rainrag.config, "load_dotenv", lambda: None)
+
+        # Clear environment variables that would override config values
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
         config_data = {
             "paths": {
                 "archive_root": "/test/archive",

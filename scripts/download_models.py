@@ -9,6 +9,7 @@ Run this once when you have internet access.
 import sys
 from pathlib import Path
 
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -40,7 +41,7 @@ def download_embedding_model(model_name: str, device: str = "cpu") -> bool:
 
         logger.success(f"✓ Successfully downloaded and cached: {model_name}")
         logger.info(f"  Model dimension: {model.get_sentence_embedding_dimension()}")
-        logger.info(f"  Cached location: ~/.cache/huggingface/hub/")
+        logger.info("  Cached location: ~/.cache/huggingface/hub/")
 
         return True
 

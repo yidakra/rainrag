@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
 import pytest
-from qdrant_client.http import models
 
 from rainrag.config import Config
 from rainrag.index import QdrantIndexer
@@ -39,6 +38,7 @@ class TestQdrantIndexer:
         mock_client_class.assert_called_once_with(
             host=test_config.qdrant.host,
             port=test_config.qdrant.port,
+            prefer_grpc=False,
         )
         mock_client.get_collections.assert_called_once()
 
@@ -75,9 +75,7 @@ class TestQdrantIndexer:
         assert call_args[1]["collection_name"] == test_config.qdrant.collection_name
 
     @patch("rainrag.index.QdrantClient")
-    def test_create_collection_exists(
-        self, mock_client_class: Mock, test_config: Config
-    ) -> None:
+    def test_create_collection_exists(self, mock_client_class: Mock, test_config: Config) -> None:
         """Test when collection already exists."""
         # Setup mock
         mock_client = MagicMock()
@@ -97,9 +95,7 @@ class TestQdrantIndexer:
         mock_client.delete_collection.assert_not_called()
 
     @patch("rainrag.index.QdrantClient")
-    def test_create_collection_recreate(
-        self, mock_client_class: Mock, test_config: Config
-    ) -> None:
+    def test_create_collection_recreate(self, mock_client_class: Mock, test_config: Config) -> None:
         """Test recreating an existing collection."""
         # Setup mock
         mock_client = MagicMock()
@@ -115,9 +111,7 @@ class TestQdrantIndexer:
         indexer.create_collection(recreate=True)
 
         # Should delete and create collection
-        mock_client.delete_collection.assert_called_once_with(
-            test_config.qdrant.collection_name
-        )
+        mock_client.delete_collection.assert_called_once_with(test_config.qdrant.collection_name)
         mock_client.create_collection.assert_called_once()
 
     @patch("rainrag.index.QdrantClient")
@@ -195,9 +189,7 @@ class TestQdrantIndexer:
         assert "language" in point.payload
 
     @patch("rainrag.index.QdrantClient")
-    def test_get_collection_info(
-        self, mock_client_class: Mock, test_config: Config
-    ) -> None:
+    def test_get_collection_info(self, mock_client_class: Mock, test_config: Config) -> None:
         """Test getting collection info."""
         # Setup mock
         mock_client = MagicMock()
@@ -218,9 +210,7 @@ class TestQdrantIndexer:
         assert stats["status"] == "green"
 
     @patch("rainrag.index.QdrantClient")
-    def test_get_collection_info_error(
-        self, mock_client_class: Mock, test_config: Config
-    ) -> None:
+    def test_get_collection_info_error(self, mock_client_class: Mock, test_config: Config) -> None:
         """Test getting collection info when error occurs."""
         # Setup mock
         mock_client = MagicMock()

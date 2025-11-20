@@ -1,10 +1,9 @@
 """Ingestion module for parsing VTT subtitle files."""
 
 import hashlib
-import json
 import re
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator, Optional
 
 from loguru import logger
 from pydantic import BaseModel
@@ -27,9 +26,7 @@ class VTTParser:
     """Parser for WebVTT subtitle files."""
 
     # Pattern to match VTT timestamp lines (e.g., "00:00:00.000 --> 00:00:05.000")
-    TIMESTAMP_PATTERN = re.compile(
-        r"^\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*$"
-    )
+    TIMESTAMP_PATTERN = re.compile(r"^\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*$")
 
     # Pattern to match VTT cue identifiers (numeric or alphanumeric IDs)
     CUE_ID_PATTERN = re.compile(r"^\d+$|^[a-zA-Z0-9_-]+$")
@@ -87,7 +84,7 @@ class VTTParser:
         return text
 
     @classmethod
-    def parse_vtt(cls, file_path: Path) -> Optional[str]:
+    def parse_vtt(cls, file_path: Path) -> str | None:
         """
         Parse a VTT file and extract clean transcript text.
 
@@ -98,7 +95,7 @@ class VTTParser:
             Cleaned transcript text or None if parsing fails
         """
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 lines = f.readlines()
 
             # VTT files should start with "WEBVTT"
@@ -199,7 +196,7 @@ class Ingester:
 
             yield vtt_file
 
-    def process_file(self, file_path: Path) -> Optional[Document]:
+    def process_file(self, file_path: Path) -> Document | None:
         """
         Process a single VTT file.
 

@@ -1,8 +1,8 @@
 """Pytest configuration and fixtures."""
 
 import tempfile
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 import pytest
 
@@ -146,7 +146,7 @@ def test_config(temp_dir: Path) -> Config:
 def archive_with_vtt_files(temp_dir: Path, sample_vtt_en: str, sample_vtt_ru: str) -> Path:
     """Create an archive directory with sample VTT files."""
     archive_dir = temp_dir / "archive"
-    archive_dir.mkdir()
+    archive_dir.mkdir(exist_ok=True)
 
     # Create English VTT files
     en_dir = archive_dir / "english" / "broadcast_001"

@@ -1,6 +1,5 @@
 """Qdrant indexing module for vector storage."""
 
-from typing import List
 
 import numpy as np
 from loguru import logger
@@ -28,9 +27,7 @@ class QdrantIndexer:
 
     def connect(self) -> None:
         """Connect to Qdrant server."""
-        logger.info(
-            f"Connecting to Qdrant at {self.config.qdrant.host}:{self.config.qdrant.port}"
-        )
+        logger.info(f"Connecting to Qdrant at {self.config.qdrant.host}:{self.config.qdrant.port}")
 
         # Disable version check to avoid warnings when client/server versions differ slightly
         # The HTTP API is stable and compatible across minor versions
@@ -59,9 +56,7 @@ class QdrantIndexer:
 
         # Check if collection exists
         collections = self.client.get_collections()
-        collection_exists = any(
-            col.name == collection_name for col in collections.collections
-        )
+        collection_exists = any(col.name == collection_name for col in collections.collections)
 
         if collection_exists:
             if recreate or self.config.qdrant.recreate_collection:
@@ -82,9 +77,7 @@ class QdrantIndexer:
                 "Dot": models.Distance.DOT,
             }
 
-            distance = distance_map.get(
-                self.config.qdrant.distance, models.Distance.COSINE
-            )
+            distance = distance_map.get(self.config.qdrant.distance, models.Distance.COSINE)
 
             # Create collection
             self.client.create_collection(
@@ -98,7 +91,7 @@ class QdrantIndexer:
             logger.info(f"Collection {collection_name} created successfully")
 
     def index_documents(
-        self, embeddings: np.ndarray, documents: List[Document], batch_size: int = 100
+        self, embeddings: np.ndarray, documents: list[Document], batch_size: int = 100
     ) -> int:
         """
         Index documents with their embeddings into Qdrant.
@@ -118,7 +111,7 @@ class QdrantIndexer:
         # Prepare points for upload
         points = []
 
-        for idx, (embedding, doc) in enumerate(zip(embeddings, documents)):
+        for idx, (embedding, doc) in enumerate(zip(embeddings, documents, strict=False)):
             point = models.PointStruct(
                 id=idx,  # Use sequential ID for simplicity
                 vector=embedding.tolist(),
@@ -133,7 +126,7 @@ class QdrantIndexer:
             points.append(point)
 
         # Upload in batches
-        total_batches = (len(points) + batch_size - 1) // batch_size
+        (len(points) + batch_size - 1) // batch_size
 
         for i in tqdm(range(0, len(points), batch_size), desc="Uploading to Qdrant"):
             batch = points[i : i + batch_size]
@@ -176,7 +169,7 @@ class QdrantIndexer:
 
     def search(
         self, query_vector: np.ndarray, top_k: int = 5, score_threshold: float = 0.0
-    ) -> List[dict]:
+    ) -> list[dict]:
         """
         Search for similar documents.
 

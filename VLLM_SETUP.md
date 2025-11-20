@@ -96,7 +96,7 @@ If you get a 404 error on `/v1/chat/completions`, check:
    ```
 
 2. **Server startup logs**: Check if the server started successfully
-   
+
 3. **Port conflicts**: Make sure port 8000 is not in use by another service
 
 ### Automatic Fallback

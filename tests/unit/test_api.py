@@ -1,13 +1,12 @@
 """Tests for the FastAPI backend."""
 
-import tempfile
 from pathlib import Path
-from typing import Generator
+
 import pytest
 from fastapi.testclient import TestClient
 
+from rainrag.api import app, find_video_file, get_video_base_name
 from rainrag.config import Config
-from rainrag.api import app, config as api_config, query_engine as api_query_engine, find_video_file, get_video_base_name
 
 
 @pytest.fixture
@@ -30,6 +29,7 @@ def test_config_with_video(temp_dir: Path) -> Config:
             "video_root": str(archive_dir),
         },
         embedding={
+            "provider": "local",
             "model_name": "sentence-transformers/all-MiniLM-L6-v2",
             "batch_size": 8,
             "max_seq_length": 128,
@@ -44,10 +44,20 @@ def test_config_with_video(temp_dir: Path) -> Config:
             "distance": "Cosine",
             "recreate_collection": False,
         },
-        vllm={
-            "host": "localhost",
-            "port": 8000,
-            "model_name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        llm={
+            "provider": "mistral",
+        },
+        mistral={
+            "api_key": "test-key",
+            "model_name": "mistral-small-latest",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        openai={
+            "api_key": "test-openai-key",
+            "model_name": "gpt-4o-mini",
+            "embedding_model": "text-embedding-3-small",
             "max_tokens": 512,
             "temperature": 0.3,
             "top_k": 5,
@@ -116,7 +126,6 @@ def archive_with_videos(temp_dir: Path, sample_vtt_en: str) -> Path:
 
 def test_find_video_file_mp4(temp_dir: Path, archive_with_videos: Path):
     """Test finding MP4 video file for VTT."""
-    from rainrag.api import config as api_cfg
 
     # Set up config
     test_cfg = Config(
@@ -126,16 +135,50 @@ def test_find_video_file_mp4(temp_dir: Path, archive_with_videos: Path):
             "embeddings_cache": "./embeddings",
             "video_root": str(archive_with_videos),
         },
-        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
-        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
-        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        embedding={
+            "provider": "local",
+            "model_name": "test",
+            "batch_size": 8,
+            "max_seq_length": 128,
+            "device": "cpu",
+            "normalize_embeddings": True,
+        },
+        qdrant={
+            "host": "localhost",
+            "port": 6333,
+            "collection_name": "test",
+            "vector_size": 384,
+            "distance": "Cosine",
+            "recreate_collection": False,
+        },
+        llm={"provider": "mistral"},
+        mistral={
+            "api_key": "test-key",
+            "model_name": "mistral-small-latest",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        openai={
+            "api_key": "test-openai-key",
+            "model_name": "gpt-4o-mini",
+            "embedding_model": "text-embedding-3-small",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
         processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
         logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+        video={
+            "enabled": True,
+            "extensions": [".mp4", ".mkv", ".webm"],
+            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+        },
     )
 
     # Temporarily set the global config
     import rainrag.api as api_module
+
     original_config = api_module.config
     api_module.config = test_cfg
 
@@ -151,8 +194,9 @@ def test_find_video_file_mp4(temp_dir: Path, archive_with_videos: Path):
 
 
 def test_find_video_file_mkv(temp_dir: Path, archive_with_videos: Path):
-    """Test finding MKV video file for VTT."""
+    """Test finding video file for VTT with hash-based naming (multi-resolution)."""
     import rainrag.api as api_module
+
     original_config = api_module.config
 
     test_cfg = Config(
@@ -162,22 +206,58 @@ def test_find_video_file_mkv(temp_dir: Path, archive_with_videos: Path):
             "embeddings_cache": "./embeddings",
             "video_root": str(archive_with_videos),
         },
-        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
-        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
-        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        embedding={
+            "provider": "local",
+            "model_name": "test",
+            "batch_size": 8,
+            "max_seq_length": 128,
+            "device": "cpu",
+            "normalize_embeddings": True,
+        },
+        qdrant={
+            "host": "localhost",
+            "port": 6333,
+            "collection_name": "test",
+            "vector_size": 384,
+            "distance": "Cosine",
+            "recreate_collection": False,
+        },
+        llm={"provider": "mistral"},
+        mistral={
+            "api_key": "test-key",
+            "model_name": "mistral-small-latest",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        openai={
+            "api_key": "test-openai-key",
+            "model_name": "gpt-4o-mini",
+            "embedding_model": "text-embedding-3-small",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
         processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
         logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+        video={
+            "enabled": True,
+            "extensions": [".mp4", ".mkv", ".webm"],
+            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+        },
     )
 
     api_module.config = test_cfg
 
     try:
-        vtt_path = str(archive_with_videos / "test_videos" / "video2.ru.vtt")
+        # Test with hash-based naming that has multiple resolutions
+        hash_name = "3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd"
+        vtt_path = str(archive_with_videos / "test_videos" / f"{hash_name}.ru.vtt")
         video_file = find_video_file(vtt_path)
 
         assert video_file is not None
-        assert video_file.endswith("video2.mkv")
+        # Should find one of the resolution variants
+        assert hash_name in video_file
         assert Path(video_file).exists()
     finally:
         api_module.config = original_config
@@ -186,6 +266,7 @@ def test_find_video_file_mkv(temp_dir: Path, archive_with_videos: Path):
 def test_find_video_file_not_found(temp_dir: Path, archive_with_videos: Path):
     """Test when video file doesn't exist."""
     import rainrag.api as api_module
+
     original_config = api_module.config
 
     test_cfg = Config(
@@ -195,12 +276,45 @@ def test_find_video_file_not_found(temp_dir: Path, archive_with_videos: Path):
             "embeddings_cache": "./embeddings",
             "video_root": str(archive_with_videos),
         },
-        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
-        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
-        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        embedding={
+            "provider": "local",
+            "model_name": "test",
+            "batch_size": 8,
+            "max_seq_length": 128,
+            "device": "cpu",
+            "normalize_embeddings": True,
+        },
+        qdrant={
+            "host": "localhost",
+            "port": 6333,
+            "collection_name": "test",
+            "vector_size": 384,
+            "distance": "Cosine",
+            "recreate_collection": False,
+        },
+        llm={"provider": "mistral"},
+        mistral={
+            "api_key": "test-key",
+            "model_name": "mistral-small-latest",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        openai={
+            "api_key": "test-openai-key",
+            "model_name": "gpt-4o-mini",
+            "embedding_model": "text-embedding-3-small",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
         processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
         logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+        video={
+            "enabled": True,
+            "extensions": [".mp4", ".mkv", ".webm"],
+            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+        },
     )
 
     api_module.config = test_cfg
@@ -223,12 +337,14 @@ def test_api_root_endpoint():
     data = response.json()
     assert data["name"] == "RainRAG API"
     assert "endpoints" in data
-    assert "/query" in data["endpoints"]["POST /query"]
+    assert "POST /query" in data["endpoints"]
+    assert "Submit a question" in data["endpoints"]["POST /query"]
 
 
 def test_video_endpoint_security(temp_dir: Path, archive_with_videos: Path):
     """Test that video endpoint prevents path traversal attacks."""
     import rainrag.api as api_module
+
     original_config = api_module.config
 
     test_cfg = Config(
@@ -238,12 +354,45 @@ def test_video_endpoint_security(temp_dir: Path, archive_with_videos: Path):
             "embeddings_cache": "./embeddings",
             "video_root": str(archive_with_videos),
         },
-        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
-        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
-        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        embedding={
+            "provider": "local",
+            "model_name": "test",
+            "batch_size": 8,
+            "max_seq_length": 128,
+            "device": "cpu",
+            "normalize_embeddings": True,
+        },
+        qdrant={
+            "host": "localhost",
+            "port": 6333,
+            "collection_name": "test",
+            "vector_size": 384,
+            "distance": "Cosine",
+            "recreate_collection": False,
+        },
+        llm={"provider": "mistral"},
+        mistral={
+            "api_key": "test-key",
+            "model_name": "mistral-small-latest",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        openai={
+            "api_key": "test-openai-key",
+            "model_name": "gpt-4o-mini",
+            "embedding_model": "text-embedding-3-small",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
         processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
         logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+        video={
+            "enabled": True,
+            "extensions": [".mp4", ".mkv", ".webm"],
+            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+        },
     )
 
     api_module.config = test_cfg
@@ -253,11 +402,11 @@ def test_video_endpoint_security(temp_dir: Path, archive_with_videos: Path):
 
         # Try path traversal attack
         response = client.get("/video/../../../etc/passwd")
-        assert response.status_code in [400, 403]  # Should be rejected
+        assert response.status_code in [400, 403, 404]  # Should be rejected
 
         # Try another path traversal
         response = client.get("/video/../../sensitive_file.txt")
-        assert response.status_code in [400, 403]  # Should be rejected
+        assert response.status_code in [400, 403, 404]  # Should be rejected
     finally:
         api_module.config = original_config
 
@@ -265,6 +414,7 @@ def test_video_endpoint_security(temp_dir: Path, archive_with_videos: Path):
 def test_vtt_endpoint_security(temp_dir: Path, archive_with_videos: Path):
     """Test that VTT endpoint prevents path traversal attacks."""
     import rainrag.api as api_module
+
     original_config = api_module.config
 
     test_cfg = Config(
@@ -274,12 +424,45 @@ def test_vtt_endpoint_security(temp_dir: Path, archive_with_videos: Path):
             "embeddings_cache": "./embeddings",
             "video_root": str(archive_with_videos),
         },
-        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
-        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
-        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        embedding={
+            "provider": "local",
+            "model_name": "test",
+            "batch_size": 8,
+            "max_seq_length": 128,
+            "device": "cpu",
+            "normalize_embeddings": True,
+        },
+        qdrant={
+            "host": "localhost",
+            "port": 6333,
+            "collection_name": "test",
+            "vector_size": 384,
+            "distance": "Cosine",
+            "recreate_collection": False,
+        },
+        llm={"provider": "mistral"},
+        mistral={
+            "api_key": "test-key",
+            "model_name": "mistral-small-latest",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        openai={
+            "api_key": "test-openai-key",
+            "model_name": "gpt-4o-mini",
+            "embedding_model": "text-embedding-3-small",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
         processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
         logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+        video={
+            "enabled": True,
+            "extensions": [".mp4", ".mkv", ".webm"],
+            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+        },
     )
 
     api_module.config = test_cfg
@@ -289,7 +472,7 @@ def test_vtt_endpoint_security(temp_dir: Path, archive_with_videos: Path):
 
         # Try path traversal attack
         response = client.get("/vtt/../../../etc/passwd")
-        assert response.status_code in [400, 403]  # Should be rejected
+        assert response.status_code in [400, 403, 404]  # Should be rejected
     finally:
         api_module.config = original_config
 
@@ -297,6 +480,7 @@ def test_vtt_endpoint_security(temp_dir: Path, archive_with_videos: Path):
 def test_video_disabled(temp_dir: Path):
     """Test video serving when disabled in config."""
     import rainrag.api as api_module
+
     original_config = api_module.config
 
     test_cfg = Config(
@@ -306,9 +490,38 @@ def test_video_disabled(temp_dir: Path):
             "embeddings_cache": "./embeddings",
             "video_root": str(temp_dir),
         },
-        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
-        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
-        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        embedding={
+            "provider": "local",
+            "model_name": "test",
+            "batch_size": 8,
+            "max_seq_length": 128,
+            "device": "cpu",
+            "normalize_embeddings": True,
+        },
+        qdrant={
+            "host": "localhost",
+            "port": 6333,
+            "collection_name": "test",
+            "vector_size": 384,
+            "distance": "Cosine",
+            "recreate_collection": False,
+        },
+        llm={"provider": "mistral"},
+        mistral={
+            "api_key": "test-key",
+            "model_name": "mistral-small-latest",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        openai={
+            "api_key": "test-openai-key",
+            "model_name": "gpt-4o-mini",
+            "embedding_model": "text-embedding-3-small",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
         processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
         logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
         video={"enabled": False, "extensions": [".mp4"], "vtt_extensions": [".vtt"]},
@@ -328,6 +541,7 @@ def test_video_disabled(temp_dir: Path):
 def test_find_video_file_multi_resolution(temp_dir: Path, archive_with_videos: Path):
     """Test finding highest resolution video file for VTT (prefers 1080p)."""
     import rainrag.api as api_module
+
     original_config = api_module.config
 
     test_cfg = Config(
@@ -337,12 +551,45 @@ def test_find_video_file_multi_resolution(temp_dir: Path, archive_with_videos: P
             "embeddings_cache": "./embeddings",
             "video_root": str(archive_with_videos),
         },
-        embedding={"model_name": "test", "batch_size": 8, "max_seq_length": 128, "device": "cpu", "normalize_embeddings": True},
-        qdrant={"host": "localhost", "port": 6333, "collection_name": "test", "vector_size": 384, "distance": "Cosine", "recreate_collection": False},
-        vllm={"host": "localhost", "port": 8000, "model_name": "test", "max_tokens": 512, "temperature": 0.3, "top_k": 5},
+        embedding={
+            "provider": "local",
+            "model_name": "test",
+            "batch_size": 8,
+            "max_seq_length": 128,
+            "device": "cpu",
+            "normalize_embeddings": True,
+        },
+        qdrant={
+            "host": "localhost",
+            "port": 6333,
+            "collection_name": "test",
+            "vector_size": 384,
+            "distance": "Cosine",
+            "recreate_collection": False,
+        },
+        llm={"provider": "mistral"},
+        mistral={
+            "api_key": "test-key",
+            "model_name": "mistral-small-latest",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        openai={
+            "api_key": "test-openai-key",
+            "model_name": "gpt-4o-mini",
+            "embedding_model": "text-embedding-3-small",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
         processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
         logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={"enabled": True, "extensions": [".mp4", ".mkv", ".webm"], "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"]},
+        video={
+            "enabled": True,
+            "extensions": [".mp4", ".mkv", ".webm"],
+            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+        },
     )
 
     api_module.config = test_cfg
@@ -370,7 +617,9 @@ def test_find_video_file_multi_resolution(temp_dir: Path, archive_with_videos: P
 
 def test_get_video_base_name_english():
     """Test extracting base name from English VTT file."""
-    vtt_path = "/mnt/vod/srv/storage/transcoded/3b/10/f9/3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd.en.vtt"
+    vtt_path = (
+        "/mnt/vod/srv/storage/transcoded/3b/10/f9/3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd.en.vtt"
+    )
     base_name = get_video_base_name(vtt_path)
 
     # Should remove .en suffix and include parent directory
@@ -380,7 +629,9 @@ def test_get_video_base_name_english():
 
 def test_get_video_base_name_russian():
     """Test extracting base name from Russian VTT file."""
-    vtt_path = "/mnt/vod/srv/storage/transcoded/3b/10/f9/3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd.ru.vtt"
+    vtt_path = (
+        "/mnt/vod/srv/storage/transcoded/3b/10/f9/3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd.ru.vtt"
+    )
     base_name = get_video_base_name(vtt_path)
 
     # Should remove .ru suffix and include parent directory

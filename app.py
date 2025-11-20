@@ -1,11 +1,10 @@
 """Streamlit frontend for RainRAG - Multilingual RAG system for video transcripts."""
 
 import os
-import time
-from typing import Dict, List, Any, Optional
+from typing import Any
 
-import streamlit as st
 import httpx
+import streamlit as st
 from loguru import logger
 
 
@@ -15,7 +14,6 @@ AUTH_TOKEN = os.getenv("STREAMLIT_AUTH_TOKEN", "")
 DEFAULT_LANGUAGE = "ru"
 DEFAULT_TOP_K = 3
 REQUEST_TIMEOUT = 60.0  # 60 seconds timeout for API requests
-
 
 
 # Translations
@@ -145,7 +143,7 @@ def initialize_session_state():
         st.session_state.authenticated = not bool(AUTH_TOKEN)
 
 
-def get_api_headers() -> Dict[str, str]:
+def get_api_headers() -> dict[str, str]:
     """Get API request headers including auth token if configured."""
     headers = {"Content-Type": "application/json"}
     if AUTH_TOKEN:
@@ -153,7 +151,7 @@ def get_api_headers() -> Dict[str, str]:
     return headers
 
 
-async def check_api_health() -> Optional[Dict[str, Any]]:
+async def check_api_health() -> dict[str, Any] | None:
     """Check API health status."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -166,7 +164,7 @@ async def check_api_health() -> Optional[Dict[str, Any]]:
         return None
 
 
-async def query_rag(question: str, language: str, top_k: int) -> Dict[str, Any]:
+async def query_rag(question: str, language: str, top_k: int) -> dict[str, Any]:
     """
     Query the RAG system via API.
 
@@ -192,7 +190,7 @@ async def query_rag(question: str, language: str, top_k: int) -> Dict[str, Any]:
         return response.json()
 
 
-def fetch_vtt_content(vtt_url: str) -> Optional[str]:
+def fetch_vtt_content(vtt_url: str) -> str | None:
     """
     Fetch VTT file content from the API.
 
@@ -215,7 +213,7 @@ def fetch_vtt_content(vtt_url: str) -> Optional[str]:
         return None
 
 
-def group_chunks_by_video(chunks: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+def group_chunks_by_video(chunks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     """
     Group context chunks by their group_id (same video, different languages).
 
@@ -246,7 +244,7 @@ def group_chunks_by_video(chunks: List[Dict[str, Any]]) -> List[List[Dict[str, A
     return sorted_groups
 
 
-def format_context_chunk(chunk: Dict[str, Any], index: int, lang: str) -> str:
+def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     """Format a context chunk metadata for display (without text content)."""
     filename = chunk.get("filename", "Unknown")
     score = chunk.get("score", 0.0)
@@ -270,9 +268,9 @@ def get_text_preview(text: str, max_lines: int = 3, max_chars: int = 200) -> tup
     Returns:
         Tuple of (preview_text, is_truncated)
     """
-    lines = text.split('\n')
+    lines = text.split("\n")
     preview_lines = lines[:max_lines]
-    preview_text = '\n'.join(preview_lines)
+    preview_text = "\n".join(preview_lines)
 
     # Check if we need to truncate by character count
     if len(preview_text) > max_chars:
@@ -287,7 +285,7 @@ def get_text_preview(text: str, max_lines: int = 3, max_chars: int = 200) -> tup
     return preview_text, is_truncated
 
 
-def render_message_bubble(message: Dict[str, Any], lang: str):
+def render_message_bubble(message: dict[str, Any], lang: str):
     """Render a message bubble with appropriate styling."""
     role = message["role"]
     content = message["content"]
@@ -366,7 +364,7 @@ def render_message_bubble(message: Dict[str, Any], lang: str):
                             selected_vtt_lang = st.radio(
                                 "Language",
                                 options=list(vtt_languages.keys()),
-                                format_func=lambda x: lang_display.get(x, x),
+                                format_func=lambda x, ld=lang_display: ld.get(x, x),
                                 horizontal=True,
                                 key=f"vtt_lang_{group_idx}",
                                 label_visibility="collapsed",
@@ -398,10 +396,10 @@ def render_message_bubble(message: Dict[str, Any], lang: str):
                             # Use dark background that works in both light and dark modes
                             st.markdown(
                                 f'<div style="height: 400px; overflow-y: auto; '
-                                f'border: 1px solid #4a4a4a; border-radius: 0.25rem; '
-                                f'padding: 0.5rem; background-color: #1e1e1e; '
-                                f'color: #e0e0e0; '
-                                f'font-family: monospace; font-size: 0.8rem; '
+                                f"border: 1px solid #4a4a4a; border-radius: 0.25rem; "
+                                f"padding: 0.5rem; background-color: #1e1e1e; "
+                                f"color: #e0e0e0; "
+                                f"font-family: monospace; font-size: 0.8rem; "
                                 f'white-space: pre-wrap;">{vtt_content}</div>',
                                 unsafe_allow_html=True,
                             )
@@ -419,7 +417,9 @@ def render_message_bubble(message: Dict[str, Any], lang: str):
                     # Display text content with preview/expand
                     text = chunk.get("text", "")
                     if text:
-                        preview_text, is_truncated = get_text_preview(text, max_lines=2, max_chars=200)
+                        preview_text, is_truncated = get_text_preview(
+                            text, max_lines=2, max_chars=200
+                        )
                         st.markdown(preview_text)
 
                         if is_truncated:
@@ -474,7 +474,9 @@ def render_sidebar(lang: str):
                 health_info = asyncio.run(check_api_health())
                 if health_info:
                     status_color = "🟢" if health_info.get("status") == "healthy" else "🟡"
-                    st.markdown(f"**{get_text('status_label', lang)}:** {status_color} {health_info.get('status', 'unknown').title()}")
+                    st.markdown(
+                        f"**{get_text('status_label', lang)}:** {status_color} {health_info.get('status', 'unknown').title()}"
+                    )
 
                     # Display current LLM model
                     st.markdown(f"**{get_text('model_label', lang)}:**")

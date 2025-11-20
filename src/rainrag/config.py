@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import yaml
 from dotenv import load_dotenv
@@ -26,7 +26,7 @@ class EmbeddingConfig(BaseModel):
 
     provider: str = Field(
         default="local",
-        description="Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API, 'gemini' for Google Gemini API"
+        description="Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API, 'gemini' for Google Gemini API",
     )
     model_name: str = Field(default="intfloat/multilingual-e5-large")
     batch_size: int = Field(default=32)
@@ -54,7 +54,7 @@ class MistralConfig(BaseModel):
         default="mistral-small-latest",
         description="Mistral model to use: mistral-small-latest, mistral-medium-latest, mistral-large-latest, etc.",
     )
-    max_tokens: int = Field(default=512)
+    max_tokens: int = Field(default=2048, description="Maximum tokens for response generation")
     temperature: float = Field(default=0.3)
     top_k: int = Field(default=5, description="Number of documents to retrieve")
 
@@ -71,7 +71,7 @@ class OpenAIConfig(BaseModel):
         default="text-embedding-3-small",
         description="OpenAI embedding model: text-embedding-3-small, text-embedding-3-large, etc.",
     )
-    max_tokens: int = Field(default=512)
+    max_tokens: int = Field(default=2048, description="Maximum tokens for response generation")
     temperature: float = Field(default=0.3)
     top_k: int = Field(default=5, description="Number of documents to retrieve")
 
@@ -84,7 +84,7 @@ class ClaudeConfig(BaseModel):
         default="claude-3-5-sonnet-20240620",
         description="Claude model to use: claude-3-5-sonnet-20240620, claude-3-opus-20240229, claude-3-haiku-20240307, etc.",
     )
-    max_tokens: int = Field(default=512)
+    max_tokens: int = Field(default=2048, description="Maximum tokens for response generation")
     temperature: float = Field(default=0.3)
     top_k: int = Field(default=5, description="Number of documents to retrieve")
 
@@ -101,7 +101,7 @@ class GeminiConfig(BaseModel):
         default="models/text-embedding-004",
         description="Gemini embedding model: models/text-embedding-004, models/embedding-001, etc.",
     )
-    max_tokens: int = Field(default=512)
+    max_tokens: int = Field(default=2048, description="Maximum tokens for response generation")
     temperature: float = Field(default=0.3)
     top_k: int = Field(default=5, description="Number of documents to retrieve")
 
@@ -111,7 +111,7 @@ class LLMConfig(BaseModel):
 
     provider: str = Field(
         default="mistral",
-        description="LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API, 'claude' for Anthropic Claude API, 'gemini' for Google Gemini API"
+        description="LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API, 'claude' for Anthropic Claude API, 'gemini' for Google Gemini API",
     )
 
 
@@ -181,8 +181,8 @@ def load_config(config_path: str = "config.yaml") -> Config:
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-    with open(config_file, "r") as f:
-        config_data: Dict[str, Any] = yaml.safe_load(f)
+    with open(config_file) as f:
+        config_data: dict[str, Any] = yaml.safe_load(f)
 
     # Override Mistral API key from environment variable if set
     mistral_api_key = os.getenv("MISTRAL_API_KEY")
