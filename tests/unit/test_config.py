@@ -166,7 +166,7 @@ class TestClaudeConfig:
         config = ClaudeConfig()
 
         assert config.api_key == ""
-        assert config.model_name == "claude-3-5-sonnet-20241022"
+        assert config.model_name == "claude-3-5-sonnet-20240620"
         assert config.max_tokens == 512
         assert config.temperature == 0.3
         assert config.top_k == 5

@@ -116,7 +116,7 @@ def test_config(temp_dir: Path) -> Config:
         },
         claude={
             "api_key": "test-api-key",
-            "model_name": "claude-3-5-sonnet-20241022",
+            "model_name": "claude-3-5-sonnet-20240620",
             "max_tokens": 512,
             "temperature": 0.3,
             "top_k": 5,

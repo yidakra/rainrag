@@ -81,8 +81,8 @@ class ClaudeConfig(BaseModel):
 
     api_key: str = Field(default="", description="Anthropic API key")
     model_name: str = Field(
-        default="claude-3-5-sonnet-20241022",
-        description="Claude model to use: claude-3-5-sonnet-20241022, claude-3-opus-20240229, claude-3-haiku-20240307, etc.",
+        default="claude-3-5-sonnet-20240620",
+        description="Claude model to use: claude-3-5-sonnet-20240620, claude-3-opus-20240229, claude-3-haiku-20240307, etc.",
     )
     max_tokens: int = Field(default=512)
     temperature: float = Field(default=0.3)
