@@ -466,6 +466,149 @@ def test_info_command_with_custom_config():
 
 
 # ============================================================================
+# MCP Command Tests
+# ============================================================================
+
+
+def test_mcp_command_success_stdio():
+    """Test successful MCP command with stdio transport."""
+    with patch("src.rainrag.cli.setup_logging"):
+        with patch("src.rainrag.cli.load_config") as mock_load_config:
+            with patch("src.rainrag.cli.run_server") as mock_run_server:
+                from rainrag.config import (
+                    Config,
+                    EmbeddingConfig,
+                    LLMConfig,
+                    LoggingConfig,
+                    MCPConfig,
+                    MistralConfig,
+                    PathsConfig,
+                    ProcessingConfig,
+                    QdrantConfig,
+                )
+
+                # Mock config with MCP settings
+                mock_cfg = Config(
+                    paths=PathsConfig(
+                        archive_root="/test/archive",
+                        docs_output="/test/docs.jsonl",
+                        embeddings_cache="/test/embeddings",
+                    ),
+                    embedding=EmbeddingConfig(),
+                    qdrant=QdrantConfig(),
+                    llm=LLMConfig(provider="mistral"),
+                    mistral=MistralConfig(api_key="test", model_name="test"),
+                    openai=MistralConfig(api_key="test", model_name="test"),
+                    processing=ProcessingConfig(),
+                    logging=LoggingConfig(),
+                    mcp=MCPConfig(transport="stdio", host="localhost", port=8000),
+                )
+                mock_load_config.return_value = mock_cfg
+
+                # Simulate KeyboardInterrupt to stop server immediately
+                mock_run_server.side_effect = KeyboardInterrupt()
+
+                result = runner.invoke(app, ["mcp"])
+
+                assert result.exit_code == 0
+                assert "Starting MCP server" in result.output
+                assert "Transport: stdio" in result.output
+                mock_run_server.assert_called_once()
+
+
+def test_mcp_command_with_http_transport():
+    """Test MCP command with HTTP transport."""
+    with patch("src.rainrag.cli.setup_logging"):
+        with patch("src.rainrag.cli.load_config") as mock_load_config:
+            with patch("src.rainrag.cli.run_server") as mock_run_server:
+                from rainrag.config import (
+                    Config,
+                    EmbeddingConfig,
+                    LLMConfig,
+                    LoggingConfig,
+                    MCPConfig,
+                    MistralConfig,
+                    PathsConfig,
+                    ProcessingConfig,
+                    QdrantConfig,
+                )
+
+                # Mock config
+                mock_cfg = Config(
+                    paths=PathsConfig(
+                        archive_root="/test/archive",
+                        docs_output="/test/docs.jsonl",
+                        embeddings_cache="/test/embeddings",
+                    ),
+                    embedding=EmbeddingConfig(),
+                    qdrant=QdrantConfig(),
+                    llm=LLMConfig(provider="mistral"),
+                    mistral=MistralConfig(api_key="test", model_name="test"),
+                    openai=MistralConfig(api_key="test", model_name="test"),
+                    processing=ProcessingConfig(),
+                    logging=LoggingConfig(),
+                    mcp=MCPConfig(
+                        transport="streamable-http", host="0.0.0.0", port=9000
+                    ),
+                )
+                mock_load_config.return_value = mock_cfg
+
+                # Simulate KeyboardInterrupt to stop server immediately
+                mock_run_server.side_effect = KeyboardInterrupt()
+
+                result = runner.invoke(
+                    app, ["mcp", "--transport", "streamable-http", "--port", "9000"]
+                )
+
+                assert result.exit_code == 0
+                assert "Starting MCP server" in result.output
+                assert "Transport: streamable-http" in result.output
+                assert "Address: 0.0.0.0:9000" in result.output or "9000" in result.output
+                mock_run_server.assert_called_once()
+
+
+def test_mcp_command_failure():
+    """Test MCP command when it fails."""
+    with patch("src.rainrag.cli.setup_logging"):
+        with patch("src.rainrag.cli.load_config") as mock_load_config:
+            with patch("src.rainrag.cli.run_server") as mock_run_server:
+                from rainrag.config import (
+                    Config,
+                    EmbeddingConfig,
+                    LLMConfig,
+                    LoggingConfig,
+                    MCPConfig,
+                    MistralConfig,
+                    PathsConfig,
+                    ProcessingConfig,
+                    QdrantConfig,
+                )
+
+                mock_cfg = Config(
+                    paths=PathsConfig(
+                        archive_root="/test/archive",
+                        docs_output="/test/docs.jsonl",
+                        embeddings_cache="/test/embeddings",
+                    ),
+                    embedding=EmbeddingConfig(),
+                    qdrant=QdrantConfig(),
+                    llm=LLMConfig(provider="mistral"),
+                    mistral=MistralConfig(api_key="test", model_name="test"),
+                    openai=MistralConfig(api_key="test", model_name="test"),
+                    processing=ProcessingConfig(),
+                    logging=LoggingConfig(),
+                    mcp=MCPConfig(),
+                )
+                mock_load_config.return_value = mock_cfg
+                mock_run_server.side_effect = Exception("Server initialization failed")
+
+                result = runner.invoke(app, ["mcp"])
+
+                assert result.exit_code == 1
+                assert "MCP server failed" in result.output
+
+
+# ============================================================================
 # Help Text Tests
 # ============================================================================
 
