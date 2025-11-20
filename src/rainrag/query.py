@@ -1,12 +1,13 @@
-"""Query interface for RainRAG using vLLM and Qdrant."""
+"""Query interface for RainRAG using Mistral/OpenAI/Claude/Gemini API and Qdrant."""
 
 from typing import List, Dict, Any
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from loguru import logger
+from mistralai import Mistral
+from openai import OpenAI
+from anthropic import Anthropic
+import google.generativeai as genai
 
 from rainrag.config import Config
 
@@ -19,7 +20,7 @@ class RAGQueryEngine:
     1. Embed the query using the same model as documents
     2. Search Qdrant for relevant chunks
     3. Build a prompt with retrieved context
-    4. Send to vLLM for answer generation
+    4. Send to Mistral API for answer generation
     """
 
     def __init__(self, config: Config):
@@ -32,132 +33,92 @@ class RAGQueryEngine:
         self.config = config
         self.embedding_model: SentenceTransformer | None = None
         self.qdrant_client: QdrantClient | None = None
-        # Select API endpoint based on configuration
-        endpoint = "chat/completions" if config.vllm.use_chat_completions else "completions"
-        self.vllm_url = f"http://{config.vllm.host}:{config.vllm.port}/v1/{endpoint}"
-        self.use_chat_api = config.vllm.use_chat_completions
 
-        # Create a session with retry strategy for resilient HTTP requests
-        self.session = requests.Session()
-        retry_strategy = Retry(
-            total=3,  # Total number of retries
-            backoff_factor=1,  # Wait 1s, 2s, 4s between retries
-            status_forcelist=[429, 500, 502, 503, 504],  # Retry on these HTTP status codes
-            allowed_methods=["POST"],  # Retry POST requests (for vLLM API calls)
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.session.mount("http://", adapter)
-        self.session.mount("https://", adapter)
+        # Initialize clients based on what's needed for LLM and embeddings
+        needs_mistral = config.llm.provider == "mistral" or config.embedding.provider == "mistral"
+        needs_openai = config.llm.provider == "openai" or config.embedding.provider == "openai"
+        needs_claude = config.llm.provider == "claude"  # Claude only supports LLM, not embeddings
+        needs_gemini = config.llm.provider == "gemini" or config.embedding.provider == "gemini"
 
-        # Detect chat template
-        try:
-            self.chat_template = self._detect_chat_template()
-            logger.info(f"Using chat template: {self.chat_template}")
-        except Exception as e:
-            logger.error(f"Failed to detect chat template: {e}, falling back to 'mistral'")
-            self.chat_template = "mistral"
-
-    def _detect_chat_template(self) -> str:
-        """
-        Detect the appropriate chat template based on model name.
-
-        Returns:
-            Template name: 'mistral', 'gemma', 'chatml', or 'generic'
-        """
-        template = self.config.vllm.chat_template.lower()
-
-        if template != "auto":
-            return template
-
-        model_name = self.config.vllm.model_name.lower()
-
-        # Auto-detect based on model name
-        if "mistral" in model_name:
-            return "mistral"
-        elif "gemma" in model_name:
-            return "gemma"
-        elif "gpt" in model_name or "chatml" in model_name:
-            return "chatml"
+        # Initialize Mistral client if needed
+        if needs_mistral:
+            self.mistral_client = Mistral(api_key=config.mistral.api_key)
+            logger.info("Initialized Mistral client")
         else:
-            return "generic"
+            self.mistral_client = None
 
-    def _format_prompt_with_template(self, system_message: str, user_message: str) -> str:
-        """
-        Format prompt according to the detected chat template.
+        # Initialize OpenAI client if needed
+        if needs_openai:
+            self.openai_client = OpenAI(api_key=config.openai.api_key)
+            logger.info("Initialized OpenAI client")
+        else:
+            self.openai_client = None
 
-        Args:
-            system_message: System instruction
-            user_message: User query with context
+        # Initialize Claude client if needed
+        if needs_claude:
+            self.claude_client = Anthropic(api_key=config.claude.api_key)
+            logger.info("Initialized Claude client")
+        else:
+            self.claude_client = None
 
-        Returns:
-            Formatted prompt string
-        """
-        if self.chat_template == "mistral":
-            # Mistral format: <s>[INST] system + user [/INST]
-            return f"<s>[INST] {system_message}\n\n{user_message}\n\nВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов. [/INST]"
+        # Initialize Gemini client if needed
+        if needs_gemini:
+            genai.configure(api_key=config.gemini.api_key)
+            logger.info("Initialized Gemini client")
 
-        elif self.chat_template == "gemma":
-            # Gemma format: <start_of_turn>user\n...<end_of_turn>\n<start_of_turn>model\n
-            return f"""<start_of_turn>user
-{system_message}
-
-{user_message}
-
-ВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов.<end_of_turn>
-<start_of_turn>model
-"""
-
-        elif self.chat_template == "chatml":
-            # ChatML format: <|im_start|>system\n...<|im_end|>\n<|im_start|>user\n...<|im_end|>
-            return f"""<|im_start|>system
-{system_message}<|im_end|>
-<|im_start|>user
-{user_message}
-
-ВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов.<|im_end|>
-<|im_start|>assistant
-"""
-
-        else:  # generic
-            # Generic format: System: ... User: ... Assistant:
-            return f"""System: {system_message}
-
-User: {user_message}
-
-ВАЖНО: Вы ДОЛЖНЫ основывать свой ответ ТОЛЬКО на предоставленных документах выше. Внимательно прочитайте контекст и ответьте на вопрос на русском языке, используя информацию из документов."""
+        # Log which provider is being used for LLM
+        if config.llm.provider == "mistral":
+            logger.info(f"Using Mistral for LLM: {config.mistral.model_name}")
+        elif config.llm.provider == "openai":
+            logger.info(f"Using OpenAI for LLM: {config.openai.model_name}")
+        elif config.llm.provider == "claude":
+            logger.info(f"Using Claude for LLM: {config.claude.model_name}")
+        elif config.llm.provider == "gemini":
+            logger.info(f"Using Gemini for LLM: {config.gemini.model_name}")
+        else:
+            raise ValueError(f"Unknown LLM provider: {config.llm.provider}")
 
     def initialize(self) -> None:
         """Initialize the embedding model and Qdrant client."""
         logger.info("Initializing query engine...")
 
-        # Load embedding model
-        logger.info(f"Loading embedding model: {self.config.embedding.model_name}")
-        try:
+        # Load embedding model only if using local provider
+        if self.config.embedding.provider == "local":
+            logger.info(f"Loading local embedding model: {self.config.embedding.model_name}")
             try:
-                self.embedding_model = SentenceTransformer(
-                    self.config.embedding.model_name,
-                    device=self.config.embedding.device,
-                    model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
+                try:
+                    self.embedding_model = SentenceTransformer(
+                        self.config.embedding.model_name,
+                        device=self.config.embedding.device,
+                        model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
+                    )
+                except TypeError:
+                    # Older sentence-transformers versions don't accept model_kwargs
+                    self.embedding_model = SentenceTransformer(
+                        self.config.embedding.model_name,
+                        device=self.config.embedding.device,
+                    )
+            except OSError as e:
+                # Handle offline mode / model not cached
+                error_msg = (
+                    f"Failed to load embedding model '{self.config.embedding.model_name}'. "
+                    f"The model is not cached locally and cannot be downloaded. "
+                    f"\n\nTo fix this:"
+                    f"\n1. Connect to the internet"
+                    f"\n2. Run: python scripts/download_models.py"
+                    f"\n3. Or run: poetry run python scripts/download_models.py"
+                    f"\n\nOriginal error: {e}"
                 )
-            except TypeError:
-                # Older sentence-transformers versions don't accept model_kwargs
-                self.embedding_model = SentenceTransformer(
-                    self.config.embedding.model_name,
-                    device=self.config.embedding.device,
-                )
-        except OSError as e:
-            # Handle offline mode / model not cached
-            error_msg = (
-                f"Failed to load embedding model '{self.config.embedding.model_name}'. "
-                f"The model is not cached locally and cannot be downloaded. "
-                f"\n\nTo fix this:"
-                f"\n1. Connect to the internet"
-                f"\n2. Run: python scripts/download_models.py"
-                f"\n3. Or run: poetry run python scripts/download_models.py"
-                f"\n\nOriginal error: {e}"
-            )
-            logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
+                logger.error(error_msg)
+                raise RuntimeError(error_msg) from e
+        elif self.config.embedding.provider == "mistral":
+            logger.info("Using Mistral API for embeddings (mistral-embed)")
+        elif self.config.embedding.provider == "openai":
+            logger.info(f"Using OpenAI API for embeddings ({self.config.openai.embedding_model})")
+        elif self.config.embedding.provider == "gemini":
+            logger.info(f"Using Gemini API for embeddings ({self.config.gemini.embedding_model})")
+        else:
+            raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
 
         # Connect to Qdrant
         logger.info(
@@ -169,6 +130,8 @@ User: {user_message}
             host=self.config.qdrant.host,
             port=self.config.qdrant.port,
             prefer_grpc=False,
+            api_key=None,  # No authentication for local Qdrant
+            timeout=60,
         )
 
         # Test connection
@@ -183,7 +146,7 @@ User: {user_message}
 
     def embed_query(self, query: str) -> List[float]:
         """
-        Embed the query text using the same model as documents.
+        Embed the query text using configured provider.
 
         Args:
             query: The query text
@@ -191,19 +154,64 @@ User: {user_message}
         Returns:
             List of floats representing the query embedding
         """
-        if self.embedding_model is None:
-            raise RuntimeError("Embedding model not initialized. Call initialize() first.")
+        if self.config.embedding.provider == "mistral":
+            # Use Mistral API embeddings
+            logger.debug(f"Embedding query using Mistral API: {query[:100]}...")
+            try:
+                response = self.mistral_client.embeddings.create(
+                    model="mistral-embed",
+                    inputs=[query]
+                )
+                return response.data[0].embedding
+            except Exception as e:
+                logger.error(f"Failed to generate embeddings with Mistral API: {e}")
+                raise RuntimeError(f"Mistral embeddings API error: {e}") from e
 
-        # Add "query: " prefix for E5 model (improves retrieval performance)
-        prefixed_query = f"query: {query}"
+        elif self.config.embedding.provider == "local":
+            # Use local SentenceTransformer model
+            if self.embedding_model is None:
+                raise RuntimeError("Embedding model not initialized. Call initialize() first.")
 
-        logger.debug(f"Embedding query: {query[:100]}...")
-        embedding = self.embedding_model.encode(
-            prefixed_query,
-            normalize_embeddings=self.config.embedding.normalize_embeddings,
-        )
+            # Add "query: " prefix for E5 model (improves retrieval performance)
+            prefixed_query = f"query: {query}"
 
-        return embedding.tolist()
+            logger.debug(f"Embedding query using local model: {query[:100]}...")
+            embedding = self.embedding_model.encode(
+                prefixed_query,
+                normalize_embeddings=self.config.embedding.normalize_embeddings,
+            )
+
+            return embedding.tolist()
+
+        elif self.config.embedding.provider == "openai":
+            # Use OpenAI API embeddings
+            logger.debug(f"Embedding query using OpenAI API: {query[:100]}...")
+            try:
+                response = self.openai_client.embeddings.create(
+                    model=self.config.openai.embedding_model,
+                    input=query
+                )
+                return response.data[0].embedding
+            except Exception as e:
+                logger.error(f"Failed to generate embeddings with OpenAI API: {e}")
+                raise RuntimeError(f"OpenAI embeddings API error: {e}") from e
+
+        elif self.config.embedding.provider == "gemini":
+            # Use Gemini API embeddings
+            logger.debug(f"Embedding query using Gemini API: {query[:100]}...")
+            try:
+                result = genai.embed_content(
+                    model=self.config.gemini.embedding_model,
+                    content=query,
+                    task_type="retrieval_query"
+                )
+                return result['embedding']
+            except Exception as e:
+                logger.error(f"Failed to generate embeddings with Gemini API: {e}")
+                raise RuntimeError(f"Gemini embeddings API error: {e}") from e
+
+        else:
+            raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
 
     def retrieve_documents(self, query_vector: List[float], top_k: int) -> List[Dict[str, Any]]:
         """
@@ -222,11 +230,11 @@ User: {user_message}
         logger.info(f"Searching for top {top_k} documents...")
 
         try:
-            results = self.qdrant_client.search(
+            results = self.qdrant_client.query_points(
                 collection_name=self.config.qdrant.collection_name,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=top_k,
-            )
+            ).points
 
             documents = []
             for idx, hit in enumerate(results):
@@ -248,9 +256,9 @@ User: {user_message}
             logger.error(f"Failed to retrieve documents: {e}")
             raise
 
-    def build_prompt(self, query: str, documents: List[Dict[str, Any]], language: str = "en") -> tuple[str, str]:
+    def build_prompt(self, query: str, documents: List[Dict[str, Any]], language: str = "en") -> List[Dict[str, str]]:
         """
-        Build the system and user prompts for the chat LLM with retrieved context.
+        Build the messages for the chat LLM with retrieved context.
 
         Args:
             query: The user's question
@@ -258,7 +266,7 @@ User: {user_message}
             language: Language code (e.g., "en", "ru") for response
 
         Returns:
-            Tuple of (system_message, user_message)
+            List of message dictionaries for Mistral API
         """
         # Build context from retrieved documents
         context_parts = []
@@ -297,164 +305,124 @@ REPEATING: Answer ONLY in English.""",
 
 Question: {query}"""
 
-        return system_message, user_message
+        # Return messages in Mistral API format
+        return [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": user_message}
+        ]
 
-    def generate_answer(self, system_message: str, user_message: str) -> str:
+    def generate_answer(self, messages: List[Dict[str, str]]) -> str:
         """
-        Generate an answer using the vLLM server.
-
-        Uses a requests session with automatic retry logic for transient failures.
-        Retries up to 3 times with exponential backoff on HTTP 429, 500, 502, 503, 504.
+        Generate an answer using configured LLM provider.
 
         Args:
-            system_message: The system instruction message
-            user_message: The user's question with context
+            messages: List of message dictionaries for the chat
 
         Returns:
             The generated answer text
 
         Raises:
-            RuntimeError: If connection fails, request times out, or server returns error
+            RuntimeError: If API call fails
         """
-        # Try chat completions API first if enabled
-        if self.use_chat_api:
+        if self.config.llm.provider == "mistral":
+            logger.info("Generating answer using Mistral API...")
             try:
-                return self._generate_with_chat_api(system_message, user_message)
-            except requests.exceptions.HTTPError as e:
-                # If chat API fails with 404 or 422, fall back to completions API
-                if e.response.status_code in [404, 422]:
-                    logger.warning(
-                        f"Chat completions API failed ({e.response.status_code}), "
-                        "falling back to completions API"
-                    )
-                    self.use_chat_api = False
-                    # Update URL for future requests
-                    self.vllm_url = f"http://{self.config.vllm.host}:{self.config.vllm.port}/v1/completions"
+                response = self.mistral_client.chat.complete(
+                    model=self.config.mistral.model_name,
+                    messages=messages,
+                    max_tokens=self.config.mistral.max_tokens,
+                    temperature=self.config.mistral.temperature,
+                )
+                answer = response.choices[0].message.content.strip()
+                logger.info("Answer generated successfully")
+                return answer
+            except Exception as e:
+                logger.error(f"Failed to generate answer with Mistral API: {e}")
+                raise RuntimeError(f"Mistral API error: {e}") from e
+
+        elif self.config.llm.provider == "openai":
+            logger.info("Generating answer using OpenAI API...")
+            try:
+                response = self.openai_client.chat.completions.create(
+                    model=self.config.openai.model_name,
+                    messages=messages,
+                    max_tokens=self.config.openai.max_tokens,
+                    temperature=self.config.openai.temperature,
+                )
+                answer = response.choices[0].message.content.strip()
+                logger.info("Answer generated successfully")
+                return answer
+            except Exception as e:
+                logger.error(f"Failed to generate answer with OpenAI API: {e}")
+                raise RuntimeError(f"OpenAI API error: {e}") from e
+
+        elif self.config.llm.provider == "claude":
+            logger.info("Generating answer using Claude API...")
+            try:
+                # Extract system message and user messages for Claude API
+                system_message = ""
+                claude_messages = []
+                for msg in messages:
+                    if msg["role"] == "system":
+                        system_message = msg["content"]
+                    else:
+                        claude_messages.append(msg)
+
+                response = self.claude_client.messages.create(
+                    model=self.config.claude.model_name,
+                    max_tokens=self.config.claude.max_tokens,
+                    temperature=self.config.claude.temperature,
+                    system=system_message,
+                    messages=claude_messages,
+                )
+                answer = response.content[0].text.strip()
+                logger.info("Answer generated successfully")
+                return answer
+            except Exception as e:
+                logger.error(f"Failed to generate answer with Claude API: {e}")
+                raise RuntimeError(f"Claude API error: {e}") from e
+
+        elif self.config.llm.provider == "gemini":
+            logger.info("Generating answer using Gemini API...")
+            try:
+                # Convert messages to Gemini format
+                model = genai.GenerativeModel(self.config.gemini.model_name)
+
+                # Extract system message and build conversation
+                system_instruction = ""
+                conversation_parts = []
+                for msg in messages:
+                    if msg["role"] == "system":
+                        system_instruction = msg["content"]
+                    elif msg["role"] == "user":
+                        conversation_parts.append(msg["content"])
+                    elif msg["role"] == "assistant":
+                        # Gemini doesn't use explicit assistant messages in the same way
+                        # For now, we'll skip assistant messages or handle them differently
+                        pass
+
+                # Combine system instruction with user message
+                if system_instruction:
+                    prompt = f"{system_instruction}\n\n{conversation_parts[-1]}"
                 else:
-                    raise
+                    prompt = conversation_parts[-1]
 
-        # Use completions API (either configured or as fallback)
-        return self._generate_with_completions_api(system_message, user_message)
+                response = model.generate_content(
+                    prompt,
+                    generation_config=genai.GenerationConfig(
+                        max_output_tokens=self.config.gemini.max_tokens,
+                        temperature=self.config.gemini.temperature,
+                    )
+                )
+                answer = response.text.strip()
+                logger.info("Answer generated successfully")
+                return answer
+            except Exception as e:
+                logger.error(f"Failed to generate answer with Gemini API: {e}")
+                raise RuntimeError(f"Gemini API error: {e}") from e
 
-    def _generate_with_chat_api(self, system_message: str, user_message: str) -> str:
-        """Generate answer using chat completions API."""
-        logger.info("Generating answer using vLLM chat completions API...")
-
-        # Combine system message and user message into a single user message
-        # because some vLLM models don't support the "system" role
-        combined_message = f"{system_message}\n\n{user_message}"
-
-        payload = {
-            "model": self.config.vllm.model_name,
-            "messages": [
-                {"role": "user", "content": combined_message}
-            ],
-            "max_tokens": self.config.vllm.max_tokens,
-            "temperature": self.config.vllm.temperature,
-            "stream": False,
-        }
-
-        try:
-            response = self.session.post(
-                self.vllm_url,
-                json=payload,
-                timeout=30,
-            )
-            response.raise_for_status()
-
-            result = response.json()
-            answer = result["choices"][0]["message"]["content"].strip()
-
-            logger.info("Answer generated successfully (chat API)")
-            return answer
-
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Failed to connect to vLLM server at {self.vllm_url}: {e}")
-            raise RuntimeError(
-                f"Cannot connect to vLLM server at {self.vllm_url}. "
-                "Make sure the vLLM server is running."
-            ) from e
-        except requests.exceptions.Timeout as e:
-            logger.error(f"Request to vLLM server timed out after 30 seconds: {e}")
-            raise RuntimeError(
-                "Request to vLLM server timed out after 30 seconds. "
-                "The model may be overloaded or the prompt may be too complex."
-            ) from e
-        except requests.exceptions.HTTPError as e:
-            error_details = e.response.text if hasattr(e.response, 'text') else str(e)
-            logger.error(f"vLLM chat API error {e.response.status_code}: {error_details}")
-            raise  # Re-raise to allow fallback logic in generate_answer
-        except (KeyError, IndexError) as e:
-            logger.error(f"Unexpected response format from vLLM server: {e}")
-            raise RuntimeError(
-                "vLLM server returned an unexpected response format. "
-                "The response may be missing expected fields."
-            ) from e
-        except Exception as e:
-            logger.error(f"Failed to generate answer: {e}")
-            raise RuntimeError(f"Unexpected error during answer generation: {e}") from e
-
-    def _generate_with_completions_api(self, system_message: str, user_message: str) -> str:
-        """Generate answer using completions API with model-specific chat template."""
-        logger.info(f"Generating answer using vLLM completions API ({self.chat_template} template)...")
-
-        # Use the appropriate chat template for the model
-        # This ensures the model follows instructions even with the completions API
-        try:
-            combined_prompt = self._format_prompt_with_template(system_message, user_message)
-        except Exception as e:
-            logger.error(f"Failed to format prompt with template: {e}, using simple format")
-            combined_prompt = f"{system_message}\n\n{user_message}\n\nAnswer:"
-
-        payload = {
-            "model": self.config.vllm.model_name,
-            "prompt": combined_prompt,
-            "max_tokens": self.config.vllm.max_tokens,
-            "temperature": self.config.vllm.temperature,
-            "stream": False,
-        }
-
-        try:
-            response = self.session.post(
-                self.vllm_url,
-                json=payload,
-                timeout=30,
-            )
-            response.raise_for_status()
-
-            result = response.json()
-            answer = result["choices"][0]["text"].strip()
-
-            logger.info("Answer generated successfully (completions API)")
-            return answer
-
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Failed to connect to vLLM server at {self.vllm_url}: {e}")
-            raise RuntimeError(
-                f"Cannot connect to vLLM server at {self.vllm_url}. "
-                "Make sure the vLLM server is running."
-            ) from e
-        except requests.exceptions.Timeout as e:
-            logger.error(f"Request to vLLM server timed out after 30 seconds: {e}")
-            raise RuntimeError(
-                "Request to vLLM server timed out after 30 seconds. "
-                "The model may be overloaded or the prompt may be too complex."
-            ) from e
-        except requests.exceptions.HTTPError as e:
-            error_details = e.response.text if hasattr(e.response, 'text') else str(e)
-            logger.error(f"vLLM completions API error {e.response.status_code}: {error_details}")
-            raise RuntimeError(
-                f"vLLM server returned HTTP error: {e.response.status_code} - {error_details}"
-            ) from e
-        except (KeyError, IndexError) as e:
-            logger.error(f"Unexpected response format from vLLM server: {e}")
-            raise RuntimeError(
-                "vLLM server returned an unexpected response format. "
-                "The response may be missing expected fields."
-            ) from e
-        except Exception as e:
-            logger.error(f"Failed to generate answer: {e}")
-            raise RuntimeError(f"Unexpected error during answer generation: {e}") from e
+        else:
+            raise ValueError(f"Unknown LLM provider: {self.config.llm.provider}")
 
     def query(self, question: str, top_k: int | None = None, language: str = "en") -> Dict[str, Any]:
         """
@@ -469,7 +437,17 @@ Question: {query}"""
             Dictionary containing the answer and metadata
         """
         if top_k is None:
-            top_k = self.config.vllm.top_k
+            # Get top_k from the appropriate LLM config
+            if self.config.llm.provider == "mistral":
+                top_k = self.config.mistral.top_k
+            elif self.config.llm.provider == "openai":
+                top_k = self.config.openai.top_k
+            elif self.config.llm.provider == "claude":
+                top_k = self.config.claude.top_k
+            elif self.config.llm.provider == "gemini":
+                top_k = self.config.gemini.top_k
+            else:
+                top_k = 5  # Default fallback
 
         logger.info(f"Processing query: {question[:100]}... (language: {language})")
 
@@ -479,11 +457,11 @@ Question: {query}"""
         # Step 2: Retrieve relevant documents
         documents = self.retrieve_documents(query_vector, top_k)
 
-        # Step 3: Build the prompt with language specification
-        system_message, user_message = self.build_prompt(question, documents, language=language)
+        # Step 3: Build the messages with language specification
+        messages = self.build_prompt(question, documents, language=language)
 
         # Step 4: Generate the answer
-        answer = self.generate_answer(system_message, user_message)
+        answer = self.generate_answer(messages)
 
         return {
             "question": question,

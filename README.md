@@ -1,12 +1,11 @@
 # RainRAG
 
-**Local-first Retrieval-Augmented Generation (RAG) Pipeline for VTT Subtitle Processing**
+**Retrieval-Augmented Generation (RAG) Pipeline for VTT Subtitle Processing**
 
-RainRAG is a modular, open-source backend system for building a semantic search engine over VTT subtitle files. It uses state-of-the-art multilingual embeddings and vector search to enable efficient retrieval of broadcast transcripts in Russian and English.
+RainRAG is a modular, open-source backend system for building a semantic search engine over VTT subtitle files. It uses state-of-the-art multilingual embeddings and vector search to enable efficient retrieval of broadcast transcripts in Russian and English, powered by Mistral AI.
 
 ## Features
 
-- **Local-first**: No external API calls, all processing runs locally
 - **Multilingual**: Supports Russian and English subtitles with `intfloat/multilingual-e5-large` embeddings
 - **Modular Pipeline**: Separate stages for ingestion, embedding, and indexing
 - **Production Ready**: Includes Helm charts for Kubernetes deployment
@@ -17,7 +16,7 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 - **Video Playback**: Inline video player for retrieved content
 - **Subtitle Access**: Download and view VTT files directly in the UI
 - **Network Access**: Accessible from other devices on the same network with optional token authentication
-- **LLM Integration**: Query interface powered by Mistral-Small via vLLM
+- **LLM Integration**: Query interface powered by Mistral AI API
 
 ## Architecture
 
@@ -71,10 +70,10 @@ RainRAG is a modular, open-source backend system for building a semantic search 
          ├──────────┐
          │          │
          ▼          ▼
-   ┌─────────┐  ┌─────────┐
-   │ Qdrant  │  │  vLLM   │
-   │ Search  │  │ Mistral │
-   └─────────┘  └─────────┘
+   ┌─────────┐  ┌──────────────┐
+   │ Qdrant  │  │  Mistral AI  │
+   │ Search  │  │     API      │
+   └─────────┘  └──────────────┘
          │          │
          └────┬─────┘
               ▼
@@ -112,7 +111,7 @@ poetry install
 poetry shell
 ```
 
-4. **Download required models** (requires internet connection)
+4. **Download required models** (only needed if using local embeddings)
 
 ```bash
 # Download and cache the embedding model
@@ -122,11 +121,26 @@ make download-models
 poetry run python scripts/download_models.py
 ```
 
-**Important:** This step downloads the `multilingual-e5-large` embedding model (~2GB) and caches it locally. This is required before you can run RainRAG. You only need to do this once.
+**Note:** This step downloads the `multilingual-e5-large` embedding model (~2GB) and caches it locally. This is only required if you're using `provider: "local"` in your embedding configuration. If you're using `provider: "mistral"` for Mistral API embeddings, you can skip this step.
 
 ### Configuration
 
-Edit `config.yaml` to customize paths and settings:
+1. **Set up Mistral API Key**
+
+Get your API key from [Mistral AI Console](https://console.mistral.ai/) and set it as an environment variable:
+
+```bash
+export MISTRAL_API_KEY=your_api_key_here
+```
+
+Or add it to your `.env` file:
+
+```bash
+cp .env.example .env
+# Edit .env and add your MISTRAL_API_KEY
+```
+
+2. **Edit `config.yaml`** to customize paths and settings:
 
 ```yaml
 paths:
@@ -135,22 +149,52 @@ paths:
   embeddings_cache: "./embeddings"
 
 embedding:
+  provider: "local"  # "local" for local model, "mistral" for Mistral API embeddings
   model_name: "intfloat/multilingual-e5-large"
-  device: "cuda"  # or "cpu"
+  device: "cuda"  # or "cpu" (only used with local provider)
   batch_size: 32
 
 qdrant:
   host: "localhost"
   port: 6333
   collection_name: "broadcast_transcripts"
+
+mistral:
+  api_key: ""  # Leave empty to use MISTRAL_API_KEY environment variable
+  model_name: "mistral-small-latest"  # or mistral-medium-latest, mistral-large-latest
+  max_tokens: 512
+  temperature: 0.3
+  top_k: 5
 ```
+
+### Choosing an Embedding Provider
+
+RainRAG supports two embedding providers:
+
+**Local Embeddings (`provider: "local"`)**
+- Uses `intfloat/multilingual-e5-large` model running locally
+- Requires downloading ~2GB model (one-time setup)
+- Requires GPU/CPU resources to run the model
+- Free to use (no API costs)
+- Best for: High-volume queries, air-gapped environments, or when you have sufficient compute resources
+
+**Mistral API Embeddings (`provider: "mistral"`)**
+- Uses Mistral's `mistral-embed` model via API
+- No local model download required
+- Minimal compute resources needed
+- Requires Mistral API key and incurs API costs
+- Best for: Quick setup, limited compute resources, or testing
+
+To use Mistral embeddings, simply change `provider: "mistral"` in your `config.yaml` embedding section.
+
+**Important:** If you switch embedding providers after indexing, you must re-run the entire pipeline (`rainrag embed` and `rainrag index`) because the embedding dimensions differ between providers.
 
 ### Running Qdrant Locally
 
 Start a local Qdrant instance using Docker:
 
 ```bash
-docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant:v1.7.4
+docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant:v1.12.1
 ```
 
 ## Usage
@@ -928,7 +972,7 @@ Ensure Qdrant is running:
 docker ps | grep qdrant
 
 # If not running, start it
-docker run -p 6333:6333 qdrant/qdrant:v1.7.4
+docker run -p 6333:6333 qdrant/qdrant:v1.12.1
 ```
 
 ### VTT Parsing Issues

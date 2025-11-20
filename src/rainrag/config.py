@@ -1,9 +1,11 @@
 """Configuration management for RainRAG."""
 
+import os
 from pathlib import Path
 from typing import Any, Dict
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 
@@ -22,6 +24,10 @@ class PathsConfig(BaseModel):
 class EmbeddingConfig(BaseModel):
     """Configuration for embedding generation."""
 
+    provider: str = Field(
+        default="local",
+        description="Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API, 'gemini' for Google Gemini API"
+    )
     model_name: str = Field(default="intfloat/multilingual-e5-large")
     batch_size: int = Field(default=32)
     max_seq_length: int = Field(default=512)
@@ -40,23 +46,72 @@ class QdrantConfig(BaseModel):
     recreate_collection: bool = Field(default=False)
 
 
-class VLLMConfig(BaseModel):
-    """Configuration for vLLM inference server."""
+class MistralConfig(BaseModel):
+    """Configuration for Mistral API."""
 
-    host: str = Field(default="localhost")
-    port: int = Field(default=8000)
-    model_name: str = Field(default="mistralai/Mistral-Small-3.2-24B-Instruct-2506")
+    api_key: str = Field(description="Mistral API key")
+    model_name: str = Field(
+        default="mistral-small-latest",
+        description="Mistral model to use: mistral-small-latest, mistral-medium-latest, mistral-large-latest, etc.",
+    )
     max_tokens: int = Field(default=512)
     temperature: float = Field(default=0.3)
     top_k: int = Field(default=5, description="Number of documents to retrieve")
-    use_chat_completions: bool = Field(
-        default=True,
-        description="Use chat completions API (/v1/chat/completions) instead of completions API. "
-        "Set to true for instruction-tuned models, false for base models or if chat API is not available.",
+
+
+class OpenAIConfig(BaseModel):
+    """Configuration for OpenAI API."""
+
+    api_key: str = Field(description="OpenAI API key")
+    model_name: str = Field(
+        default="gpt-4o-mini",
+        description="OpenAI model to use: gpt-4o, gpt-4o-mini, gpt-3.5-turbo, etc.",
     )
-    chat_template: str = Field(
-        default="auto",
-        description="Chat template format: 'auto' (detect from model), 'mistral', 'gemma', 'chatml', or 'generic'",
+    embedding_model: str = Field(
+        default="text-embedding-3-small",
+        description="OpenAI embedding model: text-embedding-3-small, text-embedding-3-large, etc.",
+    )
+    max_tokens: int = Field(default=512)
+    temperature: float = Field(default=0.3)
+    top_k: int = Field(default=5, description="Number of documents to retrieve")
+
+
+class ClaudeConfig(BaseModel):
+    """Configuration for Anthropic Claude API."""
+
+    api_key: str = Field(default="", description="Anthropic API key")
+    model_name: str = Field(
+        default="claude-3-5-sonnet-20240620",
+        description="Claude model to use: claude-3-5-sonnet-20240620, claude-3-opus-20240229, claude-3-haiku-20240307, etc.",
+    )
+    max_tokens: int = Field(default=512)
+    temperature: float = Field(default=0.3)
+    top_k: int = Field(default=5, description="Number of documents to retrieve")
+
+
+class GeminiConfig(BaseModel):
+    """Configuration for Google Gemini API."""
+
+    api_key: str = Field(default="", description="Google API key")
+    model_name: str = Field(
+        default="gemini-1.5-flash",
+        description="Gemini model to use: gemini-1.5-flash, gemini-1.5-pro, gemini-2.0-flash-exp, etc.",
+    )
+    embedding_model: str = Field(
+        default="models/text-embedding-004",
+        description="Gemini embedding model: models/text-embedding-004, models/embedding-001, etc.",
+    )
+    max_tokens: int = Field(default=512)
+    temperature: float = Field(default=0.3)
+    top_k: int = Field(default=5, description="Number of documents to retrieve")
+
+
+class LLMConfig(BaseModel):
+    """Configuration for LLM provider selection."""
+
+    provider: str = Field(
+        default="mistral",
+        description="LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API, 'claude' for Anthropic Claude API, 'gemini' for Google Gemini API"
     )
 
 
@@ -98,7 +153,11 @@ class Config(BaseModel):
     paths: PathsConfig
     embedding: EmbeddingConfig
     qdrant: QdrantConfig
-    vllm: VLLMConfig
+    llm: LLMConfig
+    mistral: MistralConfig
+    openai: OpenAIConfig
+    claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
+    gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
@@ -114,6 +173,9 @@ def load_config(config_path: str = "config.yaml") -> Config:
     Returns:
         Config object
     """
+    # Load environment variables from .env file if it exists
+    load_dotenv()
+
     config_file = Path(config_path)
 
     if not config_file.exists():
@@ -121,5 +183,33 @@ def load_config(config_path: str = "config.yaml") -> Config:
 
     with open(config_file, "r") as f:
         config_data: Dict[str, Any] = yaml.safe_load(f)
+
+    # Override Mistral API key from environment variable if set
+    mistral_api_key = os.getenv("MISTRAL_API_KEY")
+    if mistral_api_key:
+        if "mistral" not in config_data:
+            config_data["mistral"] = {}
+        config_data["mistral"]["api_key"] = mistral_api_key
+
+    # Override OpenAI API key from environment variable if set
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if openai_api_key:
+        if "openai" not in config_data:
+            config_data["openai"] = {}
+        config_data["openai"]["api_key"] = openai_api_key
+
+    # Override Anthropic API key from environment variable if set
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    if anthropic_api_key:
+        if "claude" not in config_data:
+            config_data["claude"] = {}
+        config_data["claude"]["api_key"] = anthropic_api_key
+
+    # Override Google API key from environment variable if set
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    if google_api_key:
+        if "gemini" not in config_data:
+            config_data["gemini"] = {}
+        config_data["gemini"]["api_key"] = google_api_key
 
     return Config(**config_data)

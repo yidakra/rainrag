@@ -13,6 +13,7 @@ data:
       embeddings_cache: {{ .Values.ingestion.config.paths.embeddings_cache | quote }}
 
     embedding:
+      provider: {{ .Values.ingestion.config.embedding.provider | quote }}
       model_name: {{ .Values.ingestion.config.embedding.model_name | quote }}
       batch_size: {{ .Values.ingestion.config.embedding.batch_size }}
       max_seq_length: {{ .Values.ingestion.config.embedding.max_seq_length }}
@@ -27,13 +28,12 @@ data:
       distance: {{ .Values.ingestion.config.qdrant.distance | quote }}
       recreate_collection: {{ .Values.ingestion.config.qdrant.recreate_collection }}
 
-    vllm:
-      host: {{ .Values.ingestion.config.vllm.host | quote }}
-      port: {{ .Values.ingestion.config.vllm.port }}
-      model_name: {{ .Values.ingestion.config.vllm.model_name | quote }}
-      max_tokens: {{ .Values.ingestion.config.vllm.max_tokens }}
-      temperature: {{ .Values.ingestion.config.vllm.temperature }}
-      top_k: {{ .Values.ingestion.config.vllm.top_k }}
+    mistral:
+      api_key: ""  # Set via MISTRAL_API_KEY environment variable
+      model_name: {{ .Values.ingestion.config.mistral.model_name | quote }}
+      max_tokens: {{ .Values.ingestion.config.mistral.max_tokens }}
+      temperature: {{ .Values.ingestion.config.mistral.temperature }}
+      top_k: {{ .Values.ingestion.config.mistral.top_k }}
 
     processing:
       num_workers: {{ .Values.ingestion.config.processing.num_workers }}

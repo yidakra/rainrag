@@ -7,13 +7,17 @@ import pytest
 import yaml
 
 from rainrag.config import (
+    ClaudeConfig,
     Config,
     EmbeddingConfig,
+    GeminiConfig,
+    LLMConfig,
     LoggingConfig,
+    MistralConfig,
+    OpenAIConfig,
     PathsConfig,
     ProcessingConfig,
     QdrantConfig,
-    VLLMConfig,
     load_config,
 )
 
@@ -41,6 +45,7 @@ class TestEmbeddingConfig:
         """Test default embedding configuration."""
         config = EmbeddingConfig()
 
+        assert config.provider == "local"
         assert config.model_name == "intfloat/multilingual-e5-large"
         assert config.batch_size == 32
         assert config.max_seq_length == 512
@@ -91,49 +96,146 @@ class TestQdrantConfig:
         assert config.distance == "Euclidean"
 
 
-class TestVLLMConfig:
-    """Tests for VLLMConfig model."""
+class TestMistralConfig:
+    """Tests for MistralConfig model."""
 
-    def test_vllm_config_defaults(self) -> None:
-        """Test default vLLM configuration."""
-        config = VLLMConfig()
+    def test_mistral_config_defaults(self) -> None:
+        """Test default Mistral configuration."""
+        config = MistralConfig(api_key="test-key")
 
-        assert config.host == "localhost"
-        assert config.port == 8000
-        assert config.model_name == "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+        assert config.api_key == "test-key"
+        assert config.model_name == "mistral-small-latest"
         assert config.max_tokens == 512
         assert config.temperature == 0.3
         assert config.top_k == 5
-        assert config.use_chat_completions is True
-        assert config.chat_template == "auto"
 
-    def test_vllm_config_custom(self) -> None:
-        """Test custom vLLM configuration."""
-        config = VLLMConfig(
-            host="vllm-server",
-            port=8080,
-            model_name="mistralai/Mistral-7B-Instruct-v0.3",
+    def test_mistral_config_custom(self) -> None:
+        """Test custom Mistral configuration."""
+        config = MistralConfig(
+            api_key="custom-key",
+            model_name="mistral-large-latest",
             max_tokens=1024,
             temperature=0.7,
             top_k=10,
-            use_chat_completions=False,
-            chat_template="mistral",
         )
 
-        assert config.host == "vllm-server"
-        assert config.port == 8080
-        assert config.model_name == "mistralai/Mistral-7B-Instruct-v0.3"
+        assert config.api_key == "custom-key"
+        assert config.model_name == "mistral-large-latest"
         assert config.max_tokens == 1024
         assert config.temperature == 0.7
         assert config.top_k == 10
-        assert config.use_chat_completions is False
-        assert config.chat_template == "mistral"
 
-    def test_vllm_config_chat_template_options(self) -> None:
-        """Test different chat template options."""
-        for template in ["auto", "mistral", "gemma", "chatml", "generic"]:
-            config = VLLMConfig(chat_template=template)
-            assert config.chat_template == template
+
+class TestOpenAIConfig:
+    """Tests for OpenAIConfig model."""
+
+    def test_openai_config_defaults(self) -> None:
+        """Test default OpenAI configuration."""
+        config = OpenAIConfig(api_key="test-key")
+
+        assert config.api_key == "test-key"
+        assert config.model_name == "gpt-4o-mini"
+        assert config.embedding_model == "text-embedding-3-small"
+        assert config.max_tokens == 512
+        assert config.temperature == 0.3
+        assert config.top_k == 5
+
+    def test_openai_config_custom(self) -> None:
+        """Test custom OpenAI configuration."""
+        config = OpenAIConfig(
+            api_key="custom-key",
+            model_name="gpt-4o",
+            embedding_model="text-embedding-3-large",
+            max_tokens=1024,
+            temperature=0.7,
+            top_k=10,
+        )
+
+        assert config.api_key == "custom-key"
+        assert config.model_name == "gpt-4o"
+        assert config.embedding_model == "text-embedding-3-large"
+        assert config.max_tokens == 1024
+        assert config.temperature == 0.7
+        assert config.top_k == 10
+
+
+class TestClaudeConfig:
+    """Tests for ClaudeConfig model."""
+
+    def test_claude_config_defaults(self) -> None:
+        """Test default Claude configuration."""
+        config = ClaudeConfig()
+
+        assert config.api_key == ""
+        assert config.model_name == "claude-3-5-sonnet-20240620"
+        assert config.max_tokens == 512
+        assert config.temperature == 0.3
+        assert config.top_k == 5
+
+    def test_claude_config_custom(self) -> None:
+        """Test custom Claude configuration."""
+        config = ClaudeConfig(
+            api_key="custom-key",
+            model_name="claude-3-opus-20240229",
+            max_tokens=1024,
+            temperature=0.7,
+            top_k=10,
+        )
+
+        assert config.api_key == "custom-key"
+        assert config.model_name == "claude-3-opus-20240229"
+        assert config.max_tokens == 1024
+        assert config.temperature == 0.7
+        assert config.top_k == 10
+
+
+class TestGeminiConfig:
+    """Tests for GeminiConfig model."""
+
+    def test_gemini_config_defaults(self) -> None:
+        """Test default Gemini configuration."""
+        config = GeminiConfig()
+
+        assert config.api_key == ""
+        assert config.model_name == "gemini-1.5-flash"
+        assert config.embedding_model == "models/text-embedding-004"
+        assert config.max_tokens == 512
+        assert config.temperature == 0.3
+        assert config.top_k == 5
+
+    def test_gemini_config_custom(self) -> None:
+        """Test custom Gemini configuration."""
+        config = GeminiConfig(
+            api_key="custom-key",
+            model_name="gemini-1.5-pro",
+            embedding_model="models/embedding-001",
+            max_tokens=1024,
+            temperature=0.7,
+            top_k=10,
+        )
+
+        assert config.api_key == "custom-key"
+        assert config.model_name == "gemini-1.5-pro"
+        assert config.embedding_model == "models/embedding-001"
+        assert config.max_tokens == 1024
+        assert config.temperature == 0.7
+        assert config.top_k == 10
+
+
+class TestLLMConfig:
+    """Tests for LLMConfig model."""
+
+    def test_llm_config_defaults(self) -> None:
+        """Test default LLM configuration."""
+        config = LLMConfig()
+
+        assert config.provider == "mistral"
+
+    def test_llm_config_custom(self) -> None:
+        """Test custom LLM configuration."""
+        config = LLMConfig(provider="openai")
+
+        assert config.provider == "openai"
 
 
 class TestProcessingConfig:
@@ -172,7 +274,9 @@ class TestConfig:
             ),
             embedding=EmbeddingConfig(),
             qdrant=QdrantConfig(),
-            vllm=VLLMConfig(),
+            llm=LLMConfig(),
+            mistral=MistralConfig(api_key="test-key"),
+            openai=OpenAIConfig(api_key="test-openai-key"),
             processing=ProcessingConfig(),
             logging=LoggingConfig(),
         )
@@ -180,8 +284,8 @@ class TestConfig:
         assert config.paths.archive_root == "/data/archive"
         assert config.embedding.model_name == "intfloat/multilingual-e5-large"
         assert config.qdrant.host == "localhost"
-        assert config.vllm.host == "localhost"
-        assert config.vllm.port == 8000
+        assert config.mistral.api_key == "test-key"
+        assert config.mistral.model_name == "mistral-small-latest"
         assert config.processing.num_workers == 4
         assert config.logging.level == "INFO"
 
@@ -198,6 +302,7 @@ class TestLoadConfig:
                 "embeddings_cache": "/test/embeddings",
             },
             "embedding": {
+                "provider": "local",
                 "model_name": "test-model",
                 "batch_size": 16,
                 "max_seq_length": 256,
@@ -212,10 +317,20 @@ class TestLoadConfig:
                 "distance": "Cosine",
                 "recreate_collection": True,
             },
-            "vllm": {
-                "host": "vllm-test",
-                "port": 8080,
-                "model_name": "test-model",
+            "llm": {
+                "provider": "mistral",
+            },
+            "mistral": {
+                "api_key": "test-key",
+                "model_name": "mistral-large-latest",
+                "max_tokens": 1024,
+                "temperature": 0.7,
+                "top_k": 10,
+            },
+            "openai": {
+                "api_key": "test-openai-key",
+                "model_name": "gpt-4o",
+                "embedding_model": "text-embedding-3-large",
                 "max_tokens": 1024,
                 "temperature": 0.7,
                 "top_k": 10,
@@ -244,9 +359,9 @@ class TestLoadConfig:
             assert config.embedding.batch_size == 16
             assert config.qdrant.host == "test-host"
             assert config.qdrant.recreate_collection is True
-            assert config.vllm.host == "vllm-test"
-            assert config.vllm.port == 8080
-            assert config.vllm.temperature == 0.7
+            assert config.mistral.api_key == "test-key"
+            assert config.mistral.model_name == "mistral-large-latest"
+            assert config.mistral.temperature == 0.7
             assert config.processing.num_workers == 2
             assert config.logging.level == "DEBUG"
 

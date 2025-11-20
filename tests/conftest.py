@@ -81,6 +81,7 @@ def test_config(temp_dir: Path) -> Config:
             "embeddings_cache": str(embeddings_dir),
         },
         embedding={
+            "provider": "local",  # Use local model for tests
             "model_name": "sentence-transformers/all-MiniLM-L6-v2",  # Smaller model for testing
             "batch_size": 8,
             "max_seq_length": 128,
@@ -95,10 +96,35 @@ def test_config(temp_dir: Path) -> Config:
             "distance": "Cosine",
             "recreate_collection": False,
         },
-        vllm={
-            "host": "localhost",
-            "port": 8000,
-            "model_name": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        llm={
+            "provider": "mistral",
+        },
+        mistral={
+            "api_key": "test-api-key",
+            "model_name": "mistral-small-latest",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        openai={
+            "api_key": "test-api-key",
+            "model_name": "gpt-4o-mini",
+            "embedding_model": "text-embedding-3-small",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        claude={
+            "api_key": "test-api-key",
+            "model_name": "claude-3-5-sonnet-20240620",
+            "max_tokens": 512,
+            "temperature": 0.3,
+            "top_k": 5,
+        },
+        gemini={
+            "api_key": "test-api-key",
+            "model_name": "gemini-1.5-flash",
+            "embedding_model": "models/text-embedding-004",
             "max_tokens": 512,
             "temperature": 0.3,
             "top_k": 5,

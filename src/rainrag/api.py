@@ -61,34 +61,15 @@ class HealthResponse(BaseModel):
     status: str
     qdrant_connected: bool
     model_loaded: bool
-    vllm_model: str
+    llm_provider: str
+    llm_model: str
+    embedding_provider: str
+    embedding_model: str
     qdrant_collection: str
+    # Deprecated fields (kept for backwards compatibility)
+    mistral_model: str
 
 
-class ModelInfo(BaseModel):
-    """Model information."""
-
-    name: str
-    display_name: str
-    chat_template: str
-    is_active: bool
-
-
-class ModelsResponse(BaseModel):
-    """Response model for models endpoint."""
-
-    models: List[ModelInfo]
-    current_model: str
-
-
-class SwitchModelRequest(BaseModel):
-    """Request model for switching models."""
-
-    model_name: str = Field(..., description="Full model name to switch to")
-    chat_template: str = Field(
-        default="auto",
-        description="Chat template to use (auto, mistral, gemma, chatml, generic)",
-    )
 
 
 def find_video_file(vtt_path: str) -> Optional[str]:
@@ -262,131 +243,46 @@ async def health_check():
         raise HTTPException(status_code=503, detail="Query engine not initialized")
 
     qdrant_connected = query_engine.qdrant_client is not None
-    model_loaded = query_engine.embedding_model is not None
+    model_loaded = query_engine.embedding_model is not None or query_engine.config.embedding.provider in ["mistral", "openai", "gemini"]
+
+    # Get LLM model based on provider
+    llm_provider = query_engine.config.llm.provider
+    if llm_provider == "mistral":
+        llm_model = query_engine.config.mistral.model_name
+    elif llm_provider == "openai":
+        llm_model = query_engine.config.openai.model_name
+    elif llm_provider == "claude":
+        llm_model = query_engine.config.claude.model_name
+    elif llm_provider == "gemini":
+        llm_model = query_engine.config.gemini.model_name
+    else:
+        llm_model = "unknown"
+
+    # Get embedding model based on provider
+    embedding_provider = query_engine.config.embedding.provider
+    if embedding_provider == "local":
+        embedding_model = query_engine.config.embedding.model_name
+    elif embedding_provider == "mistral":
+        embedding_model = "mistral-embed"
+    elif embedding_provider == "openai":
+        embedding_model = query_engine.config.openai.embedding_model
+    elif embedding_provider == "gemini":
+        embedding_model = query_engine.config.gemini.embedding_model
+    else:
+        embedding_model = "unknown"
 
     return HealthResponse(
         status="healthy" if (qdrant_connected and model_loaded) else "degraded",
         qdrant_connected=qdrant_connected,
         model_loaded=model_loaded,
-        vllm_model=query_engine.config.vllm.model_name,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
         qdrant_collection=query_engine.config.qdrant.collection_name,
+        # Deprecated field (kept for backwards compatibility)
+        mistral_model=llm_model,
     )
-
-
-# Supported models configuration with dedicated ports
-# Each model runs on its own vLLM instance for seamless switching
-# Note: API runs on port 8001, so vLLM uses 8000, 8002, 8003
-SUPPORTED_MODELS = {
-    "mistralai/Mistral-Small-3.2-24B-Instruct-2506": {
-        "display_name": "Mistral Small 3.2 24B",
-        "chat_template": "mistral",
-        "port": 8000,  # vLLM instance 1
-    },
-    "google/gemma-2-27b-it": {
-        "display_name": "Gemma 2 27B",
-        "chat_template": "gemma",
-        "port": 8002,  # vLLM instance 2 (8001 is used by API)
-    },
-    "gpt-oss:20b": {
-        "display_name": "GPT-OSS 20B",
-        "chat_template": "chatml",
-        "port": 8003,  # vLLM instance 3
-    },
-}
-
-
-@app.get("/models", response_model=ModelsResponse)
-async def list_models():
-    """
-    List available LLM models.
-
-    Returns:
-        List of supported models with metadata
-    """
-    if query_engine is None or config is None:
-        raise HTTPException(status_code=503, detail="Query engine not initialized")
-
-    current_model = config.vllm.model_name
-    models = []
-
-    for model_name, model_info in SUPPORTED_MODELS.items():
-        models.append(
-            ModelInfo(
-                name=model_name,
-                display_name=model_info["display_name"],
-                chat_template=model_info["chat_template"],
-                is_active=(model_name == current_model),
-            )
-        )
-
-    return ModelsResponse(models=models, current_model=current_model)
-
-
-@app.post("/models/switch")
-async def switch_model(request: SwitchModelRequest):
-    """
-    Switch to a different LLM model dynamically.
-
-    Args:
-        request: Model switch request with model name and optional chat template
-
-    Returns:
-        Success status with new model information
-    """
-    global query_engine, config
-
-    if query_engine is None or config is None:
-        raise HTTPException(status_code=503, detail="Query engine not initialized")
-
-    # Validate model name
-    if request.model_name not in SUPPORTED_MODELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported model: {request.model_name}. "
-            f"Supported models: {list(SUPPORTED_MODELS.keys())}",
-        )
-
-    try:
-        model_info = SUPPORTED_MODELS[request.model_name]
-        logger.info(
-            f"Switching model from {config.vllm.model_name} (port {config.vllm.port}) "
-            f"to {request.model_name} (port {model_info['port']})"
-        )
-
-        # Update config with new model and its dedicated port
-        config.vllm.model_name = request.model_name
-        config.vllm.port = model_info["port"]
-        config.vllm.chat_template = request.chat_template
-
-        # Reinitialize query engine with new model configuration
-        # Note: We keep the same embedding model and Qdrant client
-        old_embedding_model = query_engine.embedding_model
-        old_qdrant_client = query_engine.qdrant_client
-
-        # Create new query engine with updated config (new vLLM URL with different port)
-        query_engine = RAGQueryEngine(config)
-
-        # Reuse existing connections
-        query_engine.embedding_model = old_embedding_model
-        query_engine.qdrant_client = old_qdrant_client
-
-        logger.info(
-            f"Successfully switched to model: {request.model_name} on port {model_info['port']}"
-        )
-
-        return {
-            "status": "success",
-            "message": f"Switched to {model_info['display_name']}",
-            "model_name": request.model_name,
-            "chat_template": query_engine.chat_template,
-            "port": model_info["port"],
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to switch model: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to switch model: {str(e)}"
-        )
 
 
 @app.post("/query", response_model=QueryResponse)

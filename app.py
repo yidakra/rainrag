@@ -16,55 +16,6 @@ DEFAULT_LANGUAGE = "ru"
 DEFAULT_TOP_K = 3
 REQUEST_TIMEOUT = 60.0  # 60 seconds timeout for API requests
 
-# Supported LLM models (loaded dynamically from API)
-SUPPORTED_MODELS = {
-    "mistralai/Mistral-Small-3.2-24B-Instruct-2506": "Mistral Small 3.2 24B",
-    "google/gemma-2-27b-it": "Gemma 2 27B",
-    "gpt-oss:20b": "GPT-OSS 20B",
-}
-
-
-async def get_available_models() -> Optional[Dict[str, Any]]:
-    """Get available models from API."""
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{API_BASE_URL}/models", headers=get_api_headers())
-            if response.status_code == 200:
-                return response.json()
-            return None
-    except Exception as e:
-        logger.error(f"Failed to get models: {e}")
-        return None
-
-
-async def switch_model(model_name: str, chat_template: str = "auto") -> bool:
-    """
-    Switch to a different LLM model.
-
-    Args:
-        model_name: Full model name to switch to
-        chat_template: Chat template to use (default: auto)
-
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{API_BASE_URL}/models/switch",
-                json={"model_name": model_name, "chat_template": chat_template},
-                headers=get_api_headers(),
-            )
-            if response.status_code == 200:
-                result = response.json()
-                logger.info(f"Successfully switched to model: {result}")
-                return True
-            else:
-                logger.error(f"Model switch failed: {response.status_code} - {response.text}")
-                return False
-    except Exception as e:
-        logger.error(f"Failed to switch model: {e}")
-        return False
 
 
 # Translations
@@ -76,6 +27,7 @@ TRANSLATIONS = {
         "num_chunks_label": "Количество контекстных фрагментов",
         "system_info_label": "Информация о системе",
         "model_label": "Модель LLM",
+        "embedding_label": "Модель эмбеддингов",
         "collection_label": "Коллекция Qdrant",
         "status_label": "Статус",
         "connected": "Подключено",
@@ -111,6 +63,7 @@ TRANSLATIONS = {
         "num_chunks_label": "Number of context chunks",
         "system_info_label": "System Information",
         "model_label": "LLM Model",
+        "embedding_label": "Embedding Model",
         "collection_label": "Qdrant Collection",
         "status_label": "Status",
         "connected": "Connected",
@@ -523,68 +476,17 @@ def render_sidebar(lang: str):
                     status_color = "🟢" if health_info.get("status") == "healthy" else "🟡"
                     st.markdown(f"**{get_text('status_label', lang)}:** {status_color} {health_info.get('status', 'unknown').title()}")
 
-                    # Model selection dropdown
+                    # Display current LLM model
                     st.markdown(f"**{get_text('model_label', lang)}:**")
-                    current_model = health_info.get("vllm_model", "Unknown")
+                    llm_provider = health_info.get("llm_provider", "Unknown")
+                    llm_model = health_info.get("llm_model", "Unknown")
+                    st.code(f"{llm_provider} ({llm_model})", language="text")
 
-                    # Find the index of the current model, or use 0 as default
-                    model_names = list(SUPPORTED_MODELS.keys())
-                    try:
-                        current_index = model_names.index(current_model)
-                    except ValueError:
-                        # If current model not in supported list, add it temporarily
-                        if current_model != "Unknown":
-                            model_names.insert(0, current_model)
-                            temp_supported = {current_model: current_model}
-                            temp_supported.update(SUPPORTED_MODELS)
-                        else:
-                            temp_supported = SUPPORTED_MODELS
-                        current_index = 0
-                    else:
-                        temp_supported = SUPPORTED_MODELS
-
-                    # Initialize previous model in session state
-                    if "previous_model" not in st.session_state:
-                        st.session_state.previous_model = current_model
-
-                    selected_model = st.selectbox(
-                        "Select LLM Model",
-                        options=model_names,
-                        format_func=lambda x: f"{'✅ ' if x == current_model else ''}{temp_supported.get(x, x)}",
-                        index=current_index,
-                        key="model_select",
-                        label_visibility="collapsed",
-                    )
-
-                    # Handle model switching
-                    if selected_model != st.session_state.previous_model:
-                        switching_text = (
-                            f"🔄 Переключение на {temp_supported.get(selected_model, selected_model)}..."
-                            if lang == "ru"
-                            else f"🔄 Switching to {temp_supported.get(selected_model, selected_model)}..."
-                        )
-                        with st.spinner(switching_text):
-                            success = asyncio.run(switch_model(selected_model))
-                            if success:
-                                success_text = (
-                                    f"✅ Успешно переключено на {temp_supported.get(selected_model, selected_model)}"
-                                    if lang == "ru"
-                                    else f"✅ Successfully switched to {temp_supported.get(selected_model, selected_model)}"
-                                )
-                                st.success(success_text)
-                                st.session_state.previous_model = selected_model
-                                # Wait a moment for the change to propagate
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                error_text = (
-                                    "❌ Не удалось переключить модель. Убедитесь, что vLLM запущен с этой моделью."
-                                    if lang == "ru"
-                                    else "❌ Failed to switch model. Ensure vLLM is running with this model."
-                                )
-                                st.error(error_text)
-                                # Reset to previous model
-                                st.session_state.previous_model = current_model
+                    # Display current embedding model
+                    st.markdown(f"**{get_text('embedding_label', lang)}:**")
+                    embedding_provider = health_info.get("embedding_provider", "Unknown")
+                    embedding_model = health_info.get("embedding_model", "Unknown")
+                    st.code(f"{embedding_provider} ({embedding_model})", language="text")
 
                     st.markdown(f"**{get_text('collection_label', lang)}:**")
                     st.code(health_info.get("qdrant_collection", "Unknown"), language="text")

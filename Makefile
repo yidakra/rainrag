@@ -60,7 +60,7 @@ qdrant-start: ## Start local Qdrant instance
 		docker run -d --name rainrag-qdrant \
 			-p 6333:6333 -p 6334:6334 \
 			-v $(PWD)/qdrant_storage:/qdrant/storage \
-			qdrant/qdrant:v1.7.4; \
+			qdrant/qdrant:v1.12.1; \
 	fi
 	@echo "Waiting for Qdrant to be ready..."
 	@for i in $$(seq 1 30); do \
@@ -92,7 +92,7 @@ streamlit: ## Start Streamlit frontend
 	@echo "Note: Make sure API is running (make api) or set RAINRAG_API_URL"
 	poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860
 
-up: qdrant-start vllm-start ## Start all services (Qdrant, vLLM, API, Streamlit)
+up: qdrant-start ## Start all services (Qdrant, API, Streamlit)
 	@echo "Starting API and Streamlit..."
 	@$(MAKE) api-bg
 	@$(MAKE) streamlit-bg
@@ -102,21 +102,43 @@ up: qdrant-start vllm-start ## Start all services (Qdrant, vLLM, API, Streamlit)
 	@echo "Infrastructure:"
 	@echo "  - Qdrant:              http://localhost:6333"
 	@echo ""
-	@echo "LLM Models (vLLM):"
-	@echo "  - Mistral 7B AWQ:      http://localhost:8000"
-	@echo ""
 	@echo "Application:"
 	@echo "  - API:                 http://localhost:8001 (docs: /docs)"
 	@echo "  - Streamlit UI:        http://localhost:7860"
 	@echo ""
+	@echo "Configuration:"
+	@LLM_PROVIDER=$$(grep -A3 "^llm:" config.yaml | grep "^  provider:" | awk '{print $$2}' | tr -d '"'); \
+	LLM_MODEL=""; \
+	if [ "$$LLM_PROVIDER" = "mistral" ]; then \
+		LLM_MODEL=$$(grep -A5 "^mistral:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
+	elif [ "$$LLM_PROVIDER" = "openai" ]; then \
+		LLM_MODEL=$$(grep -A5 "^openai:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
+	elif [ "$$LLM_PROVIDER" = "claude" ]; then \
+		LLM_MODEL=$$(grep -A5 "^claude:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
+	elif [ "$$LLM_PROVIDER" = "gemini" ]; then \
+		LLM_MODEL=$$(grep -A5 "^gemini:" config.yaml | grep "^  model_name:" | head -1 | awk '{print $$2}' | tr -d '"'); \
+	fi; \
+	EMBED_PROVIDER=$$(grep -A5 "^embedding:" config.yaml | grep "^  provider:" | awk '{print $$2}' | tr -d '"'); \
+	EMBED_MODEL=""; \
+	if [ "$$EMBED_PROVIDER" = "local" ]; then \
+		EMBED_MODEL=$$(grep -A5 "^embedding:" config.yaml | grep "^  model_name:" | awk '{print $$2}' | tr -d '"'); \
+	elif [ "$$EMBED_PROVIDER" = "mistral" ]; then \
+		EMBED_MODEL="mistral-embed"; \
+	elif [ "$$EMBED_PROVIDER" = "openai" ]; then \
+		EMBED_MODEL=$$(grep -A5 "^openai:" config.yaml | grep "^  embedding_model:" | awk '{print $$2}' | tr -d '"'); \
+	elif [ "$$EMBED_PROVIDER" = "gemini" ]; then \
+		EMBED_MODEL=$$(grep -A5 "^gemini:" config.yaml | grep "^  embedding_model:" | awk '{print $$2}' | tr -d '"'); \
+	fi; \
+	echo "  - LLM Provider:        $$LLM_PROVIDER ($$LLM_MODEL)"; \
+	echo "  - Embedding Provider:  $$EMBED_PROVIDER ($$EMBED_MODEL)"
+	@echo ""
 	@echo "Logs:"
 	@echo "  - API:       /tmp/rainrag-api.log"
 	@echo "  - Streamlit: /tmp/rainrag-streamlit.log"
-	@echo "  - vLLM:      Use 'make vllm-logs' to view all model logs"
 	@echo ""
-	@echo "Switch between models seamlessly in the Streamlit UI!"
+	@echo "Note: Set MISTRAL_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, and/or GOOGLE_API_KEY in .env file"
 
-down: vllm-stop qdrant-stop ## Stop all services
+down: qdrant-stop ## Stop all services
 	@pkill -f "[u]vicorn rainrag.api" || true
 	@pkill -f "[s]treamlit run app.py" || true
 	@echo "All services stopped"
@@ -151,102 +173,6 @@ streamlit-bg: ## Start Streamlit in background
 		exit 1; \
 	fi
 
-# vLLM model servers
-vllm-mistral: ## Start Mistral vLLM server (foreground)
-	@echo "Starting Mistral 7B AWQ on port 8000"
-	poetry run python -m vllm.entrypoints.openai.api_server \
-		--model /root/models/mistral-7b-instruct-awq \
-		--tokenizer /root/models/mistral-7b-instruct-awq \
-		--served-model-name mistral-7b-instruct-awq \
-		--host 0.0.0.0 \
-		--port 8000 \
-		--quantization awq \
-		--max-model-len 4096 \
-		--gpu-memory-utilization 0.9 \
-		--dtype auto
-
-vllm-gemma: ## Start Gemma vLLM server (foreground)
-	@echo "Starting Gemma 2 27B on port 8002"
-	poetry run python -m vllm.entrypoints.openai.api_server \
-		--model google/gemma-2-27b-it \
-		--host 0.0.0.0 \
-		--port 8002 \
-		--dtype auto
-
-vllm-gptoss: ## Start GPT-OSS vLLM server (foreground)
-	@echo "Starting GPT-OSS 20B on port 8003"
-	poetry run python -m vllm.entrypoints.openai.api_server \
-		--model gpt-oss:20b \
-		--host 0.0.0.0 \
-		--port 8003 \
-		--dtype auto
-
-vllm-mistral-bg: ## Start Mistral vLLM server in background
-	@if pgrep -f "vllm.entrypoints.openai.api_server.*port 8000" > /dev/null; then \
-		echo "vLLM Mistral is already running on port 8000"; \
-	else \
-		echo "Starting Mistral vLLM server..."; \
-		cd $(PWD) && poetry run python -m vllm.entrypoints.openai.api_server \
-			--model /root/models/mistral-7b-instruct-awq \
-			--tokenizer /root/models/mistral-7b-instruct-awq \
-			--served-model-name mistral-7b-instruct-awq \
-			--host 0.0.0.0 \
-			--port 8000 \
-			--quantization awq \
-			--max-model-len 4096 \
-			--gpu-memory-utilization 0.9 \
-			--dtype auto > /tmp/rainrag-vllm-mistral.log 2>&1 & \
-		echo "Mistral vLLM started on port 8000 (logs: /tmp/rainrag-vllm-mistral.log)"; \
-	fi
-
-vllm-gemma-bg: ## Start Gemma vLLM server in background
-	@poetry run python -m vllm.entrypoints.openai.api_server \
-		--model google/gemma-2-27b-it \
-		--host 0.0.0.0 \
-		--port 8002 \
-		--dtype auto > /tmp/rainrag-vllm-gemma.log 2>&1 &
-	@echo "Gemma vLLM started on port 8002 (logs: /tmp/rainrag-vllm-gemma.log)"
-
-vllm-gptoss-bg: ## Start GPT-OSS vLLM server in background
-	@poetry run python -m vllm.entrypoints.openai.api_server \
-		--model gpt-oss:20b \
-		--host 0.0.0.0 \
-		--port 8003 \
-		--dtype auto > /tmp/rainrag-vllm-gptoss.log 2>&1 &
-	@echo "GPT-OSS vLLM started on port 8003 (logs: /tmp/rainrag-vllm-gptoss.log)"
-
-vllm-start: vllm-mistral-bg ## Start vLLM server in background
-	@echo "Waiting for vLLM server to be ready..."
-	@for i in $$(seq 1 180); do \
-		if curl -s http://localhost:8000/health > /dev/null 2>&1 || curl -s http://localhost:8000/v1/models > /dev/null 2>&1; then \
-			echo "vLLM server is ready"; \
-			break; \
-		fi; \
-		if [ $$i -eq 180 ]; then \
-			echo "Warning: vLLM may not be ready yet (this can take several minutes)"; \
-		fi; \
-		sleep 2; \
-	done
-	@echo ""
-	@echo "vLLM server started:"
-	@echo "  - Mistral 7B AWQ:        http://localhost:8000"
-	@echo ""
-	@echo "Logs available at:"
-	@echo "  - /tmp/rainrag-vllm-mistral.log"
-
-vllm-stop: ## Stop all vLLM servers
-	@pkill -f "[v]llm.entrypoints.openai.api_server" || true
-	@echo "All vLLM servers stopped"
-
-vllm-logs: ## Show logs from all vLLM servers
-	@echo "=== Mistral Logs ==="
-	@tail -20 /tmp/rainrag-vllm-mistral.log 2>/dev/null || echo "No Mistral logs found"
-	@echo ""
-	@echo "=== Gemma Logs ==="
-	@tail -20 /tmp/rainrag-vllm-gemma.log 2>/dev/null || echo "No Gemma logs found"
-	@echo ""
-	@echo "=== GPT-OSS Logs ==="
-	@tail -20 /tmp/rainrag-vllm-gptoss.log 2>/dev/null || echo "No GPT-OSS logs found"
 
 # Model management
 download-models: ## Download and cache required models (requires internet)
