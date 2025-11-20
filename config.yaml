@@ -32,7 +32,7 @@ qdrant:
 # LLM provider configuration
 llm:
   # LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API, 'claude' for Anthropic Claude API, 'gemini' for Google Gemini API
-  provider: "claude"
+  provider: "gemini"
 
 # Mistral API configuration
 mistral:
@@ -62,7 +62,7 @@ claude:
 # Google Gemini API configuration
 gemini:
   api_key: ""  # Set your Google API key here or via GOOGLE_API_KEY environment variable
-  model_name: "gemini-1.5-flash"  # Options: gemini-1.5-flash, gemini-1.5-pro, gemini-2.0-flash-exp, etc.
+  model_name: "gemini-2.5-flash"  # Options: gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-exp, etc.
   embedding_model: "models/text-embedding-004"  # Options: models/text-embedding-004, models/embedding-001, etc.
   max_tokens: 512
   temperature: 0.3
