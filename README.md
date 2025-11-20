@@ -2,7 +2,7 @@
 
 **Retrieval-Augmented Generation (RAG) Pipeline for VTT Subtitle Processing**
 
-RainRAG is a modular, open-source backend system for building a semantic search engine over VTT subtitle files. It uses state-of-the-art multilingual embeddings and vector search to enable efficient retrieval of broadcast transcripts in Russian and English, powered by Mistral AI.
+RainRAG is a modular, open-source backend system for building a semantic search engine over VTT subtitle files. It uses state-of-the-art multilingual embeddings and vector search to enable efficient retrieval of broadcast transcripts in Russian and English. Supports multiple LLM providers including Mistral AI, OpenAI, Anthropic Claude, and Google Gemini.
 
 ## Features
 
@@ -16,7 +16,8 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 - **Video Playback**: Inline video player for retrieved content
 - **Subtitle Access**: Download and view VTT files directly in the UI
 - **Network Access**: Accessible from other devices on the same network with optional token authentication
-- **LLM Integration**: Query interface powered by Mistral AI API
+- **Multi-Provider LLM**: Choose from Mistral AI, OpenAI (GPT-4/ChatGPT), Anthropic Claude, or Google Gemini
+- **Flexible Embeddings**: Local model or API-based (Mistral, OpenAI, Gemini)
 
 ## Architecture
 
@@ -70,15 +71,20 @@ RainRAG is a modular, open-source backend system for building a semantic search 
          ├──────────┐
          │          │
          ▼          ▼
-   ┌─────────┐  ┌──────────────┐
-   │ Qdrant  │  │  Mistral AI  │
-   │ Search  │  │     API      │
-   └─────────┘  └──────────────┘
-         │          │
-         └────┬─────┘
-              ▼
-        Generated Answer
-        + Context Chunks
+   ┌─────────┐  ┌──────────────────────┐
+   │ Qdrant  │  │   LLM Providers      │
+   │ Search  │  │ ┌──────────────────┐ │
+   └─────────┘  │ │ Mistral AI       │ │
+                │ │ OpenAI/ChatGPT   │ │
+                │ │ Anthropic Claude │ │
+                │ │ Google Gemini    │ │
+                │ └──────────────────┘ │
+                └──────────────────────┘
+         │                   │
+         └─────────┬─────────┘
+                   ▼
+           Generated Answer
+           + Context Chunks
 ```
 
 ## Quick Start
@@ -125,22 +131,38 @@ poetry run python scripts/download_models.py
 
 ### Configuration
 
-1. **Set up Mistral API Key**
+1. **Set up API Keys**
 
-Get your API key from [Mistral AI Console](https://console.mistral.ai/) and set it as an environment variable:
+RainRAG supports multiple LLM and embedding providers. Set up the provider(s) you want to use:
 
 ```bash
-export MISTRAL_API_KEY=your_api_key_here
+# Mistral AI (default recommended)
+export MISTRAL_API_KEY=your_mistral_key
+
+# OpenAI (for GPT-4, ChatGPT, or embeddings)
+export OPENAI_API_KEY=your_openai_key
+
+# Anthropic Claude
+export ANTHROPIC_API_KEY=your_claude_key
+
+# Google Gemini
+export GOOGLE_API_KEY=your_gemini_key
 ```
 
-Or add it to your `.env` file:
+Or add them to your `.env` file:
 
 ```bash
 cp .env.example .env
-# Edit .env and add your MISTRAL_API_KEY
+# Edit .env and add your API keys
 ```
 
-2. **Edit `config.yaml`** to customize paths and settings:
+**Getting API Keys:**
+- **Mistral**: [console.mistral.ai](https://console.mistral.ai/) - See [docs/MISTRAL_SETUP.md](docs/MISTRAL_SETUP.md)
+- **OpenAI**: [platform.openai.com](https://platform.openai.com/) - See [docs/OPENAI_SETUP.md](docs/OPENAI_SETUP.md)
+- **Claude**: [console.anthropic.com](https://console.anthropic.com/) - See [docs/CLAUDE_SETUP.md](docs/CLAUDE_SETUP.md)
+- **Gemini**: [makersuite.google.com](https://makersuite.google.com/) - See [docs/GEMINI_SETUP.md](docs/GEMINI_SETUP.md)
+
+2. **Edit `config.yaml`** to customize paths and select your providers:
 
 ```yaml
 paths:
@@ -148,8 +170,9 @@ paths:
   docs_output: "./data/docs.jsonl"
   embeddings_cache: "./embeddings"
 
+# Embedding configuration
 embedding:
-  provider: "local"  # "local" for local model, "mistral" for Mistral API embeddings
+  provider: "mistral"  # Options: "local", "mistral", "openai", "gemini"
   model_name: "intfloat/multilingual-e5-large"
   device: "cuda"  # or "cpu" (only used with local provider)
   batch_size: 32
@@ -159,33 +182,80 @@ qdrant:
   port: 6333
   collection_name: "broadcast_transcripts"
 
+# LLM provider selection
+llm:
+  provider: "mistral"  # Options: "mistral", "openai", "claude", "gemini"
+
+# Mistral AI configuration
 mistral:
-  api_key: ""  # Leave empty to use MISTRAL_API_KEY environment variable
-  model_name: "mistral-small-latest"  # or mistral-medium-latest, mistral-large-latest
+  api_key: ""  # Leave empty to use MISTRAL_API_KEY env var
+  model_name: "mistral-small-latest"
   max_tokens: 512
   temperature: 0.3
-  top_k: 5
+
+# OpenAI configuration
+openai:
+  api_key: ""  # Leave empty to use OPENAI_API_KEY env var
+  model_name: "gpt-4o-mini"
+  embedding_model: "text-embedding-3-small"
+  max_tokens: 512
+  temperature: 0.3
+
+# Anthropic Claude configuration
+claude:
+  api_key: ""  # Leave empty to use ANTHROPIC_API_KEY env var
+  model_name: "claude-haiku-4-5-20251001"
+  max_tokens: 512
+  temperature: 0.3
+
+# Google Gemini configuration
+gemini:
+  api_key: ""  # Leave empty to use GOOGLE_API_KEY env var
+  model_name: "gemini-2.5-flash"
+  embedding_model: "models/text-embedding-004"
+  max_tokens: 512
+  temperature: 0.3
 ```
+
+**See [docs/PROVIDER_COMPARISON.md](docs/PROVIDER_COMPARISON.md) for help choosing the right provider for your needs.**
 
 ### Choosing an Embedding Provider
 
-RainRAG supports two embedding providers:
+RainRAG supports four embedding providers:
 
 **Local Embeddings (`provider: "local"`)**
 - Uses `intfloat/multilingual-e5-large` model running locally
 - Requires downloading ~2GB model (one-time setup)
 - Requires GPU/CPU resources to run the model
 - Free to use (no API costs)
+- 1024 dimensions
 - Best for: High-volume queries, air-gapped environments, or when you have sufficient compute resources
 
-**Mistral API Embeddings (`provider: "mistral"`)**
+**Mistral API Embeddings (`provider: "mistral"`)** - **Recommended for most users**
 - Uses Mistral's `mistral-embed` model via API
 - No local model download required
 - Minimal compute resources needed
 - Requires Mistral API key and incurs API costs
+- 1024 dimensions
 - Best for: Quick setup, limited compute resources, or testing
 
-To use Mistral embeddings, simply change `provider: "mistral"` in your `config.yaml` embedding section.
+**OpenAI API Embeddings (`provider: "openai"`)**
+- Uses OpenAI's `text-embedding-3-small` or `text-embedding-3-large`
+- No local model download required
+- Minimal compute resources needed
+- Requires OpenAI API key and incurs API costs
+- 1536 dimensions (small) or 3072 dimensions (large)
+- Best for: Integration with existing OpenAI workflows
+
+**Google Gemini API Embeddings (`provider: "gemini"`)**
+- Uses Gemini's `models/text-embedding-004`
+- No local model download required
+- Minimal compute resources needed
+- Requires Google API key and incurs API costs
+- 768 dimensions
+- Best for: Cost-effective embedding generation
+
+To change embedding providers, update the `provider` field in your `config.yaml` embedding section and make sure the `qdrant.vector_size` matches the embedding dimensions.
 
 **Important:** If you switch embedding providers after indexing, you must re-run the entire pipeline (`rainrag embed` and `rainrag index`) because the embedding dimensions differ between providers.
 
@@ -273,7 +343,36 @@ rainrag pipeline --recreate-index
 rainrag pipeline --skip-ingest
 ```
 
-#### 5. View System Info
+#### 5. Query from CLI
+
+Ask questions directly from the command line:
+
+```bash
+rainrag ask "What topics were discussed in the latest episode?"
+```
+
+Options:
+- `--language`: Response language (`en` or `ru`, default: `en`)
+- `--top-k`: Number of context documents to retrieve (default: 5)
+- `--verbose`: Show retrieved context documents
+
+Examples:
+
+```bash
+# English query
+rainrag ask "Explain the main points about energy policy"
+
+# Russian query
+rainrag ask "О чём говорили в выпуске про энергетику?" --language ru
+
+# Retrieve more context
+rainrag ask "What was discussed about AI?" --top-k 10
+
+# Show context documents
+rainrag ask "Tell me about the interview" --verbose
+```
+
+#### 6. View System Info
 
 Display configuration and collection statistics:
 
