@@ -8,24 +8,26 @@ This module tests:
 - Integration with RAG query engine
 """
 
-import pytest
-from unittest.mock import MagicMock, patch, Mock
-from pathlib import Path
 import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.rainrag.config import (
     Config,
-    PathsConfig,
     EmbeddingConfig,
-    QdrantConfig,
     LLMConfig,
+    LoggingConfig,
     MistralConfig,
     OpenAIConfig,
+    PathsConfig,
     ProcessingConfig,
-    LoggingConfig,
+    QdrantConfig,
     VideoConfig,
 )
 from src.rainrag.query import RAGQueryEngine
@@ -35,6 +37,7 @@ from src.rainrag.query import RAGQueryEngine
 # Test Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def openai_config():
     """Create test configuration with OpenAI provider."""
@@ -42,37 +45,34 @@ def openai_config():
         paths=PathsConfig(
             archive_root="/test/archive",
             docs_output="/test/docs.jsonl",
-            embeddings_cache="/test/embeddings"
+            embeddings_cache="/test/embeddings",
         ),
         embedding=EmbeddingConfig(
             provider="openai",
             model_name="intfloat/multilingual-e5-large",
             batch_size=32,
-            device="cpu"
+            device="cpu",
         ),
         qdrant=QdrantConfig(
             host="localhost",
             port=6333,
             collection_name="test_collection",
             vector_size=1536,  # OpenAI embedding size
-            distance="Cosine"
+            distance="Cosine",
         ),
         llm=LLMConfig(provider="openai"),
-        mistral=MistralConfig(
-            api_key="test-mistral-key",
-            model_name="mistral-small-latest"
-        ),
+        mistral=MistralConfig(api_key="test-mistral-key", model_name="mistral-small-latest"),
         openai=OpenAIConfig(
             api_key="test-openai-key",
             model_name="gpt-4o-mini",
             embedding_model="text-embedding-3-small",
             max_tokens=512,
             temperature=0.3,
-            top_k=5
+            top_k=5,
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
-        video=VideoConfig(enabled=True)
+        video=VideoConfig(enabled=True),
     )
 
 
@@ -110,7 +110,7 @@ def mock_qdrant_client():
         "text": "Test document content",
         "language": "en",
         "path": "/test/doc1.vtt",
-        "doc_id": "doc1"
+        "doc_id": "doc1",
     }
     query_result.points = [point]
     client.query_points.return_value = query_result
@@ -122,10 +122,11 @@ def mock_qdrant_client():
 # OpenAI Embedding Tests
 # ============================================================================
 
+
 def test_embed_query_openai_success(openai_config, mock_openai_client, mock_qdrant_client):
     """Test successful query embedding with OpenAI API."""
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -140,8 +141,7 @@ def test_embed_query_openai_success(openai_config, mock_openai_client, mock_qdra
 
             # Verify OpenAI API was called correctly
             mock_openai_client.embeddings.create.assert_called_once_with(
-                model="text-embedding-3-small",
-                input=query
+                model="text-embedding-3-small", input=query
             )
 
 
@@ -149,8 +149,8 @@ def test_embed_query_openai_error(openai_config, mock_openai_client, mock_qdrant
     """Test OpenAI embedding API error handling."""
     mock_openai_client.embeddings.create.side_effect = Exception("API Error")
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -165,8 +165,8 @@ def test_embed_query_openai_rate_limit(openai_config, mock_openai_client, mock_q
     """Test OpenAI rate limit error handling."""
     mock_openai_client.embeddings.create.side_effect = Exception("Rate limit exceeded")
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -186,8 +186,8 @@ def test_embed_query_openai_different_model(openai_config, mock_openai_client, m
     embedding_response.data = [MagicMock(embedding=[0.1] * 3072)]
     mock_openai_client.embeddings.create.return_value = embedding_response
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -195,8 +195,7 @@ def test_embed_query_openai_different_model(openai_config, mock_openai_client, m
 
             assert len(embedding) == 3072
             mock_openai_client.embeddings.create.assert_called_with(
-                model="text-embedding-3-large",
-                input="test"
+                model="text-embedding-3-large", input="test"
             )
 
 
@@ -204,17 +203,18 @@ def test_embed_query_openai_different_model(openai_config, mock_openai_client, m
 # OpenAI LLM Generation Tests
 # ============================================================================
 
+
 def test_generate_answer_openai_success(openai_config, mock_openai_client, mock_qdrant_client):
     """Test successful answer generation with OpenAI API."""
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
             # Generate answer
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": "What is AI?"}
+                {"role": "user", "content": "What is AI?"},
             ]
 
             answer = engine.generate_answer(messages)
@@ -224,19 +224,18 @@ def test_generate_answer_openai_success(openai_config, mock_openai_client, mock_
 
             # Verify OpenAI API was called correctly
             mock_openai_client.chat.completions.create.assert_called_once_with(
-                model="gpt-4o-mini",
-                messages=messages,
-                max_tokens=512,
-                temperature=0.3
+                model="gpt-4o-mini", messages=messages, max_tokens=512, temperature=0.3
             )
 
 
-def test_generate_answer_openai_different_model(openai_config, mock_openai_client, mock_qdrant_client):
+def test_generate_answer_openai_different_model(
+    openai_config, mock_openai_client, mock_qdrant_client
+):
     """Test answer generation with different OpenAI model."""
     openai_config.openai.model_name = "gpt-4o"
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -248,13 +247,15 @@ def test_generate_answer_openai_different_model(openai_config, mock_openai_clien
             assert call_args[1]["model"] == "gpt-4o"
 
 
-def test_generate_answer_openai_custom_params(openai_config, mock_openai_client, mock_qdrant_client):
+def test_generate_answer_openai_custom_params(
+    openai_config, mock_openai_client, mock_qdrant_client
+):
     """Test answer generation with custom parameters."""
     openai_config.openai.max_tokens = 1024
     openai_config.openai.temperature = 0.7
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -271,8 +272,8 @@ def test_generate_answer_openai_error(openai_config, mock_openai_client, mock_qd
     """Test OpenAI LLM API error handling."""
     mock_openai_client.chat.completions.create.side_effect = Exception("API Error")
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -282,15 +283,17 @@ def test_generate_answer_openai_error(openai_config, mock_openai_client, mock_qd
             assert "OpenAI API error" in str(exc_info.value)
 
 
-def test_generate_answer_openai_empty_response(openai_config, mock_openai_client, mock_qdrant_client):
+def test_generate_answer_openai_empty_response(
+    openai_config, mock_openai_client, mock_qdrant_client
+):
     """Test handling of empty response from OpenAI."""
     # Mock empty response
     chat_response = MagicMock()
     chat_response.choices = [MagicMock(message=MagicMock(content="  "))]
     mock_openai_client.chat.completions.create.return_value = chat_response
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -304,19 +307,16 @@ def test_generate_answer_openai_empty_response(openai_config, mock_openai_client
 # OpenAI Full Query Pipeline Tests
 # ============================================================================
 
+
 def test_query_openai_full_pipeline(openai_config, mock_openai_client, mock_qdrant_client):
     """Test full RAG query pipeline with OpenAI."""
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
             # Run full query
-            result = engine.query(
-                question="What is machine learning?",
-                top_k=3,
-                language="en"
-            )
+            result = engine.query(question="What is machine learning?", top_k=3, language="en")
 
             # Verify result structure
             assert "answer" in result
@@ -334,16 +334,12 @@ def test_query_openai_full_pipeline(openai_config, mock_openai_client, mock_qdra
 
 def test_query_openai_russian_language(openai_config, mock_openai_client, mock_qdrant_client):
     """Test OpenAI query with Russian language."""
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
-            result = engine.query(
-                question="Что такое машинное обучение?",
-                top_k=5,
-                language="ru"
-            )
+            result = engine.query(question="Что такое машинное обучение?", top_k=5, language="ru")
 
             # Verify result
             assert result["answer"] is not None
@@ -363,16 +359,12 @@ def test_query_openai_no_documents_retrieved(openai_config, mock_openai_client, 
     query_result.points = []
     mock_qdrant_client.query_points.return_value = query_result
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
-            result = engine.query(
-                question="What is quantum physics?",
-                top_k=5,
-                language="en"
-            )
+            result = engine.query(question="What is quantum physics?", top_k=5, language="en")
 
             # Should still generate answer (without context)
             assert result["answer"] is not None

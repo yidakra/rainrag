@@ -8,19 +8,29 @@ This module tests:
 - End-to-end workflows
 """
 
-import pytest
-from unittest.mock import MagicMock, patch, Mock
-from pathlib import Path
 import sys
-import numpy as np
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.rainrag.config import (
-    Config, PathsConfig, EmbeddingConfig, QdrantConfig,
-    LLMConfig, MistralConfig, OpenAIConfig, ClaudeConfig, GeminiConfig,
-    ProcessingConfig, LoggingConfig, VideoConfig
+    ClaudeConfig,
+    Config,
+    EmbeddingConfig,
+    GeminiConfig,
+    LLMConfig,
+    LoggingConfig,
+    MistralConfig,
+    OpenAIConfig,
+    PathsConfig,
+    ProcessingConfig,
+    QdrantConfig,
+    VideoConfig,
 )
 from src.rainrag.query import RAGQueryEngine
 
@@ -28,6 +38,7 @@ from src.rainrag.query import RAGQueryEngine
 # ============================================================================
 # Test Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def mock_qdrant_client():
@@ -43,7 +54,7 @@ def mock_qdrant_client():
         "text": "Machine learning is a subset of artificial intelligence.",
         "language": "en",
         "path": "/test/doc1.vtt",
-        "doc_id": "doc1"
+        "doc_id": "doc1",
     }
     query_result.points = [point]
     client.query_points.return_value = query_result
@@ -55,44 +66,42 @@ def mock_qdrant_client():
 # Mistral Full Pipeline Tests
 # ============================================================================
 
+
 def test_mistral_full_pipeline_embeddings_and_llm(mock_qdrant_client):
     """Test full pipeline with Mistral for both embeddings and LLM."""
     config = Config(
         paths=PathsConfig(
             archive_root="/test/archive",
             docs_output="/test/docs.jsonl",
-            embeddings_cache="/test/embeddings"
+            embeddings_cache="/test/embeddings",
         ),
         embedding=EmbeddingConfig(
             provider="mistral",
             model_name="intfloat/multilingual-e5-large",
             batch_size=32,
-            device="cpu"
+            device="cpu",
         ),
         qdrant=QdrantConfig(
             host="localhost",
             port=6333,
             collection_name="test_collection",
             vector_size=1024,
-            distance="Cosine"
+            distance="Cosine",
         ),
         llm=LLMConfig(provider="mistral"),
-        mistral=MistralConfig(
-            api_key="test-key",
-            model_name="mistral-small-latest"
-        ),
+        mistral=MistralConfig(api_key="test-key", model_name="mistral-small-latest"),
         openai=OpenAIConfig(
             api_key="test-openai-key",
             model_name="gpt-4o-mini",
-            embedding_model="text-embedding-3-small"
+            embedding_model="text-embedding-3-small",
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
-        video=VideoConfig(enabled=True)
+        video=VideoConfig(enabled=True),
     )
 
-    with patch('src.rainrag.query.Mistral') as mock_mistral_class:
-        with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.Mistral") as mock_mistral_class:
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             # Mock Mistral client
             mock_mistral = MagicMock()
 
@@ -104,7 +113,11 @@ def test_mistral_full_pipeline_embeddings_and_llm(mock_qdrant_client):
             # Mock chat response
             chat_response = MagicMock()
             chat_response.choices = [
-                MagicMock(message=MagicMock(content="Machine learning is a subset of AI that enables computers to learn from data."))
+                MagicMock(
+                    message=MagicMock(
+                        content="Machine learning is a subset of AI that enables computers to learn from data."
+                    )
+                )
             ]
             mock_mistral.chat.complete.return_value = chat_response
 
@@ -114,11 +127,7 @@ def test_mistral_full_pipeline_embeddings_and_llm(mock_qdrant_client):
             engine = RAGQueryEngine(config)
             engine.initialize()
 
-            result = engine.query(
-                question="What is machine learning?",
-                top_k=5,
-                language="en"
-            )
+            result = engine.query(question="What is machine learning?", top_k=5, language="en")
 
             # Verify result
             assert result["answer"] is not None
@@ -134,45 +143,43 @@ def test_mistral_full_pipeline_embeddings_and_llm(mock_qdrant_client):
 # Mixed Provider Tests
 # ============================================================================
 
+
 def test_mistral_llm_with_local_embeddings(mock_qdrant_client):
     """Test Mistral LLM with local embeddings."""
     config = Config(
         paths=PathsConfig(
             archive_root="/test/archive",
             docs_output="/test/docs.jsonl",
-            embeddings_cache="/test/embeddings"
+            embeddings_cache="/test/embeddings",
         ),
         embedding=EmbeddingConfig(
             provider="local",
             model_name="intfloat/multilingual-e5-large",
             batch_size=32,
-            device="cpu"
+            device="cpu",
         ),
         qdrant=QdrantConfig(
             host="localhost",
             port=6333,
             collection_name="test_collection",
             vector_size=1024,
-            distance="Cosine"
+            distance="Cosine",
         ),
         llm=LLMConfig(provider="mistral"),
-        mistral=MistralConfig(
-            api_key="test-key",
-            model_name="mistral-small-latest"
-        ),
+        mistral=MistralConfig(api_key="test-key", model_name="mistral-small-latest"),
         openai=OpenAIConfig(
             api_key="test-openai-key",
             model_name="gpt-4o-mini",
-            embedding_model="text-embedding-3-small"
+            embedding_model="text-embedding-3-small",
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
-        video=VideoConfig(enabled=True)
+        video=VideoConfig(enabled=True),
     )
 
-    with patch('src.rainrag.query.SentenceTransformer') as mock_st:
-        with patch('src.rainrag.query.Mistral') as mock_mistral_class:
-            with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.SentenceTransformer") as mock_st:
+        with patch("src.rainrag.query.Mistral") as mock_mistral_class:
+            with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
                 # Mock local embeddings
                 mock_model = MagicMock()
                 mock_model.encode.return_value = MagicMock(tolist=lambda: [0.1] * 1024)
@@ -205,36 +212,36 @@ def test_openai_llm_with_mistral_embeddings(mock_qdrant_client):
         paths=PathsConfig(
             archive_root="/test/archive",
             docs_output="/test/docs.jsonl",
-            embeddings_cache="/test/embeddings"
+            embeddings_cache="/test/embeddings",
         ),
         embedding=EmbeddingConfig(
             provider="mistral",
             model_name="intfloat/multilingual-e5-large",
             batch_size=32,
-            device="cpu"
+            device="cpu",
         ),
         qdrant=QdrantConfig(
             host="localhost",
             port=6333,
             collection_name="test_collection",
             vector_size=1024,
-            distance="Cosine"
+            distance="Cosine",
         ),
         llm=LLMConfig(provider="openai"),
         mistral=MistralConfig(api_key="test-mistral-key", model_name="mistral-embed"),
         openai=OpenAIConfig(
             api_key="test-openai-key",
             model_name="gpt-4o-mini",
-            embedding_model="text-embedding-3-small"
+            embedding_model="text-embedding-3-small",
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
-        video=VideoConfig(enabled=True)
+        video=VideoConfig(enabled=True),
     )
 
-    with patch('src.rainrag.query.Mistral') as mock_mistral_class:
-        with patch('src.rainrag.query.OpenAI') as mock_openai_class:
-            with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.Mistral") as mock_mistral_class:
+        with patch("src.rainrag.query.OpenAI") as mock_openai_class:
+            with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
                 # Mock Mistral embeddings
                 mock_mistral = MagicMock()
                 embedding_response = MagicMock()
@@ -269,50 +276,44 @@ def test_claude_llm_with_gemini_embeddings(mock_qdrant_client):
         paths=PathsConfig(
             archive_root="/test/archive",
             docs_output="/test/docs.jsonl",
-            embeddings_cache="/test/embeddings"
+            embeddings_cache="/test/embeddings",
         ),
         embedding=EmbeddingConfig(
             provider="gemini",
             model_name="intfloat/multilingual-e5-large",
             batch_size=32,
-            device="cpu"
+            device="cpu",
         ),
         qdrant=QdrantConfig(
             host="localhost",
             port=6333,
             collection_name="test_collection",
             vector_size=768,
-            distance="Cosine"
+            distance="Cosine",
         ),
         llm=LLMConfig(provider="claude"),
-        mistral=MistralConfig(
-            api_key="test-mistral-key",
-            model_name="mistral-small-latest"
-        ),
+        mistral=MistralConfig(api_key="test-mistral-key", model_name="mistral-small-latest"),
         openai=OpenAIConfig(
             api_key="test-openai-key",
             model_name="gpt-4o-mini",
-            embedding_model="text-embedding-3-small"
+            embedding_model="text-embedding-3-small",
         ),
-        claude=ClaudeConfig(
-            api_key="test-claude-key",
-            model_name="claude-haiku-4-5-20251001"
-        ),
+        claude=ClaudeConfig(api_key="test-claude-key", model_name="claude-haiku-4-5-20251001"),
         gemini=GeminiConfig(
             api_key="test-gemini-key",
             model_name="gemini-2.5-flash",
-            embedding_model="models/text-embedding-004"
+            embedding_model="models/text-embedding-004",
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
-        video=VideoConfig(enabled=True)
+        video=VideoConfig(enabled=True),
     )
 
-    with patch('src.rainrag.query.genai') as mock_genai:
-        with patch('src.rainrag.query.Anthropic') as mock_anthropic_class:
-            with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.genai") as mock_genai:
+        with patch("src.rainrag.query.Anthropic") as mock_anthropic_class:
+            with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
                 # Mock Gemini embeddings
-                mock_genai.embed_content.return_value = {'embedding': [0.1] * 768}
+                mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
                 mock_genai.configure = MagicMock()
 
                 # Mock Claude LLM
@@ -340,42 +341,43 @@ def test_claude_llm_with_gemini_embeddings(mock_qdrant_client):
 # End-to-End Multilingual Tests
 # ============================================================================
 
+
 def test_multilingual_query_english(mock_qdrant_client):
     """Test end-to-end query in English."""
     config = Config(
         paths=PathsConfig(
             archive_root="/test/archive",
             docs_output="/test/docs.jsonl",
-            embeddings_cache="/test/embeddings"
+            embeddings_cache="/test/embeddings",
         ),
         embedding=EmbeddingConfig(
             provider="local",
             model_name="intfloat/multilingual-e5-large",
             batch_size=32,
-            device="cpu"
+            device="cpu",
         ),
         qdrant=QdrantConfig(
             host="localhost",
             port=6333,
             collection_name="test_collection",
             vector_size=1024,
-            distance="Cosine"
+            distance="Cosine",
         ),
         llm=LLMConfig(provider="mistral"),
         mistral=MistralConfig(api_key="test-key", model_name="mistral-small-latest"),
         openai=OpenAIConfig(
             api_key="test-openai-key",
             model_name="gpt-4o-mini",
-            embedding_model="text-embedding-3-small"
+            embedding_model="text-embedding-3-small",
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
-        video=VideoConfig(enabled=True)
+        video=VideoConfig(enabled=True),
     )
 
-    with patch('src.rainrag.query.SentenceTransformer') as mock_st:
-        with patch('src.rainrag.query.Mistral') as mock_mistral_class:
-            with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.SentenceTransformer") as mock_st:
+        with patch("src.rainrag.query.Mistral") as mock_mistral_class:
+            with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
                 # Mock embeddings
                 mock_model = MagicMock()
                 mock_model.encode.return_value = MagicMock(tolist=lambda: [0.1] * 1024)
@@ -385,7 +387,11 @@ def test_multilingual_query_english(mock_qdrant_client):
                 mock_mistral = MagicMock()
                 chat_response = MagicMock()
                 chat_response.choices = [
-                    MagicMock(message=MagicMock(content="Machine learning enables computers to learn from data without explicit programming."))
+                    MagicMock(
+                        message=MagicMock(
+                            content="Machine learning enables computers to learn from data without explicit programming."
+                        )
+                    )
                 ]
                 mock_mistral.chat.complete.return_value = chat_response
                 mock_mistral_class.return_value = mock_mistral
@@ -394,11 +400,7 @@ def test_multilingual_query_english(mock_qdrant_client):
                 engine = RAGQueryEngine(config)
                 engine.initialize()
 
-                result = engine.query(
-                    question="What is machine learning?",
-                    top_k=5,
-                    language="en"
-                )
+                result = engine.query(question="What is machine learning?", top_k=5, language="en")
 
                 # Verify English response
                 assert result["answer"] is not None
@@ -411,44 +413,41 @@ def test_multilingual_query_russian(mock_qdrant_client):
         paths=PathsConfig(
             archive_root="/test/archive",
             docs_output="/test/docs.jsonl",
-            embeddings_cache="/test/embeddings"
+            embeddings_cache="/test/embeddings",
         ),
         embedding=EmbeddingConfig(
             provider="local",
             model_name="intfloat/multilingual-e5-large",
             batch_size=32,
-            device="cpu"
+            device="cpu",
         ),
         qdrant=QdrantConfig(
             host="localhost",
             port=6333,
             collection_name="test_collection",
             vector_size=1024,
-            distance="Cosine"
+            distance="Cosine",
         ),
         llm=LLMConfig(provider="gemini"),
-        mistral=MistralConfig(
-            api_key="test-mistral-key",
-            model_name="mistral-small-latest"
-        ),
+        mistral=MistralConfig(api_key="test-mistral-key", model_name="mistral-small-latest"),
         openai=OpenAIConfig(
             api_key="test-openai-key",
             model_name="gpt-4o-mini",
-            embedding_model="text-embedding-3-small"
+            embedding_model="text-embedding-3-small",
         ),
         gemini=GeminiConfig(
             api_key="test-key",
             model_name="gemini-2.5-flash",
-            embedding_model="models/text-embedding-004"
+            embedding_model="models/text-embedding-004",
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
-        video=VideoConfig(enabled=True)
+        video=VideoConfig(enabled=True),
     )
 
-    with patch('src.rainrag.query.SentenceTransformer') as mock_st:
-        with patch('src.rainrag.query.genai') as mock_genai:
-            with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.SentenceTransformer") as mock_st:
+        with patch("src.rainrag.query.genai") as mock_genai:
+            with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
                 # Mock embeddings
                 mock_model = MagicMock()
                 mock_model.encode.return_value = MagicMock(tolist=lambda: [0.1] * 1024)
@@ -468,9 +467,7 @@ def test_multilingual_query_russian(mock_qdrant_client):
                 engine.initialize()
 
                 result = engine.query(
-                    question="Что такое машинное обучение?",
-                    top_k=5,
-                    language="ru"
+                    question="Что такое машинное обучение?", top_k=5, language="ru"
                 )
 
                 # Verify Russian response
@@ -482,39 +479,44 @@ def test_multilingual_query_russian(mock_qdrant_client):
 # Provider Switching Tests
 # ============================================================================
 
+
 def test_switching_llm_providers(mock_qdrant_client):
     """Test switching between LLM providers without re-indexing."""
     base_config = Config(
         paths=PathsConfig(
             archive_root="/test/archive",
             docs_output="/test/docs.jsonl",
-            embeddings_cache="/test/embeddings"
+            embeddings_cache="/test/embeddings",
         ),
         embedding=EmbeddingConfig(
             provider="local",
             model_name="intfloat/multilingual-e5-large",
             batch_size=32,
-            device="cpu"
+            device="cpu",
         ),
         qdrant=QdrantConfig(
             host="localhost",
             port=6333,
             collection_name="test_collection",
             vector_size=1024,
-            distance="Cosine"
+            distance="Cosine",
         ),
         llm=LLMConfig(provider="mistral"),
         mistral=MistralConfig(api_key="test-mistral", model_name="mistral-small-latest"),
-        openai=OpenAIConfig(api_key="test-openai", model_name="gpt-4o-mini", embedding_model="text-embedding-3-small"),
+        openai=OpenAIConfig(
+            api_key="test-openai",
+            model_name="gpt-4o-mini",
+            embedding_model="text-embedding-3-small",
+        ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
-        video=VideoConfig(enabled=True)
+        video=VideoConfig(enabled=True),
     )
 
-    with patch('src.rainrag.query.SentenceTransformer') as mock_st:
-        with patch('src.rainrag.query.Mistral') as mock_mistral_class:
-            with patch('src.rainrag.query.OpenAI') as mock_openai_class:
-                with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.SentenceTransformer") as mock_st:
+        with patch("src.rainrag.query.Mistral") as mock_mistral_class:
+            with patch("src.rainrag.query.OpenAI") as mock_openai_class:
+                with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
                     # Mock embeddings (same for both)
                     mock_model = MagicMock()
                     mock_model.encode.return_value = MagicMock(tolist=lambda: [0.1] * 1024)
@@ -551,6 +553,7 @@ def test_switching_llm_providers(mock_qdrant_client):
 # Error Recovery Tests
 # ============================================================================
 
+
 def test_pipeline_handles_empty_results(mock_qdrant_client):
     """Test pipeline when no documents are retrieved."""
     # Mock empty query_points results
@@ -562,36 +565,36 @@ def test_pipeline_handles_empty_results(mock_qdrant_client):
         paths=PathsConfig(
             archive_root="/test/archive",
             docs_output="/test/docs.jsonl",
-            embeddings_cache="/test/embeddings"
+            embeddings_cache="/test/embeddings",
         ),
         embedding=EmbeddingConfig(
             provider="local",
             model_name="intfloat/multilingual-e5-large",
             batch_size=32,
-            device="cpu"
+            device="cpu",
         ),
         qdrant=QdrantConfig(
             host="localhost",
             port=6333,
             collection_name="test_collection",
             vector_size=1024,
-            distance="Cosine"
+            distance="Cosine",
         ),
         llm=LLMConfig(provider="mistral"),
         mistral=MistralConfig(api_key="test-key", model_name="mistral-small-latest"),
         openai=OpenAIConfig(
             api_key="test-openai-key",
             model_name="gpt-4o-mini",
-            embedding_model="text-embedding-3-small"
+            embedding_model="text-embedding-3-small",
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
-        video=VideoConfig(enabled=True)
+        video=VideoConfig(enabled=True),
     )
 
-    with patch('src.rainrag.query.SentenceTransformer') as mock_st:
-        with patch('src.rainrag.query.Mistral') as mock_mistral_class:
-            with patch('src.rainrag.query.QdrantClient', return_value=mock_qdrant_client):
+    with patch("src.rainrag.query.SentenceTransformer") as mock_st:
+        with patch("src.rainrag.query.Mistral") as mock_mistral_class:
+            with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
                 mock_model = MagicMock()
                 mock_model.encode.return_value = MagicMock(tolist=lambda: [0.1] * 1024)
                 mock_st.return_value = mock_model

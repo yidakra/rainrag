@@ -216,9 +216,7 @@ class TestIngester:
         assert doc.length > 0
         assert doc.path == str(vtt_file.absolute())
 
-    def test_process_file_too_short(
-        self, test_config: Config, temp_dir: Path
-    ) -> None:
+    def test_process_file_too_short(self, test_config: Config, temp_dir: Path) -> None:
         """Test skipping files with text too short."""
         vtt_content = """WEBVTT
 
@@ -246,9 +244,7 @@ Hi
 
         assert doc is None
 
-    def test_ingest_pipeline(
-        self, test_config: Config, archive_with_vtt_files: Path
-    ) -> None:
+    def test_ingest_pipeline(self, test_config: Config, archive_with_vtt_files: Path) -> None:
         """Test full ingestion pipeline."""
         test_config.paths.archive_root = str(archive_with_vtt_files)
         ingester = Ingester(test_config)
@@ -263,7 +259,7 @@ Hi
         assert output_file.exists()
 
         # Check JSONL content
-        with open(output_file, "r") as f:
+        with open(output_file) as f:
             lines = f.readlines()
 
         assert len(lines) == 4

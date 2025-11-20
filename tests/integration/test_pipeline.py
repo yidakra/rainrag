@@ -20,7 +20,7 @@ class TestPipeline:
         archive_with_vtt_files: Path,
     ) -> None:
         """Test ingestion followed by embedding generation."""
-        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+        with patch("rainrag.embed.SentenceTransformer") as mock_st:
             # Create mock model
             mock_model = MagicMock()
             fake_embeddings = np.random.rand(4, test_config.qdrant.vector_size).astype(np.float32)
@@ -56,7 +56,7 @@ class TestPipeline:
         archive_with_vtt_files: Path,
     ) -> None:
         """Test that embedding caching works correctly."""
-        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+        with patch("rainrag.embed.SentenceTransformer") as mock_st:
             # Create mock model
             mock_model = MagicMock()
             fake_embeddings = np.random.rand(4, test_config.qdrant.vector_size).astype(np.float32)
@@ -92,7 +92,7 @@ class TestPipeline:
         archive_with_vtt_files: Path,
     ) -> None:
         """Test processing both English and Russian documents."""
-        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+        with patch("rainrag.embed.SentenceTransformer") as mock_st:
             # Create mock model that returns different embeddings for different texts
             mock_model = MagicMock()
 
@@ -116,7 +116,7 @@ class TestPipeline:
 
             # Full pipeline
             ingester = Ingester(test_config)
-            doc_count = ingester.ingest()
+            ingester.ingest()
 
             embedder = Embedder(test_config)
             embeddings, documents = embedder.embed(force_regenerate=True)
@@ -170,7 +170,7 @@ class TestPipeline:
         sample_vtt_en: str,
     ) -> None:
         """Test adding new files and reprocessing."""
-        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+        with patch("rainrag.embed.SentenceTransformer") as mock_st:
             # Create mock model
             mock_model = MagicMock()
 

@@ -297,6 +297,7 @@ class TestLoadConfig:
         """Test loading configuration from YAML file."""
         # Mock load_dotenv to prevent loading from .env file
         import rainrag.config
+
         monkeypatch.setattr(rainrag.config, "load_dotenv", lambda: None)
 
         # Clear environment variables that would override config values

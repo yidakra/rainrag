@@ -1,7 +1,6 @@
 """CLI interface for RainRAG using Typer."""
 
 from pathlib import Path
-from typing import Optional
 
 import typer
 from loguru import logger
@@ -11,6 +10,7 @@ from rainrag.embed import run_embedding
 from rainrag.index import run_indexing
 from rainrag.ingest import run_ingestion
 from rainrag.query import run_query
+
 
 app = typer.Typer(
     name="rainrag",
@@ -121,9 +121,7 @@ def embed(
 
         embeddings, documents = run_embedding(config, force_regenerate=force)
 
-        typer.echo(
-            f"✅ Embedding complete! Generated embeddings for {len(documents)} documents"
-        )
+        typer.echo(f"✅ Embedding complete! Generated embeddings for {len(documents)} documents")
         typer.echo(f"   Embedding shape: {embeddings.shape}")
 
     except Exception as e:
@@ -323,25 +321,25 @@ def info(
 
         typer.echo("📋 RainRAG Configuration")
         typer.echo("=" * 50)
-        typer.echo(f"\nPaths:")
+        typer.echo("\nPaths:")
         typer.echo(f"  Archive root:      {cfg.paths.archive_root}")
         typer.echo(f"  Docs output:       {cfg.paths.docs_output}")
         typer.echo(f"  Embeddings cache:  {cfg.paths.embeddings_cache}")
 
-        typer.echo(f"\nEmbedding:")
+        typer.echo("\nEmbedding:")
         typer.echo(f"  Provider:          {cfg.embedding.provider}")
         typer.echo(f"  Model:             {cfg.embedding.model_name}")
         if cfg.embedding.provider == "local":
             typer.echo(f"  Device:            {cfg.embedding.device}")
         typer.echo(f"  Batch size:        {cfg.embedding.batch_size}")
 
-        typer.echo(f"\nQdrant:")
+        typer.echo("\nQdrant:")
         typer.echo(f"  Host:              {cfg.qdrant.host}:{cfg.qdrant.port}")
         typer.echo(f"  Collection:        {cfg.qdrant.collection_name}")
         typer.echo(f"  Vector size:       {cfg.qdrant.vector_size}")
         typer.echo(f"  Distance metric:   {cfg.qdrant.distance}")
 
-        typer.echo(f"\nLLM Provider:")
+        typer.echo("\nLLM Provider:")
         typer.echo(f"  Provider:          {cfg.llm.provider}")
 
         if cfg.llm.provider == "mistral":
@@ -372,7 +370,7 @@ def info(
             stats = indexer.get_collection_info()
 
             if stats:
-                typer.echo(f"\nCollection Status:")
+                typer.echo("\nCollection Status:")
                 typer.echo(f"  Points count:      {stats.get('points_count', 'N/A')}")
                 typer.echo(f"  Vectors count:     {stats.get('vectors_count', 'N/A')}")
                 typer.echo(f"  Status:            {stats.get('status', 'N/A')}")

@@ -1,23 +1,22 @@
 """FastAPI backend for RainRAG query interface."""
 
-from typing import Any, Dict, List, Optional
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse
 from loguru import logger
-import os
+from pydantic import BaseModel, Field
 
-from rainrag.config import load_config, Config
+from rainrag.config import Config, load_config
 from rainrag.query import RAGQueryEngine
 
 
 # Global query engine instance and config
-query_engine: Optional[RAGQueryEngine] = None
-config: Optional[Config] = None
+query_engine: RAGQueryEngine | None = None
+config: Config | None = None
 
 
 class QueryRequest(BaseModel):
@@ -27,7 +26,7 @@ class QueryRequest(BaseModel):
     language: str = Field(
         default="ru", description="Response language (ru or en)", pattern="^(ru|en)$"
     )
-    top_k: Optional[int] = Field(
+    top_k: int | None = Field(
         default=None, description="Number of context chunks to retrieve", ge=1, le=20
     )
 
@@ -41,16 +40,16 @@ class ContextChunk(BaseModel):
     score: float
     rank: int
     doc_id: str
-    video_url: Optional[str] = None
-    vtt_url: Optional[str] = None
-    group_id: Optional[str] = None  # Base name for grouping multilingual versions
+    video_url: str | None = None
+    vtt_url: str | None = None
+    group_id: str | None = None  # Base name for grouping multilingual versions
 
 
 class QueryResponse(BaseModel):
     """Response model for query endpoint."""
 
     answer: str
-    context: List[ContextChunk]
+    context: list[ContextChunk]
     question: str
     num_documents: int
 
@@ -70,9 +69,7 @@ class HealthResponse(BaseModel):
     mistral_model: str
 
 
-
-
-def find_video_file(vtt_path: str) -> Optional[str]:
+def find_video_file(vtt_path: str) -> str | None:
     """
     Find video file corresponding to a VTT file.
 
@@ -91,14 +88,13 @@ def find_video_file(vtt_path: str) -> Optional[str]:
     vtt_file = Path(vtt_path)
 
     # Determine the directory to search
-    video_root = config.paths.video_root if config.paths.video_root else config.paths.archive_root
 
     # Get base name without VTT extension
     base_name = vtt_file.stem
     # Remove language suffixes like .en or .ru
     for lang_suffix in [".en", ".ru"]:
         if base_name.endswith(lang_suffix):
-            base_name = base_name[:-len(lang_suffix)]
+            base_name = base_name[: -len(lang_suffix)]
             break
 
     # Search for video file in the same directory as VTT
@@ -128,9 +124,10 @@ def find_video_file(vtt_path: str) -> Optional[str]:
                 continue
 
             # Check if file starts with base name and has a video extension
-            if video_file.name.startswith(base_name):
-                if any(video_file.suffix.lower() == ext for ext in config.video.extensions):
-                    return str(video_file)
+            if video_file.name.startswith(base_name) and any(
+                video_file.suffix.lower() == ext for ext in config.video.extensions
+            ):
+                return str(video_file)
     except Exception as e:
         logger.warning(f"Error searching for video files: {e}")
 
@@ -155,7 +152,7 @@ def get_video_base_name(vtt_path: str) -> str:
     # Remove language suffixes like .en or .ru
     for lang_suffix in [".en", ".ru"]:
         if base_name.endswith(lang_suffix):
-            base_name = base_name[:-len(lang_suffix)]
+            base_name = base_name[: -len(lang_suffix)]
             break
 
     # Include the parent directory to make it unique across different videos
@@ -204,7 +201,7 @@ app.add_middleware(
 )
 
 
-def verify_auth_token(authorization: Optional[str] = Header(None)) -> bool:
+def verify_auth_token(authorization: str | None = Header(None)) -> bool:
     """Verify authentication token if configured."""
     required_token = os.getenv("RAINRAG_AUTH_TOKEN")
 
@@ -243,7 +240,10 @@ async def health_check():
         raise HTTPException(status_code=503, detail="Query engine not initialized")
 
     qdrant_connected = query_engine.qdrant_client is not None
-    model_loaded = query_engine.embedding_model is not None or query_engine.config.embedding.provider in ["mistral", "openai", "gemini"]
+    model_loaded = (
+        query_engine.embedding_model is not None
+        or query_engine.config.embedding.provider in ["mistral", "openai", "gemini"]
+    )
 
     # Get LLM model based on provider
     llm_provider = query_engine.config.llm.provider
@@ -307,7 +307,9 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
         logger.info(f"Received query: {request.question[:100]}... (language: {request.language})")
 
         # Execute query with language parameter
-        result = query_engine.query(question=request.question, top_k=request.top_k, language=request.language)
+        result = query_engine.query(
+            question=request.question, top_k=request.top_k, language=request.language
+        )
 
         # Format response with video and VTT URLs
         context_chunks = []
@@ -323,7 +325,11 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
                 video_file = find_video_file(vtt_path)
                 if video_file:
                     # Create relative path from video_root
-                    video_root = config.paths.video_root if config.paths.video_root else config.paths.archive_root
+                    video_root = (
+                        config.paths.video_root
+                        if config.paths.video_root
+                        else config.paths.archive_root
+                    )
                     try:
                         video_rel = Path(video_file).relative_to(video_root)
                         video_url = f"/video/{video_rel}"
@@ -368,6 +374,7 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
 
     except Exception as e:
         import traceback
+
         error_details = traceback.format_exc()
         logger.error(f"Query failed: {e}")
         logger.error(f"Full traceback:\n{error_details}")

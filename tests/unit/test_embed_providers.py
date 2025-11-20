@@ -8,25 +8,26 @@ This module tests:
 - Cache integration with API providers
 """
 
-import pytest
-from unittest.mock import MagicMock, patch, Mock
-from pathlib import Path
 import sys
-import numpy as np
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.rainrag.config import (
     Config,
-    PathsConfig,
     EmbeddingConfig,
-    QdrantConfig,
     LLMConfig,
+    LoggingConfig,
     MistralConfig,
     OpenAIConfig,
+    PathsConfig,
     ProcessingConfig,
-    LoggingConfig,
+    QdrantConfig,
 )
 from src.rainrag.query import RAGQueryEngine
 
@@ -35,6 +36,7 @@ from src.rainrag.query import RAGQueryEngine
 # Mistral Embedding Tests
 # ============================================================================
 
+
 @pytest.fixture
 def mistral_config(tmp_path):
     """Create test configuration with Mistral embedding provider."""
@@ -42,33 +44,30 @@ def mistral_config(tmp_path):
         paths=PathsConfig(
             archive_root="/test/archive",
             docs_output="/test/docs.jsonl",
-            embeddings_cache=str(tmp_path / "embeddings")
+            embeddings_cache=str(tmp_path / "embeddings"),
         ),
         embedding=EmbeddingConfig(
             provider="mistral",
             model_name="intfloat/multilingual-e5-large",
             batch_size=32,
-            device="cpu"
+            device="cpu",
         ),
         qdrant=QdrantConfig(
             host="localhost",
             port=6333,
             collection_name="test_collection",
             vector_size=1024,
-            distance="Cosine"
+            distance="Cosine",
         ),
         llm=LLMConfig(provider="mistral"),
-        mistral=MistralConfig(
-            api_key="test-mistral-key",
-            model_name="mistral-small-latest"
-        ),
+        mistral=MistralConfig(api_key="test-mistral-key", model_name="mistral-small-latest"),
         openai=OpenAIConfig(
             api_key="test-openai-key",
             model_name="gpt-4o-mini",
-            embedding_model="text-embedding-3-small"
+            embedding_model="text-embedding-3-small",
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
-        logging=LoggingConfig(level="INFO", log_file="/test/logs.log")
+        logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
     )
 
 
@@ -87,8 +86,8 @@ def mock_mistral_client():
 
 def test_mistral_embedding_initialization(mistral_config, mock_mistral_client):
     """Test Mistral embedding client initialization."""
-    with patch('src.rainrag.query.Mistral', return_value=mock_mistral_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.Mistral", return_value=mock_mistral_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(mistral_config)
             engine.initialize()
 
@@ -98,8 +97,8 @@ def test_mistral_embedding_initialization(mistral_config, mock_mistral_client):
 
 def test_mistral_embedding_single_text(mistral_config, mock_mistral_client):
     """Test embedding a single text with Mistral API."""
-    with patch('src.rainrag.query.Mistral', return_value=mock_mistral_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.Mistral", return_value=mock_mistral_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(mistral_config)
             engine.initialize()
 
@@ -119,8 +118,8 @@ def test_mistral_embedding_single_text(mistral_config, mock_mistral_client):
 def test_mistral_embedding_batch(mistral_config, mock_mistral_client):
     """Test embedding multiple texts with Mistral API - via multiple calls."""
     # Test that we can embed multiple queries by calling embed_query multiple times
-    with patch('src.rainrag.query.Mistral', return_value=mock_mistral_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.Mistral", return_value=mock_mistral_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(mistral_config)
             engine.initialize()
 
@@ -136,8 +135,8 @@ def test_mistral_embedding_batch(mistral_config, mock_mistral_client):
 
 def test_mistral_embedding_model_selection(mistral_config, mock_mistral_client):
     """Test that correct Mistral embedding model is used."""
-    with patch('src.rainrag.query.Mistral', return_value=mock_mistral_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.Mistral", return_value=mock_mistral_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(mistral_config)
             engine.initialize()
 
@@ -152,8 +151,8 @@ def test_mistral_embedding_api_error(mistral_config, mock_mistral_client):
     """Test Mistral embedding API error handling."""
     mock_mistral_client.embeddings.create.side_effect = Exception("API Error")
 
-    with patch('src.rainrag.query.Mistral', return_value=mock_mistral_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.Mistral", return_value=mock_mistral_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(mistral_config)
             engine.initialize()
 
@@ -168,8 +167,8 @@ def test_mistral_embedding_rate_limit(mistral_config, mock_mistral_client):
     """Test Mistral API rate limit handling."""
     mock_mistral_client.embeddings.create.side_effect = Exception("Rate limit exceeded")
 
-    with patch('src.rainrag.query.Mistral', return_value=mock_mistral_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.Mistral", return_value=mock_mistral_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(mistral_config)
             engine.initialize()
 
@@ -186,8 +185,8 @@ def test_mistral_embedding_empty_input(mistral_config, mock_mistral_client):
     embedding_response.data = [MagicMock(embedding=[0.0] * 1024)]
     mock_mistral_client.embeddings.create.return_value = embedding_response
 
-    with patch('src.rainrag.query.Mistral', return_value=mock_mistral_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.Mistral", return_value=mock_mistral_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(mistral_config)
             engine.initialize()
 
@@ -202,6 +201,7 @@ def test_mistral_embedding_empty_input(mistral_config, mock_mistral_client):
 # OpenAI Embedding Tests
 # ============================================================================
 
+
 @pytest.fixture
 def openai_config(tmp_path):
     """Create test configuration with OpenAI embedding provider."""
@@ -209,33 +209,27 @@ def openai_config(tmp_path):
         paths=PathsConfig(
             archive_root="/test/archive",
             docs_output="/test/docs.jsonl",
-            embeddings_cache=str(tmp_path / "embeddings")
+            embeddings_cache=str(tmp_path / "embeddings"),
         ),
         embedding=EmbeddingConfig(
-            provider="openai",
-            model_name="text-embedding-3-small",
-            batch_size=32,
-            device="cpu"
+            provider="openai", model_name="text-embedding-3-small", batch_size=32, device="cpu"
         ),
         qdrant=QdrantConfig(
             host="localhost",
             port=6333,
             collection_name="test_collection",
             vector_size=1536,
-            distance="Cosine"
+            distance="Cosine",
         ),
         llm=LLMConfig(provider="openai"),
-        mistral=MistralConfig(
-            api_key="test-mistral-key",
-            model_name="mistral-small-latest"
-        ),
+        mistral=MistralConfig(api_key="test-mistral-key", model_name="mistral-small-latest"),
         openai=OpenAIConfig(
             api_key="test-openai-key",
             model_name="gpt-4o-mini",
-            embedding_model="text-embedding-3-small"
+            embedding_model="text-embedding-3-small",
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
-        logging=LoggingConfig(level="INFO", log_file="/test/logs.log")
+        logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
     )
 
 
@@ -254,8 +248,8 @@ def mock_openai_client():
 
 def test_openai_embedding_initialization(openai_config, mock_openai_client):
     """Test OpenAI embedding client initialization."""
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -265,8 +259,8 @@ def test_openai_embedding_initialization(openai_config, mock_openai_client):
 
 def test_openai_embedding_single_text(openai_config, mock_openai_client):
     """Test embedding a single text with OpenAI API."""
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -285,8 +279,8 @@ def test_openai_embedding_single_text(openai_config, mock_openai_client):
 
 def test_openai_embedding_batch(openai_config, mock_openai_client):
     """Test embedding multiple texts with OpenAI API - via multiple calls."""
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -309,8 +303,8 @@ def test_openai_embedding_different_model(openai_config, mock_openai_client):
     embedding_response.data = [MagicMock(embedding=[0.1] * 3072)]
     mock_openai_client.embeddings.create.return_value = embedding_response
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -326,8 +320,8 @@ def test_openai_embedding_api_error(openai_config, mock_openai_client):
     """Test OpenAI embedding API error handling."""
     mock_openai_client.embeddings.create.side_effect = Exception("API Error")
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -342,8 +336,8 @@ def test_openai_embedding_auth_error(openai_config, mock_openai_client):
     """Test OpenAI authentication error handling."""
     mock_openai_client.embeddings.create.side_effect = Exception("Invalid API key")
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 
@@ -360,8 +354,8 @@ def test_openai_embedding_empty_input(openai_config, mock_openai_client):
     embedding_response.data = [MagicMock(embedding=[0.0] * 1536)]
     mock_openai_client.embeddings.create.return_value = embedding_response
 
-    with patch('src.rainrag.query.OpenAI', return_value=mock_openai_client):
-        with patch('src.rainrag.query.QdrantClient'):
+    with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
+        with patch("src.rainrag.query.QdrantClient"):
             engine = RAGQueryEngine(openai_config)
             engine.initialize()
 

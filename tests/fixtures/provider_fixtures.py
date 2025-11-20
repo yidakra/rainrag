@@ -8,14 +8,15 @@ This module provides pytest fixtures for mocking:
 - Google Gemini API (embeddings and LLM)
 """
 
+from unittest.mock import MagicMock
+
 import pytest
-from typing import Any, Dict, List
-from unittest.mock import MagicMock, Mock
 
 
 # ============================================================================
 # Mistral API Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def mock_mistral_embedding_response():
@@ -50,6 +51,7 @@ def mock_mistral_client(mock_mistral_embedding_response, mock_mistral_chat_respo
 # OpenAI API Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def mock_openai_embedding_response():
     """Mock OpenAI embedding API response."""
@@ -83,13 +85,12 @@ def mock_openai_client(mock_openai_embedding_response, mock_openai_chat_response
 # Claude/Anthropic API Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def mock_claude_message_response():
     """Mock Claude message API response."""
     mock_response = MagicMock()
-    mock_response.content = [
-        MagicMock(text="This is a test response from Claude.")
-    ]
+    mock_response.content = [MagicMock(text="This is a test response from Claude.")]
     return mock_response
 
 
@@ -105,11 +106,12 @@ def mock_claude_client(mock_claude_message_response):
 # Google Gemini API Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def mock_gemini_embedding_response():
     """Mock Gemini embedding API response."""
     mock_response = {
-        'embedding': [0.1] * 768  # text-embedding-004 is 768-dim
+        "embedding": [0.1] * 768  # text-embedding-004 is 768-dim
     }
     return mock_response
 
@@ -133,6 +135,7 @@ def mock_gemini_model(mock_gemini_generate_response):
 # ============================================================================
 # Provider Error Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def mock_api_error():
@@ -159,6 +162,7 @@ def mock_auth_error():
 # Multi-Provider Test Data
 # ============================================================================
 
+
 @pytest.fixture
 def provider_configs():
     """Configuration data for all providers."""
@@ -168,7 +172,7 @@ def provider_configs():
             "model_name": "mistral-small-latest",
             "max_tokens": 512,
             "temperature": 0.3,
-            "top_k": 5
+            "top_k": 5,
         },
         "openai": {
             "api_key": "test-openai-key",
@@ -176,14 +180,14 @@ def provider_configs():
             "embedding_model": "text-embedding-3-small",
             "max_tokens": 512,
             "temperature": 0.3,
-            "top_k": 5
+            "top_k": 5,
         },
         "claude": {
             "api_key": "test-claude-key",
             "model_name": "claude-haiku-4-5-20251001",
             "max_tokens": 512,
             "temperature": 0.3,
-            "top_k": 5
+            "top_k": 5,
         },
         "gemini": {
             "api_key": "test-gemini-key",
@@ -191,8 +195,8 @@ def provider_configs():
             "embedding_model": "models/text-embedding-004",
             "max_tokens": 512,
             "temperature": 0.3,
-            "top_k": 5
-        }
+            "top_k": 5,
+        },
     }
 
 
@@ -201,7 +205,7 @@ def sample_query_messages():
     """Sample chat messages for testing."""
     return [
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "What is the capital of France?"}
+        {"role": "user", "content": "What is the capital of France?"},
     ]
 
 
@@ -211,7 +215,7 @@ def sample_embedding_texts():
     return [
         "This is a test document about artificial intelligence.",
         "Machine learning is a subset of AI.",
-        "Natural language processing enables computers to understand human language."
+        "Natural language processing enables computers to understand human language.",
     ]
 
 
@@ -223,12 +227,12 @@ def sample_retrieved_documents():
             "id": "doc1",
             "text": "Paris is the capital of France.",
             "score": 0.95,
-            "metadata": {"language": "en", "path": "/test/doc1.vtt"}
+            "metadata": {"language": "en", "path": "/test/doc1.vtt"},
         },
         {
             "id": "doc2",
             "text": "France is located in Western Europe.",
             "score": 0.85,
-            "metadata": {"language": "en", "path": "/test/doc2.vtt"}
-        }
+            "metadata": {"language": "en", "path": "/test/doc2.vtt"},
+        },
     ]

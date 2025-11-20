@@ -1,6 +1,5 @@
 """Unit tests for embedding module."""
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -51,9 +50,7 @@ class TestEmbeddingCache:
         assert loaded_docs is not None
         assert np.allclose(embeddings, loaded_embeddings)
         assert len(loaded_docs) == len(documents)
-        assert all(
-            loaded_docs[i].id == documents[i].id for i in range(len(documents))
-        )
+        assert all(loaded_docs[i].id == documents[i].id for i in range(len(documents)))
 
     def test_cache_exists(self, temp_dir: Path) -> None:
         """Test checking if cache exists."""
@@ -100,7 +97,7 @@ class TestEmbedder:
 
     def test_load_model(self, test_config: Config) -> None:
         """Test loading the embedding model."""
-        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+        with patch("rainrag.embed.SentenceTransformer") as mock_st:
             # Create mock model
             mock_model = MagicMock()
             mock_model.max_seq_length = test_config.embedding.max_seq_length
@@ -148,7 +145,7 @@ class TestEmbedder:
 
     def test_generate_embeddings(self, test_config: Config) -> None:
         """Test generating embeddings."""
-        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+        with patch("rainrag.embed.SentenceTransformer") as mock_st:
             # Create mock model that returns fake embeddings
             mock_model = MagicMock()
             fake_embeddings = np.random.rand(5, test_config.qdrant.vector_size).astype(np.float32)
@@ -180,13 +177,21 @@ class TestEmbedder:
         """Test that embeddings are normalized when configured."""
         test_config.embedding.normalize_embeddings = True
 
-        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+        with patch("rainrag.embed.SentenceTransformer") as mock_st:
             # Create mock model that returns normalized embeddings when requested
             mock_model = MagicMock()
 
-            def mock_encode(texts, batch_size=None, show_progress_bar=True, normalize_embeddings=False, convert_to_numpy=True):
+            def mock_encode(
+                texts,
+                batch_size=None,
+                show_progress_bar=True,
+                normalize_embeddings=False,
+                convert_to_numpy=True,
+            ):
                 # Create unnormalized embeddings
-                unnormalized = np.array([[3.0, 4.0, 0.0] + [0.0] * (test_config.qdrant.vector_size - 3)]).astype(np.float32)
+                unnormalized = np.array(
+                    [[3.0, 4.0, 0.0] + [0.0] * (test_config.qdrant.vector_size - 3)]
+                ).astype(np.float32)
                 if normalize_embeddings:
                     # Normalize the embeddings
                     norms = np.linalg.norm(unnormalized, axis=1, keepdims=True)
@@ -217,7 +222,7 @@ class TestEmbedder:
 
     def test_embed_with_cache(self, test_config: Config, temp_dir: Path) -> None:
         """Test embedding with caching."""
-        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+        with patch("rainrag.embed.SentenceTransformer") as mock_st:
             # Create mock model
             mock_model = MagicMock()
             fake_embeddings = np.random.rand(3, test_config.qdrant.vector_size).astype(np.float32)
@@ -263,7 +268,7 @@ class TestEmbedder:
 
     def test_embed_force_regenerate(self, test_config: Config, temp_dir: Path) -> None:
         """Test force regeneration of embeddings."""
-        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+        with patch("rainrag.embed.SentenceTransformer") as mock_st:
             # Create mock model
             mock_model = MagicMock()
             fake_embeddings = np.random.rand(1, test_config.qdrant.vector_size).astype(np.float32)

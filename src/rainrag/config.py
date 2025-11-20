@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import yaml
 from dotenv import load_dotenv
@@ -26,7 +26,7 @@ class EmbeddingConfig(BaseModel):
 
     provider: str = Field(
         default="local",
-        description="Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API, 'gemini' for Google Gemini API"
+        description="Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API, 'gemini' for Google Gemini API",
     )
     model_name: str = Field(default="intfloat/multilingual-e5-large")
     batch_size: int = Field(default=32)
@@ -111,7 +111,7 @@ class LLMConfig(BaseModel):
 
     provider: str = Field(
         default="mistral",
-        description="LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API, 'claude' for Anthropic Claude API, 'gemini' for Google Gemini API"
+        description="LLM provider: 'mistral' for Mistral API, 'openai' for OpenAI API, 'claude' for Anthropic Claude API, 'gemini' for Google Gemini API",
     )
 
 
@@ -181,8 +181,8 @@ def load_config(config_path: str = "config.yaml") -> Config:
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-    with open(config_file, "r") as f:
-        config_data: Dict[str, Any] = yaml.safe_load(f)
+    with open(config_file) as f:
+        config_data: dict[str, Any] = yaml.safe_load(f)
 
     # Override Mistral API key from environment variable if set
     mistral_api_key = os.getenv("MISTRAL_API_KEY")
