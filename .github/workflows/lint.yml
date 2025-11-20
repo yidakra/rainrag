@@ -19,33 +19,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: 'pip'
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: latest
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Load cached venv
-        id: cached-poetry-dependencies
-        uses: actions/cache@v3
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-
-      - name: Install dependencies
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction --no-root
-
-      - name: Install project
-        run: poetry install --no-interaction
+      - name: Install Ruff directly
+        run: pip install ruff==0.1.15
 
       - name: Run Ruff linter
-        run: poetry run ruff check src/ tests/
+        run: ruff check src/ tests/
 
       - name: Run Ruff formatter check
-        run: poetry run ruff format --check src/ tests/
+        run: ruff format --check src/ tests/
 
   typecheck:
     name: Type Check with Mypy
@@ -59,28 +42,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: 'pip'
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: latest
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Load cached venv
-        id: cached-poetry-dependencies
-        uses: actions/cache@v3
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
-
-      - name: Install dependencies
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction --no-root
-
-      - name: Install project
-        run: poetry install --no-interaction
+      - name: Install Mypy directly
+        run: pip install mypy==1.8.0
 
       - name: Run Mypy type checking
-        run: poetry run mypy src/rainrag/
+        run: mypy src/rainrag/
         continue-on-error: true  # Don't fail build on type errors (for now)
