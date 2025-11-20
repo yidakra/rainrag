@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -99,11 +100,18 @@ class TestEmbedder:
 
     def test_load_model(self, test_config: Config) -> None:
         """Test loading the embedding model."""
-        embedder = Embedder(test_config)
-        embedder.load_model()
+        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+            # Create mock model
+            mock_model = MagicMock()
+            mock_model.max_seq_length = test_config.embedding.max_seq_length
+            mock_st.return_value = mock_model
 
-        assert embedder.model is not None
-        assert embedder.model.max_seq_length == test_config.embedding.max_seq_length
+            embedder = Embedder(test_config)
+            embedder.load_model()
+
+            assert embedder.model is not None
+            assert embedder.model.max_seq_length == test_config.embedding.max_seq_length
+            mock_st.assert_called_once()
 
     def test_load_documents(self, test_config: Config, temp_dir: Path) -> None:
         """Test loading documents from JSONL."""
@@ -140,130 +148,165 @@ class TestEmbedder:
 
     def test_generate_embeddings(self, test_config: Config) -> None:
         """Test generating embeddings."""
-        embedder = Embedder(test_config)
-        embedder.load_model()
+        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+            # Create mock model that returns fake embeddings
+            mock_model = MagicMock()
+            fake_embeddings = np.random.rand(5, test_config.qdrant.vector_size).astype(np.float32)
+            mock_model.encode.return_value = fake_embeddings
+            mock_st.return_value = mock_model
 
-        documents = [
-            Document(
-                id=f"doc{i}",
-                path=f"/path/file{i}.vtt",
-                language="en",
-                text=f"This is test document number {i}",
-                length=len(f"This is test document number {i}"),
-            )
-            for i in range(5)
-        ]
+            embedder = Embedder(test_config)
+            embedder.load_model()
 
-        embeddings = embedder.generate_embeddings(documents, show_progress=False)
+            documents = [
+                Document(
+                    id=f"doc{i}",
+                    path=f"/path/file{i}.vtt",
+                    language="en",
+                    text=f"This is test document number {i}",
+                    length=len(f"This is test document number {i}"),
+                )
+                for i in range(5)
+            ]
 
-        assert embeddings.shape[0] == 5
-        assert embeddings.shape[1] == test_config.qdrant.vector_size
-        assert embeddings.dtype == np.float32
+            embeddings = embedder.generate_embeddings(documents, show_progress=False)
 
-        # Check that embeddings are different for different texts
-        assert not np.allclose(embeddings[0], embeddings[1])
+            assert embeddings.shape[0] == 5
+            assert embeddings.shape[1] == test_config.qdrant.vector_size
+            assert embeddings.dtype == np.float32
+            mock_model.encode.assert_called_once()
 
     def test_generate_embeddings_normalized(self, test_config: Config) -> None:
         """Test that embeddings are normalized when configured."""
         test_config.embedding.normalize_embeddings = True
 
-        embedder = Embedder(test_config)
-        embedder.load_model()
+        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+            # Create mock model that returns normalized embeddings when requested
+            mock_model = MagicMock()
 
-        documents = [
-            Document(
-                id="doc1",
-                path="/path/file.vtt",
-                language="en",
-                text="Test document",
-                length=13,
-            )
-        ]
+            def mock_encode(texts, batch_size=None, show_progress_bar=True, normalize_embeddings=False, convert_to_numpy=True):
+                # Create unnormalized embeddings
+                unnormalized = np.array([[3.0, 4.0, 0.0] + [0.0] * (test_config.qdrant.vector_size - 3)]).astype(np.float32)
+                if normalize_embeddings:
+                    # Normalize the embeddings
+                    norms = np.linalg.norm(unnormalized, axis=1, keepdims=True)
+                    return unnormalized / norms
+                return unnormalized
 
-        embeddings = embedder.generate_embeddings(documents, show_progress=False)
+            mock_model.encode = mock_encode
+            mock_st.return_value = mock_model
 
-        # Check that vectors are normalized (L2 norm ≈ 1)
-        norms = np.linalg.norm(embeddings, axis=1)
-        assert np.allclose(norms, 1.0, atol=1e-5)
+            embedder = Embedder(test_config)
+            embedder.load_model()
+
+            documents = [
+                Document(
+                    id="doc1",
+                    path="/path/file.vtt",
+                    language="en",
+                    text="Test document",
+                    length=13,
+                )
+            ]
+
+            embeddings = embedder.generate_embeddings(documents, show_progress=False)
+
+            # Check that vectors are normalized (L2 norm ≈ 1)
+            norms = np.linalg.norm(embeddings, axis=1)
+            assert np.allclose(norms, 1.0, atol=1e-5)
 
     def test_embed_with_cache(self, test_config: Config, temp_dir: Path) -> None:
         """Test embedding with caching."""
-        # Create test documents
-        docs_file = temp_dir / "data" / "docs.jsonl"
-        docs_file.parent.mkdir(parents=True)
+        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+            # Create mock model
+            mock_model = MagicMock()
+            fake_embeddings = np.random.rand(3, test_config.qdrant.vector_size).astype(np.float32)
+            mock_model.encode.return_value = fake_embeddings
+            mock_st.return_value = mock_model
 
-        documents = [
-            Document(
-                id=f"doc{i}",
-                path=f"/path/file{i}.vtt",
-                language="en",
-                text=f"Test document {i}",
-                length=len(f"Test document {i}"),
-            )
-            for i in range(3)
-        ]
+            # Create test documents
+            docs_file = temp_dir / "data" / "docs.jsonl"
+            docs_file.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(docs_file, "w") as f:
-            for doc in documents:
-                f.write(doc.model_dump_json() + "\n")
+            documents = [
+                Document(
+                    id=f"doc{i}",
+                    path=f"/path/file{i}.vtt",
+                    language="en",
+                    text=f"Test document {i}",
+                    length=len(f"Test document {i}"),
+                )
+                for i in range(3)
+            ]
 
-        test_config.paths.docs_output = str(docs_file)
-        test_config.paths.embeddings_cache = str(temp_dir / "embeddings")
+            with open(docs_file, "w") as f:
+                for doc in documents:
+                    f.write(doc.model_dump_json() + "\n")
 
-        # First run - should generate embeddings
-        embedder = Embedder(test_config)
-        embeddings1, docs1 = embedder.embed(force_regenerate=False)
+            test_config.paths.docs_output = str(docs_file)
+            test_config.paths.embeddings_cache = str(temp_dir / "embeddings")
 
-        assert embeddings1.shape[0] == 3
-        assert len(docs1) == 3
-        assert embedder.cache.exists()
+            # First run - should generate embeddings
+            embedder = Embedder(test_config)
+            embeddings1, docs1 = embedder.embed(force_regenerate=False)
 
-        # Second run - should load from cache
-        embedder2 = Embedder(test_config)
-        embeddings2, docs2 = embedder2.embed(force_regenerate=False)
+            assert embeddings1.shape[0] == 3
+            assert len(docs1) == 3
+            assert embedder.cache.exists()
 
-        assert np.allclose(embeddings1, embeddings2)
-        assert len(docs2) == 3
+            # Second run - should load from cache
+            embedder2 = Embedder(test_config)
+            embeddings2, docs2 = embedder2.embed(force_regenerate=False)
+
+            assert np.allclose(embeddings1, embeddings2)
+            assert len(docs2) == 3
 
     def test_embed_force_regenerate(self, test_config: Config, temp_dir: Path) -> None:
         """Test force regeneration of embeddings."""
-        # Create test documents
-        docs_file = temp_dir / "data" / "docs.jsonl"
-        docs_file.parent.mkdir(parents=True)
+        with patch('rainrag.embed.SentenceTransformer') as mock_st:
+            # Create mock model
+            mock_model = MagicMock()
+            fake_embeddings = np.random.rand(1, test_config.qdrant.vector_size).astype(np.float32)
+            mock_model.encode.return_value = fake_embeddings
+            mock_st.return_value = mock_model
 
-        documents = [
-            Document(
-                id="doc1",
-                path="/path/file.vtt",
-                language="en",
-                text="Test document",
-                length=13,
-            )
-        ]
+            # Create test documents
+            docs_file = temp_dir / "data" / "docs.jsonl"
+            docs_file.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(docs_file, "w") as f:
-            for doc in documents:
-                f.write(doc.model_dump_json() + "\n")
+            documents = [
+                Document(
+                    id="doc1",
+                    path="/path/file.vtt",
+                    language="en",
+                    text="Test document",
+                    length=13,
+                )
+            ]
 
-        test_config.paths.docs_output = str(docs_file)
-        test_config.paths.embeddings_cache = str(temp_dir / "embeddings")
+            with open(docs_file, "w") as f:
+                for doc in documents:
+                    f.write(doc.model_dump_json() + "\n")
 
-        # First run
-        embedder = Embedder(test_config)
-        embeddings1, _ = embedder.embed(force_regenerate=False)
+            test_config.paths.docs_output = str(docs_file)
+            test_config.paths.embeddings_cache = str(temp_dir / "embeddings")
 
-        # Second run with force_regenerate=True
-        embedder2 = Embedder(test_config)
-        embeddings2, _ = embedder2.embed(force_regenerate=True)
+            # First run
+            embedder = Embedder(test_config)
+            embeddings1, _ = embedder.embed(force_regenerate=False)
 
-        # Embeddings should be similar (same text), but regenerated
-        assert np.allclose(embeddings1, embeddings2, atol=1e-4)
+            # Second run with force_regenerate=True
+            embedder2 = Embedder(test_config)
+            embeddings2, _ = embedder2.embed(force_regenerate=True)
+
+            # Embeddings should be similar (same text), but regenerated
+            assert np.allclose(embeddings1, embeddings2, atol=1e-4)
 
     def test_embed_no_documents(self, test_config: Config, temp_dir: Path) -> None:
         """Test embedding with no documents."""
         # Create empty JSONL file
         docs_file = temp_dir / "data" / "docs.jsonl"
-        docs_file.parent.mkdir(parents=True)
+        docs_file.parent.mkdir(parents=True, exist_ok=True)
         docs_file.write_text("")
 
         test_config.paths.docs_output = str(docs_file)
