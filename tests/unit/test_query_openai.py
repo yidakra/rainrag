@@ -22,6 +22,7 @@ from src.rainrag.config import (
     EmbeddingConfig,
     QdrantConfig,
     LLMConfig,
+    MistralConfig,
     OpenAIConfig,
     ProcessingConfig,
     LoggingConfig,
@@ -57,6 +58,10 @@ def openai_config():
             distance="Cosine"
         ),
         llm=LLMConfig(provider="openai"),
+        mistral=MistralConfig(
+            api_key="test-mistral-key",
+            model_name="mistral-small-latest"
+        ),
         openai=OpenAIConfig(
             api_key="test-openai-key",
             model_name="gpt-4o-mini",

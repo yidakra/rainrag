@@ -18,6 +18,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.rainrag.config import (
+    MistralConfig,
+    OpenAIConfig,
     Config,
     PathsConfig,
     EmbeddingConfig,
