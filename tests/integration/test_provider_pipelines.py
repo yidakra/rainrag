@@ -34,16 +34,19 @@ def mock_qdrant_client():
     """Mock Qdrant client for integration tests."""
     client = MagicMock()
 
-    # Mock search results
-    search_result = MagicMock()
-    search_result.id = "doc1"
-    search_result.score = 0.95
-    search_result.payload = {
+    # Mock query_points results (updated for new API)
+    query_result = MagicMock()
+    point = MagicMock()
+    point.id = "doc1"
+    point.score = 0.95
+    point.payload = {
         "text": "Machine learning is a subset of artificial intelligence.",
         "language": "en",
-        "path": "/test/doc1.vtt"
+        "path": "/test/doc1.vtt",
+        "doc_id": "doc1"
     }
-    client.search.return_value = [search_result]
+    query_result.points = [point]
+    client.query_points.return_value = query_result
 
     return client
 
@@ -77,6 +80,11 @@ def test_mistral_full_pipeline_embeddings_and_llm(mock_qdrant_client):
         mistral=MistralConfig(
             api_key="test-key",
             model_name="mistral-small-latest"
+        ),
+        openai=OpenAIConfig(
+            api_key="test-openai-key",
+            model_name="gpt-4o-mini",
+            embedding_model="text-embedding-3-small"
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
@@ -151,6 +159,11 @@ def test_mistral_llm_with_local_embeddings(mock_qdrant_client):
         mistral=MistralConfig(
             api_key="test-key",
             model_name="mistral-small-latest"
+        ),
+        openai=OpenAIConfig(
+            api_key="test-openai-key",
+            model_name="gpt-4o-mini",
+            embedding_model="text-embedding-3-small"
         ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
@@ -272,6 +285,15 @@ def test_claude_llm_with_gemini_embeddings(mock_qdrant_client):
             distance="Cosine"
         ),
         llm=LLMConfig(provider="claude"),
+        mistral=MistralConfig(
+            api_key="test-mistral-key",
+            model_name="mistral-small-latest"
+        ),
+        openai=OpenAIConfig(
+            api_key="test-openai-key",
+            model_name="gpt-4o-mini",
+            embedding_model="text-embedding-3-small"
+        ),
         claude=ClaudeConfig(
             api_key="test-claude-key",
             model_name="claude-haiku-4-5-20251001"
@@ -341,6 +363,11 @@ def test_multilingual_query_english(mock_qdrant_client):
         ),
         llm=LLMConfig(provider="mistral"),
         mistral=MistralConfig(api_key="test-key", model_name="mistral-small-latest"),
+        openai=OpenAIConfig(
+            api_key="test-openai-key",
+            model_name="gpt-4o-mini",
+            embedding_model="text-embedding-3-small"
+        ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
         video=VideoConfig(enabled=True)
@@ -400,6 +427,15 @@ def test_multilingual_query_russian(mock_qdrant_client):
             distance="Cosine"
         ),
         llm=LLMConfig(provider="gemini"),
+        mistral=MistralConfig(
+            api_key="test-mistral-key",
+            model_name="mistral-small-latest"
+        ),
+        openai=OpenAIConfig(
+            api_key="test-openai-key",
+            model_name="gpt-4o-mini",
+            embedding_model="text-embedding-3-small"
+        ),
         gemini=GeminiConfig(
             api_key="test-key",
             model_name="gemini-2.5-flash",
@@ -517,8 +553,10 @@ def test_switching_llm_providers(mock_qdrant_client):
 
 def test_pipeline_handles_empty_results(mock_qdrant_client):
     """Test pipeline when no documents are retrieved."""
-    # Mock empty search results
-    mock_qdrant_client.search.return_value = []
+    # Mock empty query_points results
+    query_result = MagicMock()
+    query_result.points = []
+    mock_qdrant_client.query_points.return_value = query_result
 
     config = Config(
         paths=PathsConfig(
@@ -541,6 +579,11 @@ def test_pipeline_handles_empty_results(mock_qdrant_client):
         ),
         llm=LLMConfig(provider="mistral"),
         mistral=MistralConfig(api_key="test-key", model_name="mistral-small-latest"),
+        openai=OpenAIConfig(
+            api_key="test-openai-key",
+            model_name="gpt-4o-mini",
+            embedding_model="text-embedding-3-small"
+        ),
         processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
         logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
         video=VideoConfig(enabled=True)
