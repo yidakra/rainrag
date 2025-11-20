@@ -54,7 +54,7 @@ openai:
 # Anthropic Claude API configuration
 claude:
   api_key: ""  # Set your Anthropic API key here or via ANTHROPIC_API_KEY environment variable
-  model_name: "claude-3-5-sonnet-20241022"  # Options: claude-3-5-sonnet-20241022, claude-3-opus-20240229, claude-3-haiku-20240307, etc.
+  model_name: "claude-3-5-sonnet-20240620"  # Options: claude-3-5-sonnet-20240620, claude-3-opus-20240229, claude-3-haiku-20240307, etc.
   max_tokens: 512
   temperature: 0.3
   top_k: 5  # Number of documents to retrieve for context
