@@ -1,4 +1,4 @@
-.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop api streamlit up down api-bg streamlit-bg vllm-mistral vllm-gemma vllm-gptoss vllm-mistral-bg vllm-gemma-bg vllm-gptoss-bg vllm-start vllm-stop vllm-logs
+.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop api streamlit up down api-bg streamlit-bg mcp mcp-http mcp-inspector
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -195,6 +195,32 @@ pipeline: ## Run full pipeline
 
 info: ## Show system info
 	poetry run rainrag info
+
+# MCP Server commands
+mcp: ## Run MCP server (default stdio transport for Claude Desktop/Cursor)
+	@echo "Starting MCP server with stdio transport..."
+	@echo "Connect from Claude Desktop or Cursor"
+	poetry run rainrag mcp
+
+mcp-http: ## Run MCP server with HTTP transport
+	@echo "Starting MCP server at http://localhost:8000/mcp"
+	@echo "Use for remote connections or ChatGPT integration"
+	poetry run rainrag mcp --transport streamable-http --port 8000
+
+mcp-inspector: ## Run MCP server with inspector for testing
+	@echo "=== MCP Inspector Setup ==="
+	@echo ""
+	@echo "1. Install inspector (if not already installed):"
+	@echo "   npm install -g @modelcontextprotocol/inspector"
+	@echo ""
+	@echo "2. Starting MCP server on http://localhost:8000/mcp"
+	@echo ""
+	@echo "3. In another terminal, run:"
+	@echo "   npx @modelcontextprotocol/inspector"
+	@echo ""
+	@echo "4. Connect to: http://localhost:8000/mcp"
+	@echo ""
+	poetry run rainrag mcp --transport streamable-http --port 8000
 
 # Helm commands
 helm-install: ## Install Helm chart

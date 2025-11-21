@@ -68,5 +68,35 @@ services:
       api:
         condition: service_healthy
 
+  # MCP Server (for Claude Desktop, ChatGPT, Cursor integration)
+  mcp:
+    image: rainrag:latest
+    container_name: rainrag-mcp
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/data/rainrag
+      - ./embeddings:/data/embeddings
+      - ./logs:/app/logs
+    command: rainrag mcp --transport streamable-http --host 0.0.0.0 --port 8000
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/mcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   qdrant_storage:

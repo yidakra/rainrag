@@ -200,31 +200,164 @@ Open your browser to the inspector URL and connect to `http://localhost:8000/mcp
 
 ## Usage Examples
 
-Once integrated, you can use RainRAG from your AI assistant:
+Once integrated, you can use RainRAG from your AI assistant. Here are practical examples for different scenarios:
 
-### Full RAG Query
+### Scenario 1: Finding Specific Topics (English)
 
+**What you ask Claude/ChatGPT/Cursor:**
+> "Use the query_rag tool to find out what was discussed about renewable energy in the videos"
+
+**MCP Tool Call:**
 ```
-Use query_rag with question "What are the main topics discussed in videos about renewable energy?" and language "en"
-```
-
-### Retrieval Only
-
-```
-Use retrieve_documents to find 10 transcript chunks related to "climate change"
-```
-
-### Russian Language Query
-
-```
-Use query_rag with question "О чём говорили в видео про искусственный интеллект?" and language "ru"
+Tool: query_rag
+Arguments:
+  question: "What topics were discussed about renewable energy?"
+  language: "en"
+  top_k: 5
 ```
 
-### Check Configuration
+**What you get back:**
+- A comprehensive answer synthesized from the video transcripts
+- Source citations with video filenames
+- Relevance scores for each retrieved segment
 
+### Scenario 2: Multilingual Search (Russian)
+
+**What you ask:**
+> "О чём говорили в последних видео про искусственный интеллект? Ответь по-русски."
+
+**MCP Tool Call:**
 ```
-Show me the config://current resource
+Tool: query_rag
+Arguments:
+  question: "О чём говорили в видео про искусственный интеллект?"
+  language: "ru"
+  top_k: 5
 ```
+
+**Result:**
+- Answer in Russian
+- Retrieves from both Russian and English transcripts
+- Prioritizes based on semantic similarity
+
+### Scenario 3: Getting Raw Context (No LLM Generation)
+
+**What you ask:**
+> "Use retrieve_documents to find 10 relevant transcript chunks about climate change without generating an answer"
+
+**MCP Tool Call:**
+```
+Tool: retrieve_documents
+Arguments:
+  question: "climate change global warming environment"
+  top_k: 10
+```
+
+**Result:**
+- Just the retrieved document chunks
+- No LLM processing (faster)
+- Useful for examining raw context before asking detailed questions
+
+### Scenario 4: Deep Dive with More Context
+
+**What you ask:**
+> "I need a detailed analysis of discussions about machine learning. Use 10 sources."
+
+**MCP Tool Call:**
+```
+Tool: query_rag
+Arguments:
+  question: "What are all the topics covered regarding machine learning, including techniques, applications, and challenges?"
+  language: "en"
+  top_k: 10
+```
+
+**Result:**
+- Comprehensive answer from 10 different transcript segments
+- More context = better coverage but slower response
+
+### Scenario 5: Checking System Configuration
+
+**What you ask:**
+> "What's the current RainRAG configuration?"
+
+**MCP Resource:**
+```
+Resource: config://current
+```
+
+**Result:**
+- Current embedding provider and model
+- LLM provider and model
+- Vector database details
+- Collection information
+
+### Scenario 6: Comparative Analysis
+
+**What you ask:**
+> "Compare what was said about solar energy versus nuclear energy in the videos"
+
+**MCP Tool Calls (sequential):**
+```
+1. query_rag(question="solar energy advantages disadvantages", language="en", top_k=5)
+2. query_rag(question="nuclear energy advantages disadvantages", language="en", top_k=5)
+```
+
+**Result:**
+- The AI assistant will combine both results
+- Provides comparative analysis based on video content
+
+### Scenario 7: Time-Specific or Contextual Queries
+
+**What you ask:**
+> "What recent developments in AI were discussed?"
+
+**MCP Tool Call:**
+```
+Tool: query_rag
+Arguments:
+  question: "recent developments artificial intelligence latest advances"
+  language: "en"
+  top_k: 7
+```
+
+**Note:** Results depend on your video transcript dates and content.
+
+## Natural Language Examples
+
+You don't need to explicitly call the tools - just ask naturally:
+
+**Simple Questions:**
+- "What do the videos say about quantum computing?"
+- "Расскажи про обсуждение экономики в видео"
+- "Summarize the main points about cryptocurrency"
+
+**Complex Queries:**
+- "What are the different perspectives on climate policy mentioned across multiple videos?"
+- "Can you find all references to specific AI models or frameworks?"
+- "What technical challenges were discussed regarding renewable energy implementation?"
+
+**Follow-up Questions:**
+- After getting an answer: "Can you provide more details about the second point?"
+- "Which specific video discussed this in the most depth?"
+- "Were there any counterarguments mentioned?"
+
+## Tool Parameters Reference
+
+### query_rag
+- **question** (required): Your search query or question
+- **language** (optional): "en" or "ru" - language for the response (default: "en")
+- **top_k** (optional): Number of chunks to retrieve, 1-20 (default: 5)
+
+### retrieve_documents
+- **question** (required): Your search query
+- **top_k** (optional): Number of chunks to retrieve (default: 5)
+
+**Tips:**
+- Use `top_k=3` for quick, focused answers
+- Use `top_k=7-10` for comprehensive, detailed answers
+- Use `retrieve_documents` first to see what context is available
+- Specify `language="ru"` for Russian responses (works with both Russian and English transcripts)
 
 ## Troubleshooting
 
@@ -361,18 +494,174 @@ query_rag(question="...", top_k=10)
 
 ## Performance Optimization
 
-### For Fastest Queries
+### Expected Performance Metrics
 
-1. **Use API-based embeddings**: Mistral/OpenAI/Gemini embeddings are faster than local models
-2. **Use fast LLMs**: `gemini-2.5-flash`, `gpt-4o-mini`, or `mistral-small-latest`
-3. **Reduce context**: Lower `top_k` to retrieve fewer documents
-4. **Local Qdrant**: Run Qdrant on the same machine as the MCP server
+**Typical Query Latency (End-to-End):**
 
-### For Best Quality
+| Configuration | Embedding | Retrieval | LLM Generation | Total |
+|--------------|-----------|-----------|----------------|-------|
+| **Fast** (API + Flash) | 0.5-1s | 0.1-0.3s | 1-2s | **2-4s** |
+| **Balanced** (API + Standard) | 0.5-1s | 0.1-0.3s | 2-4s | **3-6s** |
+| **Local** (Local model) | 2-5s | 0.1-0.3s | 2-4s | **5-10s** |
+| **Quality** (API + Claude) | 0.5-1s | 0.1-0.3s | 4-8s | **5-10s** |
 
-1. **More context**: Increase `top_k` to 7-10 documents
-2. **Better LLMs**: Use `claude-3-5-sonnet`, `gpt-4o`, or `gemini-2.5-pro`
-3. **Higher max_tokens**: Increase for longer, more detailed answers
+**Note:** First query may be slower due to model loading (local) or cold start.
+
+### Optimization Strategies
+
+#### Speed-Optimized Configuration
+
+**Best for:** Interactive use, real-time queries, quick exploration
+
+```yaml
+embedding:
+  provider: "mistral"  # Fast API-based embeddings
+
+llm:
+  provider: "gemini"
+
+gemini:
+  model_name: "gemini-2.5-flash"  # Fastest LLM
+  max_tokens: 512
+  top_k: 3  # Fewer documents = faster
+```
+
+**Expected latency:** 2-4 seconds per query
+
+#### Quality-Optimized Configuration
+
+**Best for:** Detailed analysis, comprehensive answers, research
+
+```yaml
+embedding:
+  provider: "openai"
+
+openai:
+  embedding_model: "text-embedding-3-large"  # Higher quality embeddings
+
+llm:
+  provider: "claude"
+
+claude:
+  model_name: "claude-3-5-sonnet-20240620"  # Best quality
+  max_tokens: 2048
+  top_k: 10  # More context
+```
+
+**Expected latency:** 5-12 seconds per query
+
+#### Balanced Configuration (Recommended)
+
+**Best for:** General use, good mix of speed and quality
+
+```yaml
+embedding:
+  provider: "mistral"
+
+llm:
+  provider: "openai"
+
+openai:
+  model_name: "gpt-4o-mini"  # Good balance
+  max_tokens: 1024
+  top_k: 5
+```
+
+**Expected latency:** 3-6 seconds per query
+
+### Performance Tuning Tips
+
+#### 1. Embedding Provider Choice
+
+**Impact:** Affects initial query embedding time
+
+- **Local** (`intfloat/multilingual-e5-large`): 2-5s first query, 1-2s subsequent
+  - Pros: No API costs, no rate limits, works offline
+  - Cons: Requires GPU/CPU resources, slower
+
+- **Mistral API** (`mistral-embed`): 0.5-1s
+  - Pros: Fast, reliable, good quality
+  - Cons: API costs, requires internet
+
+- **OpenAI API** (`text-embedding-3-small`): 0.3-0.7s
+  - Pros: Very fast, excellent quality
+  - Cons: Higher API costs
+
+- **Gemini API** (`text-embedding-004`): 0.4-0.8s
+  - Pros: Fast, cost-effective
+  - Cons: Requires Google Cloud setup
+
+**Recommendation:** Use Mistral or OpenAI API for MCP integration (better UX)
+
+#### 2. LLM Provider Choice
+
+**Impact:** Affects answer generation time
+
+| Provider | Model | Speed | Quality | Cost |
+|----------|-------|-------|---------|------|
+| Gemini | `gemini-2.5-flash` | ⚡⚡⚡ Fastest | ⭐⭐⭐ Good | 💰 Cheap |
+| OpenAI | `gpt-4o-mini` | ⚡⚡ Fast | ⭐⭐⭐⭐ Great | 💰💰 Medium |
+| Mistral | `mistral-small-latest` | ⚡⚡ Fast | ⭐⭐⭐ Good | 💰💰 Medium |
+| OpenAI | `gpt-4o` | ⚡ Moderate | ⭐⭐⭐⭐⭐ Excellent | 💰💰💰 High |
+| Claude | `claude-3-5-sonnet` | ⚡ Moderate | ⭐⭐⭐⭐⭐ Excellent | 💰💰💰 High |
+
+#### 3. Context Size (`top_k`)
+
+**Impact:** Affects both retrieval time and LLM processing time
+
+- `top_k: 3` - Quick answers, focused context (~2-3s total)
+- `top_k: 5` - Balanced (default) (~3-6s total)
+- `top_k: 7-10` - Comprehensive answers (~5-10s total)
+- `top_k: 15-20` - Maximum coverage (~8-15s total)
+
+**Guideline:**
+- Simple factual queries: 3-5
+- Complex analysis: 7-10
+- Exhaustive research: 10-20
+
+#### 4. Infrastructure Optimization
+
+**Qdrant Location:**
+- **Local** (same machine): 0.1-0.3s retrieval ✅
+- **Local network**: 0.3-1s retrieval
+- **Remote/Cloud**: 1-3s retrieval ❌
+
+**MCP Server Location:**
+- **Local** (stdio): Best for Claude Desktop/Cursor
+- **Local network** (HTTP): Good for team use
+- **Cloud** (HTTP): Slower but accessible anywhere
+
+### Monitoring Performance
+
+**Check query logs:**
+```bash
+tail -f ./logs/rainrag.log | grep "MCP"
+```
+
+**Test with MCP Inspector:**
+```bash
+# Time a query
+time curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"tool":"query_rag","args":{"question":"test"}}'
+```
+
+### Troubleshooting Slow Queries
+
+**If queries take >10 seconds:**
+
+1. **Check embedding provider** - Switch from local to API
+2. **Check Qdrant location** - Ensure it's running locally
+3. **Reduce `top_k`** - Try 3 instead of 5
+4. **Check network latency** - Test API response times
+5. **Review LLM choice** - Use Flash/Mini models
+
+**If queries take >30 seconds:**
+
+- Likely a timeout or configuration issue
+- Check logs: `tail -f ./logs/rainrag.log`
+- Verify Qdrant is accessible: `curl http://localhost:6333`
+- Check API keys are valid
 
 ## Next Steps
 
