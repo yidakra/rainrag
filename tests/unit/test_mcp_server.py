@@ -330,32 +330,38 @@ class TestMCPServerRunning:
             with patch("rainrag.mcp_server.initialize_server") as mock_init:
                 with patch("rainrag.mcp_server._config") as mock_config:
                     with patch("rainrag.mcp_server.mcp") as mock_mcp:
-                        # Setup mock config
-                        mock_mcp_config = MagicMock()
-                        mock_mcp_config.transport = "streamable-http"
-                        mock_mcp_config.host = "0.0.0.0"
-                        mock_mcp_config.port = 9000
-                        mock_config.mcp = mock_mcp_config
+                        with patch("rainrag.mcp_server.uvicorn") as mock_uvicorn:
+                            # Setup mock config
+                            mock_mcp_config = MagicMock()
+                            mock_mcp_config.transport = "streamable-http"
+                            mock_mcp_config.host = "0.0.0.0"
+                            mock_mcp_config.port = 9000
+                            mock_config.mcp = mock_mcp_config
 
-                        from rainrag.mcp_server import run_server
+                            # Mock the ASGI app
+                            mock_asgi_app = MagicMock()
+                            mock_mcp.streamable_http_app.return_value = mock_asgi_app
 
-                        # Run the server with HTTP transport
-                        run_server(
-                            config_path,
-                            transport="streamable-http",
-                            host="0.0.0.0",
-                            port=9000,
-                        )
+                            from rainrag.mcp_server import run_server
 
-                        # Verify initialization was called
-                        mock_init.assert_called_once_with(config_path)
+                            # Run the server with HTTP transport
+                            run_server(
+                                config_path,
+                                transport="streamable-http",
+                                host="0.0.0.0",
+                                port=9000,
+                            )
 
-                        # Verify mcp.run was called with correct parameters
-                        mock_mcp.run.assert_called_once()
-                        call_kwargs = mock_mcp.run.call_args.kwargs
-                        assert call_kwargs.get("transport") == "streamable-http"
-                        assert call_kwargs.get("host") == "0.0.0.0"
-                        assert call_kwargs.get("port") == 9000
+                            # Verify initialization was called
+                            mock_init.assert_called_once_with(config_path)
+
+                            # Verify streamable_http_app was called to get ASGI app
+                            mock_mcp.streamable_http_app.assert_called_once()
+
+                            # Verify uvicorn.run was called with correct parameters
+                            mock_uvicorn.run.assert_called_once_with(
+                                mock_asgi_app, host="0.0.0.0", port=9000
+                            )
 
         finally:
             Path(config_path).unlink()

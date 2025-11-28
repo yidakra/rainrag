@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import uvicorn
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
@@ -199,7 +200,10 @@ def run_server(
     # Run the server with specified transport
     if transport_to_use == "streamable-http":
         logger.info(f"MCP server running at http://{host_to_use}:{port_to_use}/mcp")
-        mcp.run(transport=transport_to_use, host=host_to_use, port=port_to_use)
+        # For HTTP transport, we need to use uvicorn directly
+        # Get the ASGI app from FastMCP and run it with uvicorn
+        asgi_app = mcp.streamable_http_app()
+        uvicorn.run(asgi_app, host=host_to_use, port=port_to_use)
     else:
         logger.info(f"MCP server running with {transport_to_use} transport")
         mcp.run(transport=transport_to_use)
