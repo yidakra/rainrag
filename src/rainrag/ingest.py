@@ -1,8 +1,11 @@
 """Ingestion module for parsing VTT subtitle files."""
 
 import hashlib
+import json
 import re
+import subprocess
 from collections.abc import Generator
+from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -20,6 +23,8 @@ class Document(BaseModel):
     language: str
     text: str
     length: int
+    date: str | None = None  # ISO date from source video mtime
+    duration_seconds: float | None = None  # Video duration in seconds
 
 
 class VTTParser:
@@ -157,6 +162,86 @@ class VTTParser:
         path_str = str(file_path.absolute())
         return hashlib.sha256(path_str.encode()).hexdigest()[:16]
 
+    @staticmethod
+    def find_source_video(vtt_path: Path) -> Path | None:
+        """
+        Find the source video file for a VTT subtitle file.
+
+        VTT files are named like: {hash}.{lang}.vtt
+        Source videos are named like: {hash} (no extension) or {hash}.mp4
+
+        Args:
+            vtt_path: Path to the VTT file
+
+        Returns:
+            Path to source video or None if not found
+        """
+        # Extract the hash from filename (e.g., "abc123.ru.vtt" -> "abc123")
+        stem = vtt_path.stem  # "abc123.ru"
+        if "." in stem:
+            video_hash = stem.rsplit(".", 1)[0]  # "abc123"
+        else:
+            video_hash = stem
+
+        parent = vtt_path.parent
+
+        # Try to find source video (usually extensionless or .mp4)
+        candidates = [
+            parent / video_hash,  # No extension (original)
+            parent / f"{video_hash}.mp4",
+        ]
+
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+
+        return None
+
+    @staticmethod
+    def get_video_metadata(video_path: Path) -> tuple[str | None, float | None]:
+        """
+        Extract metadata from a video file.
+
+        Args:
+            video_path: Path to the video file
+
+        Returns:
+            Tuple of (date_iso, duration_seconds)
+        """
+        date_iso = None
+        duration = None
+
+        # Get mtime as date
+        try:
+            mtime = video_path.stat().st_mtime
+            date_iso = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+        except Exception as e:
+            logger.debug(f"Could not get mtime for {video_path}: {e}")
+
+        # Get duration via ffprobe
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_format",
+                    str(video_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                duration_str = data.get("format", {}).get("duration")
+                if duration_str:
+                    duration = float(duration_str)
+        except Exception as e:
+            logger.debug(f"Could not get duration for {video_path}: {e}")
+
+        return date_iso, duration
+
 
 class Ingester:
     """Main ingestion class for crawling and parsing VTT files."""
@@ -224,6 +309,13 @@ class Ingester:
         # Generate document ID
         doc_id = self.parser.generate_id(file_path)
 
+        # Extract metadata from source video
+        date_iso = None
+        duration = None
+        source_video = self.parser.find_source_video(file_path)
+        if source_video:
+            date_iso, duration = self.parser.get_video_metadata(source_video)
+
         # Create document
         doc = Document(
             id=doc_id,
@@ -231,6 +323,8 @@ class Ingester:
             language=language,
             text=text,
             length=len(text),
+            date=date_iso,
+            duration_seconds=duration,
         )
 
         return doc

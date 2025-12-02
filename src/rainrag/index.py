@@ -121,6 +121,8 @@ class QdrantIndexer:
                     "language": doc.language,
                     "text": doc.text,
                     "length": doc.length,
+                    "date": doc.date,
+                    "duration_seconds": doc.duration_seconds,
                 },
             )
             points.append(point)

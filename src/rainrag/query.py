@@ -244,6 +244,8 @@ class RAGQueryEngine:
                     "path": hit.payload.get("path", ""),
                     "language": hit.payload.get("language", ""),
                     "doc_id": hit.payload.get("doc_id", ""),
+                    "date": hit.payload.get("date"),
+                    "duration_seconds": hit.payload.get("duration_seconds"),
                 }
                 documents.append(doc)
                 logger.debug(f"Rank {idx + 1}: Score={hit.score:.4f}, Path={doc['path']}")
@@ -278,6 +280,14 @@ class RAGQueryEngine:
                 text = text[:max_chars_per_doc].rstrip() + "..."
             context_parts.append(f"[Document {doc['rank']}]")
             context_parts.append(f"Source: {doc['path']}")
+            # Include date if available
+            if doc.get("date"):
+                context_parts.append(f"Date: {doc['date']}")
+            # Include duration if available (format as mm:ss)
+            if doc.get("duration_seconds"):
+                mins = int(doc["duration_seconds"] // 60)
+                secs = int(doc["duration_seconds"] % 60)
+                context_parts.append(f"Duration: {mins}:{secs:02d}")
             context_parts.append(f"Text: {text}")
             context_parts.append("")  # Empty line between documents
 
@@ -285,16 +295,28 @@ class RAGQueryEngine:
 
         # Language-specific system messages
         system_messages = {
-            "ru": """Вы помощник, который помогает пользователям понимать видео-транскрипты. КРИТИЧЕСКИ ВАЖНО: Вы ДОЛЖНЫ отвечать ТОЛЬКО на русском языке. Каждое слово вашего ответа должно быть на русском языке.
+            "ru": """Вы — ассистент для журналистов и редакторов, помогающий находить видеоматериалы в новостном архиве. КРИТИЧЕСКИ ВАЖНО: Вы ДОЛЖНЫ отвечать ТОЛЬКО на русском языке.
 
-Вам предоставлены релевантные фрагменты видео-транскриптов. Отвечайте на вопрос пользователя на основе предоставленного контекста. Если контекста недостаточно для полного ответа, укажите это в ответе.
+ВСЕ ВИДЕО — АРХИВНЫЕ ЗАПИСИ, не текущие новости. Правила ответа:
+- Всегда указывайте дату записи из метаданных (поле "Date")
+- Упоминайте длительность видео (поле "Duration") — важно для редакторов
+- Используйте прошедшее время: "В архивном видео от 2021-05-11 показано..."
+- Цитируйте путь к файлу (Source), чтобы редактор мог найти видео
+- Если несколько видео релевантны, перечислите каждое с датой и описанием
+- Объясните, почему материал может быть полезен для текущего сюжета
 
-ПОВТОРЯЮ: Отвечайте ТОЛЬКО на русском языке.""",
-            "en": """You are an assistant that helps users understand video transcripts. CRITICAL: You MUST answer ONLY in English. Every word of your response must be in English.
+Если дата отсутствует, укажите это. Если материал не найден — скажите прямо, не выдумывайте.""",
+            "en": """You are an assistant for journalists and editors, helping them find video footage from a news archive. CRITICAL: You MUST answer ONLY in English.
 
-You have been provided with relevant excerpts from video transcripts. Answer the user's question based on the provided context. If the context doesn't contain enough information to fully answer the question, acknowledge this in your response.
+ALL VIDEOS ARE ARCHIVAL RECORDINGS, not current news. Response rules:
+- Always cite the recording date from metadata (the "Date" field)
+- Mention video duration (the "Duration" field) — important for editors
+- Use past tense: "Archive footage from 2021-05-11 shows..."
+- Cite the file path (Source) so editors can locate the video
+- If multiple videos are relevant, list each with date and description
+- Explain why the footage might be useful for the current story
 
-REPEATING: Answer ONLY in English.""",
+If date is missing, note this. If no relevant footage is found, say so clearly — do not fabricate.""",
         }
 
         # Get system message (default to English if not found)
