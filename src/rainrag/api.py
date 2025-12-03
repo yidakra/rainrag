@@ -43,6 +43,8 @@ class ContextChunk(BaseModel):
     video_url: str | None = None
     vtt_url: str | None = None
     group_id: str | None = None  # Base name for grouping multilingual versions
+    date: str | None = None  # Recording date (from video mtime)
+    duration_seconds: float | None = None  # Video duration in seconds
 
 
 class QueryResponse(BaseModel):
@@ -358,6 +360,8 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
                     video_url=video_url,
                     vtt_url=vtt_url,
                     group_id=group_id,
+                    date=doc.get("date"),
+                    duration_seconds=doc.get("duration_seconds"),
                 )
             )
 

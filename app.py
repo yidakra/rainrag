@@ -53,6 +53,8 @@ TRANSLATIONS = {
         "download_vtt": "Скачать VTT",
         "view_vtt": "Просмотр VTT",
         "no_video": "Видео не найдено",
+        "date_label": "Дата",
+        "duration_label": "Длит.",
     },
     "en": {
         "title": "🎬 RainRAG - Video Transcript Search",
@@ -89,6 +91,8 @@ TRANSLATIONS = {
         "download_vtt": "Download VTT",
         "view_vtt": "View VTT",
         "no_video": "Video not found",
+        "date_label": "Date",
+        "duration_label": "Dur.",
     },
 }
 
@@ -249,10 +253,27 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     filename = chunk.get("filename", "Unknown")
     score = chunk.get("score", 0.0)
     chunk_lang = chunk.get("language", "unknown")
+    date = chunk.get("date")
+    duration_seconds = chunk.get("duration_seconds")
+
+    # Format duration as mm:ss
+    duration_str = ""
+    if duration_seconds:
+        mins = int(duration_seconds // 60)
+        secs = int(duration_seconds % 60)
+        duration_str = f"{mins}:{secs:02d}"
+
+    # Build metadata line with date and duration if available
+    meta_parts = [f"**{get_text('score_label', lang)}:** {score:.3f}"]
+    if date:
+        meta_parts.append(f"**{get_text('date_label', lang)}:** {date}")
+    if duration_str:
+        meta_parts.append(f"**{get_text('duration_label', lang)}:** {duration_str}")
+    meta_parts.append(f"**{get_text('language_field', lang)}:** {chunk_lang}")
 
     return f"""
 **{get_text("source_label", lang)}:** `{filename}`
-**{get_text("score_label", lang)}:** {score:.3f} | **{get_text("language_field", lang)}:** {chunk_lang}
+{" | ".join(meta_parts)}
 """
 
 
