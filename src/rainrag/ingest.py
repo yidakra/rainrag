@@ -25,6 +25,8 @@ class Document(BaseModel):
     length: int
     date: str | None = None  # ISO date from source video mtime
     duration_seconds: float | None = None  # Video duration in seconds
+    start_time: str | None = None  # First timecode in VTT (HH:MM:SS)
+    end_time: str | None = None  # Last timecode in VTT (HH:MM:SS)
 
 
 class VTTParser:
@@ -99,6 +101,23 @@ class VTTParser:
         Returns:
             Cleaned transcript text or None if parsing fails
         """
+        result = cls.parse_vtt_with_timecodes(file_path)
+        return result[0] if result else None
+
+    @classmethod
+    def parse_vtt_with_timecodes(
+        cls, file_path: Path
+    ) -> tuple[str, str | None, str | None] | None:
+        """
+        Parse a VTT file and extract text with first/last timecodes.
+
+        Args:
+            file_path: Path to the VTT file
+
+        Returns:
+            Tuple of (text, start_time, end_time) or None if parsing fails.
+            Timecodes are in HH:MM:SS format.
+        """
         try:
             with open(file_path, encoding="utf-8") as f:
                 lines = f.readlines()
@@ -109,6 +128,7 @@ class VTTParser:
                 return None
 
             text_lines = []
+            timecodes: list[tuple[str, str]] = []  # (start, end) pairs
             skip_next = False
 
             for line in lines[1:]:  # Skip the WEBVTT header
@@ -119,8 +139,14 @@ class VTTParser:
                     skip_next = False
                     continue
 
-                # Skip timestamp lines
+                # Capture timestamp lines
                 if cls.TIMESTAMP_PATTERN.match(line):
+                    # Extract start and end times: "00:00:00.000 --> 00:00:10.160"
+                    parts = line.split("-->")
+                    if len(parts) == 2:
+                        start = parts[0].strip().split(".")[0]  # Remove milliseconds
+                        end = parts[1].strip().split()[0].split(".")[0]  # Remove ms and any positioning
+                        timecodes.append((start, end))
                     skip_next = False
                     continue
 
@@ -142,7 +168,11 @@ class VTTParser:
             # Join all text lines with spaces
             full_text = " ".join(text_lines)
 
-            return full_text if full_text else None
+            # Get first and last timecodes
+            start_time = timecodes[0][0] if timecodes else None
+            end_time = timecodes[-1][1] if timecodes else None
+
+            return (full_text, start_time, end_time) if full_text else None
 
         except Exception as e:
             logger.error(f"Error parsing {file_path}: {e}")
@@ -291,12 +321,14 @@ class Ingester:
         Returns:
             Document object or None if processing fails
         """
-        # Parse VTT content
-        text = self.parser.parse_vtt(file_path)
+        # Parse VTT content with timecodes
+        result = self.parser.parse_vtt_with_timecodes(file_path)
 
-        if not text:
+        if not result:
             logger.warning(f"No text extracted from {file_path}")
             return None
+
+        text, start_time, end_time = result
 
         # Check minimum text length
         if len(text) < self.config.processing.min_text_length:
@@ -325,6 +357,8 @@ class Ingester:
             length=len(text),
             date=date_iso,
             duration_seconds=duration,
+            start_time=start_time,
+            end_time=end_time,
         )
 
         return doc

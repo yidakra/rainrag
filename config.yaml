@@ -68,6 +68,18 @@ gemini:
   temperature: 0.3
   top_k: 5  # Number of documents to retrieve for context
 
+# Cohere API configuration (for reranking)
+cohere:
+  api_key: ""  # Set your Cohere API key here or via COHERE_API_KEY environment variable
+  model_name: "rerank-v3.5"  # Options: rerank-v3.5, rerank-english-v3.0, rerank-multilingual-v3.0
+
+# Reranker configuration
+reranker:
+  enabled: false  # Set to true to enable reranking
+  provider: "cohere"
+  top_n: 5  # Number of documents to return after reranking
+  initial_k: 20  # Number of candidates to retrieve before reranking
+
 # Processing configuration
 processing:
   # Number of worker threads for file processing

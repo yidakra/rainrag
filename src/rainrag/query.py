@@ -2,12 +2,14 @@
 
 from typing import Any
 
+import cohere
 import google.generativeai as genai
 from anthropic import Anthropic
 from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient
+from qdrant_client.http import models as qdrant_models
 from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
@@ -66,6 +68,13 @@ class RAGQueryEngine:
         if needs_gemini:
             genai.configure(api_key=config.gemini.api_key)
             logger.info("Initialized Gemini client")
+
+        # Initialize Cohere client if reranker is enabled
+        if config.reranker.enabled and config.reranker.provider == "cohere":
+            self.cohere_client = cohere.ClientV2(api_key=config.cohere.api_key)
+            logger.info(f"Initialized Cohere reranker: {config.cohere.model_name}")
+        else:
+            self.cohere_client = None
 
         # Log which provider is being used for LLM
         if config.llm.provider == "mistral":
@@ -212,13 +221,21 @@ class RAGQueryEngine:
         else:
             raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
 
-    def retrieve_documents(self, query_vector: list[float], top_k: int) -> list[dict[str, Any]]:
+    def retrieve_documents(
+        self,
+        query_vector: list[float],
+        top_k: int,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Retrieve the most relevant documents from Qdrant.
 
         Args:
             query_vector: The query embedding
             top_k: Number of documents to retrieve
+            date_from: Filter results from this date (YYYY-MM-DD)
+            date_to: Filter results up to this date (YYYY-MM-DD)
 
         Returns:
             List of retrieved documents with metadata
@@ -228,11 +245,33 @@ class RAGQueryEngine:
 
         logger.info(f"Searching for top {top_k} documents...")
 
+        # Build date filter if specified
+        query_filter = None
+        if date_from or date_to:
+            conditions = []
+            if date_from:
+                conditions.append(
+                    qdrant_models.FieldCondition(
+                        key="date",
+                        range=qdrant_models.Range(gte=date_from),
+                    )
+                )
+            if date_to:
+                conditions.append(
+                    qdrant_models.FieldCondition(
+                        key="date",
+                        range=qdrant_models.Range(lte=date_to),
+                    )
+                )
+            query_filter = qdrant_models.Filter(must=conditions)
+            logger.info(f"Applying date filter: {date_from} to {date_to}")
+
         try:
             results = self.qdrant_client.query_points(
                 collection_name=self.config.qdrant.collection_name,
                 query=query_vector,
                 limit=top_k,
+                query_filter=query_filter,
             ).points
 
             documents = []
@@ -246,6 +285,8 @@ class RAGQueryEngine:
                     "doc_id": hit.payload.get("doc_id", ""),
                     "date": hit.payload.get("date"),
                     "duration_seconds": hit.payload.get("duration_seconds"),
+                    "start_time": hit.payload.get("start_time"),
+                    "end_time": hit.payload.get("end_time"),
                 }
                 documents.append(doc)
                 logger.debug(f"Rank {idx + 1}: Score={hit.score:.4f}, Path={doc['path']}")
@@ -256,6 +297,58 @@ class RAGQueryEngine:
         except Exception as e:
             logger.error(f"Failed to retrieve documents: {e}")
             raise
+
+    def rerank_documents(
+        self, query: str, documents: list[dict[str, Any]], top_n: int
+    ) -> list[dict[str, Any]]:
+        """
+        Rerank documents using Cohere Rerank API.
+
+        Args:
+            query: The user's query
+            documents: List of retrieved documents
+            top_n: Number of documents to return after reranking
+
+        Returns:
+            Reranked list of documents
+        """
+        if not self.cohere_client:
+            logger.warning("Cohere client not initialized, skipping reranking")
+            return documents[:top_n]
+
+        if not documents:
+            return documents
+
+        logger.info(f"Reranking {len(documents)} documents with Cohere...")
+
+        try:
+            # Prepare documents for reranking
+            texts = [doc["text"] for doc in documents]
+
+            # Call Cohere Rerank API
+            response = self.cohere_client.rerank(
+                model=self.config.cohere.model_name,
+                query=query,
+                documents=texts,
+                top_n=min(top_n, len(documents)),
+            )
+
+            # Reorder documents based on rerank results
+            reranked = []
+            for idx, result in enumerate(response.results):
+                doc = documents[result.index].copy()
+                doc["rank"] = idx + 1
+                doc["rerank_score"] = result.relevance_score
+                doc["original_score"] = doc["score"]
+                doc["score"] = result.relevance_score  # Use rerank score as primary
+                reranked.append(doc)
+
+            logger.info(f"Reranking complete. Returning top {len(reranked)} documents")
+            return reranked
+
+        except Exception as e:
+            logger.error(f"Reranking failed: {e}. Returning original documents.")
+            return documents[:top_n]
 
     def build_prompt(
         self, query: str, documents: list[dict[str, Any]], language: str = "en"
@@ -288,6 +381,9 @@ class RAGQueryEngine:
                 mins = int(doc["duration_seconds"] // 60)
                 secs = int(doc["duration_seconds"] % 60)
                 context_parts.append(f"Duration: {mins}:{secs:02d}")
+            # Include timecodes if available
+            if doc.get("start_time") and doc.get("end_time"):
+                context_parts.append(f"Timecodes: {doc['start_time']} - {doc['end_time']}")
             context_parts.append(f"Text: {text}")
             context_parts.append("")  # Empty line between documents
 
@@ -448,7 +544,12 @@ Question: {query}"""
             raise ValueError(f"Unknown LLM provider: {self.config.llm.provider}")
 
     def query(
-        self, question: str, top_k: int | None = None, language: str = "en"
+        self,
+        question: str,
+        top_k: int | None = None,
+        language: str = "en",
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute the complete query pipeline.
@@ -457,6 +558,8 @@ Question: {query}"""
             question: The user's question
             top_k: Number of documents to retrieve (defaults to config value)
             language: Language code for response (e.g., "en", "ru")
+            date_from: Filter results from this date (YYYY-MM-DD)
+            date_to: Filter results up to this date (YYYY-MM-DD)
 
         Returns:
             Dictionary containing the answer and metadata
@@ -479,13 +582,25 @@ Question: {query}"""
         # Step 1: Embed the query
         query_vector = self.embed_query(question)
 
-        # Step 2: Retrieve relevant documents
-        documents = self.retrieve_documents(query_vector, top_k)
+        # Step 2: Retrieve relevant documents with optional date filter
+        # If reranking is enabled, retrieve more candidates
+        if self.config.reranker.enabled:
+            retrieval_k = self.config.reranker.initial_k
+        else:
+            retrieval_k = top_k
 
-        # Step 3: Build the messages with language specification
+        documents = self.retrieve_documents(
+            query_vector, retrieval_k, date_from=date_from, date_to=date_to
+        )
+
+        # Step 3: Rerank if enabled
+        if self.config.reranker.enabled and documents:
+            documents = self.rerank_documents(question, documents, top_n=top_k)
+
+        # Step 4: Build the messages with language specification
         messages = self.build_prompt(question, documents, language=language)
 
-        # Step 4: Generate the answer
+        # Step 5: Generate the answer
         answer = self.generate_answer(messages)
 
         return {

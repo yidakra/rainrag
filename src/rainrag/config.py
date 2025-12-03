@@ -158,6 +158,29 @@ class MCPConfig(BaseModel):
     port: int = Field(default=8000, description="Port for HTTP-based transports")
 
 
+class CohereConfig(BaseModel):
+    """Configuration for Cohere Rerank API."""
+
+    api_key: str = Field(default="", description="Cohere API key")
+    model_name: str = Field(
+        default="rerank-v3.5",
+        description="Cohere rerank model: rerank-v3.5, rerank-english-v3.0, rerank-multilingual-v3.0",
+    )
+
+
+class RerankerConfig(BaseModel):
+    """Configuration for reranking."""
+
+    enabled: bool = Field(default=False, description="Enable reranking of search results")
+    provider: str = Field(default="cohere", description="Reranker provider: 'cohere'")
+    top_n: int = Field(
+        default=5, description="Number of documents to return after reranking"
+    )
+    initial_k: int = Field(
+        default=20, description="Number of candidates to retrieve before reranking"
+    )
+
+
 class Config(BaseModel):
     """Main configuration model."""
 
@@ -169,6 +192,8 @@ class Config(BaseModel):
     openai: OpenAIConfig
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
+    cohere: CohereConfig = Field(default_factory=CohereConfig)
+    reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
@@ -223,5 +248,12 @@ def load_config(config_path: str = "config.yaml") -> Config:
         if "gemini" not in config_data:
             config_data["gemini"] = {}
         config_data["gemini"]["api_key"] = google_api_key
+
+    # Override Cohere API key from environment variable if set
+    cohere_api_key = os.getenv("COHERE_API_KEY")
+    if cohere_api_key:
+        if "cohere" not in config_data:
+            config_data["cohere"] = {}
+        config_data["cohere"]["api_key"] = cohere_api_key
 
     return Config(**config_data)

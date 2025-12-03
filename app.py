@@ -55,6 +55,11 @@ TRANSLATIONS = {
         "no_video": "Видео не найдено",
         "date_label": "Дата",
         "duration_label": "Длит.",
+        "timecode_label": "Тайм-код",
+        "date_filter_label": "Фильтр по дате",
+        "date_from_label": "С",
+        "date_to_label": "По",
+        "clear_dates": "Сбросить даты",
     },
     "en": {
         "title": "🎬 RainRAG - Video Transcript Search",
@@ -93,6 +98,11 @@ TRANSLATIONS = {
         "no_video": "Video not found",
         "date_label": "Date",
         "duration_label": "Dur.",
+        "timecode_label": "TC",
+        "date_filter_label": "Date Filter",
+        "date_from_label": "From",
+        "date_to_label": "To",
+        "clear_dates": "Clear Dates",
     },
 }
 
@@ -145,6 +155,10 @@ def initialize_session_state():
         st.session_state.top_k = DEFAULT_TOP_K
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = not bool(AUTH_TOKEN)
+    if "date_from" not in st.session_state:
+        st.session_state.date_from = None
+    if "date_to" not in st.session_state:
+        st.session_state.date_to = None
 
 
 def get_api_headers() -> dict[str, str]:
@@ -168,7 +182,13 @@ async def check_api_health() -> dict[str, Any] | None:
         return None
 
 
-async def query_rag(question: str, language: str, top_k: int) -> dict[str, Any]:
+async def query_rag(
+    question: str,
+    language: str,
+    top_k: int,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
     """
     Query the RAG system via API.
 
@@ -176,6 +196,8 @@ async def query_rag(question: str, language: str, top_k: int) -> dict[str, Any]:
         question: User's question
         language: Response language (ru or en)
         top_k: Number of context chunks to retrieve
+        date_from: Filter from date (YYYY-MM-DD)
+        date_to: Filter to date (YYYY-MM-DD)
 
     Returns:
         API response dictionary
@@ -184,10 +206,16 @@ async def query_rag(question: str, language: str, top_k: int) -> dict[str, Any]:
         httpx.HTTPStatusError: If API returns error status
         httpx.TimeoutException: If request times out
     """
+    payload = {"question": question, "language": language, "top_k": top_k}
+    if date_from:
+        payload["date_from"] = date_from
+    if date_to:
+        payload["date_to"] = date_to
+
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         response = await client.post(
             f"{API_BASE_URL}/query",
-            json={"question": question, "language": language, "top_k": top_k},
+            json=payload,
             headers=get_api_headers(),
         )
         response.raise_for_status()
@@ -255,6 +283,8 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     chunk_lang = chunk.get("language", "unknown")
     date = chunk.get("date")
     duration_seconds = chunk.get("duration_seconds")
+    start_time = chunk.get("start_time")
+    end_time = chunk.get("end_time")
 
     # Format duration as mm:ss
     duration_str = ""
@@ -263,12 +293,19 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
         secs = int(duration_seconds % 60)
         duration_str = f"{mins}:{secs:02d}"
 
-    # Build metadata line with date and duration if available
+    # Format timecode range
+    timecode_str = ""
+    if start_time and end_time:
+        timecode_str = f"{start_time}-{end_time}"
+
+    # Build metadata line with date, duration, and timecodes if available
     meta_parts = [f"**{get_text('score_label', lang)}:** {score:.3f}"]
     if date:
         meta_parts.append(f"**{get_text('date_label', lang)}:** {date}")
     if duration_str:
         meta_parts.append(f"**{get_text('duration_label', lang)}:** {duration_str}")
+    if timecode_str:
+        meta_parts.append(f"**{get_text('timecode_label', lang)}:** {timecode_str}")
     meta_parts.append(f"**{get_text('language_field', lang)}:** {chunk_lang}")
 
     return f"""
@@ -354,11 +391,13 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     if video_url:
                         st.markdown(f"**🎥 {get_text('video_label', lang)}:**")
                         video_full_url = f"{API_BASE_URL}{video_url}"
-                        try:
-                            st.video(video_full_url)
-                        except Exception as e:
-                            logger.warning(f"Could not load video: {e}")
-                            st.warning(get_text("no_video", lang))
+                        # Use HTML5 video element to support #t= timecode fragments
+                        st.markdown(
+                            f"""<video controls width="100%" style="border-radius: 8px;">
+                                <source src="{video_full_url}" type="video/mp4">
+                            </video>""",
+                            unsafe_allow_html=True,
+                        )
                     else:
                         st.info(get_text("no_video", lang))
 
@@ -487,6 +526,31 @@ def render_sidebar(lang: str):
 
         st.divider()
 
+        # Date range filter
+        st.markdown(f"**📅 {get_text('date_filter_label', lang)}**")
+        col1, col2 = st.columns(2)
+        with col1:
+            date_from = st.date_input(
+                get_text("date_from_label", lang),
+                value=st.session_state.date_from,
+                key="date_from_input",
+            )
+            st.session_state.date_from = date_from if date_from else None
+        with col2:
+            date_to = st.date_input(
+                get_text("date_to_label", lang),
+                value=st.session_state.date_to,
+                key="date_to_input",
+            )
+            st.session_state.date_to = date_to if date_to else None
+
+        if st.button(get_text("clear_dates", lang), use_container_width=True):
+            st.session_state.date_from = None
+            st.session_state.date_to = None
+            st.rerun()
+
+        st.divider()
+
         # System information
         with st.spinner(get_text("loading_system", lang)):
             import asyncio
@@ -596,9 +660,23 @@ def main():
             try:
                 import asyncio
 
+                # Convert date objects to strings if set
+                date_from = None
+                date_to = None
+                if st.session_state.date_from:
+                    date_from = st.session_state.date_from.strftime("%Y-%m-%d")
+                if st.session_state.date_to:
+                    date_to = st.session_state.date_to.strftime("%Y-%m-%d")
+
                 # Query the RAG system
                 response = asyncio.run(
-                    query_rag(user_input, st.session_state.language, st.session_state.top_k)
+                    query_rag(
+                        user_input,
+                        st.session_state.language,
+                        st.session_state.top_k,
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
                 )
 
                 # Add assistant response to chat

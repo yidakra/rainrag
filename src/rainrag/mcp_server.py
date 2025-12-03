@@ -49,6 +49,8 @@ def query_rag(
     question: str,
     language: str = "en",
     top_k: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict[str, Any]:
     """
     Query the RainRAG system with a question and get an answer with context.
@@ -62,6 +64,8 @@ def query_rag(
         question: The question to ask about the video transcripts
         language: Language for the response - "en" for English or "ru" for Russian (default: "en")
         top_k: Number of document chunks to retrieve (default: uses config value, typically 5)
+        date_from: Filter results from this date (YYYY-MM-DD format)
+        date_to: Filter results up to this date (YYYY-MM-DD format)
 
     Returns:
         Dictionary containing:
@@ -72,12 +76,19 @@ def query_rag(
 
     Example:
         >>> query_rag("What topics are discussed in the videos?", language="en", top_k=3)
+        >>> query_rag("protests", date_from="2020-01-01", date_to="2020-12-31")
     """
     engine = get_query_engine()
     logger.info(f"MCP query received: {question[:100]}... (language: {language})")
 
     try:
-        result = engine.query(question=question, top_k=top_k, language=language)
+        result = engine.query(
+            question=question,
+            top_k=top_k,
+            language=language,
+            date_from=date_from,
+            date_to=date_to,
+        )
         logger.info("MCP query completed successfully")
         return result
     except Exception as e:
@@ -89,6 +100,8 @@ def query_rag(
 def retrieve_documents(
     question: str,
     top_k: int = 5,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict[str, Any]:
     """
     Retrieve relevant document chunks without generating an answer.
@@ -104,16 +117,19 @@ def retrieve_documents(
     Args:
         question: The question or query to search for relevant documents
         top_k: Number of document chunks to retrieve (default: 5)
+        date_from: Filter results from this date (YYYY-MM-DD format)
+        date_to: Filter results up to this date (YYYY-MM-DD format)
 
     Returns:
         Dictionary containing:
         - question: The original question
         - documents: List of relevant document chunks with metadata
-          Each document includes: rank, score, text, path, language, doc_id
+          Each document includes: rank, score, text, path, language, doc_id, date, duration_seconds
         - num_documents: Number of documents retrieved
 
     Example:
         >>> retrieve_documents("machine learning algorithms", top_k=3)
+        >>> retrieve_documents("protests", date_from="2020-01-01", date_to="2020-12-31")
     """
     engine = get_query_engine()
     logger.info(f"MCP retrieval request: {question[:100]}... (top_k: {top_k})")
@@ -122,8 +138,10 @@ def retrieve_documents(
         # Embed the query
         query_vector = engine.embed_query(question)
 
-        # Retrieve documents
-        documents = engine.retrieve_documents(query_vector, top_k)
+        # Retrieve documents with optional date filter
+        documents = engine.retrieve_documents(
+            query_vector, top_k, date_from=date_from, date_to=date_to
+        )
 
         logger.info("MCP retrieval completed successfully")
         return {
