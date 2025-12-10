@@ -458,37 +458,15 @@ RainRAG includes a complete web-based query interface with:
 
 ### Prerequisites
 
-Before starting the web interface, you need running LLM server(s) to generate answers:
+- Qdrant running locally (`make qdrant-start` starts the bundled container)
+- API keys set for your chosen providers (`MISTRAL_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`)
+- `config.yaml` updated with the desired `llm.provider` and `embedding.provider`
 
-**See [MULTI_MODEL_SETUP.md](MULTI_MODEL_SETUP.md) for running all 3 models simultaneously (recommended)**
-**See [VLLM_SETUP.md](VLLM_SETUP.md) for single vLLM server configuration**
-**See [MODEL_CONFIGURATION.md](MODEL_CONFIGURATION.md) for detailed model-specific configurations**
-
-Quick single-model startup:
+Start everything locally:
 ```bash
-# Mistral on port 8000 (default)
-python -m vllm.entrypoints.openai.api_server \
-  --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
-  --host 0.0.0.0 \
-  --port 8000
+make up
 ```
-
-Multi-model setup (run all 3 for seamless switching):
-```bash
-# Terminal 1: Mistral on port 8000
-python -m vllm.entrypoints.openai.api_server \
-  --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 --port 8000
-
-# Terminal 2: Gemma on port 8002
-python -m vllm.entrypoints.openai.api_server \
-  --model google/gemma-2-27b-it --port 8002
-
-# Terminal 3: GPT-OSS on port 8003
-python -m vllm.entrypoints.openai.api_server \
-  --model gpt-oss:20b --port 8003
-```
-
-**Or use `make up` to start everything at once!**
+This brings up Qdrant, the FastAPI backend on port 8001, and the Streamlit UI on port 7860. Use `make down` to stop.
 
 ### Quick Start (Local Development)
 

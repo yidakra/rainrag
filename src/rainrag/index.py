@@ -158,9 +158,9 @@ class QdrantIndexer:
 
             stats = {
                 "name": collection_name,
-                "vectors_count": info.vectors_count,
-                "points_count": info.points_count,
-                "status": info.status,
+                "vectors_count": getattr(info, "vectors_count", None),
+                "points_count": getattr(info, "points_count", None),
+                "status": getattr(info, "status", None),
             }
 
             logger.info(f"Collection info: {stats}")
