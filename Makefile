@@ -144,7 +144,8 @@ down: qdrant-stop ## Stop all services
 	@echo "All services stopped"
 
 api-bg: ## Start API in background
-	@cd $(PWD) && poetry run python -m uvicorn rainrag.api:app --host 0.0.0.0 --port 8001 > /tmp/rainrag-api.log 2>&1 &
+	@cd $(PWD) && set -a && [ -f .env ] && . /root/rainrag/.env || true && set +a && \
+		poetry run python -m uvicorn rainrag.api:app --host 0.0.0.0 --port 8001 > /tmp/rainrag-api.log 2>&1 &
 	@echo "Waiting for API to be ready..."
 	@for i in $$(seq 1 30); do \
 		if curl -s http://localhost:8001/health > /dev/null 2>&1; then \
@@ -164,7 +165,8 @@ api-bg: ## Start API in background
 	fi
 
 streamlit-bg: ## Start Streamlit in background
-	@cd $(PWD) && poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860 > /tmp/rainrag-streamlit.log 2>&1 &
+	@cd $(PWD) && set -a && [ -f .env ] && . /root/rainrag/.env || true && set +a && \
+		poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860 > /tmp/rainrag-streamlit.log 2>&1 &
 	@sleep 3
 	@if pgrep -f "streamlit run app.py" > /dev/null; then \
 		echo "Streamlit started in background (logs: /tmp/rainrag-streamlit.log)"; \

@@ -9,7 +9,13 @@ from loguru import logger
 
 
 # Configuration
-API_BASE_URL = os.getenv("RAINRAG_API_URL", "http://localhost:8001")
+API_BASE_URL = os.getenv("RAINRAG_API_URL", "http://localhost:8001").rstrip("/")
+# Ensure we have an origin for static assets (videos/VTT). If API_BASE_URL ends with /api,
+# strip it for asset links so we don't hit /api/video/ (which 404s).
+API_BASE = API_BASE_URL.rstrip("/")
+ASSET_BASE_URL = API_BASE[:-4] if API_BASE.endswith("/api") else API_BASE
+# Allow disabling SSL verification for self-signed internal certs
+API_VERIFY_SSL = os.getenv("RAINRAG_API_VERIFY", "true").lower() not in ("0", "false", "no", "off")
 AUTH_TOKEN = os.getenv("STREAMLIT_AUTH_TOKEN", "")
 DEFAULT_LANGUAGE = "ru"
 DEFAULT_TOP_K = 3
@@ -172,8 +178,8 @@ def get_api_headers() -> dict[str, str]:
 async def check_api_health() -> dict[str, Any] | None:
     """Check API health status."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{API_BASE_URL}/health", headers=get_api_headers())
+        async with httpx.AsyncClient(timeout=5.0, verify=API_VERIFY_SSL) as client:
+            response = await client.get(f"{API_BASE}/health", headers=get_api_headers())
             if response.status_code == 200:
                 return response.json()
             return None
@@ -212,9 +218,9 @@ async def query_rag(
     if date_to:
         payload["date_to"] = date_to
 
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
         response = await client.post(
-            f"{API_BASE_URL}/query",
+            f"{API_BASE}/query",
             json=payload,
             headers=get_api_headers(),
         )
@@ -235,9 +241,9 @@ def fetch_vtt_content(vtt_url: str) -> str | None:
     try:
         import requests
 
-        vtt_full_url = f"{API_BASE_URL}{vtt_url}"
+        vtt_full_url = f"{ASSET_BASE_URL}{vtt_url}"
         headers = get_api_headers()
-        response = requests.get(vtt_full_url, headers=headers, timeout=10)
+        response = requests.get(vtt_full_url, headers=headers, timeout=10, verify=API_VERIFY_SSL)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -390,7 +396,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     video_url = group[0].get("video_url")
                     if video_url:
                         st.markdown(f"**🎥 {get_text('video_label', lang)}:**")
-                        video_full_url = f"{API_BASE_URL}{video_url}"
+                        video_full_url = f"{ASSET_BASE_URL}{video_url}"
                         # Use HTML5 video element to support #t= timecode fragments
                         st.markdown(
                             f"""<video controls width="100%" style="border-radius: 8px;">
