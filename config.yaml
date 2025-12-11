@@ -38,7 +38,7 @@ llm:
 mistral:
   api_key: ""  # Set your Mistral API key here or via MISTRAL_API_KEY environment variable
   model_name: "mistral-small-latest"  # Options: mistral-small-latest, mistral-medium-latest, mistral-large-latest
-  max_tokens: 512
+  max_tokens: 1024
   temperature: 0.3
   top_k: 5  # Number of documents to retrieve for context
 
@@ -75,7 +75,7 @@ cohere:
 
 # Reranker configuration
 reranker:
-  enabled: false  # Set to true to enable reranking
+  enabled: true  # Set to true to enable reranking
   provider: "cohere"
   top_n: 5  # Number of documents to return after reranking
   initial_k: 20  # Number of candidates to retrieve before reranking

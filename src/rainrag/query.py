@@ -71,7 +71,12 @@ class RAGQueryEngine:
 
         # Initialize Cohere client if reranker is enabled
         if config.reranker.enabled and config.reranker.provider == "cohere":
-            self.cohere_client = cohere.ClientV2(api_key=config.cohere.api_key)
+            try:
+                # Newer SDK
+                self.cohere_client = cohere.ClientV2(api_key=config.cohere.api_key)
+            except AttributeError:
+                # Older SDK fallback
+                self.cohere_client = cohere.Client(api_key=config.cohere.api_key)
             logger.info(f"Initialized Cohere reranker: {config.cohere.model_name}")
         else:
             self.cohere_client = None
@@ -245,32 +250,22 @@ class RAGQueryEngine:
 
         logger.info(f"Searching for top {top_k} documents...")
 
-        # Build date filter if specified
+        # Build date filter if specified - we'll do client-side filtering
+        # to avoid Qdrant issues with None date values
         query_filter = None
         if date_from or date_to:
-            conditions = []
-            if date_from:
-                conditions.append(
-                    qdrant_models.FieldCondition(
-                        key="date",
-                        range=qdrant_models.Range(gte=date_from),
-                    )
-                )
-            if date_to:
-                conditions.append(
-                    qdrant_models.FieldCondition(
-                        key="date",
-                        range=qdrant_models.Range(lte=date_to),
-                    )
-                )
-            query_filter = qdrant_models.Filter(must=conditions)
-            logger.info(f"Applying date filter: {date_from} to {date_to}")
+            logger.info(f"Will apply client-side date filter: {date_from} to {date_to}")
 
         try:
+            # If date filtering is requested, retrieve more documents and filter client-side
+            # to handle cases where some documents don't have dates
+            effective_limit = top_k * 3 if (date_from or date_to) else top_k
+
+            logger.info(f"Querying Qdrant with filter: {query_filter}, limit: {effective_limit}")
             results = self.qdrant_client.query_points(
                 collection_name=self.config.qdrant.collection_name,
                 query=query_vector,
-                limit=top_k,
+                limit=effective_limit,
                 query_filter=query_filter,
             ).points
 
@@ -291,7 +286,50 @@ class RAGQueryEngine:
                 documents.append(doc)
                 logger.debug(f"Rank {idx + 1}: Score={hit.score:.4f}, Path={doc['path']}")
 
-            logger.info(f"Retrieved {len(documents)} documents")
+            # Apply date filtering client-side if requested
+            if date_from or date_to:
+                from datetime import date as _date, datetime as _dt
+
+                def _parse_date(value: Any) -> _date | None:
+                    """Best-effort parse for ISO date strings or datetime/date objects."""
+                    if value is None:
+                        return None
+                    if isinstance(value, _dt):
+                        return value.date()
+                    if isinstance(value, _date):
+                        return value
+                    try:
+                        return _dt.fromisoformat(str(value)).date()
+                    except Exception:
+                        return None
+
+                parsed_from = _parse_date(date_from)
+                parsed_to = _parse_date(date_to)
+
+                filtered_documents = []
+                for doc in documents:
+                    doc_date_raw = doc.get("date")
+                    doc_date = _parse_date(doc_date_raw)
+                    if doc_date is None:
+                        continue  # Skip documents without dates
+
+                    include_doc = True
+                    if parsed_from and doc_date < parsed_from:
+                        include_doc = False
+                    if parsed_to and doc_date > parsed_to:
+                        include_doc = False
+
+                    if include_doc:
+                        filtered_documents.append(doc)
+
+                # Re-rank and limit to top_k
+                documents = filtered_documents[:top_k]
+
+                # Update ranks after filtering
+                for idx, doc in enumerate(documents):
+                    doc["rank"] = idx + 1
+
+            logger.info(f"Retrieved {len(documents)} documents after filtering")
             return documents
 
         except Exception as e:
@@ -362,17 +400,17 @@ class RAGQueryEngine:
             language: Language code (e.g., "en", "ru") for response
 
         Returns:
-            List of message dictionaries for Mistral API
+            List of message dictionaries for the chat API
         """
         # Build context from retrieved documents
         context_parts = []
-        max_chars_per_doc = 1200
+        # Allow more context per document
+        max_chars_per_doc = 2000
         for doc in documents:
             text = doc["text"]
             if len(text) > max_chars_per_doc:
                 text = text[:max_chars_per_doc].rstrip() + "..."
             context_parts.append(f"[Document {doc['rank']}]")
-            context_parts.append(f"Source: {doc['path']}")
             # Include date if available
             if doc.get("date"):
                 context_parts.append(f"Date: {doc['date']}")
@@ -397,8 +435,8 @@ class RAGQueryEngine:
 - Всегда указывайте дату записи из метаданных (поле "Date")
 - Упоминайте длительность видео (поле "Duration") — важно для редакторов
 - Используйте прошедшее время: "В архивном видео от 2021-05-11 показано..."
-- Цитируйте путь к файлу (Source), чтобы редактор мог найти видео
 - Если несколько видео релевантны, перечислите каждое с датой и описанием
+- Делайте хорошее, развернутое "Описание" для каждого релевантного видео
 - Объясните, почему материал может быть полезен для текущего сюжета
 
 Если дата отсутствует, укажите это. Если материал не найден — скажите прямо, не выдумывайте.""",
@@ -408,8 +446,8 @@ ALL VIDEOS ARE ARCHIVAL RECORDINGS, not current news. Response rules:
 - Always cite the recording date from metadata (the "Date" field)
 - Mention video duration (the "Duration" field) — important for editors
 - Use past tense: "Archive footage from 2021-05-11 shows..."
-- Cite the file path (Source) so editors can locate the video
 - If multiple videos are relevant, list each with date and description
+- Provide rich, detailed descriptions explaining the content of each video
 - Explain why the footage might be useful for the current story
 
 If date is missing, note this. If no relevant footage is found, say so clearly — do not fabricate.""",
@@ -424,7 +462,7 @@ If date is missing, note this. If no relevant footage is found, say so clearly �
 
 Question: {query}"""
 
-        # Return messages in Mistral API format
+        # Return messages in provider-agnostic chat format
         return [
             {"role": "system", "content": system_message},
             {"role": "user", "content": user_message},

@@ -24,6 +24,7 @@ class Document(BaseModel):
     text: str
     length: int
     date: str | None = None  # ISO date from source video mtime
+    date_ts: float | None = None  # Timestamp (seconds) for range filtering
     duration_seconds: float | None = None  # Video duration in seconds
     start_time: str | None = None  # First timecode in VTT (HH:MM:SS)
     end_time: str | None = None  # Last timecode in VTT (HH:MM:SS)
@@ -228,7 +229,7 @@ class VTTParser:
         return None
 
     @staticmethod
-    def get_video_metadata(video_path: Path) -> tuple[str | None, float | None]:
+    def get_video_metadata(video_path: Path) -> tuple[str | None, float | None, float | None]:
         """
         Extract metadata from a video file.
 
@@ -236,15 +237,17 @@ class VTTParser:
             video_path: Path to the video file
 
         Returns:
-            Tuple of (date_iso, duration_seconds)
+            Tuple of (date_iso, duration_seconds, date_ts)
         """
         date_iso = None
+        date_ts = None
         duration = None
 
         # Get mtime as date
         try:
             mtime = video_path.stat().st_mtime
             date_iso = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+            date_ts = mtime
         except Exception as e:
             logger.debug(f"Could not get mtime for {video_path}: {e}")
 
@@ -270,7 +273,7 @@ class VTTParser:
         except Exception as e:
             logger.debug(f"Could not get duration for {video_path}: {e}")
 
-        return date_iso, duration
+        return date_iso, duration, date_ts
 
 
 class Ingester:
@@ -343,10 +346,11 @@ class Ingester:
 
         # Extract metadata from source video
         date_iso = None
+        date_ts = None
         duration = None
         source_video = self.parser.find_source_video(file_path)
         if source_video:
-            date_iso, duration = self.parser.get_video_metadata(source_video)
+            date_iso, duration, date_ts = self.parser.get_video_metadata(source_video)
 
         # Create document
         doc = Document(
@@ -356,6 +360,7 @@ class Ingester:
             text=text,
             length=len(text),
             date=date_iso,
+            date_ts=date_ts,
             duration_seconds=duration,
             start_time=start_time,
             end_time=end_time,

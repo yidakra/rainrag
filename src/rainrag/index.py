@@ -122,6 +122,7 @@ class QdrantIndexer:
                     "text": doc.text,
                     "length": doc.length,
                     "date": doc.date,
+                    "date_ts": doc.date_ts,
                     "duration_seconds": doc.duration_seconds,
                     "start_time": doc.start_time,
                     "end_time": doc.end_time,

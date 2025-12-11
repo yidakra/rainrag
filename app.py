@@ -165,6 +165,13 @@ def initialize_session_state():
         st.session_state.date_from = None
     if "date_to" not in st.session_state:
         st.session_state.date_to = None
+    if "date_input_reset_counter" not in st.session_state:
+        st.session_state.date_input_reset_counter = 0
+    if "clear_dates_trigger" in st.session_state:
+        # Clean up old unused trigger
+        del st.session_state.clear_dates_trigger
+    if "clear_dates_trigger" not in st.session_state:
+        st.session_state.clear_dates_trigger = False
 
 
 def get_api_headers() -> dict[str, str]:
@@ -534,25 +541,27 @@ def render_sidebar(lang: str):
 
         # Date range filter
         st.markdown(f"**📅 {get_text('date_filter_label', lang)}**")
+
         col1, col2 = st.columns(2)
         with col1:
             date_from = st.date_input(
                 get_text("date_from_label", lang),
                 value=st.session_state.date_from,
-                key="date_from_input",
+                key=f"date_from_input_{st.session_state.date_input_reset_counter}",
             )
             st.session_state.date_from = date_from if date_from else None
         with col2:
             date_to = st.date_input(
                 get_text("date_to_label", lang),
                 value=st.session_state.date_to,
-                key="date_to_input",
+                key=f"date_to_input_{st.session_state.date_input_reset_counter}",
             )
             st.session_state.date_to = date_to if date_to else None
 
         if st.button(get_text("clear_dates", lang), use_container_width=True):
             st.session_state.date_from = None
             st.session_state.date_to = None
+            st.session_state.date_input_reset_counter += 1
             st.rerun()
 
         st.divider()
