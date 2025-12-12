@@ -1,6 +1,9 @@
 """Streamlit frontend for RainRAG - Multilingual RAG system for video transcripts."""
 
+import json
 import os
+from datetime import date
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -20,6 +23,7 @@ AUTH_TOKEN = os.getenv("STREAMLIT_AUTH_TOKEN", "")
 DEFAULT_LANGUAGE = "ru"
 DEFAULT_TOP_K = 3
 REQUEST_TIMEOUT = 60.0  # 60 seconds timeout for API requests
+DOCS_PATH = os.getenv("RAINRAG_DOCS_PATH", "./data/docs.jsonl")
 
 
 # Translations
@@ -174,6 +178,60 @@ def initialize_session_state():
         st.session_state.clear_dates_trigger = False
 
 
+@st.cache_data(show_spinner=False)
+def get_archive_date_range() -> tuple[date | None, date | None]:
+    """
+    Compute min/max available dates from the docs JSONL.
+
+    Returns:
+        (min_date, max_date) or (None, None) if unavailable.
+    """
+    docs_path = Path(DOCS_PATH)
+    if not docs_path.exists():
+        return None, None
+
+    min_d: date | None = None
+    max_d: date | None = None
+
+    try:
+        with docs_path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                date_str = record.get("date") or record.get("date_iso")
+                if date_str:
+                    try:
+                        d = date.fromisoformat(date_str.split("T")[0])
+                    except ValueError:
+                        d = None
+                else:
+                    d = None
+
+                if d is None:
+                    date_ts = record.get("date_ts")
+                    if isinstance(date_ts, (int, float)):
+                        try:
+                            d = date.fromtimestamp(date_ts)
+                        except (OverflowError, OSError, ValueError):
+                            d = None
+
+                if d:
+                    if min_d is None or d < min_d:
+                        min_d = d
+                    if max_d is None or d > max_d:
+                        max_d = d
+    except FileNotFoundError:
+        return None, None
+
+    return min_d, max_d
+
+
 def get_api_headers() -> dict[str, str]:
     """Get API request headers including auth token if configured."""
     headers = {"Content-Type": "application/json"}
@@ -321,8 +379,9 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
         meta_parts.append(f"**{get_text('timecode_label', lang)}:** {timecode_str}")
     meta_parts.append(f"**{get_text('language_field', lang)}:** {chunk_lang}")
 
+    # Add a hard line break after the source line so "Релевантность" starts on a new line.
     return f"""
-**{get_text("source_label", lang)}:** `{filename}`
+**{get_text("source_label", lang)}:** `{filename}`<br>
 {" | ".join(meta_parts)}
 """
 
@@ -406,7 +465,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         video_full_url = f"{ASSET_BASE_URL}{video_url}"
                         # Use HTML5 video element to support #t= timecode fragments
                         st.markdown(
-                            f"""<video controls width="100%" style="border-radius: 8px;">
+                            f"""<video controls width="100%" style="border-radius: 8px; height: 460px; object-fit: contain;">
                                 <source src="{video_full_url}" type="video/mp4">
                             </video>""",
                             unsafe_allow_html=True,
@@ -488,17 +547,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     # Display context chunk metadata
                     st.markdown(format_context_chunk(chunk, chunk_idx + 1, lang))
 
-                    # Display text content with preview/expand
-                    text = chunk.get("text", "")
-                    if text:
-                        preview_text, is_truncated = get_text_preview(
-                            text, max_lines=2, max_chars=200
-                        )
-                        st.markdown(preview_text)
-
-                        if is_truncated:
-                            with st.expander("Show full text"):
-                                st.markdown(text)
+                    # Do not display transcript text here (VTT viewer already provides full context)
 
                     # Add a small separator between language versions within a group
                     if chunk_idx < len(group) - 1:
@@ -543,11 +592,24 @@ def render_sidebar(lang: str):
         # Date range filter
         st.markdown(f"**📅 {get_text('date_filter_label', lang)}**")
 
+        min_date, max_date = get_archive_date_range()
+        # Clamp stored dates to available range (if known)
+        if min_date and st.session_state.date_from and st.session_state.date_from < min_date:
+            st.session_state.date_from = min_date
+        if max_date and st.session_state.date_from and st.session_state.date_from > max_date:
+            st.session_state.date_from = max_date
+        if min_date and st.session_state.date_to and st.session_state.date_to < min_date:
+            st.session_state.date_to = min_date
+        if max_date and st.session_state.date_to and st.session_state.date_to > max_date:
+            st.session_state.date_to = max_date
+
         col1, col2 = st.columns(2)
         with col1:
             date_from = st.date_input(
                 get_text("date_from_label", lang),
                 value=st.session_state.date_from,
+                min_value=min_date or date(1900, 1, 1),
+                max_value=max_date or date.today(),
                 key=f"date_from_input_{st.session_state.date_input_reset_counter}",
             )
             st.session_state.date_from = date_from if date_from else None
@@ -555,6 +617,8 @@ def render_sidebar(lang: str):
             date_to = st.date_input(
                 get_text("date_to_label", lang),
                 value=st.session_state.date_to,
+                min_value=min_date or date(1900, 1, 1),
+                max_value=max_date or date.today(),
                 key=f"date_to_input_{st.session_state.date_input_reset_counter}",
             )
             st.session_state.date_to = date_to if date_to else None
@@ -567,43 +631,37 @@ def render_sidebar(lang: str):
 
         st.divider()
 
-        # System information
-        with st.spinner(get_text("loading_system", lang)):
-            import asyncio
+        # System information (collapsible)
+        with st.expander("System", expanded=False):
+            with st.spinner(get_text("loading_system", lang)):
+                import asyncio
 
-            try:
-                health_info = asyncio.run(check_api_health())
-                if health_info:
-                    status_color = "🟢" if health_info.get("status") == "healthy" else "🟡"
-                    st.markdown(
-                        f"**{get_text('status_label', lang)}:** {status_color} {health_info.get('status', 'unknown').title()}"
-                    )
+                try:
+                    health_info = asyncio.run(check_api_health())
+                    if health_info:
+                        # Status indicators in one line
+                        status_color = "🟢" if health_info.get("status") == "healthy" else "🟡"
+                        qdrant_status = "🟢" if health_info.get("qdrant_connected") else "🔴"
+                        model_status = "🟢" if health_info.get("model_loaded") else "🔴"
 
-                    # Display current LLM model
-                    st.markdown(f"**{get_text('model_label', lang)}:**")
-                    llm_provider = health_info.get("llm_provider", "Unknown")
-                    llm_model = health_info.get("llm_model", "Unknown")
-                    st.code(f"{llm_provider} ({llm_model})", language="text")
+                        st.markdown(f"**Status:** {status_color} | **Qdrant:** {qdrant_status} | **Embeddings:** {model_status}")
 
-                    # Display current embedding model
-                    st.markdown(f"**{get_text('embedding_label', lang)}:**")
-                    embedding_provider = health_info.get("embedding_provider", "Unknown")
-                    embedding_model = health_info.get("embedding_model", "Unknown")
-                    st.code(f"{embedding_provider} ({embedding_model})", language="text")
+                        # Compact model info
+                        llm_provider = health_info.get("llm_provider", "Unknown")
+                        llm_model = health_info.get("llm_model", "Unknown")
+                        embedding_provider = health_info.get("embedding_provider", "Unknown")
+                        embedding_model = health_info.get("embedding_model", "Unknown")
+                        collection_name = health_info.get("qdrant_collection", "Unknown")
 
-                    st.markdown(f"**{get_text('collection_label', lang)}:**")
-                    st.code(health_info.get("qdrant_collection", "Unknown"), language="text")
+                        st.markdown(
+                            f"**Models:** {llm_provider} ({llm_model}) | {embedding_provider} ({embedding_model}) | **Collection:** {collection_name}"
+                        )
 
-                    # Connection statuses
-                    qdrant_status = "🟢" if health_info.get("qdrant_connected") else "🔴"
-                    model_status = "🟢" if health_info.get("model_loaded") else "🔴"
-                    st.markdown(f"**Qdrant:** {qdrant_status}")
-                    st.markdown(f"**Embedding Model:** {model_status}")
-                else:
+                    else:
+                        st.error(get_text("health_check_failed", lang))
+                except Exception as e:
+                    logger.error(f"Failed to get health info: {e}")
                     st.error(get_text("health_check_failed", lang))
-            except Exception as e:
-                logger.error(f"Failed to get health info: {e}")
-                st.error(get_text("health_check_failed", lang))
 
         st.divider()
 
