@@ -448,7 +448,8 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         # Get selected VTT info
                         vtt_info = vtt_languages[selected_vtt_lang]
                         vtt_url = vtt_info["url"]
-                        vtt_full_url = f"{API_BASE_URL}{vtt_url}"
+                        # Use ASSET_BASE_URL to avoid /api prefix on asset links
+                        vtt_full_url = f"{ASSET_BASE_URL}{vtt_url}"
                         vtt_filename = vtt_info["filename"].split("/")[-1]
 
                         # Download button
