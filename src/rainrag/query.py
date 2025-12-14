@@ -9,7 +9,6 @@ from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient
-from qdrant_client.http import models as qdrant_models
 from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
@@ -288,7 +287,8 @@ class RAGQueryEngine:
 
             # Apply date filtering client-side if requested
             if date_from or date_to:
-                from datetime import date as _date, datetime as _dt
+                from datetime import date as _date
+                from datetime import datetime as _dt
 
                 def _parse_date(value: Any) -> _date | None:
                     """Best-effort parse for ISO date strings or datetime/date objects."""

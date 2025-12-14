@@ -186,8 +186,6 @@ class TestMCPServerTools:
             QdrantConfig,
         )
 
-        from rainrag.config import LoggingConfig, OpenAIConfig
-
         mock_config = Config(
             paths=PathsConfig(
                 archive_root="/test/archive",
