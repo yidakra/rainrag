@@ -139,47 +139,73 @@ Claude Desktop (version 0.7.0+) has native MCP support.
 
 Cursor supports MCP servers for enhanced context.
 
-1. **Open Cursor Settings**
+Cursor typically reads MCP server configuration from `~/.cursor/mcp.json`.
 
-   Go to Settings → Features → MCP Servers
+1. **Add RainRAG Server**
 
-2. **Add RainRAG Server**
+   Create/edit `~/.cursor/mcp.json`:
 
-   Add the following configuration:
+```json
+{
+  "mcpServers": {
+    "rainrag": {
+      "command": "bash",
+      "args": [
+        "-lc",
+        "cd /absolute/path/to/rainrag && poetry run rainrag mcp --config /absolute/path/to/rainrag/config.yaml"
+      ]
+    }
+  }
+}
+```
 
-   ```json
-   {
-     "rainrag": {
-       "command": "rainrag",
-       "args": ["mcp", "--config", "/absolute/path/to/rainrag/config.yaml"]
-     }
-   }
-   ```
+2. **Restart Cursor**
 
-3. **Restart Cursor**
+3. **Use RainRAG**
 
-4. **Use RainRAG**
+   In Cursor Chat, ask it to call `retrieve_documents` or `query_rag`.
 
-   In the chat or command palette, you can now use RainRAG tools to query your video transcripts.
+#### Important (stdio transport)
+
+Cursor uses **stdio** transport. That means the MCP server must write **only JSON-RPC** to **stdout**.
+Any extra prints/banners on stdout can break Cursor with JSON parse errors. RainRAG routes startup messages to stderr for stdio.
 
 ### ChatGPT (via HTTP)
 
-For ChatGPT or other web-based assistants, use the HTTP transport:
+ChatGPT (macOS app) uses “Connectors”. It typically requires an **HTTPS** URL and will reject private/LAN `http://…`
+addresses with “Unsafe URL”. Use the HTTP transport plus an HTTPS tunnel.
 
-1. **Run MCP Server with HTTP Transport**
+1. **Run MCP Server with HTTP Transport (local)**
 
    ```bash
-   rainrag mcp --transport streamable-http --host 0.0.0.0 --port 8000
+   # Bind locally; expose via tunnel (recommended)
+   FASTMCP_TRANSPORT_SECURITY__ENABLE_DNS_REBINDING_PROTECTION=false \
+     rainrag mcp --transport streamable-http --host 127.0.0.1 --port 8000
    ```
 
-2. **Configure Custom Action/Plugin**
+   Notes:
+   - Disabling DNS-rebinding protection is **for tunneling/testing**; do not expose this directly to an untrusted network.
+   - If you want LAN-only access (no tunnel), use `--host 0.0.0.0` and keep DNS protection enabled with an allowlist.
 
-   The server will be available at:
-   ```
-   http://your-server:8000/mcp
-   ```
+2. **Create an HTTPS tunnel (Cloudflare Quick Tunnel)**
 
-   **Note**: MCP HTTP integration with ChatGPT may require additional setup or plugins as ChatGPT's MCP support is still evolving. Check OpenAI's documentation for the latest integration methods.
+   On the same machine:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+   It will print a URL like `https://<name>.trycloudflare.com`.
+
+3. **Add connector in ChatGPT (Mac)**
+
+   Use:
+   - **MCP Server URL**: `https://<name>.trycloudflare.com/mcp`
+
+4. **Test**
+
+   Ask ChatGPT to call:
+   - `retrieve_documents` with `question="Борис Кагарлицкий"`, `top_k=1`
 
 ### Testing with MCP Inspector
 
@@ -409,13 +435,40 @@ You don't need to explicitly call the tools - just ask naturally:
 
 ### HTTP Transport Issues
 
-**Issue**: Can't connect to HTTP server
+**Issue**: “Not Acceptable: Client must accept text/event-stream” or browser shows JSON error
 
 **Solutions**:
-- Check firewall rules allow connections on the specified port
-- Verify the server is running: `curl http://localhost:8000/mcp`
-- Try binding to all interfaces: `--host 0.0.0.0`
-- Check for port conflicts with other services
+- `/mcp` is not a “normal” endpoint; opening it in a browser will not work.
+- A plain `curl http://localhost:8000/mcp` returns `406 Not Acceptable` (missing `Accept: text/event-stream`).
+- The correct way to test is with an MCP client. Example (Python):
+
+```bash
+poetry run python - <<'PY'
+import anyio
+from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.session import ClientSession
+
+URL = "http://127.0.0.1:8000/mcp"
+
+async def main():
+    async with streamablehttp_client(URL) as (read, write, _get_session_id):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            tools = await session.list_tools()
+            print([t.name for t in tools.tools])
+
+anyio.run(main)
+PY
+```
+
+**Issue**: “Invalid Host header” (421) when accessed via LAN/tunnel
+
+**Cause**: DNS rebinding protection rejects the request’s Host header.
+
+**Solutions**:
+- For LAN access: run with `--host 0.0.0.0` and ensure the Host is allowlisted.
+- For HTTPS tunnels (e.g. `trycloudflare.com`): disable protection for testing:
+  `FASTMCP_TRANSPORT_SECURITY__ENABLE_DNS_REBINDING_PROTECTION=false`
 
 ## Advanced Configuration
 

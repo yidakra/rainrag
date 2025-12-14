@@ -1,10 +1,13 @@
 """MCP server for RainRAG - exposes RAG functionality to AI assistants."""
 
+import os
+import socket
 from typing import Any
 
 import uvicorn
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from rainrag.config import Config, load_config
 from rainrag.query import RAGQueryEngine
@@ -217,6 +220,54 @@ def run_server(
 
     # Run the server with specified transport
     if transport_to_use == "streamable-http":
+        # Allow explicitly disabling DNS rebinding protection via env var (useful for HTTPS tunnels where the Host
+        # header will be the tunnel domain).
+        # Note: FastMCP may auto-enable transport security when initialized with a localhost host (its default),
+        # and those explicit settings can prevent pydantic env overrides from taking effect. We honor the env var
+        # here to make behavior predictable.
+        env_disable = os.getenv("FASTMCP_TRANSPORT_SECURITY__ENABLE_DNS_REBINDING_PROTECTION")
+        if env_disable is not None and env_disable.strip().lower() in {"0", "false", "no", "off"}:
+            # Using None fully disables TransportSecurityMiddleware (avoids any Host header validation).
+            mcp.settings.transport_security = None
+
+        # MCP enables DNS rebinding protection automatically when FastMCP is initialized with a localhost host
+        # (its default). If we bind uvicorn to 0.0.0.0 (LAN), the Host header will be the LAN IP (e.g. 172.16.x.x)
+        # and requests will fail with `421 Invalid Host header` unless that host is allowlisted.
+        if (
+            mcp.settings.transport_security is not None
+            and mcp.settings.transport_security.enable_dns_rebinding_protection
+            and host_to_use not in ("127.0.0.1", "localhost", "::1")
+        ):
+            allowed_hosts = set(mcp.settings.transport_security.allowed_hosts or [])
+            allowed_origins = set(mcp.settings.transport_security.allowed_origins or [])
+
+            if host_to_use in ("0.0.0.0", "::"):
+                # Best-effort: allow the machine's primary outbound IPv4 address. This matches what clients on the LAN
+                # will typically use in the Host header.
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("1.1.1.1", 80))
+                    lan_ip = s.getsockname()[0]
+                    s.close()
+                except Exception:
+                    lan_ip = None
+                if lan_ip:
+                    allowed_hosts.add(f"{lan_ip}:*")
+                    allowed_origins.add(f"http://{lan_ip}:*")
+            else:
+                allowed_hosts.add(f"{host_to_use}:*")
+                allowed_origins.add(f"http://{host_to_use}:*")
+
+            # Always preserve localhost allowlist for local testing.
+            allowed_hosts.update({"127.0.0.1:*", "localhost:*", "[::1]:*"})
+            allowed_origins.update({"http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"})
+
+            mcp.settings.transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=sorted(allowed_hosts),
+                allowed_origins=sorted(allowed_origins),
+            )
+
         logger.info(f"MCP server running at http://{host_to_use}:{port_to_use}/mcp")
         # For HTTP transport, we need to use uvicorn directly
         # Get the ASGI app from FastMCP and run it with uvicorn

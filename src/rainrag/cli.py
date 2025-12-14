@@ -450,11 +450,15 @@ def mcp(
         host_to_use = host or cfg.mcp.host
         port_to_use = port or cfg.mcp.port
 
-        typer.echo("🚀 Starting MCP server...")
-        typer.echo(f"   Transport: {transport_to_use}")
+        # IMPORTANT: For stdio transport, stdout must be reserved for JSON-RPC messages.
+        # Send human-readable startup info to stderr so MCP clients (Cursor/Claude Desktop)
+        # don't fail parsing.
+        log_to_stderr = transport_to_use == "stdio"
+        typer.echo("🚀 Starting MCP server...", err=log_to_stderr)
+        typer.echo(f"   Transport: {transport_to_use}", err=log_to_stderr)
         if transport_to_use != "stdio":
-            typer.echo(f"   Address: {host_to_use}:{port_to_use}")
-        typer.echo("")
+            typer.echo(f"   Address: {host_to_use}:{port_to_use}", err=log_to_stderr)
+        typer.echo("", err=log_to_stderr)
 
         # Run the MCP server (this will block)
         run_server(

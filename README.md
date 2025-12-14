@@ -616,8 +616,8 @@ Users will be prompted to enter the token when accessing the Streamlit interface
 - **Subtitles**: VTT files appear in a scrollable viewer on the right (1/3 width)
   - Language selector for videos with multiple subtitle languages (en/ru)
   - Download button to save VTT files locally
-- **Text Preview**: Long text excerpts are collapsed with "Show full text" expansion
-- **Metadata**: Each chunk displays filename, relevance score, and language
+- **Date filters**: Optional date range filter (the picker is constrained to the archive date span from `RAINRAG_DOCS_PATH` / `./data/docs.jsonl`)
+- **Metadata**: Each chunk displays filename, relevance score, language, and timecodes (when available)
 
 #### Example Queries (Russian)
 
@@ -1077,6 +1077,14 @@ embedding:
   batch_size: 16  # Reduce from 32
 ```
 
+If the full pipeline gets killed, run the stages separately to isolate which step needs tuning:
+
+```bash
+rainrag ingest
+rainrag embed --force
+rainrag index --recreate
+```
+
 ### Qdrant Connection Failed
 
 Ensure Qdrant is running:
@@ -1086,6 +1094,31 @@ docker ps | grep qdrant
 
 # If not running, start it
 docker run -p 6333:6333 qdrant/qdrant:v1.12.1
+```
+
+### Queries Return No Results (Empty Collection)
+
+If you get answers with no retrieved videos/VTTs, your collection is likely empty.
+
+1) Check:
+
+```bash
+rainrag info
+```
+
+2) If `points_count` is `0`, repopulate it:
+
+```bash
+rainrag pipeline --recreate-index
+```
+
+### Date Filters Causing Errors / No Matches
+
+- Date filtering depends on documents having valid `date` metadata and a numeric `date_ts` for safe range filtering.
+- After updating RainRAG, **rerun the full pipeline** (don’t use `--skip-ingest`) so `date_ts` is populated end-to-end:
+
+```bash
+rainrag pipeline --recreate-index
 ```
 
 ### VTT Parsing Issues
@@ -1098,6 +1131,13 @@ logging:
 ```
 
 Then check logs for detailed parsing information.
+
+### Editor Shows “Import … could not be resolved”
+
+If runtime works but the editor shows missing imports, ensure the editor uses the project Poetry environment.
+
+- Recommended: use an in-project venv (`.venv`) and point your editor/type-checker at it.
+- This repo includes `pyrightconfig.json` and `.vscode/settings.json` to help Cursor/VS Code pick up `.venv`.
 
 ## Roadmap
 
