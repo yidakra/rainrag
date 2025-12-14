@@ -78,15 +78,15 @@ def ingest(
     setup_logging(config)
 
     try:
-        typer.echo("🚀 Starting ingestion pipeline...")
+        typer.echo("Starting ingestion pipeline...")
 
         doc_count = run_ingestion(config)
 
-        typer.echo(f"✅ Ingestion complete! Processed {doc_count} documents")
+        typer.echo(f"Ingestion complete! Processed {doc_count} documents")
 
     except Exception as e:
         logger.exception(f"Ingestion failed: {e}")
-        typer.echo(f"❌ Ingestion failed: {e}", err=True)
+        typer.echo(f"Ingestion failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -117,16 +117,16 @@ def embed(
     setup_logging(config)
 
     try:
-        typer.echo("🚀 Starting embedding generation...")
+        typer.echo("Starting embedding generation...")
 
         embeddings, documents = run_embedding(config, force_regenerate=force)
 
-        typer.echo(f"✅ Embedding complete! Generated embeddings for {len(documents)} documents")
+        typer.echo(f"Embedding complete! Generated embeddings for {len(documents)} documents")
         typer.echo(f"   Embedding shape: {embeddings.shape}")
 
     except Exception as e:
         logger.exception(f"Embedding failed: {e}")
-        typer.echo(f"❌ Embedding failed: {e}", err=True)
+        typer.echo(f"Embedding failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -157,18 +157,18 @@ def index(
     setup_logging(config)
 
     try:
-        typer.echo("🚀 Starting indexing pipeline...")
+        typer.echo("Starting indexing pipeline...")
 
         if recreate:
-            typer.echo("⚠️  Warning: Recreating collection (existing data will be deleted)")
+            typer.echo("Warning: Recreating collection (existing data will be deleted)")
 
         num_indexed = run_indexing(config, recreate=recreate)
 
-        typer.echo(f"✅ Indexing complete! Indexed {num_indexed} documents")
+        typer.echo(f"Indexing complete! Indexed {num_indexed} documents")
 
     except Exception as e:
         logger.exception(f"Indexing failed: {e}")
-        typer.echo(f"❌ Indexing failed: {e}", err=True)
+        typer.echo(f"Indexing failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -204,34 +204,34 @@ def pipeline(
     setup_logging(config)
 
     try:
-        typer.echo("🚀 Starting full pipeline...")
+        typer.echo("Starting full pipeline...")
 
         # Step 1: Ingest
         if not skip_ingest:
-            typer.echo("\n📂 Step 1/3: Ingestion")
+            typer.echo("\nStep 1/3: Ingestion")
             doc_count = run_ingestion(config)
-            typer.echo(f"   ✓ Processed {doc_count} documents")
+            typer.echo(f"   Processed {doc_count} documents")
         else:
-            typer.echo("\n📂 Step 1/3: Ingestion (skipped)")
+            typer.echo("\nStep 1/3: Ingestion (skipped)")
 
         # Step 2: Embed
         if not skip_embed:
-            typer.echo("\n🧮 Step 2/3: Embedding")
+            typer.echo("\nStep 2/3: Embedding")
             embeddings, documents = run_embedding(config)
-            typer.echo(f"   ✓ Generated embeddings for {len(documents)} documents")
+            typer.echo(f"   Generated embeddings for {len(documents)} documents")
         else:
-            typer.echo("\n🧮 Step 2/3: Embedding (skipped)")
+            typer.echo("\nStep 2/3: Embedding (skipped)")
 
         # Step 3: Index
-        typer.echo("\n📊 Step 3/3: Indexing")
+        typer.echo("\nStep 3/3: Indexing")
         num_indexed = run_indexing(config, recreate=recreate_index)
-        typer.echo(f"   ✓ Indexed {num_indexed} documents")
+        typer.echo(f"   Indexed {num_indexed} documents")
 
-        typer.echo("\n✅ Full pipeline complete!")
+        typer.echo("\nFull pipeline complete!")
 
     except Exception as e:
         logger.exception(f"Pipeline failed: {e}")
-        typer.echo(f"\n❌ Pipeline failed: {e}", err=True)
+        typer.echo(f"\nPipeline failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -271,22 +271,22 @@ def ask(
     setup_logging(config)
 
     try:
-        typer.echo("🔍 Processing your question...\n")
+        typer.echo("Processing your question...\n")
 
         result = run_query(config, question, top_k)
 
         # Display the answer
-        typer.echo("💡 Answer:")
+        typer.echo("Answer:")
         typer.echo("=" * 70)
         typer.echo(result["answer"])
         typer.echo("=" * 70)
 
         # Display metadata
-        typer.echo(f"\n📊 Retrieved {result['num_documents']} relevant documents")
+        typer.echo(f"\nRetrieved {result['num_documents']} relevant documents")
 
         # Display sources if verbose
         if verbose:
-            typer.echo("\n📚 Sources:")
+            typer.echo("\nSources:")
             for doc in result["retrieved_documents"]:
                 typer.echo(f"\n  [{doc['rank']}] Score: {doc['score']:.4f}")
                 typer.echo(f"      Path: {doc['path']}")
@@ -295,7 +295,7 @@ def ask(
 
     except Exception as e:
         logger.exception(f"Query failed: {e}")
-        typer.echo(f"❌ Query failed: {e}", err=True)
+        typer.echo(f"Query failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -319,7 +319,7 @@ def info(
 
         cfg = load_config(config)
 
-        typer.echo("📋 RainRAG Configuration")
+        typer.echo("RainRAG Configuration")
         typer.echo("=" * 50)
         typer.echo("\nPaths:")
         typer.echo(f"  Archive root:      {cfg.paths.archive_root}")
@@ -376,11 +376,11 @@ def info(
                 typer.echo(f"  Status:            {stats.get('status', 'N/A')}")
 
         except Exception as e:
-            typer.echo(f"\n⚠️  Could not connect to Qdrant: {e}")
+            typer.echo(f"\nCould not connect to Qdrant: {e}")
 
     except Exception as e:
         logger.exception(f"Failed to get info: {e}")
-        typer.echo(f"❌ Failed to get info: {e}", err=True)
+        typer.echo(f"Failed to get info: {e}", err=True)
         raise typer.Exit(code=1)
 
 

@@ -97,12 +97,12 @@ You must update `qdrant.vector_size` to match!
 
 | Model | Use Case | Performance | Cost | Context |
 |-------|----------|-------------|------|---------|
-| `gpt-4o-mini` | **Recommended** - Best value | ⭐⭐⭐⭐ | $ | 128K tokens |
-| `gpt-4o` | High quality, multimodal | ⭐⭐⭐⭐⭐ | $$$ | 128K tokens |
-| `gpt-4-turbo` | Previous generation | ⭐⭐⭐⭐ | $$$ | 128K tokens |
-| `gpt-3.5-turbo` | Legacy, cheaper | ⭐⭐⭐ | $ | 16K tokens |
-| `o1-preview` | Advanced reasoning | ⭐⭐⭐⭐⭐ | $$$$ | 128K tokens |
-| `o1-mini` | Reasoning, cost-effective | ⭐⭐⭐⭐ | $$ | 128K tokens |
+| `gpt-4o-mini` | **Recommended** - Best value | Great | $ | 128K tokens |
+| `gpt-4o` | High quality, multimodal | Excellent | $$$ | 128K tokens |
+| `gpt-4-turbo` | Previous generation | Great | $$$ | 128K tokens |
+| `gpt-3.5-turbo` | Legacy, cheaper | Good | $ | 16K tokens |
+| `o1-preview` | Advanced reasoning | Excellent | $$$$ | 128K tokens |
+| `o1-mini` | Reasoning, cost-effective | Great | $$ | 128K tokens |
 
 ### Embedding Models
 

@@ -69,9 +69,9 @@ claude:
 
 | Model | Use Case | Performance | Cost | Context |
 |-------|----------|-------------|------|---------|
-| `claude-haiku-4-5-20251001` | **Recommended** - Fast, efficient | ⭐⭐⭐⭐ | $ | 200K |
-| `claude-sonnet-4-5-20250514` | Balanced quality/cost | ⭐⭐⭐⭐⭐ | $$ | 200K |
-| `claude-opus-4-20250514` | Maximum capability | ⭐⭐⭐⭐⭐ | $$$ | 200K |
+| `claude-haiku-4-5-20251001` | **Recommended** - Fast, efficient | Great | $ | 200K |
+| `claude-sonnet-4-5-20250514` | Balanced quality/cost | Excellent | $$ | 200K |
+| `claude-opus-4-20250514` | Maximum capability | Excellent | $$$ | 200K |
 
 ## Step 4: Test Your Setup
 

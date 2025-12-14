@@ -652,11 +652,11 @@ openai:
 
 | Provider | Model | Speed | Quality | Cost |
 |----------|-------|-------|---------|------|
-| Gemini | `gemini-2.5-flash` | ⚡⚡⚡ Fastest | ⭐⭐⭐ Good | 💰 Cheap |
-| OpenAI | `gpt-4o-mini` | ⚡⚡ Fast | ⭐⭐⭐⭐ Great | 💰💰 Medium |
-| Mistral | `mistral-small-latest` | ⚡⚡ Fast | ⭐⭐⭐ Good | 💰💰 Medium |
-| OpenAI | `gpt-4o` | ⚡ Moderate | ⭐⭐⭐⭐⭐ Excellent | 💰💰💰 High |
-| Claude | `claude-3-5-sonnet` | ⚡ Moderate | ⭐⭐⭐⭐⭐ Excellent | 💰💰💰 High |
+| Gemini | `gemini-2.5-flash` | Fastest | Good | $ |
+| OpenAI | `gpt-4o-mini` | Fast | Great | $$ |
+| Mistral | `mistral-small-latest` | Fast | Good | $$ |
+| OpenAI | `gpt-4o` | Moderate | Excellent | $$$ |
+| Claude | `claude-3-5-sonnet` | Moderate | Excellent | $$$ |
 
 #### 3. Context Size (`top_k`)
 
