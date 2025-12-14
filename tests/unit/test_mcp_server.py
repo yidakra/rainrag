@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from rainrag.config import Config
 from rainrag.mcp_server import get_query_engine, initialize_server
 
 
@@ -179,7 +178,9 @@ class TestMCPServerTools:
             Config,
             EmbeddingConfig,
             LLMConfig,
+            LoggingConfig,
             MistralConfig,
+            OpenAIConfig,
             PathsConfig,
             ProcessingConfig,
             QdrantConfig,

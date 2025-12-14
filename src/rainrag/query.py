@@ -201,7 +201,7 @@ class RAGQueryEngine:
             # Use OpenAI API embeddings
             logger.debug(f"Embedding query using OpenAI API: {query[:100]}...")
             try:
-                response = self.openai_client.embeddings.create(
+                response = self.openai_client.embeddings.create(  # type: ignore[assignment]
                     model=self.config.openai.embedding_model, input=query
                 )
                 return response.data[0].embedding
@@ -486,11 +486,11 @@ Question: {query}"""
             try:
                 response = self.mistral_client.chat.complete(
                     model=self.config.mistral.model_name,
-                    messages=messages,
+                    messages=messages,  # type: ignore[arg-type]
                     max_tokens=self.config.mistral.max_tokens,
                     temperature=self.config.mistral.temperature,
                 )
-                answer = response.choices[0].message.content.strip()
+                answer = response.choices[0].message.content.strip()  # type: ignore[union-attr]
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:
@@ -500,13 +500,13 @@ Question: {query}"""
         elif self.config.llm.provider == "openai":
             logger.info("Generating answer using OpenAI API...")
             try:
-                response = self.openai_client.chat.completions.create(
+                response = self.openai_client.chat.completions.create(  # type: ignore[assignment]
                     model=self.config.openai.model_name,
-                    messages=messages,
+                    messages=messages,  # type: ignore[arg-type]
                     max_tokens=self.config.openai.max_tokens,
                     temperature=self.config.openai.temperature,
                 )
-                answer = response.choices[0].message.content.strip()
+                answer = response.choices[0].message.content.strip()  # type: ignore[union-attr]
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:
@@ -525,14 +525,14 @@ Question: {query}"""
                     else:
                         claude_messages.append(msg)
 
-                response = self.claude_client.messages.create(
+                response = self.claude_client.messages.create(  # type: ignore[assignment]
                     model=self.config.claude.model_name,
                     max_tokens=self.config.claude.max_tokens,
                     temperature=self.config.claude.temperature,
                     system=system_message,
-                    messages=claude_messages,
+                    messages=claude_messages,  # type: ignore[arg-type]
                 )
-                answer = response.content[0].text.strip()
+                answer = response.content[0].text.strip()  # type: ignore[attr-defined]
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:
@@ -564,14 +564,14 @@ Question: {query}"""
                 else:
                     prompt = conversation_parts[-1]
 
-                response = model.generate_content(
+                response = model.generate_content(  # type: ignore[assignment]
                     prompt,
                     generation_config=genai.GenerationConfig(
                         max_output_tokens=self.config.gemini.max_tokens,
                         temperature=self.config.gemini.temperature,
                     ),
                 )
-                answer = response.text.strip()
+                answer = response.text.strip()  # type: ignore[attr-defined]
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:

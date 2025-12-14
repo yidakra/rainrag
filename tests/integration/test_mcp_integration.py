@@ -105,7 +105,7 @@ mcp:
         try:
             # Wait for server to start (max 15 seconds)
             server_started = False
-            for i in range(30):
+            for _ in range(30):
                 try:
                     # Try to connect to the MCP endpoint
                     response = requests.get(

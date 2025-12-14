@@ -211,6 +211,10 @@ def run_server(
     # Initialize the server with config
     initialize_server(config_path)
 
+    # Ensure _config is initialized
+    if _config is None:
+        raise RuntimeError("Configuration not initialized")
+
     # Use provided values or fall back to config
     transport_to_use = transport or _config.mcp.transport
     host_to_use = host or _config.mcp.host
@@ -273,9 +277,11 @@ def run_server(
         # Get the ASGI app from FastMCP and run it with uvicorn
         asgi_app = mcp.streamable_http_app()
         uvicorn.run(asgi_app, host=host_to_use, port=port_to_use)
-    else:
+    elif transport_to_use in ("stdio", "sse", "streamable-http"):
         logger.info(f"MCP server running with {transport_to_use} transport")
-        mcp.run(transport=transport_to_use)
+        mcp.run(transport=transport_to_use)  # type: ignore[arg-type]
+    else:
+        raise ValueError(f"Invalid transport: {transport_to_use}")
 
 
 if __name__ == "__main__":

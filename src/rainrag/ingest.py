@@ -128,7 +128,7 @@ class VTTParser:
                 logger.warning(f"File {file_path} does not appear to be a valid VTT file")
                 return None
 
-            text_lines = []
+            text_lines: list[str] = []
             timecodes: list[tuple[str, str]] = []  # (start, end) pairs
             skip_next = False
 
@@ -137,7 +137,6 @@ class VTTParser:
 
                 # Skip empty lines
                 if not line:
-                    skip_next = False
                     continue
 
                 # Capture timestamp lines
@@ -157,14 +156,17 @@ class VTTParser:
                     continue
 
                 # Skip NOTE comments
-                if line.startswith("NOTE"):
+                if line.startswith("NOTE"):  # type: ignore[unreachable]
+                    continue
+
+                # Skip cue identifiers (lines that are just numbers or IDs)
+                if cls.CUE_ID_PATTERN.match(line):
                     continue
 
                 # This is actual subtitle text
-                if not skip_next:
-                    cleaned = cls.clean_text(line)
-                    if cleaned:
-                        text_lines.append(cleaned)
+                cleaned = cls.clean_text(line)
+                if cleaned:
+                    text_lines.append(cleaned)
 
             # Join all text lines with spaces
             full_text = " ".join(text_lines)

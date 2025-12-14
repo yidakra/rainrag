@@ -152,10 +152,10 @@ class MCPConfig(BaseModel):
 
     transport: str = Field(
         default="stdio",
-        description="Transport protocol: 'stdio', 'sse', or 'streamable-http'",
+        description='Transport protocol: "stdio", "sse", or "streamable-http"',
     )
-    host: str = Field(default="localhost", description="Host for HTTP-based transports")
-    port: int = Field(default=8000, description="Port for HTTP-based transports")
+    host: str = Field(default="localhost")
+    port: int = Field(default=8000)
 
 
 class CohereConfig(BaseModel):

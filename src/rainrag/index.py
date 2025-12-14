@@ -156,9 +156,9 @@ class QdrantIndexer:
 
             stats = {
                 "name": collection_name,
-                "vectors_count": getattr(info, "vectors_count", None),
-                "points_count": getattr(info, "points_count", None),
-                "status": getattr(info, "status", None),
+                "indexed_vectors_count": info.indexed_vectors_count,
+                "points_count": info.points_count,
+                "status": info.status,
             }
 
             logger.info(f"Collection info: {stats}")
@@ -185,12 +185,12 @@ class QdrantIndexer:
         """
         collection_name = self.config.qdrant.collection_name
 
-        results = self.client.search(
+        results = self.client.query_points(
             collection_name=collection_name,
-            query_vector=query_vector.tolist(),
+            query=query_vector.tolist(),
             limit=top_k,
             score_threshold=score_threshold,
-        )
+        ).points
 
         search_results = []
         for result in results:
