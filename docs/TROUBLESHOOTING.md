@@ -10,6 +10,7 @@ This guide helps you diagnose and fix common issues with RainRAG.
 - [Qdrant Connection Issues](#qdrant-connection-issues)
 - [Performance Issues](#performance-issues)
 - [Configuration Issues](#configuration-issues)
+- [MCP Server Issues](#mcp-server-issues)
 
 ---
 
@@ -456,6 +457,205 @@ llm:
 openai:  # ...must have openai config
   api_key: ""
   model_name: "gpt-4o-mini"
+```
+
+---
+
+## MCP Server Issues
+
+### "MCP server won't start"
+
+**Symptoms**: Server fails to initialize or crashes immediately
+
+**Diagnosis**:
+```bash
+# Check if Qdrant is running
+curl http://localhost:6333
+
+# Check config is valid
+rainrag info
+
+# Check logs
+tail -f ./logs/rainrag.log
+```
+
+**Solutions**:
+
+1. **Ensure Qdrant is running**:
+```bash
+# Start Qdrant with Docker
+docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant:v1.12.1
+```
+
+2. **Verify config.yaml is valid**:
+```bash
+# Test config loading
+python -c "from rainrag.config import load_config; load_config('config.yaml')"
+```
+
+3. **Check API keys are set** (if using API-based embeddings/LLM):
+```bash
+echo $MISTRAL_API_KEY
+echo $OPENAI_API_KEY
+echo $ANTHROPIC_API_KEY
+echo $GOOGLE_API_KEY
+```
+
+4. **Install MCP dependencies**:
+```bash
+poetry install  # Ensure mcp[cli] is installed
+```
+
+### "Claude Desktop doesn't detect MCP server"
+
+**Symptoms**: No server icon in Claude Desktop, server not appearing in tools
+
+**Diagnosis**:
+```bash
+# Check Claude Desktop config path
+# macOS: ~/Library/Application Support/Claude/claude_desktop_config.json
+# Windows: %APPDATA%\Claude\claude_desktop_config.json
+
+# Verify rainrag command is in PATH
+which rainrag
+
+# Test server starts manually
+rainrag mcp
+```
+
+**Solutions**:
+
+1. **Use absolute paths in config**:
+```json
+{
+  "mcpServers": {
+    "rainrag": {
+      "command": "rainrag",
+      "args": ["mcp", "--config", "/absolute/path/to/config.yaml"]
+    }
+  }
+}
+```
+
+2. **Verify JSON syntax**:
+```bash
+# Validate JSON on macOS/Linux
+cat ~/Library/Application\ Support/Claude/claude_desktop_config.json | python -m json.tool
+```
+
+3. **Check rainrag is in PATH**:
+```bash
+# If using poetry
+poetry shell
+which rainrag  # Should show path to rainrag
+
+# Add to PATH if needed
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+4. **Restart Claude Desktop completely**:
+- Quit Claude Desktop (not just close window)
+- Wait 5 seconds
+- Relaunch Claude Desktop
+
+5. **Check Claude Desktop logs** (if available):
+- macOS: `~/Library/Logs/Claude/`
+- Windows: `%APPDATA%\Claude\logs\`
+
+### "MCP queries timing out"
+
+**Symptoms**: Queries take too long or timeout
+
+**Solutions**:
+
+1. **Use API-based embeddings instead of local**:
+```yaml
+embedding:
+  provider: "mistral"  # or "openai", "gemini"
+```
+
+2. **Use faster LLM models**:
+```yaml
+llm:
+  provider: "gemini"
+gemini:
+  model_name: "gemini-2.5-flash"  # Faster than pro
+```
+
+3. **Reduce context chunks**:
+```yaml
+mistral:
+  top_k: 3  # Reduce from 5 to 3
+```
+
+4. **Ensure Qdrant is local**:
+```yaml
+qdrant:
+  host: "localhost"  # Not remote host
+  port: 6333
+```
+
+### "HTTP transport not accessible"
+
+**Symptoms**: Can't connect to MCP server via HTTP
+
+**Solutions**:
+
+1. **Check firewall allows port**:
+```bash
+# Test if port is open
+curl http://localhost:8000/mcp
+```
+
+2. **Bind to all interfaces if remote access needed**:
+```bash
+rainrag mcp --transport streamable-http --host 0.0.0.0 --port 8000
+```
+
+3. **Verify no port conflicts**:
+```bash
+# Check if port is already in use
+lsof -i :8000  # macOS/Linux
+netstat -ano | findstr :8000  # Windows
+```
+
+### "MCP tools not appearing in AI assistant"
+
+**Symptoms**: Server connected but tools (query_rag, retrieve_documents) don't show up
+
+**Solutions**:
+
+1. **Verify server is initialized**:
+```bash
+# Check logs for initialization messages
+tail -f ./logs/rainrag.log | grep "MCP server"
+```
+
+2. **Test with MCP Inspector**:
+```bash
+# Install inspector
+npm install -g @modelcontextprotocol/inspector
+
+# Run server with HTTP
+rainrag mcp --transport streamable-http
+
+# In another terminal
+npx @modelcontextprotocol/inspector
+# Connect to http://localhost:8000/mcp
+```
+
+3. **Ensure collection has data**:
+```bash
+# Check Qdrant has indexed documents
+rainrag info
+
+# Should show points count > 0
+```
+
+4. **Re-run pipeline if no data**:
+```bash
+rainrag pipeline
 ```
 
 ---

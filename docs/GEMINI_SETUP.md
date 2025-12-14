@@ -92,9 +92,9 @@ qdrant:
 
 | Model | Use Case | Performance | Cost | Context |
 |-------|----------|-------------|------|---------|
-| `gemini-2.5-flash` | **Recommended** - Fast, efficient | ⭐⭐⭐⭐ | $ | 1M tokens |
-| `gemini-2.5-pro` | High quality, complex tasks | ⭐⭐⭐⭐⭐ | $$ | 2M tokens |
-| `gemini-2.5-flash-exp` | Experimental, latest features | ⭐⭐⭐⭐ | $ | 1M tokens |
+| `gemini-2.5-flash` | **Recommended** - Fast, efficient | Great | $ | 1M tokens |
+| `gemini-2.5-pro` | High quality, complex tasks | Excellent | $$ | 2M tokens |
+| `gemini-2.5-flash-exp` | Experimental, latest features | Great | $ | 1M tokens |
 
 ### Embedding Models
 

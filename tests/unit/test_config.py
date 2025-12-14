@@ -13,6 +13,7 @@ from rainrag.config import (
     GeminiConfig,
     LLMConfig,
     LoggingConfig,
+    MCPConfig,
     MistralConfig,
     OpenAIConfig,
     PathsConfig,
@@ -222,6 +223,30 @@ class TestGeminiConfig:
         assert config.top_k == 10
 
 
+class TestMCPConfig:
+    """Tests for MCPConfig model."""
+
+    def test_mcp_config_defaults(self) -> None:
+        """Test default MCP configuration."""
+        config = MCPConfig()
+
+        assert config.transport == "stdio"
+        assert config.host == "localhost"
+        assert config.port == 8000
+
+    def test_mcp_config_custom(self) -> None:
+        """Test custom MCP configuration."""
+        config = MCPConfig(
+            transport="streamable-http",
+            host="0.0.0.0",
+            port=9000,
+        )
+
+        assert config.transport == "streamable-http"
+        assert config.host == "0.0.0.0"
+        assert config.port == 9000
+
+
 class TestLLMConfig:
     """Tests for LLMConfig model."""
 
@@ -356,6 +381,11 @@ class TestLoadConfig:
                 "format": "{message}",
                 "log_file": "/test/logs/test.log",
             },
+            "mcp": {
+                "transport": "streamable-http",
+                "host": "0.0.0.0",
+                "port": 9000,
+            },
         }
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -375,6 +405,9 @@ class TestLoadConfig:
             assert config.mistral.temperature == 0.7
             assert config.processing.num_workers == 2
             assert config.logging.level == "DEBUG"
+            assert config.mcp.transport == "streamable-http"
+            assert config.mcp.host == "0.0.0.0"
+            assert config.mcp.port == 9000
 
         finally:
             Path(config_path).unlink()

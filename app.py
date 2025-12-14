@@ -19,7 +19,7 @@ REQUEST_TIMEOUT = 60.0  # 60 seconds timeout for API requests
 # Translations
 TRANSLATIONS = {
     "ru": {
-        "title": "🎬 RainRAG - Поиск по видео-транскриптам",
+        "title": "RainRAG - Поиск по видео-транскриптам",
         "subtitle": "Задайте вопрос о содержимом видео на русском или английском языке",
         "language_label": "Язык / Language",
         "num_chunks_label": "Количество контекстных фрагментов",
@@ -33,17 +33,17 @@ TRANSLATIONS = {
         "input_placeholder": "Введите ваш вопрос здесь...",
         "send_button": "Отправить",
         "clear_button": "Очистить историю",
-        "context_header": "📄 Найденные фрагменты контекста",
-        "error_auth": "❌ Ошибка аутентификации. Проверьте токен доступа.",
-        "error_connection": "❌ Ошибка подключения к серверу. Убедитесь, что API запущен.",
-        "error_timeout": "⏱️ Превышено время ожидания. Попробуйте снова.",
-        "error_general": "❌ Произошла ошибка",
+        "context_header": "Найденные фрагменты контекста",
+        "error_auth": "Ошибка аутентификации. Проверьте токен доступа.",
+        "error_connection": "Ошибка подключения к серверу. Убедитесь, что API запущен.",
+        "error_timeout": "Превышено время ожидания. Попробуйте снова.",
+        "error_general": "Произошла ошибка",
         "thinking": "Думаю...",
         "source_label": "Источник",
         "score_label": "Релевантность",
         "language_field": "Язык",
         "loading_system": "Загрузка информации о системе...",
-        "auth_title": "🔐 Вход в систему",
+        "auth_title": "Вход в систему",
         "auth_prompt": "Введите токен доступа:",
         "auth_button": "Войти",
         "auth_invalid": "Неверный токен доступа",
@@ -55,7 +55,7 @@ TRANSLATIONS = {
         "no_video": "Видео не найдено",
     },
     "en": {
-        "title": "🎬 RainRAG - Video Transcript Search",
+        "title": "RainRAG - Video Transcript Search",
         "subtitle": "Ask questions about video content in Russian or English",
         "language_label": "Language / Язык",
         "num_chunks_label": "Number of context chunks",
@@ -69,17 +69,17 @@ TRANSLATIONS = {
         "input_placeholder": "Type your question here...",
         "send_button": "Send",
         "clear_button": "Clear History",
-        "context_header": "📄 Retrieved Context Chunks",
-        "error_auth": "❌ Authentication error. Please check your access token.",
-        "error_connection": "❌ Connection error. Make sure the API is running.",
-        "error_timeout": "⏱️ Request timeout. Please try again.",
-        "error_general": "❌ An error occurred",
+        "context_header": "Retrieved Context Chunks",
+        "error_auth": "Authentication error. Please check your access token.",
+        "error_connection": "Connection error. Make sure the API is running.",
+        "error_timeout": "Request timeout. Please try again.",
+        "error_general": "An error occurred",
         "thinking": "Thinking...",
         "source_label": "Source",
         "score_label": "Relevance",
         "language_field": "Language",
         "loading_system": "Loading system information...",
-        "auth_title": "🔐 System Login",
+        "auth_title": "System Login",
         "auth_prompt": "Enter access token:",
         "auth_button": "Login",
         "auth_invalid": "Invalid access token",
@@ -331,7 +331,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     # Display video (2/3 width on left)
                     video_url = group[0].get("video_url")
                     if video_url:
-                        st.markdown(f"**🎥 {get_text('video_label', lang)}:**")
+                        st.markdown(f"**{get_text('video_label', lang)}:**")
                         video_full_url = f"{API_BASE_URL}{video_url}"
                         try:
                             st.video(video_full_url)
@@ -343,7 +343,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 
                 with vtt_col:
                     # Display VTT selector and viewer (1/3 width on right)
-                    st.markdown(f"**📄 {get_text('vtt_label', lang)}:**")
+                    st.markdown(f"**{get_text('vtt_label', lang)}:**")
 
                     # Create language selector if multiple VTT files exist for this group
                     vtt_languages = {}
@@ -385,7 +385,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                             f'background-color: #0084ff; color: white; text-decoration: none; '
                             f'border-radius: 0.25rem; text-align: center; width: 100%; '
                             f'box-sizing: border-box; margin-bottom: 0.5rem;">'
-                            f'⬇️ {get_text("download_vtt", lang)}</a>',
+                            f'{get_text("download_vtt", lang)}</a>',
                             unsafe_allow_html=True,
                         )
 
@@ -438,7 +438,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 def render_sidebar(lang: str):
     """Render the sidebar with controls and system information."""
     with st.sidebar:
-        st.title("⚙️ " + get_text("system_info_label", lang))
+        st.title(get_text("system_info_label", lang))
 
         # Language selection
         language_options = {"ru": "Русский 🇷🇺", "en": "English 🇬🇧"}
@@ -517,7 +517,7 @@ def main():
     # Page configuration
     st.set_page_config(
         page_title="RainRAG - Video Transcript Search",
-        page_icon="🎬",
+        page_icon="📹",
         layout="wide",
         initial_sidebar_state="expanded",
     )

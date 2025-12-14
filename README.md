@@ -13,6 +13,7 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 - **CLI Interface**: Easy-to-use command-line interface powered by Typer
 - **Vector Search**: Uses Qdrant for efficient similarity search
 - **Web UI**: Streamlit-based chat interface with FastAPI backend
+- **MCP Server**: Deploy as Model Context Protocol server for Claude Desktop, ChatGPT, and Cursor integration
 - **Video Playback**: Inline video player for retrieved content
 - **Subtitle Access**: Download and view VTT files directly in the UI
 - **Network Access**: Accessible from other devices on the same network with optional token authentication
@@ -380,6 +381,41 @@ Display configuration and collection statistics:
 rainrag info
 ```
 
+#### 7. Run MCP Server
+
+Deploy RainRAG as an MCP (Model Context Protocol) server for integration with AI assistants like Claude Desktop, ChatGPT, and Cursor:
+
+```bash
+# Run with default settings (stdio transport for local tools)
+rainrag mcp
+
+# Run with HTTP transport for remote connections
+rainrag mcp --transport streamable-http --port 8000
+```
+
+The MCP server exposes your RAG system as tools that AI assistants can use:
+- `query_rag`: Full RAG pipeline (retrieve + generate answer)
+- `retrieve_documents`: Retrieval only (no LLM generation)
+
+**Setup with Claude Desktop:**
+
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "rainrag": {
+      "command": "rainrag",
+      "args": ["mcp", "--config", "/absolute/path/to/config.yaml"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop and you can now query your video transcripts directly from Claude!
+
+**For detailed setup instructions** including Cursor and ChatGPT integration, see [docs/MCP_SETUP.md](docs/MCP_SETUP.md).
+
 ### Python API
 
 You can also use RainRAG as a Python library:
@@ -422,37 +458,15 @@ RainRAG includes a complete web-based query interface with:
 
 ### Prerequisites
 
-Before starting the web interface, you need running LLM server(s) to generate answers:
+- Qdrant running locally (`make qdrant-start` starts the bundled container)
+- API keys set for your chosen providers (`MISTRAL_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`)
+- `config.yaml` updated with the desired `llm.provider` and `embedding.provider`
 
-**See [MULTI_MODEL_SETUP.md](MULTI_MODEL_SETUP.md) for running all 3 models simultaneously (recommended)**
-**See [VLLM_SETUP.md](VLLM_SETUP.md) for single vLLM server configuration**
-**See [MODEL_CONFIGURATION.md](MODEL_CONFIGURATION.md) for detailed model-specific configurations**
-
-Quick single-model startup:
+Start everything locally:
 ```bash
-# Mistral on port 8000 (default)
-python -m vllm.entrypoints.openai.api_server \
-  --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
-  --host 0.0.0.0 \
-  --port 8000
+make up
 ```
-
-Multi-model setup (run all 3 for seamless switching):
-```bash
-# Terminal 1: Mistral on port 8000
-python -m vllm.entrypoints.openai.api_server \
-  --model mistralai/Mistral-Small-3.2-24B-Instruct-2506 --port 8000
-
-# Terminal 2: Gemma on port 8002
-python -m vllm.entrypoints.openai.api_server \
-  --model google/gemma-2-27b-it --port 8002
-
-# Terminal 3: GPT-OSS on port 8003
-python -m vllm.entrypoints.openai.api_server \
-  --model gpt-oss:20b --port 8003
-```
-
-**Or use `make up` to start everything at once!**
+This brings up Qdrant, the FastAPI backend on port 8001, and the Streamlit UI on port 7860. Use `make down` to stop.
 
 ### Quick Start (Local Development)
 
@@ -602,8 +616,8 @@ Users will be prompted to enter the token when accessing the Streamlit interface
 - **Subtitles**: VTT files appear in a scrollable viewer on the right (1/3 width)
   - Language selector for videos with multiple subtitle languages (en/ru)
   - Download button to save VTT files locally
-- **Text Preview**: Long text excerpts are collapsed with "Show full text" expansion
-- **Metadata**: Each chunk displays filename, relevance score, and language
+- **Date filters**: Optional date range filter (the picker is constrained to the archive date span from `RAINRAG_DOCS_PATH` / `./data/docs.jsonl`)
+- **Metadata**: Each chunk displays filename, relevance score, language, and timecodes (when available)
 
 #### Example Queries (Russian)
 
@@ -1063,6 +1077,14 @@ embedding:
   batch_size: 16  # Reduce from 32
 ```
 
+If the full pipeline gets killed, run the stages separately to isolate which step needs tuning:
+
+```bash
+rainrag ingest
+rainrag embed --force
+rainrag index --recreate
+```
+
 ### Qdrant Connection Failed
 
 Ensure Qdrant is running:
@@ -1072,6 +1094,31 @@ docker ps | grep qdrant
 
 # If not running, start it
 docker run -p 6333:6333 qdrant/qdrant:v1.12.1
+```
+
+### Queries Return No Results (Empty Collection)
+
+If you get answers with no retrieved videos/VTTs, your collection is likely empty.
+
+1) Check:
+
+```bash
+rainrag info
+```
+
+2) If `points_count` is `0`, repopulate it:
+
+```bash
+rainrag pipeline --recreate-index
+```
+
+### Date Filters Causing Errors / No Matches
+
+- Date filtering depends on documents having valid `date` metadata and a numeric `date_ts` for safe range filtering.
+- After updating RainRAG, **rerun the full pipeline** (don’t use `--skip-ingest`) so `date_ts` is populated end-to-end:
+
+```bash
+rainrag pipeline --recreate-index
 ```
 
 ### VTT Parsing Issues
@@ -1084,6 +1131,13 @@ logging:
 ```
 
 Then check logs for detailed parsing information.
+
+### Editor Shows “Import … could not be resolved”
+
+If runtime works but the editor shows missing imports, ensure the editor uses the project Poetry environment.
+
+- Recommended: use an in-project venv (`.venv`) and point your editor/type-checker at it.
+- This repo includes `pyrightconfig.json` and `.vscode/settings.json` to help Cursor/VS Code pick up `.venv`.
 
 ## Roadmap
 

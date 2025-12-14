@@ -5,11 +5,40 @@ from pathlib import Path
 import typer
 from loguru import logger
 
-from rainrag.config import load_config
-from rainrag.embed import run_embedding
-from rainrag.index import run_indexing
-from rainrag.ingest import run_ingestion
-from rainrag.query import run_query
+
+# NOTE: Avoid importing heavy modules (torch/transformers) at import-time.
+# Some commands (and even `--help`) should be fast in CI and tooling, so we
+# import pipeline components lazily inside the command functions.
+
+
+def load_config(config_path: str):
+    from rainrag.config import load_config as _load_config
+
+    return _load_config(config_path)
+
+
+def run_ingestion(config_path: str):
+    from rainrag.ingest import run_ingestion as _run_ingestion
+
+    return _run_ingestion(config_path)
+
+
+def run_embedding(config_path: str, *, force_regenerate: bool = False):
+    from rainrag.embed import run_embedding as _run_embedding
+
+    return _run_embedding(config_path, force_regenerate=force_regenerate)
+
+
+def run_indexing(config_path: str, *, recreate: bool = False):
+    from rainrag.index import run_indexing as _run_indexing
+
+    return _run_indexing(config_path, recreate=recreate)
+
+
+def run_query(config_path: str, question: str, top_k: int | None):
+    from rainrag.query import run_query as _run_query
+
+    return _run_query(config_path, question, top_k)
 
 
 app = typer.Typer(
@@ -78,15 +107,14 @@ def ingest(
     setup_logging(config)
 
     try:
-        typer.echo("🚀 Starting ingestion pipeline...")
-
+        typer.echo("Starting ingestion pipeline...")
         doc_count = run_ingestion(config)
 
-        typer.echo(f"✅ Ingestion complete! Processed {doc_count} documents")
+        typer.echo(f"Ingestion complete! Processed {doc_count} documents")
 
     except Exception as e:
         logger.exception(f"Ingestion failed: {e}")
-        typer.echo(f"❌ Ingestion failed: {e}", err=True)
+        typer.echo(f"Ingestion failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -117,16 +145,15 @@ def embed(
     setup_logging(config)
 
     try:
-        typer.echo("🚀 Starting embedding generation...")
-
+        typer.echo("Starting embedding generation...")
         embeddings, documents = run_embedding(config, force_regenerate=force)
 
-        typer.echo(f"✅ Embedding complete! Generated embeddings for {len(documents)} documents")
+        typer.echo(f"Embedding complete! Generated embeddings for {len(documents)} documents")
         typer.echo(f"   Embedding shape: {embeddings.shape}")
 
     except Exception as e:
         logger.exception(f"Embedding failed: {e}")
-        typer.echo(f"❌ Embedding failed: {e}", err=True)
+        typer.echo(f"Embedding failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -157,18 +184,17 @@ def index(
     setup_logging(config)
 
     try:
-        typer.echo("🚀 Starting indexing pipeline...")
+        typer.echo("Starting indexing pipeline...")
 
         if recreate:
-            typer.echo("⚠️  Warning: Recreating collection (existing data will be deleted)")
-
+            typer.echo("Warning: Recreating collection (existing data will be deleted)")
         num_indexed = run_indexing(config, recreate=recreate)
 
-        typer.echo(f"✅ Indexing complete! Indexed {num_indexed} documents")
+        typer.echo(f"Indexing complete! Indexed {num_indexed} documents")
 
     except Exception as e:
         logger.exception(f"Indexing failed: {e}")
-        typer.echo(f"❌ Indexing failed: {e}", err=True)
+        typer.echo(f"Indexing failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -204,34 +230,34 @@ def pipeline(
     setup_logging(config)
 
     try:
-        typer.echo("🚀 Starting full pipeline...")
+        typer.echo("Starting full pipeline...")
 
         # Step 1: Ingest
         if not skip_ingest:
-            typer.echo("\n📂 Step 1/3: Ingestion")
+            typer.echo("\nStep 1/3: Ingestion")
             doc_count = run_ingestion(config)
-            typer.echo(f"   ✓ Processed {doc_count} documents")
+            typer.echo(f"   Processed {doc_count} documents")
         else:
-            typer.echo("\n📂 Step 1/3: Ingestion (skipped)")
+            typer.echo("\nStep 1/3: Ingestion (skipped)")
 
         # Step 2: Embed
         if not skip_embed:
-            typer.echo("\n🧮 Step 2/3: Embedding")
+            typer.echo("\nStep 2/3: Embedding")
             embeddings, documents = run_embedding(config)
-            typer.echo(f"   ✓ Generated embeddings for {len(documents)} documents")
+            typer.echo(f"   Generated embeddings for {len(documents)} documents")
         else:
-            typer.echo("\n🧮 Step 2/3: Embedding (skipped)")
+            typer.echo("\nStep 2/3: Embedding (skipped)")
 
         # Step 3: Index
-        typer.echo("\n📊 Step 3/3: Indexing")
+        typer.echo("\nStep 3/3: Indexing")
         num_indexed = run_indexing(config, recreate=recreate_index)
-        typer.echo(f"   ✓ Indexed {num_indexed} documents")
+        typer.echo(f"   Indexed {num_indexed} documents")
 
-        typer.echo("\n✅ Full pipeline complete!")
+        typer.echo("\nFull pipeline complete!")
 
     except Exception as e:
         logger.exception(f"Pipeline failed: {e}")
-        typer.echo(f"\n❌ Pipeline failed: {e}", err=True)
+        typer.echo(f"\nPipeline failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -271,22 +297,21 @@ def ask(
     setup_logging(config)
 
     try:
-        typer.echo("🔍 Processing your question...\n")
-
+        typer.echo("Processing your question...\n")
         result = run_query(config, question, top_k)
 
         # Display the answer
-        typer.echo("💡 Answer:")
+        typer.echo("Answer:")
         typer.echo("=" * 70)
         typer.echo(result["answer"])
         typer.echo("=" * 70)
 
         # Display metadata
-        typer.echo(f"\n📊 Retrieved {result['num_documents']} relevant documents")
+        typer.echo(f"\nRetrieved {result['num_documents']} relevant documents")
 
         # Display sources if verbose
         if verbose:
-            typer.echo("\n📚 Sources:")
+            typer.echo("\nSources:")
             for doc in result["retrieved_documents"]:
                 typer.echo(f"\n  [{doc['rank']}] Score: {doc['score']:.4f}")
                 typer.echo(f"      Path: {doc['path']}")
@@ -295,7 +320,7 @@ def ask(
 
     except Exception as e:
         logger.exception(f"Query failed: {e}")
-        typer.echo(f"❌ Query failed: {e}", err=True)
+        typer.echo(f"Query failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 
@@ -319,7 +344,7 @@ def info(
 
         cfg = load_config(config)
 
-        typer.echo("📋 RainRAG Configuration")
+        typer.echo("RainRAG Configuration")
         typer.echo("=" * 50)
         typer.echo("\nPaths:")
         typer.echo(f"  Archive root:      {cfg.paths.archive_root}")
@@ -376,11 +401,115 @@ def info(
                 typer.echo(f"  Status:            {stats.get('status', 'N/A')}")
 
         except Exception as e:
-            typer.echo(f"\n⚠️  Could not connect to Qdrant: {e}")
+            typer.echo(f"\nCould not connect to Qdrant: {e}")
 
     except Exception as e:
         logger.exception(f"Failed to get info: {e}")
-        typer.echo(f"❌ Failed to get info: {e}", err=True)
+        typer.echo(f"Failed to get info: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def mcp(
+    config: str = typer.Option(
+        "config.yaml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+    transport: str = typer.Option(
+        None,
+        "--transport",
+        "-t",
+        help="Transport protocol (stdio, sse, streamable-http). Defaults to config value.",
+    ),
+    host: str = typer.Option(
+        None,
+        "--host",
+        "-h",
+        help="Host for HTTP-based transports. Defaults to config value.",
+    ),
+    port: int = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Port for HTTP-based transports. Defaults to config value.",
+    ),
+) -> None:
+    """
+    Run the MCP (Model Context Protocol) server.
+
+    This exposes the RainRAG system as an MCP server that can be used by
+    AI assistants like Claude Desktop, ChatGPT, and Cursor.
+
+    The server provides two main tools:
+    - query_rag: Full RAG pipeline (retrieve + generate answer)
+    - retrieve_documents: Retrieval only (no LLM generation)
+
+    Transport options:
+    - stdio: Standard input/output (for Claude Desktop, Cursor)
+    - streamable-http: HTTP server (for remote connections)
+    - sse: Server-Sent Events
+
+    Examples:
+        # Run with stdio transport (default for Claude Desktop)
+        rainrag mcp
+
+        # Run with HTTP transport on custom port
+        rainrag mcp --transport streamable-http --port 8080
+
+        # Run with specific config file
+        rainrag mcp --config custom-config.yaml
+    """
+    setup_logging(config)
+
+    try:
+        # Fast validation path: if the user supplied a transport explicitly, validate
+        # without importing the server module (which imports heavier dependencies).
+        allowed_transports = {"stdio", "sse", "streamable-http"}
+        if transport is not None and transport not in allowed_transports:
+            typer.echo(
+                f"Invalid transport: {transport}. Must be one of: stdio, sse, streamable-http",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
+        from rainrag.mcp_server import run_server
+
+        # Load config to get defaults
+        cfg = load_config(config)
+
+        # Use CLI args if provided, otherwise use config values
+        transport_to_use = transport or cfg.mcp.transport
+        host_to_use = host or cfg.mcp.host
+        port_to_use = port or cfg.mcp.port
+
+        # IMPORTANT: For stdio transport, stdout must be reserved for JSON-RPC messages.
+        # Send human-readable startup info to stderr so MCP clients (Cursor/Claude Desktop)
+        # don't fail parsing.
+        log_to_stderr = transport_to_use == "stdio"
+        typer.echo("Starting MCP server...", err=log_to_stderr)
+        typer.echo(f"   Transport: {transport_to_use}", err=log_to_stderr)
+        if transport_to_use != "stdio":
+            typer.echo(f"   Address: {host_to_use}:{port_to_use}", err=log_to_stderr)
+        typer.echo("", err=log_to_stderr)
+
+        # Run the MCP server (this will block)
+        run_server(
+            config_path=config,
+            transport=transport_to_use,
+            host=host_to_use,
+            port=port_to_use,
+        )
+
+    except KeyboardInterrupt:
+        typer.echo("\n\nMCP server stopped")
+        raise typer.Exit(code=0)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        logger.exception(f"MCP server failed: {e}")
+        typer.echo(f"MCP server failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 

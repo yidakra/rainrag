@@ -85,9 +85,9 @@ qdrant:
 
 | Model | Use Case | Performance | Cost |
 |-------|----------|-------------|------|
-| `mistral-small-latest` | **Recommended** - Fast, accurate for most tasks | ⭐⭐⭐⭐ | $ |
-| `mistral-medium-latest` | Complex reasoning, longer context | ⭐⭐⭐⭐⭐ | $$ |
-| `mistral-large-latest` | Maximum capability, enterprise use | ⭐⭐⭐⭐⭐ | $$$ |
+| `mistral-small-latest` | **Recommended** - Fast, accurate for most tasks | Great | $ |
+| `mistral-medium-latest` | Complex reasoning, longer context | Excellent | $$ |
+| `mistral-large-latest` | Maximum capability, enterprise use | Excellent | $$$ |
 
 ### Embedding Models
 

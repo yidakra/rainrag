@@ -194,7 +194,7 @@ class TestQdrantIndexer:
         # Setup mock
         mock_client = MagicMock()
         mock_info = MagicMock()
-        mock_info.vectors_count = 100
+        mock_info.indexed_vectors_count = 100
         mock_info.points_count = 100
         mock_info.status = "green"
         mock_client.get_collection.return_value = mock_info
@@ -205,7 +205,7 @@ class TestQdrantIndexer:
 
         stats = indexer.get_collection_info()
 
-        assert stats["vectors_count"] == 100
+        assert stats["indexed_vectors_count"] == 100
         assert stats["points_count"] == 100
         assert stats["status"] == "green"
 
@@ -247,7 +247,10 @@ class TestQdrantIndexer:
             "language": "ru",
         }
 
-        mock_client.search.return_value = [mock_result1, mock_result2]
+        # Mock query_points response
+        mock_response = MagicMock()
+        mock_response.points = [mock_result1, mock_result2]
+        mock_client.query_points.return_value = mock_response
         mock_client_class.return_value = mock_client
 
         indexer = QdrantIndexer(test_config)

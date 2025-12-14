@@ -29,6 +29,12 @@ class QueryRequest(BaseModel):
     top_k: int | None = Field(
         default=None, description="Number of context chunks to retrieve", ge=1, le=20
     )
+    date_from: str | None = Field(
+        default=None, description="Filter results from this date (YYYY-MM-DD)"
+    )
+    date_to: str | None = Field(
+        default=None, description="Filter results up to this date (YYYY-MM-DD)"
+    )
 
 
 class ContextChunk(BaseModel):
@@ -43,6 +49,10 @@ class ContextChunk(BaseModel):
     video_url: str | None = None
     vtt_url: str | None = None
     group_id: str | None = None  # Base name for grouping multilingual versions
+    date: str | None = None  # Recording date (from video mtime)
+    duration_seconds: float | None = None  # Video duration in seconds
+    start_time: str | None = None  # First timecode (HH:MM:SS)
+    end_time: str | None = None  # Last timecode (HH:MM:SS)
 
 
 class QueryResponse(BaseModel):
@@ -67,6 +77,29 @@ class HealthResponse(BaseModel):
     qdrant_collection: str
     # Deprecated fields (kept for backwards compatibility)
     mistral_model: str
+
+
+def timecode_to_seconds(timecode: str) -> int | None:
+    """
+    Convert HH:MM:SS timecode to seconds.
+
+    Args:
+        timecode: Timecode in HH:MM:SS format
+
+    Returns:
+        Total seconds or None if parsing fails
+    """
+    try:
+        parts = timecode.split(":")
+        if len(parts) == 3:
+            hours, minutes, seconds = int(parts[0]), int(parts[1]), int(parts[2])
+            return hours * 3600 + minutes * 60 + seconds
+        elif len(parts) == 2:
+            minutes, seconds = int(parts[0]), int(parts[1])
+            return minutes * 60 + seconds
+        return None
+    except (ValueError, AttributeError):
+        return None
 
 
 def find_video_file(vtt_path: str) -> str | None:
@@ -306,9 +339,13 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
     try:
         logger.info(f"Received query: {request.question[:100]}... (language: {request.language})")
 
-        # Execute query with language parameter
+        # Execute query with language and date filter parameters
         result = query_engine.query(
-            question=request.question, top_k=request.top_k, language=request.language
+            question=request.question,
+            top_k=request.top_k,
+            language=request.language,
+            date_from=request.date_from,
+            date_to=request.date_to,
         )
 
         # Format response with video and VTT URLs
@@ -333,6 +370,12 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
                     try:
                         video_rel = Path(video_file).relative_to(video_root)
                         video_url = f"/video/{video_rel}"
+                        # Add timecode fragment for video player to start at
+                        start_time = doc.get("start_time")
+                        if start_time:
+                            start_seconds = timecode_to_seconds(start_time)
+                            if start_seconds is not None:
+                                video_url = f"{video_url}#t={start_seconds}"
                     except ValueError:
                         logger.warning(f"Video file {video_file} is not under video_root")
 
@@ -358,6 +401,10 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
                     video_url=video_url,
                     vtt_url=vtt_url,
                     group_id=group_id,
+                    date=doc.get("date"),
+                    duration_seconds=doc.get("duration_seconds"),
+                    start_time=doc.get("start_time"),
+                    end_time=doc.get("end_time"),
                 )
             )
 

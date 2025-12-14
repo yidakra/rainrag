@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import cohere
 import google.generativeai as genai
 from anthropic import Anthropic
 from loguru import logger
@@ -66,6 +67,18 @@ class RAGQueryEngine:
         if needs_gemini:
             genai.configure(api_key=config.gemini.api_key)
             logger.info("Initialized Gemini client")
+
+        # Initialize Cohere client if reranker is enabled
+        if config.reranker.enabled and config.reranker.provider == "cohere":
+            try:
+                # Newer SDK
+                self.cohere_client = cohere.ClientV2(api_key=config.cohere.api_key)
+            except AttributeError:
+                # Older SDK fallback
+                self.cohere_client = cohere.Client(api_key=config.cohere.api_key)
+            logger.info(f"Initialized Cohere reranker: {config.cohere.model_name}")
+        else:
+            self.cohere_client = None
 
         # Log which provider is being used for LLM
         if config.llm.provider == "mistral":
@@ -187,7 +200,7 @@ class RAGQueryEngine:
             # Use OpenAI API embeddings
             logger.debug(f"Embedding query using OpenAI API: {query[:100]}...")
             try:
-                response = self.openai_client.embeddings.create(
+                response = self.openai_client.embeddings.create(  # type: ignore[assignment]
                     model=self.config.openai.embedding_model, input=query
                 )
                 return response.data[0].embedding
@@ -212,13 +225,21 @@ class RAGQueryEngine:
         else:
             raise ValueError(f"Unknown embedding provider: {self.config.embedding.provider}")
 
-    def retrieve_documents(self, query_vector: list[float], top_k: int) -> list[dict[str, Any]]:
+    def retrieve_documents(
+        self,
+        query_vector: list[float],
+        top_k: int,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Retrieve the most relevant documents from Qdrant.
 
         Args:
             query_vector: The query embedding
             top_k: Number of documents to retrieve
+            date_from: Filter results from this date (YYYY-MM-DD)
+            date_to: Filter results up to this date (YYYY-MM-DD)
 
         Returns:
             List of retrieved documents with metadata
@@ -228,11 +249,23 @@ class RAGQueryEngine:
 
         logger.info(f"Searching for top {top_k} documents...")
 
+        # Build date filter if specified - we'll do client-side filtering
+        # to avoid Qdrant issues with None date values
+        query_filter = None
+        if date_from or date_to:
+            logger.info(f"Will apply client-side date filter: {date_from} to {date_to}")
+
         try:
+            # If date filtering is requested, retrieve more documents and filter client-side
+            # to handle cases where some documents don't have dates
+            effective_limit = top_k * 3 if (date_from or date_to) else top_k
+
+            logger.info(f"Querying Qdrant with filter: {query_filter}, limit: {effective_limit}")
             results = self.qdrant_client.query_points(
                 collection_name=self.config.qdrant.collection_name,
                 query=query_vector,
-                limit=top_k,
+                limit=effective_limit,
+                query_filter=query_filter,
             ).points
 
             documents = []
@@ -244,16 +277,116 @@ class RAGQueryEngine:
                     "path": hit.payload.get("path", ""),
                     "language": hit.payload.get("language", ""),
                     "doc_id": hit.payload.get("doc_id", ""),
+                    "date": hit.payload.get("date"),
+                    "duration_seconds": hit.payload.get("duration_seconds"),
+                    "start_time": hit.payload.get("start_time"),
+                    "end_time": hit.payload.get("end_time"),
                 }
                 documents.append(doc)
                 logger.debug(f"Rank {idx + 1}: Score={hit.score:.4f}, Path={doc['path']}")
 
-            logger.info(f"Retrieved {len(documents)} documents")
+            # Apply date filtering client-side if requested
+            if date_from or date_to:
+                from datetime import date as _date
+                from datetime import datetime as _dt
+
+                def _parse_date(value: Any) -> _date | None:
+                    """Best-effort parse for ISO date strings or datetime/date objects."""
+                    if value is None:
+                        return None
+                    if isinstance(value, _dt):
+                        return value.date()
+                    if isinstance(value, _date):
+                        return value
+                    try:
+                        return _dt.fromisoformat(str(value)).date()
+                    except Exception:
+                        return None
+
+                parsed_from = _parse_date(date_from)
+                parsed_to = _parse_date(date_to)
+
+                filtered_documents = []
+                for doc in documents:
+                    doc_date_raw = doc.get("date")
+                    doc_date = _parse_date(doc_date_raw)
+                    if doc_date is None:
+                        continue  # Skip documents without dates
+
+                    include_doc = True
+                    if parsed_from and doc_date < parsed_from:
+                        include_doc = False
+                    if parsed_to and doc_date > parsed_to:
+                        include_doc = False
+
+                    if include_doc:
+                        filtered_documents.append(doc)
+
+                # Re-rank and limit to top_k
+                documents = filtered_documents[:top_k]
+
+                # Update ranks after filtering
+                for idx, doc in enumerate(documents):
+                    doc["rank"] = idx + 1
+
+            logger.info(f"Retrieved {len(documents)} documents after filtering")
             return documents
 
         except Exception as e:
             logger.error(f"Failed to retrieve documents: {e}")
             raise
+
+    def rerank_documents(
+        self, query: str, documents: list[dict[str, Any]], top_n: int
+    ) -> list[dict[str, Any]]:
+        """
+        Rerank documents using Cohere Rerank API.
+
+        Args:
+            query: The user's query
+            documents: List of retrieved documents
+            top_n: Number of documents to return after reranking
+
+        Returns:
+            Reranked list of documents
+        """
+        if not self.cohere_client:
+            logger.warning("Cohere client not initialized, skipping reranking")
+            return documents[:top_n]
+
+        if not documents:
+            return documents
+
+        logger.info(f"Reranking {len(documents)} documents with Cohere...")
+
+        try:
+            # Prepare documents for reranking
+            texts = [doc["text"] for doc in documents]
+
+            # Call Cohere Rerank API
+            response = self.cohere_client.rerank(
+                model=self.config.cohere.model_name,
+                query=query,
+                documents=texts,
+                top_n=min(top_n, len(documents)),
+            )
+
+            # Reorder documents based on rerank results
+            reranked = []
+            for idx, result in enumerate(response.results):
+                doc = documents[result.index].copy()
+                doc["rank"] = idx + 1
+                doc["rerank_score"] = result.relevance_score
+                doc["original_score"] = doc["score"]
+                doc["score"] = result.relevance_score  # Use rerank score as primary
+                reranked.append(doc)
+
+            logger.info(f"Reranking complete. Returning top {len(reranked)} documents")
+            return reranked
+
+        except Exception as e:
+            logger.error(f"Reranking failed: {e}. Returning original documents.")
+            return documents[:top_n]
 
     def build_prompt(
         self, query: str, documents: list[dict[str, Any]], language: str = "en"
@@ -267,17 +400,28 @@ class RAGQueryEngine:
             language: Language code (e.g., "en", "ru") for response
 
         Returns:
-            List of message dictionaries for Mistral API
+            List of message dictionaries for the chat API
         """
         # Build context from retrieved documents
         context_parts = []
-        max_chars_per_doc = 1200
+        # Allow more context per document
+        max_chars_per_doc = 2000
         for doc in documents:
             text = doc["text"]
             if len(text) > max_chars_per_doc:
                 text = text[:max_chars_per_doc].rstrip() + "..."
             context_parts.append(f"[Document {doc['rank']}]")
-            context_parts.append(f"Source: {doc['path']}")
+            # Include date if available
+            if doc.get("date"):
+                context_parts.append(f"Date: {doc['date']}")
+            # Include duration if available (format as mm:ss)
+            if doc.get("duration_seconds"):
+                mins = int(doc["duration_seconds"] // 60)
+                secs = int(doc["duration_seconds"] % 60)
+                context_parts.append(f"Duration: {mins}:{secs:02d}")
+            # Include timecodes if available
+            if doc.get("start_time") and doc.get("end_time"):
+                context_parts.append(f"Timecodes: {doc['start_time']} - {doc['end_time']}")
             context_parts.append(f"Text: {text}")
             context_parts.append("")  # Empty line between documents
 
@@ -285,16 +429,28 @@ class RAGQueryEngine:
 
         # Language-specific system messages
         system_messages = {
-            "ru": """Вы помощник, который помогает пользователям понимать видео-транскрипты. КРИТИЧЕСКИ ВАЖНО: Вы ДОЛЖНЫ отвечать ТОЛЬКО на русском языке. Каждое слово вашего ответа должно быть на русском языке.
+            "ru": """Вы — ассистент для журналистов и редакторов, помогающий находить видеоматериалы в новостном архиве. КРИТИЧЕСКИ ВАЖНО: Вы ДОЛЖНЫ отвечать ТОЛЬКО на русском языке.
 
-Вам предоставлены релевантные фрагменты видео-транскриптов. Отвечайте на вопрос пользователя на основе предоставленного контекста. Если контекста недостаточно для полного ответа, укажите это в ответе.
+ВСЕ ВИДЕО — АРХИВНЫЕ ЗАПИСИ, не текущие новости. Правила ответа:
+- Всегда указывайте дату записи из метаданных (поле "Date")
+- Упоминайте длительность видео (поле "Duration") — важно для редакторов
+- Используйте прошедшее время: "В архивном видео от 2021-05-11 показано..."
+- Если несколько видео релевантны, перечислите каждое с датой и описанием
+- Делайте хорошее, развернутое "Описание" для каждого релевантного видео
+- Объясните, почему материал может быть полезен для текущего сюжета
 
-ПОВТОРЯЮ: Отвечайте ТОЛЬКО на русском языке.""",
-            "en": """You are an assistant that helps users understand video transcripts. CRITICAL: You MUST answer ONLY in English. Every word of your response must be in English.
+Если дата отсутствует, укажите это. Если материал не найден — скажите прямо, не выдумывайте.""",
+            "en": """You are an assistant for journalists and editors, helping them find video footage from a news archive. CRITICAL: You MUST answer ONLY in English.
 
-You have been provided with relevant excerpts from video transcripts. Answer the user's question based on the provided context. If the context doesn't contain enough information to fully answer the question, acknowledge this in your response.
+ALL VIDEOS ARE ARCHIVAL RECORDINGS, not current news. Response rules:
+- Always cite the recording date from metadata (the "Date" field)
+- Mention video duration (the "Duration" field) — important for editors
+- Use past tense: "Archive footage from 2021-05-11 shows..."
+- If multiple videos are relevant, list each with date and description
+- Provide rich, detailed descriptions explaining the content of each video
+- Explain why the footage might be useful for the current story
 
-REPEATING: Answer ONLY in English.""",
+If date is missing, note this. If no relevant footage is found, say so clearly — do not fabricate.""",
         }
 
         # Get system message (default to English if not found)
@@ -306,7 +462,7 @@ REPEATING: Answer ONLY in English.""",
 
 Question: {query}"""
 
-        # Return messages in Mistral API format
+        # Return messages in provider-agnostic chat format
         return [
             {"role": "system", "content": system_message},
             {"role": "user", "content": user_message},
@@ -330,11 +486,11 @@ Question: {query}"""
             try:
                 response = self.mistral_client.chat.complete(
                     model=self.config.mistral.model_name,
-                    messages=messages,
+                    messages=messages,  # type: ignore[arg-type]
                     max_tokens=self.config.mistral.max_tokens,
                     temperature=self.config.mistral.temperature,
                 )
-                answer = response.choices[0].message.content.strip()
+                answer = response.choices[0].message.content.strip()  # type: ignore[union-attr]
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:
@@ -344,13 +500,13 @@ Question: {query}"""
         elif self.config.llm.provider == "openai":
             logger.info("Generating answer using OpenAI API...")
             try:
-                response = self.openai_client.chat.completions.create(
+                response = self.openai_client.chat.completions.create(  # type: ignore[assignment]
                     model=self.config.openai.model_name,
-                    messages=messages,
+                    messages=messages,  # type: ignore[arg-type]
                     max_tokens=self.config.openai.max_tokens,
                     temperature=self.config.openai.temperature,
                 )
-                answer = response.choices[0].message.content.strip()
+                answer = response.choices[0].message.content.strip()  # type: ignore[union-attr]
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:
@@ -369,14 +525,14 @@ Question: {query}"""
                     else:
                         claude_messages.append(msg)
 
-                response = self.claude_client.messages.create(
+                response = self.claude_client.messages.create(  # type: ignore[assignment]
                     model=self.config.claude.model_name,
                     max_tokens=self.config.claude.max_tokens,
                     temperature=self.config.claude.temperature,
                     system=system_message,
-                    messages=claude_messages,
+                    messages=claude_messages,  # type: ignore[arg-type]
                 )
-                answer = response.content[0].text.strip()
+                answer = response.content[0].text.strip()  # type: ignore[attr-defined]
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:
@@ -408,14 +564,14 @@ Question: {query}"""
                 else:
                     prompt = conversation_parts[-1]
 
-                response = model.generate_content(
+                response = model.generate_content(  # type: ignore[assignment]
                     prompt,
                     generation_config=genai.GenerationConfig(
                         max_output_tokens=self.config.gemini.max_tokens,
                         temperature=self.config.gemini.temperature,
                     ),
                 )
-                answer = response.text.strip()
+                answer = response.text.strip()  # type: ignore[attr-defined]
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:
@@ -426,7 +582,12 @@ Question: {query}"""
             raise ValueError(f"Unknown LLM provider: {self.config.llm.provider}")
 
     def query(
-        self, question: str, top_k: int | None = None, language: str = "en"
+        self,
+        question: str,
+        top_k: int | None = None,
+        language: str = "en",
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute the complete query pipeline.
@@ -435,6 +596,8 @@ Question: {query}"""
             question: The user's question
             top_k: Number of documents to retrieve (defaults to config value)
             language: Language code for response (e.g., "en", "ru")
+            date_from: Filter results from this date (YYYY-MM-DD)
+            date_to: Filter results up to this date (YYYY-MM-DD)
 
         Returns:
             Dictionary containing the answer and metadata
@@ -457,13 +620,22 @@ Question: {query}"""
         # Step 1: Embed the query
         query_vector = self.embed_query(question)
 
-        # Step 2: Retrieve relevant documents
-        documents = self.retrieve_documents(query_vector, top_k)
+        # Step 2: Retrieve relevant documents with optional date filter
+        # If reranking is enabled, retrieve more candidates
+        retrieval_k = self.config.reranker.initial_k if self.config.reranker.enabled else top_k
 
-        # Step 3: Build the messages with language specification
+        documents = self.retrieve_documents(
+            query_vector, retrieval_k, date_from=date_from, date_to=date_to
+        )
+
+        # Step 3: Rerank if enabled
+        if self.config.reranker.enabled and documents:
+            documents = self.rerank_documents(question, documents, top_n=top_k)
+
+        # Step 4: Build the messages with language specification
         messages = self.build_prompt(question, documents, language=language)
 
-        # Step 4: Generate the answer
+        # Step 5: Generate the answer
         answer = self.generate_answer(messages)
 
         return {

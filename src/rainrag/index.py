@@ -1,6 +1,5 @@
 """Qdrant indexing module for vector storage."""
 
-
 import numpy as np
 from loguru import logger
 from qdrant_client import QdrantClient
@@ -91,7 +90,7 @@ class QdrantIndexer:
             logger.info(f"Collection {collection_name} created successfully")
 
     def index_documents(
-        self, embeddings: np.ndarray, documents: list[Document], batch_size: int = 100
+        self, embeddings: np.ndarray, documents: list[Document], batch_size: int = 50
     ) -> int:
         """
         Index documents with their embeddings into Qdrant.
@@ -108,33 +107,35 @@ class QdrantIndexer:
 
         logger.info(f"Indexing {len(documents)} documents into {collection_name}")
 
-        # Prepare points for upload
-        points = []
+        # Upload in batches without holding all points in memory
+        total = len(documents)
+        for i in tqdm(range(0, total, batch_size), desc="Uploading to Qdrant"):
+            batch_points: list[models.PointStruct] = []
+            end = min(i + batch_size, total)
 
-        for idx, (embedding, doc) in enumerate(zip(embeddings, documents, strict=False)):
-            point = models.PointStruct(
-                id=idx,  # Use sequential ID for simplicity
-                vector=embedding.tolist(),
-                payload={
-                    "doc_id": doc.id,
-                    "path": doc.path,
-                    "language": doc.language,
-                    "text": doc.text,
-                    "length": doc.length,
-                },
-            )
-            points.append(point)
+            for idx in range(i, end):
+                embedding = embeddings[idx]
+                doc = documents[idx]
+                batch_points.append(
+                    models.PointStruct(
+                        id=idx,  # Use sequential ID for simplicity
+                        vector=embedding.tolist(),
+                        payload={
+                            "doc_id": doc.id,
+                            "path": doc.path,
+                            "language": doc.language,
+                            "text": doc.text,
+                            "length": doc.length,
+                            "date": doc.date,
+                            "date_ts": doc.date_ts,
+                            "duration_seconds": doc.duration_seconds,
+                            "start_time": doc.start_time,
+                            "end_time": doc.end_time,
+                        },
+                    )
+                )
 
-        # Upload in batches
-        (len(points) + batch_size - 1) // batch_size
-
-        for i in tqdm(range(0, len(points), batch_size), desc="Uploading to Qdrant"):
-            batch = points[i : i + batch_size]
-
-            self.client.upsert(
-                collection_name=collection_name,
-                points=batch,
-            )
+            self.client.upsert(collection_name=collection_name, points=batch_points)
 
         logger.info(f"Successfully indexed {len(documents)} documents")
 
@@ -154,7 +155,7 @@ class QdrantIndexer:
 
             stats = {
                 "name": collection_name,
-                "vectors_count": info.vectors_count,
+                "indexed_vectors_count": info.indexed_vectors_count,
                 "points_count": info.points_count,
                 "status": info.status,
             }
@@ -183,12 +184,12 @@ class QdrantIndexer:
         """
         collection_name = self.config.qdrant.collection_name
 
-        results = self.client.search(
+        results = self.client.query_points(
             collection_name=collection_name,
-            query_vector=query_vector.tolist(),
+            query=query_vector.tolist(),
             limit=top_k,
             score_threshold=score_threshold,
-        )
+        ).points
 
         search_results = []
         for result in results:
