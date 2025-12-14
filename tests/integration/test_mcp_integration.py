@@ -13,7 +13,7 @@ import pytest
 import requests
 
 
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\\[[0-9;]*[A-Za-z]")
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def _strip_ansi(text: str) -> str:
