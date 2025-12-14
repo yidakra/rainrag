@@ -474,7 +474,7 @@ def test_mcp_command_success_stdio():
     """Test successful MCP command with stdio transport."""
     with patch("src.rainrag.cli.setup_logging"):
         with patch("src.rainrag.cli.load_config") as mock_load_config:
-            with patch("src.rainrag.cli.run_server") as mock_run_server:
+            with patch("rainrag.mcp_server.run_server") as mock_run_server:
                 from rainrag.config import (
                     Config,
                     EmbeddingConfig,
@@ -482,6 +482,7 @@ def test_mcp_command_success_stdio():
                     LoggingConfig,
                     MCPConfig,
                     MistralConfig,
+                    OpenAIConfig,
                     PathsConfig,
                     ProcessingConfig,
                     QdrantConfig,
@@ -498,7 +499,7 @@ def test_mcp_command_success_stdio():
                     qdrant=QdrantConfig(),
                     llm=LLMConfig(provider="mistral"),
                     mistral=MistralConfig(api_key="test", model_name="test"),
-                    openai=MistralConfig(api_key="test", model_name="test"),
+                    openai=OpenAIConfig(api_key="test"),
                     processing=ProcessingConfig(),
                     logging=LoggingConfig(),
                     mcp=MCPConfig(transport="stdio", host="localhost", port=8000),
@@ -520,7 +521,7 @@ def test_mcp_command_with_http_transport():
     """Test MCP command with HTTP transport."""
     with patch("src.rainrag.cli.setup_logging"):
         with patch("src.rainrag.cli.load_config") as mock_load_config:
-            with patch("src.rainrag.cli.run_server") as mock_run_server:
+            with patch("rainrag.mcp_server.run_server") as mock_run_server:
                 from rainrag.config import (
                     Config,
                     EmbeddingConfig,
@@ -528,6 +529,7 @@ def test_mcp_command_with_http_transport():
                     LoggingConfig,
                     MCPConfig,
                     MistralConfig,
+                    OpenAIConfig,
                     PathsConfig,
                     ProcessingConfig,
                     QdrantConfig,
@@ -544,7 +546,7 @@ def test_mcp_command_with_http_transport():
                     qdrant=QdrantConfig(),
                     llm=LLMConfig(provider="mistral"),
                     mistral=MistralConfig(api_key="test", model_name="test"),
-                    openai=MistralConfig(api_key="test", model_name="test"),
+                    openai=OpenAIConfig(api_key="test"),
                     processing=ProcessingConfig(),
                     logging=LoggingConfig(),
                     mcp=MCPConfig(
@@ -571,7 +573,7 @@ def test_mcp_command_failure():
     """Test MCP command when it fails."""
     with patch("src.rainrag.cli.setup_logging"):
         with patch("src.rainrag.cli.load_config") as mock_load_config:
-            with patch("src.rainrag.cli.run_server") as mock_run_server:
+            with patch("rainrag.mcp_server.run_server") as mock_run_server:
                 from rainrag.config import (
                     Config,
                     EmbeddingConfig,
@@ -579,6 +581,7 @@ def test_mcp_command_failure():
                     LoggingConfig,
                     MCPConfig,
                     MistralConfig,
+                    OpenAIConfig,
                     PathsConfig,
                     ProcessingConfig,
                     QdrantConfig,
@@ -594,7 +597,7 @@ def test_mcp_command_failure():
                     qdrant=QdrantConfig(),
                     llm=LLMConfig(provider="mistral"),
                     mistral=MistralConfig(api_key="test", model_name="test"),
-                    openai=MistralConfig(api_key="test", model_name="test"),
+                    openai=OpenAIConfig(api_key="test"),
                     processing=ProcessingConfig(),
                     logging=LoggingConfig(),
                     mcp=MCPConfig(),

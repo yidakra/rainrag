@@ -116,7 +116,7 @@ class TestMCPServerTools:
 
         # Verify the engine was called correctly
         mock_engine.query.assert_called_once_with(
-            question="test question", top_k=5, language="en"
+            question="test question", top_k=5, language="en", date_from=None, date_to=None
         )
 
         # Verify the result
@@ -161,7 +161,9 @@ class TestMCPServerTools:
 
         # Verify the engine methods were called correctly
         mock_engine.embed_query.assert_called_once_with("test query")
-        mock_engine.retrieve_documents.assert_called_once_with([0.1] * 1024, 3)
+        mock_engine.retrieve_documents.assert_called_once_with(
+            [0.1] * 1024, 3, date_from=None, date_to=None
+        )
 
         # Verify the result
         assert result["question"] == "test query"
@@ -183,6 +185,8 @@ class TestMCPServerTools:
             QdrantConfig,
         )
 
+        from rainrag.config import LoggingConfig, OpenAIConfig
+
         mock_config = Config(
             paths=PathsConfig(
                 archive_root="/test/archive",
@@ -200,9 +204,9 @@ class TestMCPServerTools:
             mistral=MistralConfig(
                 api_key="test-key", model_name="mistral-small-latest"
             ),
-            openai=MagicMock(),
+            openai=OpenAIConfig(api_key="test-key"),
             processing=ProcessingConfig(),
-            logging=MagicMock(),
+            logging=LoggingConfig(),
         )
 
         # Import after mocking
