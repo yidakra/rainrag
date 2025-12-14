@@ -1,6 +1,5 @@
 """Qdrant indexing module for vector storage."""
 
-
 import numpy as np
 from loguru import logger
 from qdrant_client import QdrantClient

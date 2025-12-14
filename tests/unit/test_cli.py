@@ -549,9 +549,7 @@ def test_mcp_command_with_http_transport():
                     openai=OpenAIConfig(api_key="test"),
                     processing=ProcessingConfig(),
                     logging=LoggingConfig(),
-                    mcp=MCPConfig(
-                        transport="streamable-http", host="0.0.0.0", port=9000
-                    ),
+                    mcp=MCPConfig(transport="streamable-http", host="0.0.0.0", port=9000),
                 )
                 mock_load_config.return_value = mock_cfg
 

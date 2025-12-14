@@ -173,9 +173,7 @@ class RerankerConfig(BaseModel):
 
     enabled: bool = Field(default=False, description="Enable reranking of search results")
     provider: str = Field(default="cohere", description="Reranker provider: 'cohere'")
-    top_n: int = Field(
-        default=5, description="Number of documents to return after reranking"
-    )
+    top_n: int = Field(default=5, description="Number of documents to return after reranking")
     initial_k: int = Field(
         default=20, description="Number of candidates to retrieve before reranking"
     )

@@ -106,9 +106,7 @@ class VTTParser:
         return result[0] if result else None
 
     @classmethod
-    def parse_vtt_with_timecodes(
-        cls, file_path: Path
-    ) -> tuple[str, str | None, str | None] | None:
+    def parse_vtt_with_timecodes(cls, file_path: Path) -> tuple[str, str | None, str | None] | None:
         """
         Parse a VTT file and extract text with first/last timecodes.
 
@@ -145,7 +143,9 @@ class VTTParser:
                     parts = line.split("-->")
                     if len(parts) == 2:
                         start = parts[0].strip().split(".")[0]  # Remove milliseconds
-                        end = parts[1].strip().split()[0].split(".")[0]  # Remove ms and any positioning
+                        end = (
+                            parts[1].strip().split()[0].split(".")[0]
+                        )  # Remove ms and any positioning
                         timecodes.append((start, end))
                     skip_next = False
                     continue
@@ -255,8 +255,10 @@ class VTTParser:
             result = subprocess.run(
                 [
                     "ffprobe",
-                    "-v", "quiet",
-                    "-print_format", "json",
+                    "-v",
+                    "quiet",
+                    "-print_format",
+                    "json",
                     "-show_format",
                     str(video_path),
                 ],

@@ -200,9 +200,7 @@ class TestMCPServerTools:
                 vector_size=1024,
             ),
             llm=LLMConfig(provider="mistral"),
-            mistral=MistralConfig(
-                api_key="test-key", model_name="mistral-small-latest"
-            ),
+            mistral=MistralConfig(api_key="test-key", model_name="mistral-small-latest"),
             openai=OpenAIConfig(api_key="test-key"),
             processing=ProcessingConfig(),
             logging=LoggingConfig(),

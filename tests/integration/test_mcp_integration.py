@@ -108,9 +108,7 @@ mcp:
             for _ in range(30):
                 try:
                     # Try to connect to the MCP endpoint
-                    response = requests.get(
-                        "http://localhost:8888/mcp", timeout=1
-                    )
+                    response = requests.get("http://localhost:8888/mcp", timeout=1)
                     # Any response (even 405 Method Not Allowed) means server is up
                     if response.status_code in [200, 405, 404]:
                         server_started = True
@@ -172,9 +170,7 @@ mcp:
             server_ready = False
             for _ in range(30):
                 try:
-                    response = requests.get(
-                        "http://localhost:8889/mcp", timeout=1
-                    )
+                    response = requests.get("http://localhost:8889/mcp", timeout=1)
                     if response.status_code in [200, 405, 404]:
                         server_ready = True
                         break
@@ -186,9 +182,7 @@ mcp:
             # Test that we can consistently connect
             for _ in range(3):
                 try:
-                    response = requests.get(
-                        "http://localhost:8889/mcp", timeout=2
-                    )
+                    response = requests.get("http://localhost:8889/mcp", timeout=2)
                     # Server should respond (even if method not allowed)
                     assert response.status_code in [
                         200,
@@ -283,9 +277,7 @@ class TestMCPServerWithInspector:
     npm install -g @modelcontextprotocol/inspector
     """
 
-    @pytest.mark.skip(
-        reason="Requires MCP Inspector npm package - run manually if needed"
-    )
+    @pytest.mark.skip(reason="Requires MCP Inspector npm package - run manually if needed")
     def test_mcp_inspector_connection(self, tmp_path: Path) -> None:
         """Test MCP server can be inspected with MCP Inspector.
 
