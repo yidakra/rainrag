@@ -211,10 +211,7 @@ class VTTParser:
         """
         # Extract the hash from filename (e.g., "abc123.ru.vtt" -> "abc123")
         stem = vtt_path.stem  # "abc123.ru"
-        if "." in stem:
-            video_hash = stem.rsplit(".", 1)[0]  # "abc123"
-        else:
-            video_hash = stem
+        video_hash = stem.rsplit(".", 1)[0] if "." in stem else stem  # "abc123"
 
         parent = vtt_path.parent
 

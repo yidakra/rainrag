@@ -622,10 +622,7 @@ Question: {query}"""
 
         # Step 2: Retrieve relevant documents with optional date filter
         # If reranking is enabled, retrieve more candidates
-        if self.config.reranker.enabled:
-            retrieval_k = self.config.reranker.initial_k
-        else:
-            retrieval_k = top_k
+        retrieval_k = self.config.reranker.initial_k if self.config.reranker.enabled else top_k
 
         documents = self.retrieve_documents(
             query_vector, retrieval_k, date_from=date_from, date_to=date_to
