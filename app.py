@@ -215,7 +215,7 @@ def get_archive_date_range() -> tuple[date | None, date | None]:
 
                 if d is None:
                     date_ts = record.get("date_ts")
-                    if isinstance(date_ts, (int, float)):
+                    if isinstance(date_ts, int | float):
                         try:
                             d = date.fromtimestamp(date_ts)
                         except (OverflowError, OSError, ValueError):
