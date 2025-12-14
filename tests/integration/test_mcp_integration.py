@@ -4,12 +4,20 @@ These tests verify the MCP server works end-to-end with actual components.
 They require Qdrant to be running and are marked as integration tests.
 """
 
+import re
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
 import requests
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text)
 
 
 @pytest.mark.integration
@@ -217,10 +225,11 @@ class TestMCPServerCommandLine:
         )
 
         assert result.returncode == 0, "Help command should succeed"
-        assert "MCP (Model Context Protocol)" in result.stdout
-        assert "--transport" in result.stdout
-        assert "--port" in result.stdout
-        assert "--host" in result.stdout
+        out = _strip_ansi(result.stdout)
+        assert "MCP (Model Context Protocol)" in out
+        assert "--transport" in out
+        assert "--port" in out
+        assert "--host" in out
 
     def test_mcp_invalid_transport(self, tmp_path: Path) -> None:
         """Test that invalid transport option is handled."""
