@@ -109,8 +109,9 @@ mcp:
                 try:
                     # Try to connect to the MCP endpoint
                     response = requests.get("http://localhost:8888/mcp", timeout=1)
-                    # Any response (even 405 Method Not Allowed) means server is up
-                    if response.status_code in [200, 405, 404]:
+                    # Any response means server is up. Streamable HTTP commonly returns 406 for plain GET
+                    # requests without `Accept: text/event-stream`.
+                    if response.status_code in [200, 405, 404, 406]:
                         server_started = True
                         break
                 except requests.exceptions.RequestException:
@@ -171,7 +172,7 @@ mcp:
             for _ in range(30):
                 try:
                     response = requests.get("http://localhost:8889/mcp", timeout=1)
-                    if response.status_code in [200, 405, 404]:
+                    if response.status_code in [200, 405, 404, 406]:
                         server_ready = True
                         break
                 except requests.exceptions.RequestException:
@@ -188,6 +189,7 @@ mcp:
                         200,
                         405,
                         404,
+                        406,
                     ], f"Unexpected status code: {response.status_code}"
                 except requests.exceptions.RequestException as e:
                     pytest.fail(f"Failed to connect to server: {e}")
