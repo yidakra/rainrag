@@ -208,7 +208,16 @@ def run_server(
         host: Host address for HTTP transports (defaults to config value)
         port: Port for HTTP transports (defaults to config value)
     """
+    # Validate transport early so CLI errors (e.g. invalid transport) fail fast
+    # without initializing the query engine / loading heavy dependencies.
+    allowed_transports = {"stdio", "sse", "streamable-http"}
+
     # Initialize the server with config
+    # We can only resolve config-default transport after loading config,
+    # but if a transport was explicitly provided, validate before init.
+    if transport is not None and transport not in allowed_transports:
+        raise ValueError(f"Invalid transport: {transport}")
+
     initialize_server(config_path)
 
     # Ensure _config is initialized

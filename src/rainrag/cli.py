@@ -5,11 +5,38 @@ from pathlib import Path
 import typer
 from loguru import logger
 
-from rainrag.config import load_config
-from rainrag.embed import run_embedding
-from rainrag.index import run_indexing
-from rainrag.ingest import run_ingestion
-from rainrag.query import run_query
+# NOTE: Avoid importing heavy modules (torch/transformers) at import-time.
+# Some commands (and even `--help`) should be fast in CI and tooling, so we
+# import pipeline components lazily inside the command functions.
+
+def load_config(config_path: str):
+    from rainrag.config import load_config as _load_config
+
+    return _load_config(config_path)
+
+
+def run_ingestion(config_path: str):
+    from rainrag.ingest import run_ingestion as _run_ingestion
+
+    return _run_ingestion(config_path)
+
+
+def run_embedding(config_path: str, *, force_regenerate: bool = False):
+    from rainrag.embed import run_embedding as _run_embedding
+
+    return _run_embedding(config_path, force_regenerate=force_regenerate)
+
+
+def run_indexing(config_path: str, *, recreate: bool = False):
+    from rainrag.index import run_indexing as _run_indexing
+
+    return _run_indexing(config_path, recreate=recreate)
+
+
+def run_query(config_path: str, question: str, top_k: int | None):
+    from rainrag.query import run_query as _run_query
+
+    return _run_query(config_path, question, top_k)
 
 
 app = typer.Typer(
@@ -79,7 +106,6 @@ def ingest(
 
     try:
         typer.echo("Starting ingestion pipeline...")
-
         doc_count = run_ingestion(config)
 
         typer.echo(f"Ingestion complete! Processed {doc_count} documents")
@@ -118,7 +144,6 @@ def embed(
 
     try:
         typer.echo("Starting embedding generation...")
-
         embeddings, documents = run_embedding(config, force_regenerate=force)
 
         typer.echo(f"Embedding complete! Generated embeddings for {len(documents)} documents")
@@ -161,7 +186,6 @@ def index(
 
         if recreate:
             typer.echo("Warning: Recreating collection (existing data will be deleted)")
-
         num_indexed = run_indexing(config, recreate=recreate)
 
         typer.echo(f"Indexing complete! Indexed {num_indexed} documents")
@@ -272,7 +296,6 @@ def ask(
 
     try:
         typer.echo("Processing your question...\n")
-
         result = run_query(config, question, top_k)
 
         # Display the answer
@@ -439,7 +462,16 @@ def mcp(
     setup_logging(config)
 
     try:
-        from rainrag.config import load_config
+        # Fast validation path: if the user supplied a transport explicitly, validate
+        # without importing the server module (which imports heavier dependencies).
+        allowed_transports = {"stdio", "sse", "streamable-http"}
+        if transport is not None and transport not in allowed_transports:
+            typer.echo(
+                f"Invalid transport: {transport}. Must be one of: stdio, sse, streamable-http",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
         from rainrag.mcp_server import run_server
 
         # Load config to get defaults
@@ -471,6 +503,8 @@ def mcp(
     except KeyboardInterrupt:
         typer.echo("\n\nMCP server stopped")
         raise typer.Exit(code=0)
+    except typer.Exit:
+        raise
     except Exception as e:
         logger.exception(f"MCP server failed: {e}")
         typer.echo(f"MCP server failed: {e}", err=True)
