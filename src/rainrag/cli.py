@@ -5,9 +5,11 @@ from pathlib import Path
 import typer
 from loguru import logger
 
+
 # NOTE: Avoid importing heavy modules (torch/transformers) at import-time.
 # Some commands (and even `--help`) should be fast in CI and tooling, so we
 # import pipeline components lazily inside the command functions.
+
 
 def load_config(config_path: str):
     from rainrag.config import load_config as _load_config
