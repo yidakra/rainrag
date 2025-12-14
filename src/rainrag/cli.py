@@ -469,11 +469,11 @@ def mcp(
         )
 
     except KeyboardInterrupt:
-        typer.echo("\n\n⏹️  MCP server stopped")
+        typer.echo("\n\nMCP server stopped")
         raise typer.Exit(code=0)
     except Exception as e:
         logger.exception(f"MCP server failed: {e}")
-        typer.echo(f"❌ MCP server failed: {e}", err=True)
+        typer.echo(f"MCP server failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 
