@@ -381,7 +381,7 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
 
     # Add a hard line break after the source line so "Релевантность" starts on a new line.
     return f"""
-**{get_text("source_label", lang)}:** `{filename}`<br>
+**{get_text("source_label", lang)}:** `{filename}`
 {" | ".join(meta_parts)}
 """
 
