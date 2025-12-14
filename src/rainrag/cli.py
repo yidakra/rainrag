@@ -454,7 +454,7 @@ def mcp(
         # Send human-readable startup info to stderr so MCP clients (Cursor/Claude Desktop)
         # don't fail parsing.
         log_to_stderr = transport_to_use == "stdio"
-        typer.echo("🚀 Starting MCP server...", err=log_to_stderr)
+        typer.echo("Starting MCP server...", err=log_to_stderr)
         typer.echo(f"   Transport: {transport_to_use}", err=log_to_stderr)
         if transport_to_use != "stdio":
             typer.echo(f"   Address: {host_to_use}:{port_to_use}", err=log_to_stderr)
