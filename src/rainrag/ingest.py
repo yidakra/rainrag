@@ -627,6 +627,9 @@ class Ingester:
                     continue
 
                 # Truncate if too long
+                # Note: max_chunk_length should be set considering the embedding model's
+                # max_seq_length (in tokens). Rule of thumb: ~3 chars per token for English,
+                # less for other languages. With max_seq_length=512, max_chunk_length=1400 is safe.
                 text = chunk.text
                 if len(text) > self.config.chunking.max_chunk_length:
                     logger.debug(

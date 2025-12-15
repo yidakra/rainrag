@@ -30,7 +30,10 @@ class EmbeddingConfig(BaseModel):
     )
     model_name: str = Field(default="intfloat/multilingual-e5-large")
     batch_size: int = Field(default=32)
-    max_seq_length: int = Field(default=512)
+    max_seq_length: int = Field(
+        default=512,
+        description="Maximum sequence length in tokens for embedding model (multilingual-e5-large supports up to 512)",
+    )
     device: str = Field(default="cuda")
     normalize_embeddings: bool = Field(default=True)
 
@@ -124,7 +127,8 @@ class ChunkingConfig(BaseModel):
     )
     min_chunk_length: int = Field(default=50, description="Minimum text length for a chunk")
     max_chunk_length: int = Field(
-        default=2000, description="Maximum text length for a chunk (characters)"
+        default=1400,
+        description="Maximum text length for a chunk in characters (should be ~3x max_seq_length to account for tokenization)",
     )
 
 
