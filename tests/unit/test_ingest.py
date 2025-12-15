@@ -148,6 +148,99 @@ class TestVTTParser:
 
         assert id1 != id2
 
+    def test_timestamp_to_seconds(self) -> None:
+        """Test timestamp to seconds conversion."""
+        assert VTTParser.timestamp_to_seconds("00:00:00") == 0.0
+        assert VTTParser.timestamp_to_seconds("00:01:00") == 60.0
+        assert VTTParser.timestamp_to_seconds("00:00:30") == 30.0
+        assert VTTParser.timestamp_to_seconds("01:30:45") == 5445.0
+
+    def test_seconds_to_timestamp(self) -> None:
+        """Test seconds to timestamp conversion."""
+        assert VTTParser.seconds_to_timestamp(0) == "00:00:00"
+        assert VTTParser.seconds_to_timestamp(60) == "00:01:00"
+        assert VTTParser.seconds_to_timestamp(30) == "00:00:30"
+        assert VTTParser.seconds_to_timestamp(5445) == "01:30:45"
+
+    def test_generate_video_id_consistency(self, temp_dir: Path) -> None:
+        """Test that video_id is same for different languages of same video."""
+        path_en = temp_dir / "abc123.en.vtt"
+        path_ru = temp_dir / "abc123.ru.vtt"
+
+        id_en = VTTParser.generate_video_id(path_en)
+        id_ru = VTTParser.generate_video_id(path_ru)
+
+        # Same video in different languages should have same video_id
+        assert id_en == id_ru
+
+    def test_generate_video_id_different_videos(self, temp_dir: Path) -> None:
+        """Test that different videos have different video_ids."""
+        path1 = temp_dir / "abc123.en.vtt"
+        path2 = temp_dir / "xyz456.en.vtt"
+
+        id1 = VTTParser.generate_video_id(path1)
+        id2 = VTTParser.generate_video_id(path2)
+
+        assert id1 != id2
+
+    def test_parse_vtt_to_cues(self, temp_dir: Path) -> None:
+        """Test parsing VTT into individual cues."""
+        vtt_content = """WEBVTT
+
+00:00:00.000 --> 00:00:05.000
+First subtitle
+
+00:00:05.000 --> 00:00:10.000
+Second subtitle
+
+00:00:10.000 --> 00:00:15.000
+Third subtitle
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+
+        assert cues is not None
+        assert len(cues) == 3
+        assert cues[0].text == "First subtitle"
+        assert cues[0].start_time == "00:00:00"
+        assert cues[0].end_time == "00:00:05"
+        assert cues[0].start_seconds == 0.0
+        assert cues[0].end_seconds == 5.0
+
+    def test_create_chunks_from_cues(self, temp_dir: Path) -> None:
+        """Test creating time-based chunks from cues."""
+        vtt_content = """WEBVTT
+
+00:00:00.000 --> 00:01:00.000
+Text in first minute
+
+00:02:00.000 --> 00:03:00.000
+Text in third minute
+
+00:06:00.000 --> 00:07:00.000
+Text in seventh minute
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+        assert cues is not None
+
+        # Create 5-minute chunks (300 seconds)
+        chunks = VTTParser.create_chunks_from_cues(cues, chunk_duration_seconds=300)
+
+        assert len(chunks) == 2  # 0-5min and 5-10min
+        assert chunks[0].chunk_index == 0
+        assert chunks[0].start_seconds == 0.0
+        assert "Text in first minute" in chunks[0].text
+        assert "Text in third minute" in chunks[0].text
+
+        assert chunks[1].chunk_index == 1
+        assert chunks[1].start_seconds == 300.0  # 5 minutes
+        assert "Text in seventh minute" in chunks[1].text
+
 
 class TestDocument:
     """Tests for Document model."""
@@ -207,14 +300,19 @@ class TestIngester:
         vtt_file.parent.mkdir(parents=True)
         vtt_file.write_text(sample_vtt_en)
 
+        # Disable chunking for this test to get single document
+        test_config.chunking.enabled = False
         ingester = Ingester(test_config)
-        doc = ingester.process_file(vtt_file)
+        docs = ingester.process_file(vtt_file)
 
-        assert doc is not None
+        assert len(docs) == 1
+        doc = docs[0]
         assert doc.language == "en"
         assert "Hello, this is a test subtitle" in doc.text
         assert doc.length > 0
         assert doc.path == str(vtt_file.absolute())
+        assert doc.video_id is not None
+        assert doc.is_chunk is False
 
     def test_process_file_too_short(self, test_config: Config, temp_dir: Path) -> None:
         """Test skipping files with text too short."""
@@ -226,11 +324,12 @@ Hi
         vtt_file = temp_dir / "short.vtt"
         vtt_file.write_text(vtt_content)
 
+        test_config.chunking.enabled = False
         ingester = Ingester(test_config)
-        doc = ingester.process_file(vtt_file)
+        docs = ingester.process_file(vtt_file)
 
-        # Should be None because text is too short (min_text_length=10)
-        assert doc is None
+        # Should be empty list because text is too short (min_text_length=10)
+        assert len(docs) == 0
 
     def test_process_file_invalid(
         self, test_config: Config, temp_dir: Path, invalid_vtt: str
@@ -239,14 +338,16 @@ Hi
         vtt_file = temp_dir / "invalid.vtt"
         vtt_file.write_text(invalid_vtt)
 
+        test_config.chunking.enabled = False
         ingester = Ingester(test_config)
-        doc = ingester.process_file(vtt_file)
+        docs = ingester.process_file(vtt_file)
 
-        assert doc is None
+        assert len(docs) == 0
 
     def test_ingest_pipeline(self, test_config: Config, archive_with_vtt_files: Path) -> None:
-        """Test full ingestion pipeline."""
+        """Test full ingestion pipeline without chunking."""
         test_config.paths.archive_root = str(archive_with_vtt_files)
+        test_config.chunking.enabled = False  # Disable chunking for predictable count
         ingester = Ingester(test_config)
 
         doc_count = ingester.ingest()
@@ -269,6 +370,7 @@ Hi
         assert all("id" in doc for doc in docs)
         assert all("text" in doc for doc in docs)
         assert all("language" in doc for doc in docs)
+        assert all("video_id" in doc for doc in docs)
 
         # Check we have both languages
         languages = {doc["language"] for doc in docs}
@@ -312,3 +414,50 @@ Hi
 
         # Large file should be skipped
         assert len(vtt_files) == 0
+
+    def test_process_file_with_chunking(self, test_config: Config, temp_dir: Path) -> None:
+        """Test file processing with chunking enabled."""
+        # Create a VTT file with 10 minutes of content
+        vtt_content = """WEBVTT
+
+00:00:00.000 --> 00:01:00.000
+Content in first minute
+
+00:02:00.000 --> 00:03:00.000
+Content in third minute
+
+00:06:00.000 --> 00:07:00.000
+Content in seventh minute
+
+00:09:00.000 --> 00:10:00.000
+Content in tenth minute
+"""
+        vtt_file = temp_dir / "test.en.vtt"
+        vtt_file.write_text(vtt_content)
+
+        # Enable chunking with 5-minute chunks
+        test_config.chunking.enabled = True
+        test_config.chunking.chunk_duration_seconds = 300  # 5 minutes
+
+        ingester = Ingester(test_config)
+        docs = ingester.process_file(vtt_file)
+
+        # Should create 2 chunks (0-5min and 5-10min)
+        assert len(docs) == 2
+
+        # Verify first chunk
+        assert docs[0].is_chunk is True
+        assert docs[0].chunk_index == 0
+        assert docs[0].total_chunks == 2
+        assert "Content in first minute" in docs[0].text
+        assert docs[0].start_time_seconds == 0.0
+
+        # Verify second chunk
+        assert docs[1].is_chunk is True
+        assert docs[1].chunk_index == 1
+        assert docs[1].total_chunks == 2
+        assert "Content in seventh minute" in docs[1].text
+        assert docs[1].start_time_seconds == 300.0
+
+        # Verify both have same video_id
+        assert docs[0].video_id == docs[1].video_id

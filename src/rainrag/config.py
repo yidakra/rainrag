@@ -115,6 +115,19 @@ class LLMConfig(BaseModel):
     )
 
 
+class ChunkingConfig(BaseModel):
+    """Configuration for VTT chunking."""
+
+    enabled: bool = Field(default=True, description="Enable chunking of VTT files")
+    chunk_duration_seconds: int = Field(
+        default=300, description="Duration of each chunk in seconds (default: 5 minutes)"
+    )
+    min_chunk_length: int = Field(default=50, description="Minimum text length for a chunk")
+    max_chunk_length: int = Field(
+        default=2000, description="Maximum text length for a chunk (characters)"
+    )
+
+
 class ProcessingConfig(BaseModel):
     """Configuration for data processing."""
 
@@ -192,6 +205,7 @@ class Config(BaseModel):
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     cohere: CohereConfig = Field(default_factory=CohereConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
+    chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)

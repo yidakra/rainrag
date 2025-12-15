@@ -410,18 +410,27 @@ class RAGQueryEngine:
             text = doc["text"]
             if len(text) > max_chars_per_doc:
                 text = text[:max_chars_per_doc].rstrip() + "..."
-            context_parts.append(f"[Document {doc['rank']}]")
+
+            # Document header
+            doc_header = f"[Document {doc['rank']}]"
+            if doc.get("is_chunk"):
+                doc_header += f" [Chunk {doc.get('chunk_index', 0) + 1}/{doc.get('total_chunks', 1)}]"
+            context_parts.append(doc_header)
+
             # Include date if available
             if doc.get("date"):
                 context_parts.append(f"Date: {doc['date']}")
+
             # Include duration if available (format as mm:ss)
             if doc.get("duration_seconds"):
                 mins = int(doc["duration_seconds"] // 60)
                 secs = int(doc["duration_seconds"] % 60)
                 context_parts.append(f"Duration: {mins}:{secs:02d}")
+
             # Include timecodes if available
             if doc.get("start_time") and doc.get("end_time"):
                 context_parts.append(f"Timecodes: {doc['start_time']} - {doc['end_time']}")
+
             context_parts.append(f"Text: {text}")
             context_parts.append("")  # Empty line between documents
 
