@@ -323,16 +323,10 @@ def group_chunks_by_video(chunks: list[dict[str, Any]]) -> list[list[dict[str, A
     Returns:
         List of groups, where each group contains chunks for the same video
     """
-    from collections import defaultdict
-
-    groups = defaultdict(list)
+    groups: dict[str, list[dict[str, Any]]] = {}
     for chunk in chunks:
-        group_id = chunk.get("group_id")
-        if group_id:
-            groups[group_id].append(chunk)
-        else:
-            # If no group_id, treat as standalone
-            groups[chunk.get("filename", "unknown")].append(chunk)
+        group_id = chunk.get("group_id") or chunk.get("filename", "unknown")
+        groups.setdefault(group_id, []).append(chunk)
 
     # Sort groups by the best score in each group
     sorted_groups = sorted(
@@ -455,14 +449,11 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     video_url = group[0].get("video_url")
                     if video_url:
                         st.markdown(f"**{get_text('video_label', lang)}:**")
-                        video_full_url = f"{ASSET_BASE_URL}{video_url}"
+                        # Streamlit treats non-URL strings as local file paths. Use an absolute URL for browser playback.
+                        # Strip the fragment (#t=...) because some embeds can be finicky with it.
+                        video_full_url = f"{ASSET_BASE_URL}{video_url.split('#', 1)[0]}"
                         try:
-                            st.markdown(
-                                f"""<video controls width="100%" style="border-radius: 8px; height: 460px; object-fit: contain;">
-                                <source src="{video_full_url}" type="video/mp4">
-                            </video>""",
-                                unsafe_allow_html=True,
-                            )
+                            st.video(video_full_url)
                         except Exception as e:
                             logger.warning(f"Could not load video: {e}")
                             st.warning(get_text("no_video", lang))

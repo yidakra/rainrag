@@ -445,7 +445,7 @@ async def root():
     }
 
 
-@app.get("/video/{file_path:path}")
+@app.api_route("/video/{file_path:path}", methods=["GET", "HEAD"])
 async def serve_video(file_path: str):
     """
     Serve video files.
@@ -495,14 +495,12 @@ async def serve_video(file_path: str):
     }
     media_type = media_types.get(full_path.suffix.lower(), "video/mp4")
 
-    return FileResponse(
-        path=str(full_path),
-        media_type=media_type,
-        filename=full_path.name,
-    )
+    # NOTE: Do not force Content-Disposition: attachment for videos.
+    # Some browsers refuse to play media in <video> when it is served as an attachment.
+    return FileResponse(path=str(full_path), media_type=media_type)
 
 
-@app.get("/vtt/{file_path:path}")
+@app.api_route("/vtt/{file_path:path}", methods=["GET", "HEAD"])
 async def serve_vtt(file_path: str):
     """
     Serve VTT subtitle files.
