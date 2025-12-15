@@ -14,13 +14,11 @@ from loguru import logger
 # Configuration
 API_BASE_URL = os.getenv("RAINRAG_API_URL", "http://localhost:8001").rstrip("/")
 # API base for server-side calls (health/query). If API_BASE_URL ends with /api, keep it.
-API_BASE = API_BASE_URL.rstrip("/")
+API_BASE = API_BASE_URL
 # Asset base for browser-facing URLs (video/vtt/docs). If API_BASE_URL ends with /api, strip it.
 ASSET_BASE_URL = API_BASE[:-4] if API_BASE.endswith("/api") else API_BASE
 # Allow disabling SSL verification for self-signed/internal certs
-API_VERIFY_SSL = (
-    os.getenv("RAINRAG_API_VERIFY", "true").lower() not in ("0", "false", "no", "off")
-)
+API_VERIFY_SSL = os.getenv("RAINRAG_API_VERIFY", "true").lower() not in ("0", "false", "no", "off")
 AUTH_TOKEN = os.getenv("STREAMLIT_AUTH_TOKEN", "")
 DEFAULT_LANGUAGE = "ru"
 DEFAULT_TOP_K = 3
@@ -303,9 +301,7 @@ def fetch_vtt_content(vtt_url: str) -> str | None:
 
         vtt_full_url = f"{ASSET_BASE_URL}{vtt_url}"
         headers = get_api_headers()
-        response = requests.get(
-            vtt_full_url, headers=headers, timeout=10, verify=API_VERIFY_SSL
-        )
+        response = requests.get(vtt_full_url, headers=headers, timeout=10, verify=API_VERIFY_SSL)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -622,12 +618,8 @@ def render_sidebar(lang: str):
                 try:
                     health_info = asyncio.run(check_api_health())
                     if health_info:
-                        status_color = (
-                            "🟢" if health_info.get("status") == "healthy" else "🟡"
-                        )
-                        qdrant_status = (
-                            "🟢" if health_info.get("qdrant_connected") else "🔴"
-                        )
+                        status_color = "🟢" if health_info.get("status") == "healthy" else "🟡"
+                        qdrant_status = "🟢" if health_info.get("qdrant_connected") else "🔴"
                         model_status = "🟢" if health_info.get("model_loaded") else "🔴"
 
                         st.markdown(
@@ -636,9 +628,7 @@ def render_sidebar(lang: str):
 
                         llm_provider = health_info.get("llm_provider", "Unknown")
                         llm_model = health_info.get("llm_model", "Unknown")
-                        embedding_provider = health_info.get(
-                            "embedding_provider", "Unknown"
-                        )
+                        embedding_provider = health_info.get("embedding_provider", "Unknown")
                         embedding_model = health_info.get("embedding_model", "Unknown")
                         collection_name = health_info.get("qdrant_collection", "Unknown")
 
@@ -648,9 +638,7 @@ def render_sidebar(lang: str):
                         st.markdown(
                             f"**{get_text('embedding_label', lang)}:** {embedding_provider} ({embedding_model})"
                         )
-                        st.markdown(
-                            f"**{get_text('collection_label', lang)}:** {collection_name}"
-                        )
+                        st.markdown(f"**{get_text('collection_label', lang)}:** {collection_name}")
                     else:
                         st.error(get_text("health_check_failed", lang))
                 except Exception as e:
@@ -730,15 +718,9 @@ def main():
 
                 # Query the RAG system
                 date_from = (
-                    st.session_state.date_from.isoformat()
-                    if st.session_state.date_from
-                    else None
+                    st.session_state.date_from.isoformat() if st.session_state.date_from else None
                 )
-                date_to = (
-                    st.session_state.date_to.isoformat()
-                    if st.session_state.date_to
-                    else None
-                )
+                date_to = st.session_state.date_to.isoformat() if st.session_state.date_to else None
                 response = asyncio.run(
                     query_rag(
                         user_input,
