@@ -122,13 +122,23 @@ class ChunkingConfig(BaseModel):
     """Configuration for VTT chunking."""
 
     enabled: bool = Field(default=True, description="Enable chunking of VTT files")
-    chunk_duration_seconds: int = Field(
-        default=300, description="Duration of each chunk in seconds (default: 5 minutes)"
+    strategy: str = Field(
+        default="hybrid",
+        description="Chunking strategy: 'time' (time-based only), 'token' (token-based only), 'hybrid' (time-based with token validation)",
     )
-    min_chunk_length: int = Field(default=50, description="Minimum text length for a chunk")
-    max_chunk_length: int = Field(
-        default=1400,
-        description="Maximum text length for a chunk in characters (should be ~3x max_seq_length to account for tokenization)",
+    chunk_duration_seconds: int = Field(
+        default=300, description="Duration of each chunk in seconds (default: 5 minutes) - used for 'time' and 'hybrid' strategies"
+    )
+    min_chunk_tokens: int = Field(
+        default=50, description="Minimum tokens per chunk (chunks smaller than this may be merged with neighbors)"
+    )
+    max_chunk_tokens: int | None = Field(
+        default=None,
+        description="Maximum tokens per chunk (auto-detected from embedding model if not set). Chunks exceeding this will be split.",
+    )
+    token_buffer: int = Field(
+        default=50,
+        description="Safety buffer to reserve for special tokens (e.g., 'passage:' prefix)",
     )
 
 
@@ -214,6 +224,59 @@ class Config(BaseModel):
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+
+    def get_max_chunk_tokens(self) -> int:
+        """
+        Get the maximum chunk size in tokens based on embedding model.
+
+        Returns the configured max_chunk_tokens if set, otherwise auto-detects
+        based on the embedding model's known limits.
+
+        Returns:
+            Maximum tokens per chunk (accounting for token_buffer)
+        """
+        # Use explicit config if set
+        if self.chunking.max_chunk_tokens is not None:
+            return self.chunking.max_chunk_tokens
+
+        # Auto-detect based on embedding model
+        model_limits = {
+            # Local models
+            "intfloat/multilingual-e5-large": 512,
+            "intfloat/multilingual-e5-base": 512,
+            "intfloat/multilingual-e5-small": 512,
+            "sentence-transformers/all-MiniLM-L6-v2": 256,
+            "sentence-transformers/all-mpnet-base-v2": 384,
+            # OpenAI models
+            "text-embedding-3-large": 8191,
+            "text-embedding-3-small": 8191,
+            "text-embedding-ada-002": 8191,
+            # Cohere models
+            "embed-english-v3.0": 512,
+            "embed-multilingual-v3.0": 512,
+            "embed-english-light-v3.0": 512,
+            "embed-multilingual-light-v3.0": 512,
+            # Gemini models
+            "models/text-embedding-004": 2048,
+            "models/embedding-001": 2048,
+        }
+
+        # Get model name based on provider
+        if self.embedding.provider == "local":
+            model_name = self.embedding.model_name
+        elif self.embedding.provider == "openai":
+            model_name = self.openai.embedding_model
+        elif self.embedding.provider == "gemini":
+            model_name = self.gemini.embedding_model
+        else:
+            # Default to configured max_seq_length
+            return self.embedding.max_seq_length - self.chunking.token_buffer
+
+        # Look up model limit
+        limit = model_limits.get(model_name, self.embedding.max_seq_length)
+
+        # Subtract safety buffer
+        return limit - self.chunking.token_buffer
 
 
 def load_config(config_path: str = "config.yaml") -> Config:

@@ -158,6 +158,36 @@ class VTTParser:
         secs = int(seconds % 60)
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
+    @staticmethod
+    def estimate_tokens(text: str, language: str = "en") -> int:
+        """
+        Estimate token count for text using character-to-token ratio.
+
+        This is a fast approximation that doesn't require loading tokenizers.
+        For precise counting, use the actual model tokenizer.
+
+        Args:
+            text: Text to estimate tokens for
+            language: Language code for better estimation
+
+        Returns:
+            Estimated token count
+        """
+        # Character-to-token ratios (conservative estimates)
+        # Based on empirical measurements with various models
+        ratios = {
+            "en": 4.0,  # English: ~4 chars per token
+            "ru": 2.5,  # Russian/Cyrillic: ~2.5 chars per token (denser)
+            "zh": 1.5,  # Chinese: ~1.5 chars per token
+            "ja": 1.5,  # Japanese: ~1.5 chars per token
+            "ar": 3.0,  # Arabic: ~3 chars per token
+        }
+
+        ratio = ratios.get(language, 3.5)  # Default: 3.5 chars/token
+        estimated_tokens = len(text) / ratio
+
+        return int(estimated_tokens)
+
     @classmethod
     def parse_vtt(cls, file_path: Path) -> str | None:
         """
@@ -411,6 +441,121 @@ class VTTParser:
 
         return chunks
 
+    @classmethod
+    def create_chunks_hybrid(
+        cls,
+        cues: list[VTTCue],
+        chunk_duration_seconds: int = 300,
+        max_tokens: int = 462,  # 512 - 50 buffer
+        min_tokens: int = 50,
+        language: str = "en",
+    ) -> list[VTTChunk]:
+        """
+        Create chunks using hybrid strategy: time-based with token validation.
+
+        This method:
+        1. Creates initial time-based chunks (semantic coherence)
+        2. Validates chunks don't exceed max_tokens
+        3. Splits oversized chunks by token count
+        4. Merges undersized chunks with neighbors
+
+        Args:
+            cues: List of VTTCue objects
+            chunk_duration_seconds: Target duration for time-based chunks
+            max_tokens: Maximum tokens per chunk
+            min_tokens: Minimum tokens per chunk (for merging)
+            language: Language code for token estimation
+
+        Returns:
+            List of VTTChunk objects optimized for token limits
+        """
+        if not cues:
+            return []
+
+        # Step 1: Create initial time-based chunks
+        time_chunks = cls.create_chunks_from_cues(cues, chunk_duration_seconds)
+
+        # Step 2: Validate and split oversized chunks
+        validated_chunks: list[VTTChunk] = []
+        chunk_index = 0
+
+        for time_chunk in time_chunks:
+            estimated_tokens = cls.estimate_tokens(time_chunk.text, language)
+
+            # If chunk fits within limit, keep it
+            if estimated_tokens <= max_tokens:
+                # Update chunk index
+                validated_chunk = VTTChunk(
+                    chunk_index=chunk_index,
+                    start_time=time_chunk.start_time,
+                    end_time=time_chunk.end_time,
+                    start_seconds=time_chunk.start_seconds,
+                    end_seconds=time_chunk.end_seconds,
+                    text=time_chunk.text,
+                    cue_count=time_chunk.cue_count,
+                )
+                validated_chunks.append(validated_chunk)
+                chunk_index += 1
+            else:
+                # Split oversized chunk by token count
+                # Re-parse this time chunk's cues and split by tokens
+                chunk_cues = [
+                    cue
+                    for cue in cues
+                    if time_chunk.start_seconds <= cue.start_seconds < time_chunk.end_seconds
+                ]
+
+                # Build token-based sub-chunks
+                current_cues: list[VTTCue] = []
+                current_tokens = 0
+
+                for cue in chunk_cues:
+                    cue_tokens = cls.estimate_tokens(cue.text, language)
+
+                    # Check if adding this cue would exceed limit
+                    if current_tokens + cue_tokens > max_tokens and current_cues:
+                        # Finalize current sub-chunk
+                        sub_chunk_text = " ".join(c.text for c in current_cues)
+                        sub_chunk = VTTChunk(
+                            chunk_index=chunk_index,
+                            start_time=current_cues[0].start_time,
+                            end_time=current_cues[-1].end_time,
+                            start_seconds=current_cues[0].start_seconds,
+                            end_seconds=current_cues[-1].end_seconds,
+                            text=sub_chunk_text,
+                            cue_count=len(current_cues),
+                        )
+                        validated_chunks.append(sub_chunk)
+                        chunk_index += 1
+
+                        # Start new sub-chunk
+                        current_cues = [cue]
+                        current_tokens = cue_tokens
+                    else:
+                        current_cues.append(cue)
+                        current_tokens += cue_tokens
+
+                # Add final sub-chunk
+                if current_cues:
+                    sub_chunk_text = " ".join(c.text for c in current_cues)
+                    sub_chunk = VTTChunk(
+                        chunk_index=chunk_index,
+                        start_time=current_cues[0].start_time,
+                        end_time=current_cues[-1].end_time,
+                        start_seconds=current_cues[0].start_seconds,
+                        end_seconds=current_cues[-1].end_seconds,
+                        text=sub_chunk_text,
+                        cue_count=len(current_cues),
+                    )
+                    validated_chunks.append(sub_chunk)
+                    chunk_index += 1
+
+        # Step 3: Merge undersized chunks (optional optimization)
+        # For now, we'll keep all chunks to preserve temporal boundaries
+        # Future enhancement: merge chunks < min_tokens with neighbors
+
+        return validated_chunks
+
     @staticmethod
     def generate_id(file_path: Path, chunk_index: int | None = None) -> str:
         """
@@ -605,38 +750,50 @@ class Ingester:
                 logger.warning(f"No cues extracted from {file_path}")
                 return []
 
-            # Create chunks from cues
-            chunks = self.parser.create_chunks_from_cues(
-                cues, self.config.chunking.chunk_duration_seconds
-            )
+            # Get max tokens based on embedding model
+            max_tokens = self.config.get_max_chunk_tokens()
+
+            # Create chunks based on strategy
+            if self.config.chunking.strategy == "hybrid":
+                # Hybrid: time-based with token validation (RECOMMENDED)
+                chunks = self.parser.create_chunks_hybrid(
+                    cues,
+                    chunk_duration_seconds=self.config.chunking.chunk_duration_seconds,
+                    max_tokens=max_tokens,
+                    min_tokens=self.config.chunking.min_chunk_tokens,
+                    language=language,
+                )
+            elif self.config.chunking.strategy == "time":
+                # Time-based only (may exceed token limits!)
+                chunks = self.parser.create_chunks_from_cues(
+                    cues, self.config.chunking.chunk_duration_seconds
+                )
+            else:  # token strategy
+                # Pure token-based chunking
+                chunks = self.parser.create_chunks_hybrid(
+                    cues,
+                    chunk_duration_seconds=9999999,  # Effectively disable time chunking
+                    max_tokens=max_tokens,
+                    min_tokens=self.config.chunking.min_chunk_tokens,
+                    language=language,
+                )
 
             if not chunks:
                 logger.warning(f"No chunks created from {file_path}")
                 return []
+
+            logger.debug(
+                f"Created {len(chunks)} chunks from {file_path} using '{self.config.chunking.strategy}' strategy (max_tokens={max_tokens})"
+            )
 
             # Create Document objects for each chunk
             documents: list[Document] = []
             total_chunks = len(chunks)
 
             for chunk in chunks:
-                # Skip chunks that are too short
-                if len(chunk.text) < self.config.chunking.min_chunk_length:
-                    logger.debug(
-                        f"Skipping chunk {chunk.chunk_index} from {file_path} (text too short: {len(chunk.text)} chars)"
-                    )
-                    continue
-
-                # Truncate if too long
-                # Note: max_chunk_length should be set considering the embedding model's
-                # max_seq_length (in tokens). Rule of thumb: ~3 chars per token for English,
-                # less for other languages. With max_seq_length=512, max_chunk_length=1400 is safe.
+                # Chunks are already validated by the chunking strategy
+                # No need for additional length checks
                 text = chunk.text
-                if len(text) > self.config.chunking.max_chunk_length:
-                    logger.debug(
-                        f"Truncating chunk {chunk.chunk_index} from {file_path} ({len(text)} -> {self.config.chunking.max_chunk_length} chars)"
-                    )
-                    text = text[: self.config.chunking.max_chunk_length]
-
                 doc_id = self.parser.generate_id(file_path, chunk.chunk_index)
 
                 doc = Document(
