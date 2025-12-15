@@ -457,9 +457,16 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     video_url = group[0].get("video_url")
                     if video_url:
                         st.markdown(f"**{get_text('video_label', lang)}:**")
-                        # Streamlit treats non-URL strings as local file paths. Use an absolute URL for browser playback.
-                        # Strip the fragment (#t=...) because some embeds can be finicky with it.
-                        video_full_url = f"{ASSET_BASE_URL}{video_url.split('#', 1)[0]}"
+                        # Strip any existing fragment
+                        base_video_url = video_url.split('#', 1)[0]
+                        video_full_url = f"{ASSET_BASE_URL}{base_video_url}"
+
+                        # Add timestamp fragment for chunks to seek to start time
+                        start_time_seconds = group[0].get("start_time_seconds")
+                        if start_time_seconds is not None:
+                            # HTML5 video supports #t=seconds for seeking
+                            video_full_url += f"#t={int(start_time_seconds)}"
+
                         try:
                             st.video(video_full_url)
                         except Exception as e:
