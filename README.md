@@ -1010,6 +1010,7 @@ rainrag/
 - `enabled`: Enable automatic chunking of VTT files (default: true)
 - `strategy`: Chunking strategy - `"time"` (time-based only), `"token"` (token-based only), or `"hybrid"` (time-based with token validation, recommended)
 - `chunk_duration_seconds`: Duration of each time-based chunk in seconds (default: 300 = 5 minutes)
+- `overlap_seconds`: Overlap between adjacent chunks in seconds (default: 30). Prevents information loss at boundaries.
 - `min_chunk_tokens`: Minimum tokens per chunk (default: 50, chunks smaller than this may be merged)
 - `max_chunk_tokens`: Maximum tokens per chunk (auto-detected from embedding model if not set)
 - `token_buffer`: Safety buffer to reserve for special tokens (default: 50)
@@ -1081,9 +1082,41 @@ chunking:
   enabled: true
   strategy: "hybrid"  # Default
   chunk_duration_seconds: 300  # 5 minutes
+  overlap_seconds: 30  # NEW: 30-second overlap between chunks
   min_chunk_tokens: 50
   max_chunk_tokens: null  # Auto-detect from embedding model
   token_buffer: 50  # Safety margin for special tokens
+```
+
+### Chunk Overlap (Prevents Information Loss)
+
+By default, RainRAG creates **30-second overlaps** between adjacent chunks to prevent critical information from being lost at chunk boundaries.
+
+**Without overlap:**
+```
+Chunk 1: 00:00:00 - 00:05:00  |
+Chunk 2:              00:05:00 - 00:10:00
+                      ^ Hard boundary - conversation split here!
+```
+
+**With 30-second overlap (default):**
+```
+Chunk 1: 00:00:00 - 00:05:00     |
+Chunk 2:           00:04:30 - 00:10:00
+                   ^^^^^^^^ 30s overlap - conversation preserved!
+```
+
+**Why this matters:**
+- Conversations/topics that span the 5-minute boundary stay intact
+- Search quality improves because context isn't artificially split
+- Small cost: ~10% more chunks (e.g., 26 chunks instead of 24 for 2-hour video)
+
+**Configuration:**
+```yaml
+chunking:
+  overlap_seconds: 30  # Default: 30 seconds
+  # Set to 0 to disable overlap (not recommended)
+  # Set to 60 for 1-minute overlap (more context, more chunks)
 ```
 
 ### Model-Aware Token Limits
