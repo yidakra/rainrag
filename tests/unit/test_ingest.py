@@ -228,8 +228,8 @@ Text in seventh minute
         cues = VTTParser.parse_vtt_to_cues(vtt_file)
         assert cues is not None
 
-        # Create 5-minute chunks (300 seconds)
-        chunks = VTTParser.create_chunks_from_cues(cues, chunk_duration_seconds=300)
+        # Create 5-minute chunks (300 seconds) without overlap
+        chunks = VTTParser.create_chunks_from_cues(cues, chunk_duration_seconds=300, overlap_seconds=0)
 
         assert len(chunks) == 2  # 0-5min and 5-10min
         assert chunks[0].chunk_index == 0
@@ -238,7 +238,7 @@ Text in seventh minute
         assert "Text in third minute" in chunks[0].text
 
         assert chunks[1].chunk_index == 1
-        assert chunks[1].start_seconds == 300.0  # 5 minutes
+        assert chunks[1].start_seconds == 300.0  # 5 minutes (no overlap)
         assert "Text in seventh minute" in chunks[1].text
 
     def test_estimate_tokens_english(self) -> None:
@@ -345,6 +345,45 @@ Content in third 5 minute chunk
         assert "first 5 minute chunk" in chunks[0].text
         assert "second 5 minute chunk" in chunks[1].text
         assert "third 5 minute chunk" in chunks[2].text
+
+    def test_create_chunks_with_overlap(self, temp_dir: Path) -> None:
+        """Test chunk overlap prevents information loss at boundaries."""
+        vtt_content = """WEBVTT
+
+00:04:30.000 --> 00:04:45.000
+Important context before boundary
+
+00:04:50.000 --> 00:05:10.000
+Critical information spanning the 5-minute mark
+
+00:05:15.000 --> 00:05:30.000
+Follow-up information after boundary
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+        assert cues is not None
+
+        # Create chunks with 5-minute duration and 30-second overlap
+        chunks = VTTParser.create_chunks_from_cues(
+            cues, chunk_duration_seconds=300, overlap_seconds=30
+        )
+
+        # Should create 2 chunks: 0-5min and 4:30-10min (30s overlap)
+        assert len(chunks) == 2
+
+        # Verify first chunk (0-5min)
+        assert chunks[0].start_seconds == 0.0
+        assert "Important context before boundary" in chunks[0].text
+        assert "Critical information spanning" in chunks[0].text
+
+        # Verify second chunk starts at 4:30 (270s), creating 30s overlap
+        assert chunks[1].start_seconds == 270.0
+        # Second chunk should contain overlapping content from first chunk
+        assert "Important context before boundary" in chunks[1].text
+        assert "Critical information spanning" in chunks[1].text
+        assert "Follow-up information after boundary" in chunks[1].text
 
 
 class TestDocument:
@@ -540,9 +579,10 @@ Content in tenth minute
         vtt_file = temp_dir / "test.en.vtt"
         vtt_file.write_text(vtt_content)
 
-        # Enable chunking with 5-minute chunks
+        # Enable chunking with 5-minute chunks and no overlap
         test_config.chunking.enabled = True
         test_config.chunking.chunk_duration_seconds = 300  # 5 minutes
+        test_config.chunking.overlap_seconds = 0  # No overlap for this test
 
         ingester = Ingester(test_config)
         docs = ingester.process_file(vtt_file)
@@ -562,7 +602,7 @@ Content in tenth minute
         assert docs[1].chunk_index == 1
         assert docs[1].total_chunks == 2
         assert "Content in seventh minute" in docs[1].text
-        assert docs[1].start_time_seconds == 300.0
+        assert docs[1].start_time_seconds == 300.0  # No overlap
 
         # Verify both have same video_id
         assert docs[0].video_id == docs[1].video_id

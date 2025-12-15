@@ -377,17 +377,18 @@ class VTTParser:
 
     @classmethod
     def create_chunks_from_cues(
-        cls, cues: list[VTTCue], chunk_duration_seconds: int = 300
+        cls, cues: list[VTTCue], chunk_duration_seconds: int = 300, overlap_seconds: int = 30
     ) -> list[VTTChunk]:
         """
-        Create time-based chunks from a list of VTT cues.
+        Create time-based chunks from a list of VTT cues with optional overlap.
 
         Args:
             cues: List of VTTCue objects
             chunk_duration_seconds: Duration of each chunk in seconds
+            overlap_seconds: Overlap between adjacent chunks in seconds (default: 30)
 
         Returns:
-            List of VTTChunk objects
+            List of VTTChunk objects with overlapping context
         """
         if not cues:
             return []
@@ -417,9 +418,15 @@ class VTTParser:
                     chunks.append(chunk)
                     chunk_index += 1
 
-                # Start new chunk
-                chunk_start_seconds = (cue.start_seconds // chunk_duration_seconds) * chunk_duration_seconds
-                chunk_cues = []
+                # Start new chunk with overlap
+                # Move forward by (chunk_duration - overlap) to create overlap
+                chunk_start_seconds += chunk_duration_seconds - overlap_seconds
+
+                # Keep overlapping cues from previous chunk
+                chunk_cues = [
+                    c for c in chunk_cues
+                    if c.start_seconds >= chunk_start_seconds
+                ]
 
             chunk_cues.append(cue)
 
@@ -446,15 +453,16 @@ class VTTParser:
         cls,
         cues: list[VTTCue],
         chunk_duration_seconds: int = 300,
+        overlap_seconds: int = 30,
         max_tokens: int = 462,  # 512 - 50 buffer
         min_tokens: int = 50,
         language: str = "en",
     ) -> list[VTTChunk]:
         """
-        Create chunks using hybrid strategy: time-based with token validation.
+        Create chunks using hybrid strategy: time-based with token validation and overlap.
 
         This method:
-        1. Creates initial time-based chunks (semantic coherence)
+        1. Creates initial time-based chunks with overlap (semantic coherence)
         2. Validates chunks don't exceed max_tokens
         3. Splits oversized chunks by token count
         4. Merges undersized chunks with neighbors
@@ -462,18 +470,19 @@ class VTTParser:
         Args:
             cues: List of VTTCue objects
             chunk_duration_seconds: Target duration for time-based chunks
+            overlap_seconds: Overlap between adjacent chunks in seconds
             max_tokens: Maximum tokens per chunk
             min_tokens: Minimum tokens per chunk (for merging)
             language: Language code for token estimation
 
         Returns:
-            List of VTTChunk objects optimized for token limits
+            List of VTTChunk objects optimized for token limits with overlap
         """
         if not cues:
             return []
 
-        # Step 1: Create initial time-based chunks
-        time_chunks = cls.create_chunks_from_cues(cues, chunk_duration_seconds)
+        # Step 1: Create initial time-based chunks with overlap
+        time_chunks = cls.create_chunks_from_cues(cues, chunk_duration_seconds, overlap_seconds)
 
         # Step 2: Validate and split oversized chunks
         validated_chunks: list[VTTChunk] = []
@@ -759,6 +768,7 @@ class Ingester:
                 chunks = self.parser.create_chunks_hybrid(
                     cues,
                     chunk_duration_seconds=self.config.chunking.chunk_duration_seconds,
+                    overlap_seconds=self.config.chunking.overlap_seconds,
                     max_tokens=max_tokens,
                     min_tokens=self.config.chunking.min_chunk_tokens,
                     language=language,
@@ -766,13 +776,16 @@ class Ingester:
             elif self.config.chunking.strategy == "time":
                 # Time-based only (may exceed token limits!)
                 chunks = self.parser.create_chunks_from_cues(
-                    cues, self.config.chunking.chunk_duration_seconds
+                    cues,
+                    chunk_duration_seconds=self.config.chunking.chunk_duration_seconds,
+                    overlap_seconds=self.config.chunking.overlap_seconds,
                 )
             else:  # token strategy
-                # Pure token-based chunking
+                # Pure token-based chunking (disable overlap for token-only)
                 chunks = self.parser.create_chunks_hybrid(
                     cues,
                     chunk_duration_seconds=9999999,  # Effectively disable time chunking
+                    overlap_seconds=0,  # No overlap for pure token strategy
                     max_tokens=max_tokens,
                     min_tokens=self.config.chunking.min_chunk_tokens,
                     language=language,
