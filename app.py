@@ -357,17 +357,21 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     if start_time and end_time:
         timecode_str = f"{start_time}-{end_time}"
 
-    # Build chunk info string
+    # Build chunk info string with time range
     chunk_info = ""
     if is_chunk and chunk_index is not None and total_chunks is not None:
-        chunk_info = f" **[Chunk {chunk_index + 1}/{total_chunks}]**"
+        if timecode_str:
+            chunk_info = f" **[Chunk {chunk_index + 1}/{total_chunks}: {timecode_str}]**"
+        else:
+            chunk_info = f" **[Chunk {chunk_index + 1}/{total_chunks}]**"
 
     meta_parts = [f"**{get_text('score_label', lang)}:** {score:.3f}"]
     if chunk_date:
         meta_parts.append(f"**{get_text('date_label', lang)}:** {chunk_date}")
     if duration_str:
         meta_parts.append(f"**{get_text('duration_label', lang)}:** {duration_str}")
-    if timecode_str:
+    # Don't duplicate timecode in metadata if already shown in chunk info
+    if timecode_str and not is_chunk:
         meta_parts.append(f"**{get_text('timecode_label', lang)}:** {timecode_str}")
     meta_parts.append(f"**{get_text('language_field', lang)}:** {chunk_lang}")
 
