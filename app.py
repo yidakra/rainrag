@@ -1,6 +1,9 @@
 """Streamlit frontend for RainRAG - Multilingual RAG system for video transcripts."""
 
+import json
 import os
+from datetime import date
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -9,11 +12,20 @@ from loguru import logger
 
 
 # Configuration
-API_BASE_URL = os.getenv("RAINRAG_API_URL", "http://localhost:8001")
+API_BASE_URL = os.getenv("RAINRAG_API_URL", "http://localhost:8001").rstrip("/")
+# API base for server-side calls (health/query). If API_BASE_URL ends with /api, keep it.
+API_BASE = API_BASE_URL.rstrip("/")
+# Asset base for browser-facing URLs (video/vtt/docs). If API_BASE_URL ends with /api, strip it.
+ASSET_BASE_URL = API_BASE[:-4] if API_BASE.endswith("/api") else API_BASE
+# Allow disabling SSL verification for self-signed/internal certs
+API_VERIFY_SSL = (
+    os.getenv("RAINRAG_API_VERIFY", "true").lower() not in ("0", "false", "no", "off")
+)
 AUTH_TOKEN = os.getenv("STREAMLIT_AUTH_TOKEN", "")
 DEFAULT_LANGUAGE = "ru"
 DEFAULT_TOP_K = 3
 REQUEST_TIMEOUT = 60.0  # 60 seconds timeout for API requests
+DOCS_PATH = os.getenv("RAINRAG_DOCS_PATH", "./data/docs.jsonl")
 
 
 # Translations
@@ -53,6 +65,13 @@ TRANSLATIONS = {
         "download_vtt": "Скачать VTT",
         "view_vtt": "Просмотр VTT",
         "no_video": "Видео не найдено",
+        "date_label": "Дата",
+        "duration_label": "Длит.",
+        "timecode_label": "Тайм-код",
+        "date_filter_label": "Фильтр по дате",
+        "date_from_label": "С",
+        "date_to_label": "По",
+        "clear_dates": "Сбросить даты",
     },
     "en": {
         "title": "RainRAG - Video Transcript Search",
@@ -89,6 +108,13 @@ TRANSLATIONS = {
         "download_vtt": "Download VTT",
         "view_vtt": "View VTT",
         "no_video": "Video not found",
+        "date_label": "Date",
+        "duration_label": "Dur.",
+        "timecode_label": "TC",
+        "date_filter_label": "Date Filter",
+        "date_from_label": "From",
+        "date_to_label": "To",
+        "clear_dates": "Clear Dates",
     },
 }
 
@@ -141,6 +167,66 @@ def initialize_session_state():
         st.session_state.top_k = DEFAULT_TOP_K
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = not bool(AUTH_TOKEN)
+    if "date_from" not in st.session_state:
+        st.session_state.date_from = None
+    if "date_to" not in st.session_state:
+        st.session_state.date_to = None
+    if "date_input_reset_counter" not in st.session_state:
+        st.session_state.date_input_reset_counter = 0
+
+
+@st.cache_data(show_spinner=False)
+def get_archive_date_range() -> tuple[date | None, date | None]:
+    """
+    Compute min/max available dates from the docs JSONL.
+
+    Returns:
+        (min_date, max_date) or (None, None) if unavailable.
+    """
+    docs_path = Path(DOCS_PATH)
+    if not docs_path.exists():
+        return None, None
+
+    min_d: date | None = None
+    max_d: date | None = None
+
+    try:
+        with docs_path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                date_str = record.get("date") or record.get("date_iso")
+                if date_str:
+                    try:
+                        d = date.fromisoformat(date_str.split("T")[0])
+                    except ValueError:
+                        d = None
+                else:
+                    d = None
+
+                if d is None:
+                    date_ts = record.get("date_ts")
+                    if isinstance(date_ts, int | float):
+                        try:
+                            d = date.fromtimestamp(date_ts)
+                        except (OverflowError, OSError, ValueError):
+                            d = None
+
+                if d:
+                    if min_d is None or d < min_d:
+                        min_d = d
+                    if max_d is None or d > max_d:
+                        max_d = d
+    except FileNotFoundError:
+        return None, None
+
+    return min_d, max_d
 
 
 def get_api_headers() -> dict[str, str]:
@@ -154,8 +240,8 @@ def get_api_headers() -> dict[str, str]:
 async def check_api_health() -> dict[str, Any] | None:
     """Check API health status."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{API_BASE_URL}/health", headers=get_api_headers())
+        async with httpx.AsyncClient(timeout=5.0, verify=API_VERIFY_SSL) as client:
+            response = await client.get(f"{API_BASE}/health", headers=get_api_headers())
             if response.status_code == 200:
                 return response.json()
             return None
@@ -164,7 +250,13 @@ async def check_api_health() -> dict[str, Any] | None:
         return None
 
 
-async def query_rag(question: str, language: str, top_k: int) -> dict[str, Any]:
+async def query_rag(
+    question: str,
+    language: str,
+    top_k: int,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
     """
     Query the RAG system via API.
 
@@ -180,10 +272,16 @@ async def query_rag(question: str, language: str, top_k: int) -> dict[str, Any]:
         httpx.HTTPStatusError: If API returns error status
         httpx.TimeoutException: If request times out
     """
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    payload: dict[str, Any] = {"question": question, "language": language, "top_k": top_k}
+    if date_from:
+        payload["date_from"] = date_from
+    if date_to:
+        payload["date_to"] = date_to
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
         response = await client.post(
-            f"{API_BASE_URL}/query",
-            json={"question": question, "language": language, "top_k": top_k},
+            f"{API_BASE}/query",
+            json=payload,
             headers=get_api_headers(),
         )
         response.raise_for_status()
@@ -203,9 +301,11 @@ def fetch_vtt_content(vtt_url: str) -> str | None:
     try:
         import requests
 
-        vtt_full_url = f"{API_BASE_URL}{vtt_url}"
+        vtt_full_url = f"{ASSET_BASE_URL}{vtt_url}"
         headers = get_api_headers()
-        response = requests.get(vtt_full_url, headers=headers, timeout=10)
+        response = requests.get(
+            vtt_full_url, headers=headers, timeout=10, verify=API_VERIFY_SSL
+        )
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -249,10 +349,33 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     filename = chunk.get("filename", "Unknown")
     score = chunk.get("score", 0.0)
     chunk_lang = chunk.get("language", "unknown")
+    chunk_date = chunk.get("date")
+    duration_seconds = chunk.get("duration_seconds")
+    start_time = chunk.get("start_time")
+    end_time = chunk.get("end_time")
+
+    duration_str = ""
+    if duration_seconds:
+        mins = int(duration_seconds // 60)
+        secs = int(duration_seconds % 60)
+        duration_str = f"{mins}:{secs:02d}"
+
+    timecode_str = ""
+    if start_time and end_time:
+        timecode_str = f"{start_time}-{end_time}"
+
+    meta_parts = [f"**{get_text('score_label', lang)}:** {score:.3f}"]
+    if chunk_date:
+        meta_parts.append(f"**{get_text('date_label', lang)}:** {chunk_date}")
+    if duration_str:
+        meta_parts.append(f"**{get_text('duration_label', lang)}:** {duration_str}")
+    if timecode_str:
+        meta_parts.append(f"**{get_text('timecode_label', lang)}:** {timecode_str}")
+    meta_parts.append(f"**{get_text('language_field', lang)}:** {chunk_lang}")
 
     return f"""
-**{get_text("source_label", lang)}:** `{filename}`
-**{get_text("score_label", lang)}:** {score:.3f} | **{get_text("language_field", lang)}:** {chunk_lang}
+**{get_text("source_label", lang)}:** `{filename}`<br>
+{" | ".join(meta_parts)}
 """
 
 
@@ -332,9 +455,14 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     video_url = group[0].get("video_url")
                     if video_url:
                         st.markdown(f"**{get_text('video_label', lang)}:**")
-                        video_full_url = f"{API_BASE_URL}{video_url}"
+                        video_full_url = f"{ASSET_BASE_URL}{video_url}"
                         try:
-                            st.video(video_full_url)
+                            st.markdown(
+                                f"""<video controls width="100%" style="border-radius: 8px; height: 460px; object-fit: contain;">
+                                <source src="{video_full_url}" type="video/mp4">
+                            </video>""",
+                                unsafe_allow_html=True,
+                            )
                         except Exception as e:
                             logger.warning(f"Could not load video: {e}")
                             st.warning(get_text("no_video", lang))
@@ -375,7 +503,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         # Get selected VTT info
                         vtt_info = vtt_languages[selected_vtt_lang]
                         vtt_url = vtt_info["url"]
-                        vtt_full_url = f"{API_BASE_URL}{vtt_url}"
+                        vtt_full_url = f"{ASSET_BASE_URL}{vtt_url}"
                         vtt_filename = vtt_info["filename"].split("/")[-1]
 
                         # Download button
@@ -413,18 +541,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                 for chunk_idx, chunk in enumerate(group):
                     # Display context chunk metadata
                     st.markdown(format_context_chunk(chunk, chunk_idx + 1, lang))
-
-                    # Display text content with preview/expand
-                    text = chunk.get("text", "")
-                    if text:
-                        preview_text, is_truncated = get_text_preview(
-                            text, max_lines=2, max_chars=200
-                        )
-                        st.markdown(preview_text)
-
-                        if is_truncated:
-                            with st.expander("Show full text"):
-                                st.markdown(text)
+                    # Do not display transcript text here (VTT viewer already provides full context)
 
                     # Add a small separator between language versions within a group
                     if chunk_idx < len(group) - 1:
@@ -438,8 +555,6 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 def render_sidebar(lang: str):
     """Render the sidebar with controls and system information."""
     with st.sidebar:
-        st.title(get_text("system_info_label", lang))
-
         # Language selection
         language_options = {"ru": "Русский 🇷🇺", "en": "English 🇬🇧"}
         selected_lang = st.selectbox(
@@ -466,43 +581,90 @@ def render_sidebar(lang: str):
 
         st.divider()
 
-        # System information
-        with st.spinner(get_text("loading_system", lang)):
-            import asyncio
+        # Date range filter
+        st.markdown(f"**{get_text('date_filter_label', lang)}**")
 
-            try:
-                health_info = asyncio.run(check_api_health())
-                if health_info:
-                    status_color = "🟢" if health_info.get("status") == "healthy" else "🟡"
-                    st.markdown(
-                        f"**{get_text('status_label', lang)}:** {status_color} {health_info.get('status', 'unknown').title()}"
-                    )
+        min_date, max_date = get_archive_date_range()
+        # Clamp stored dates to available range (if known)
+        if min_date and st.session_state.date_from and st.session_state.date_from < min_date:
+            st.session_state.date_from = min_date
+        if max_date and st.session_state.date_from and st.session_state.date_from > max_date:
+            st.session_state.date_from = max_date
+        if min_date and st.session_state.date_to and st.session_state.date_to < min_date:
+            st.session_state.date_to = min_date
+        if max_date and st.session_state.date_to and st.session_state.date_to > max_date:
+            st.session_state.date_to = max_date
 
-                    # Display current LLM model
-                    st.markdown(f"**{get_text('model_label', lang)}:**")
-                    llm_provider = health_info.get("llm_provider", "Unknown")
-                    llm_model = health_info.get("llm_model", "Unknown")
-                    st.code(f"{llm_provider} ({llm_model})", language="text")
+        col1, col2 = st.columns(2)
+        with col1:
+            date_from = st.date_input(
+                get_text("date_from_label", lang),
+                value=st.session_state.date_from,
+                min_value=min_date or date(1900, 1, 1),
+                max_value=max_date or date.today(),
+                key=f"date_from_input_{st.session_state.date_input_reset_counter}",
+            )
+            st.session_state.date_from = date_from if date_from else None
+        with col2:
+            date_to = st.date_input(
+                get_text("date_to_label", lang),
+                value=st.session_state.date_to,
+                min_value=min_date or date(1900, 1, 1),
+                max_value=max_date or date.today(),
+                key=f"date_to_input_{st.session_state.date_input_reset_counter}",
+            )
+            st.session_state.date_to = date_to if date_to else None
 
-                    # Display current embedding model
-                    st.markdown(f"**{get_text('embedding_label', lang)}:**")
-                    embedding_provider = health_info.get("embedding_provider", "Unknown")
-                    embedding_model = health_info.get("embedding_model", "Unknown")
-                    st.code(f"{embedding_provider} ({embedding_model})", language="text")
+        if st.button(get_text("clear_dates", lang), use_container_width=True):
+            st.session_state.date_from = None
+            st.session_state.date_to = None
+            st.session_state.date_input_reset_counter += 1
+            st.rerun()
 
-                    st.markdown(f"**{get_text('collection_label', lang)}:**")
-                    st.code(health_info.get("qdrant_collection", "Unknown"), language="text")
+        st.divider()
 
-                    # Connection statuses
-                    qdrant_status = "🟢" if health_info.get("qdrant_connected") else "🔴"
-                    model_status = "🟢" if health_info.get("model_loaded") else "🔴"
-                    st.markdown(f"**Qdrant:** {qdrant_status}")
-                    st.markdown(f"**Embedding Model:** {model_status}")
-                else:
+        # System information (collapsible + compact)
+        with st.expander(get_text("system_info_label", lang), expanded=False):
+            with st.spinner(get_text("loading_system", lang)):
+                import asyncio
+
+                try:
+                    health_info = asyncio.run(check_api_health())
+                    if health_info:
+                        status_color = (
+                            "🟢" if health_info.get("status") == "healthy" else "🟡"
+                        )
+                        qdrant_status = (
+                            "🟢" if health_info.get("qdrant_connected") else "🔴"
+                        )
+                        model_status = "🟢" if health_info.get("model_loaded") else "🔴"
+
+                        st.markdown(
+                            f"**{get_text('status_label', lang)}:** {status_color} | **Qdrant:** {qdrant_status} | **Embeddings:** {model_status}"
+                        )
+
+                        llm_provider = health_info.get("llm_provider", "Unknown")
+                        llm_model = health_info.get("llm_model", "Unknown")
+                        embedding_provider = health_info.get(
+                            "embedding_provider", "Unknown"
+                        )
+                        embedding_model = health_info.get("embedding_model", "Unknown")
+                        collection_name = health_info.get("qdrant_collection", "Unknown")
+
+                        st.markdown(
+                            f"**{get_text('model_label', lang)}:** {llm_provider} ({llm_model})"
+                        )
+                        st.markdown(
+                            f"**{get_text('embedding_label', lang)}:** {embedding_provider} ({embedding_model})"
+                        )
+                        st.markdown(
+                            f"**{get_text('collection_label', lang)}:** {collection_name}"
+                        )
+                    else:
+                        st.error(get_text("health_check_failed", lang))
+                except Exception as e:
+                    logger.error(f"Failed to get health info: {e}")
                     st.error(get_text("health_check_failed", lang))
-            except Exception as e:
-                logger.error(f"Failed to get health info: {e}")
-                st.error(get_text("health_check_failed", lang))
 
         st.divider()
 
@@ -576,8 +738,24 @@ def main():
                 import asyncio
 
                 # Query the RAG system
+                date_from = (
+                    st.session_state.date_from.isoformat()
+                    if st.session_state.date_from
+                    else None
+                )
+                date_to = (
+                    st.session_state.date_to.isoformat()
+                    if st.session_state.date_to
+                    else None
+                )
                 response = asyncio.run(
-                    query_rag(user_input, st.session_state.language, st.session_state.top_k)
+                    query_rag(
+                        user_input,
+                        st.session_state.language,
+                        st.session_state.top_k,
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
                 )
 
                 # Add assistant response to chat
@@ -604,7 +782,7 @@ def main():
 
             except httpx.ConnectError:
                 st.error(get_text("error_connection", lang))
-                logger.error(f"Connection error to {API_BASE_URL}")
+                logger.error(f"Connection error to {API_BASE}")
 
             except Exception as e:
                 st.error(f"{get_text('error_general', lang)}: {str(e)}")
