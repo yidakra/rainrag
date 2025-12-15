@@ -343,6 +343,9 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     duration_seconds = chunk.get("duration_seconds")
     start_time = chunk.get("start_time")
     end_time = chunk.get("end_time")
+    is_chunk = chunk.get("is_chunk", False)
+    chunk_index = chunk.get("chunk_index")
+    total_chunks = chunk.get("total_chunks")
 
     duration_str = ""
     if duration_seconds:
@@ -354,6 +357,11 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     if start_time and end_time:
         timecode_str = f"{start_time}-{end_time}"
 
+    # Build chunk info string
+    chunk_info = ""
+    if is_chunk and chunk_index is not None and total_chunks is not None:
+        chunk_info = f" **[Chunk {chunk_index + 1}/{total_chunks}]**"
+
     meta_parts = [f"**{get_text('score_label', lang)}:** {score:.3f}"]
     if chunk_date:
         meta_parts.append(f"**{get_text('date_label', lang)}:** {chunk_date}")
@@ -364,7 +372,7 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     meta_parts.append(f"**{get_text('language_field', lang)}:** {chunk_lang}")
 
     return f"""
-**{get_text("source_label", lang)}:** `{filename}`<br>
+**{get_text("source_label", lang)}:** `{filename}`{chunk_info}<br>
 {" | ".join(meta_parts)}
 """
 

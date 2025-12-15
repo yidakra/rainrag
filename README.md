@@ -1005,6 +1005,139 @@ rainrag/
 - `extensions`: List of supported video file extensions
 - `vtt_extensions`: List of supported VTT file extensions
 
+### Chunking
+
+- `enabled`: Enable automatic chunking of VTT files (default: true)
+- `strategy`: Chunking strategy - `"time"` (time-based only), `"token"` (token-based only), or `"hybrid"` (time-based with token validation, recommended)
+- `chunk_duration_seconds`: Duration of each time-based chunk in seconds (default: 300 = 5 minutes)
+- `min_chunk_tokens`: Minimum tokens per chunk (default: 50, chunks smaller than this may be merged)
+- `max_chunk_tokens`: Maximum tokens per chunk (auto-detected from embedding model if not set)
+- `token_buffer`: Safety buffer to reserve for special tokens (default: 50)
+
+## VTT Chunking and Timestamp Utilization
+
+RainRAG automatically chunks long VTT subtitle files into smaller segments optimized for embedding model token limits. This prevents truncation and ensures all content is searchable.
+
+### Why Chunking?
+
+Without chunking, a 2-hour video transcript would be embedded as a single document and truncated at the embedding model's token limit:
+- **Without chunking**: 2-hour video (120,000 characters) → truncated to first 512 tokens (~1,800 characters) → 98.5% of content lost
+- **With chunking**: 2-hour video → split into 24 chunks of 5 minutes each → 100% of content embedded and searchable
+
+### Chunking Strategies
+
+RainRAG supports three chunking strategies:
+
+#### 1. Time-based Chunking (`strategy: "time"`)
+
+Splits transcripts by video timestamp into fixed-duration segments (default: 5 minutes).
+
+**Advantages:**
+- Preserves semantic coherence (conversations/topics don't get split mid-sentence)
+- Timestamps allow precise video seeking
+- Natural boundaries for video content
+
+**Configuration:**
+```yaml
+chunking:
+  enabled: true
+  strategy: "time"
+  chunk_duration_seconds: 300  # 5 minutes
+```
+
+#### 2. Token-based Chunking (`strategy: "token"`)
+
+Splits transcripts purely by token count to maximize embedding model utilization.
+
+**Advantages:**
+- Guarantees chunks fit within model limits
+- Maximizes token usage for each chunk
+
+**Disadvantages:**
+- May split sentences or conversations unnaturally
+- Less semantic coherence
+
+**Configuration:**
+```yaml
+chunking:
+  enabled: true
+  strategy: "token"
+  min_chunk_tokens: 50
+  max_chunk_tokens: 462  # or auto-detected
+```
+
+#### 3. Hybrid Chunking (`strategy: "hybrid"`) **[Recommended]**
+
+Combines time-based and token-based approaches: creates time-based chunks first, then validates they fit within token limits. Oversized chunks are split by token count while respecting subtitle cue boundaries.
+
+**Advantages:**
+- Best of both worlds: semantic coherence + token safety
+- Adapts to different embedding models automatically
+- Prevents both truncation and wasted token capacity
+
+**Configuration:**
+```yaml
+chunking:
+  enabled: true
+  strategy: "hybrid"  # Default
+  chunk_duration_seconds: 300  # 5 minutes
+  min_chunk_tokens: 50
+  max_chunk_tokens: null  # Auto-detect from embedding model
+  token_buffer: 50  # Safety margin for special tokens
+```
+
+### Model-Aware Token Limits
+
+RainRAG automatically adapts chunk sizes based on your embedding model's capabilities:
+
+| Embedding Model | Token Limit | Effective Chunk Size (with buffer) |
+|----------------|-------------|-------------------------------------|
+| `intfloat/multilingual-e5-large` | 512 | 462 tokens (~1,600 chars) |
+| `text-embedding-3-small` (OpenAI) | 8,191 | 8,141 tokens (~28,000 chars) |
+| `text-embedding-3-large` (OpenAI) | 8,191 | 8,141 tokens (~28,000 chars) |
+| `models/text-embedding-004` (Gemini) | 2,048 | 1,998 tokens (~7,000 chars) |
+
+**This means:**
+- **E5 local model**: 5-minute chunks → ~24 chunks per 2-hour video
+- **OpenAI embedding**: 5-minute chunks stay intact (no splitting needed) → ~24 chunks per 2-hour video
+- **Gemini embedding**: 5-minute chunks may occasionally be split → ~24-30 chunks per 2-hour video
+
+You can override auto-detection by setting `max_chunk_tokens` explicitly in `config.yaml`.
+
+### Cross-Language Video Identification
+
+All language versions of the same video (e.g., `episode_001.en.vtt` and `episode_001.ru.vtt`) share the same `video_id`, allowing RainRAG to:
+- Group multilingual results together in the UI
+- Show both Russian and English subtitles for the same video
+- Enable cross-language search (search in English, find Russian content and vice versa)
+
+### Chunk Metadata
+
+Each chunk includes rich metadata:
+- `is_chunk`: Boolean indicating if document is a chunk
+- `chunk_index`: Position in the sequence (0-based)
+- `total_chunks`: Total number of chunks for this video
+- `start_time_seconds`: Start timestamp in seconds
+- `end_time_seconds`: End timestamp in seconds
+- `start_time`: Human-readable start time (HH:MM:SS)
+- `end_time`: Human-readable end time (HH:MM:SS)
+- `video_id`: Unique identifier shared across language versions
+
+This metadata enables:
+- Precise video seeking to relevant segments
+- Progress tracking (e.g., "Chunk 3 of 24")
+- Time-range filtering
+
+### Token Estimation
+
+Since loading full tokenizers during ingestion is slow, RainRAG uses fast character-to-token ratio estimation:
+- **English**: ~4 characters per token
+- **Russian (Cyrillic)**: ~2.5 characters per token
+- **Chinese**: ~1.5 characters per token
+- **Default**: ~3.5 characters per token
+
+This provides 95%+ accuracy without the overhead of loading embedding model tokenizers.
+
 ## Development
 
 ### Running Tests

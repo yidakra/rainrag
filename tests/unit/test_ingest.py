@@ -241,6 +241,111 @@ Text in seventh minute
         assert chunks[1].start_seconds == 300.0  # 5 minutes
         assert "Text in seventh minute" in chunks[1].text
 
+    def test_estimate_tokens_english(self) -> None:
+        """Test token estimation for English text."""
+        # English: ~4 chars per token
+        text = "This is a test sentence with approximately twenty characters per word."
+        estimated = VTTParser.estimate_tokens(text, "en")
+        # 72 characters / 4 = ~18 tokens
+        assert 15 <= estimated <= 21
+
+    def test_estimate_tokens_russian(self) -> None:
+        """Test token estimation for Russian text."""
+        # Russian: ~2.5 chars per token
+        text = "Это тестовое предложение с примерным количеством символов."
+        estimated = VTTParser.estimate_tokens(text, "ru")
+        # 60 characters / 2.5 = ~24 tokens
+        assert 20 <= estimated <= 28
+
+    def test_estimate_tokens_default(self) -> None:
+        """Test token estimation with unknown language falls back to default."""
+        text = "A" * 350  # 350 characters
+        estimated = VTTParser.estimate_tokens(text, "unknown")
+        # Default: ~3.5 chars per token -> 350 / 3.5 = 100 tokens
+        assert 95 <= estimated <= 105
+
+    def test_create_chunks_hybrid_no_splitting(self, temp_dir: Path) -> None:
+        """Test hybrid chunking when time-based chunks fit within token limits."""
+        vtt_content = """WEBVTT
+
+00:00:00.000 --> 00:02:00.000
+Short content that fits easily within token limits
+
+00:05:00.000 --> 00:07:00.000
+Another short segment
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+        assert cues is not None
+
+        # Create chunks with generous token limit (should not split)
+        chunks = VTTParser.create_chunks_hybrid(
+            cues, chunk_duration_seconds=300, max_tokens=500, min_tokens=10, language="en"
+        )
+
+        # Should create 2 chunks (0-5min and 5-10min), no splitting needed
+        assert len(chunks) == 2
+        assert "Short content" in chunks[0].text
+        assert "Another short segment" in chunks[1].text
+
+    def test_create_chunks_hybrid_with_splitting(self, temp_dir: Path) -> None:
+        """Test hybrid chunking splits oversized time-based chunks."""
+        # Create a VTT with very long content in first 5 minutes
+        long_text = " ".join([f"Word{i}" for i in range(200)])  # ~1000 characters
+        vtt_content = f"""WEBVTT
+
+00:00:00.000 --> 00:04:00.000
+{long_text}
+
+00:05:00.000 --> 00:06:00.000
+Short text in next chunk
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+        assert cues is not None
+
+        # Create chunks with small token limit (should trigger splitting)
+        chunks = VTTParser.create_chunks_hybrid(
+            cues, chunk_duration_seconds=300, max_tokens=100, min_tokens=10, language="en"
+        )
+
+        # First time-based chunk should be split due to token limit
+        # Should have more than 2 chunks
+        assert len(chunks) >= 2
+
+    def test_create_chunks_hybrid_multiple_time_chunks(self, temp_dir: Path) -> None:
+        """Test hybrid chunking creates multiple time-based chunks when content is sparse."""
+        vtt_content = """WEBVTT
+
+00:00:00.000 --> 00:00:05.000
+Content in first 5 minute chunk
+
+00:05:00.000 --> 00:06:00.000
+Content in second 5 minute chunk
+
+00:10:00.000 --> 00:11:00.000
+Content in third 5 minute chunk
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+        assert cues is not None
+
+        chunks = VTTParser.create_chunks_hybrid(
+            cues, chunk_duration_seconds=300, max_tokens=500, min_tokens=5, language="en"
+        )
+
+        # Should create 3 time-based chunks (0-5min, 5-10min, 10-15min)
+        assert len(chunks) == 3
+        assert "first 5 minute chunk" in chunks[0].text
+        assert "second 5 minute chunk" in chunks[1].text
+        assert "third 5 minute chunk" in chunks[2].text
+
 
 class TestDocument:
     """Tests for Document model."""
@@ -461,3 +566,63 @@ Content in tenth minute
 
         # Verify both have same video_id
         assert docs[0].video_id == docs[1].video_id
+
+
+class TestConfig:
+    """Tests for Config model and methods."""
+
+    def test_get_max_chunk_tokens_e5_model(self, test_config: Config) -> None:
+        """Test token limit detection for E5 embedding models."""
+        test_config.embedding.provider = "local"
+        test_config.embedding.model_name = "intfloat/multilingual-e5-large"
+        test_config.chunking.token_buffer = 50
+
+        max_tokens = test_config.get_max_chunk_tokens()
+
+        # E5 has 512 token limit, minus 50 buffer = 462
+        assert max_tokens == 462
+
+    def test_get_max_chunk_tokens_openai_model(self, test_config: Config) -> None:
+        """Test token limit detection for OpenAI embedding models."""
+        test_config.embedding.provider = "openai"
+        test_config.openai.embedding_model = "text-embedding-3-small"
+        test_config.chunking.token_buffer = 50
+
+        max_tokens = test_config.get_max_chunk_tokens()
+
+        # OpenAI has 8191 token limit, minus 50 buffer = 8141
+        assert max_tokens == 8141
+
+    def test_get_max_chunk_tokens_gemini_model(self, test_config: Config) -> None:
+        """Test token limit detection for Gemini embedding models."""
+        test_config.embedding.provider = "gemini"
+        test_config.gemini.embedding_model = "models/text-embedding-004"
+        test_config.chunking.token_buffer = 50
+
+        max_tokens = test_config.get_max_chunk_tokens()
+
+        # Gemini has 2048 token limit, minus 50 buffer = 1998
+        assert max_tokens == 1998
+
+    def test_get_max_chunk_tokens_explicit_override(self, test_config: Config) -> None:
+        """Test that explicit max_chunk_tokens overrides auto-detection."""
+        test_config.embedding.provider = "local"
+        test_config.embedding.model_name = "intfloat/multilingual-e5-large"
+        test_config.chunking.max_chunk_tokens = 300  # Explicit override
+
+        max_tokens = test_config.get_max_chunk_tokens()
+
+        # Should use explicit value, not auto-detected
+        assert max_tokens == 300
+
+    def test_get_max_chunk_tokens_unknown_model(self, test_config: Config) -> None:
+        """Test fallback for unknown embedding models."""
+        test_config.embedding.provider = "local"
+        test_config.embedding.model_name = "unknown/model"
+        test_config.embedding.max_seq_length = 512
+        test_config.chunking.token_buffer = 50
+
+        max_tokens = test_config.get_max_chunk_tokens()
+
+        # Should fall back to max_seq_length minus buffer
+        assert max_tokens == 462
