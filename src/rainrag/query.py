@@ -9,6 +9,7 @@ from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient
+from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
@@ -35,6 +36,11 @@ class RAGQueryEngine:
         self.config = config
         self.embedding_model: SentenceTransformer | None = None
         self.qdrant_client: QdrantClient | None = None
+
+        # BM25 for hybrid search
+        self.bm25: BM25Okapi | None = None
+        self.bm25_corpus: list[dict[str, Any]] = []  # Store documents for BM25
+        self.bm25_tokenized_corpus: list[list[str]] = []  # Tokenized texts for BM25
 
         # Initialize clients based on what's needed for LLM and embeddings
         needs_mistral = config.llm.provider == "mistral" or config.embedding.provider == "mistral"
@@ -158,6 +164,223 @@ class RAGQueryEngine:
 
         logger.info("Query engine initialized successfully")
 
+        # Build BM25 index if hybrid search is enabled
+        if self.config.hybrid_search.enabled:
+            logger.info("Hybrid search enabled. Building BM25 index...")
+            self._build_bm25_index()
+
+    def _build_bm25_index(self) -> None:
+        """Build BM25 index from all documents in Qdrant collection."""
+        if self.qdrant_client is None:
+            raise RuntimeError("Qdrant client not initialized. Call initialize() first.")
+
+        logger.info("Fetching all documents from Qdrant for BM25 indexing...")
+
+        # Scroll through all documents in the collection
+        offset = None
+        batch_size = 100
+
+        while True:
+            try:
+                scroll_result = self.qdrant_client.scroll(
+                    collection_name=self.config.qdrant.collection_name,
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,  # Don't need vectors for BM25
+                )
+
+                points, next_offset = scroll_result
+
+                if not points:
+                    break
+
+                # Add documents to BM25 corpus
+                for point in points:
+                    doc = {
+                        "id": point.id,
+                        "text": point.payload.get("text", ""),
+                        "path": point.payload.get("path", ""),
+                        "language": point.payload.get("language", ""),
+                        "doc_id": point.payload.get("doc_id", ""),
+                        "date": point.payload.get("date"),
+                        "duration_seconds": point.payload.get("duration_seconds"),
+                        "start_time": point.payload.get("start_time"),
+                        "end_time": point.payload.get("end_time"),
+                        "start_time_seconds": point.payload.get("start_time_seconds"),
+                        "end_time_seconds": point.payload.get("end_time_seconds"),
+                        "is_chunk": point.payload.get("is_chunk", False),
+                        "chunk_index": point.payload.get("chunk_index"),
+                        "total_chunks": point.payload.get("total_chunks"),
+                        "video_id": point.payload.get("video_id"),
+                    }
+                    self.bm25_corpus.append(doc)
+
+                    # Tokenize text for BM25 (simple whitespace + lowercase)
+                    tokenized = doc["text"].lower().split()
+                    self.bm25_tokenized_corpus.append(tokenized)
+
+                offset = next_offset
+                if offset is None:
+                    break
+
+            except Exception as e:
+                logger.error(f"Error building BM25 index: {e}")
+                raise
+
+        # Build BM25 index
+        if self.bm25_tokenized_corpus:
+            self.bm25 = BM25Okapi(self.bm25_tokenized_corpus)
+            logger.info(f"BM25 index built with {len(self.bm25_corpus)} documents")
+        else:
+            logger.warning("No documents found for BM25 indexing")
+
+    def _search_bm25(self, query: str, top_k: int) -> list[dict[str, Any]]:
+        """
+        Search using BM25 keyword matching.
+
+        Args:
+            query: Search query
+            top_k: Number of documents to retrieve
+
+        Returns:
+            List of documents with BM25 scores
+        """
+        if self.bm25 is None:
+            raise RuntimeError("BM25 index not built. Enable hybrid_search and reinitialize.")
+
+        # Tokenize query
+        query_tokens = query.lower().split()
+
+        # Get BM25 scores for all documents
+        scores = self.bm25.get_scores(query_tokens)
+
+        # Get top-k indices
+        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+
+        # Build result list
+        results = []
+        for rank, idx in enumerate(top_indices, 1):
+            doc = self.bm25_corpus[idx].copy()
+            doc["rank"] = rank
+            doc["score"] = float(scores[idx])
+            results.append(doc)
+
+        return results
+
+    def _fuse_scores_rrf(
+        self, vector_results: list[dict[str, Any]], bm25_results: list[dict[str, Any]], k: int = 60
+    ) -> list[dict[str, Any]]:
+        """
+        Fuse scores using Reciprocal Rank Fusion (RRF).
+
+        RRF score = sum(1 / (k + rank)) for each result list
+
+        Args:
+            vector_results: Results from vector search
+            bm25_results: Results from BM25 search
+            k: RRF constant (default: 60, standard from literature)
+
+        Returns:
+            Combined and reranked results
+        """
+        # Build score map: doc_id -> RRF score
+        rrf_scores: dict[str, float] = {}
+        doc_map: dict[str, dict[str, Any]] = {}
+
+        # Add vector search scores
+        for result in vector_results:
+            doc_id = result["doc_id"]
+            rank = result["rank"]
+            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (k + rank))
+            doc_map[doc_id] = result
+
+        # Add BM25 scores
+        for result in bm25_results:
+            doc_id = result["doc_id"]
+            rank = result["rank"]
+            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + (1.0 / (k + rank))
+            # Prefer vector result doc if exists, otherwise use BM25
+            if doc_id not in doc_map:
+                doc_map[doc_id] = result
+
+        # Sort by RRF score
+        sorted_doc_ids = sorted(rrf_scores.keys(), key=lambda d: rrf_scores[d], reverse=True)
+
+        # Build final results
+        results = []
+        for rank, doc_id in enumerate(sorted_doc_ids, 1):
+            doc = doc_map[doc_id].copy()
+            doc["rank"] = rank
+            doc["score"] = rrf_scores[doc_id]  # Replace with RRF score
+            doc["fusion_method"] = "rrf"
+            results.append(doc)
+
+        return results
+
+    def _fuse_scores_weighted(
+        self, vector_results: list[dict[str, Any]], bm25_results: list[dict[str, Any]], bm25_weight: float = 0.3
+    ) -> list[dict[str, Any]]:
+        """
+        Fuse scores using weighted sum.
+
+        Combined score = (1 - bm25_weight) * vector_score + bm25_weight * bm25_score
+
+        Args:
+            vector_results: Results from vector search
+            bm25_results: Results from BM25 search
+            bm25_weight: Weight for BM25 scores (0.0-1.0)
+
+        Returns:
+            Combined and reranked results
+        """
+        vector_weight = 1.0 - bm25_weight
+
+        # Normalize scores to 0-1 range for fair weighting
+        def normalize_scores(results: list[dict[str, Any]]) -> dict[str, float]:
+            """Normalize scores to 0-1 range."""
+            scores = {r["doc_id"]: r["score"] for r in results}
+            if not scores:
+                return {}
+            max_score = max(scores.values())
+            min_score = min(scores.values())
+            score_range = max_score - min_score
+            if score_range == 0:
+                return {doc_id: 1.0 for doc_id in scores}
+            return {doc_id: (score - min_score) / score_range for doc_id, score in scores.items()}
+
+        vector_scores = normalize_scores(vector_results)
+        bm25_scores = normalize_scores(bm25_results)
+
+        # Build doc map
+        doc_map: dict[str, dict[str, Any]] = {}
+        for result in vector_results:
+            doc_map[result["doc_id"]] = result
+        for result in bm25_results:
+            if result["doc_id"] not in doc_map:
+                doc_map[result["doc_id"]] = result
+
+        # Compute weighted scores
+        combined_scores: dict[str, float] = {}
+        for doc_id in doc_map:
+            vec_score = vector_scores.get(doc_id, 0.0)
+            bm_score = bm25_scores.get(doc_id, 0.0)
+            combined_scores[doc_id] = vector_weight * vec_score + bm25_weight * bm_score
+
+        # Sort by combined score
+        sorted_doc_ids = sorted(combined_scores.keys(), key=lambda d: combined_scores[d], reverse=True)
+
+        # Build final results
+        results = []
+        for rank, doc_id in enumerate(sorted_doc_ids, 1):
+            doc = doc_map[doc_id].copy()
+            doc["rank"] = rank
+            doc["score"] = combined_scores[doc_id]
+            doc["fusion_method"] = "weighted"
+            results.append(doc)
+
+        return results
+
     def embed_query(self, query: str) -> list[float]:
         """
         Embed the query text using configured provider.
@@ -231,15 +454,19 @@ class RAGQueryEngine:
         top_k: int,
         date_from: str | None = None,
         date_to: str | None = None,
+        query_text: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Retrieve the most relevant documents from Qdrant.
+
+        Supports hybrid search (vector + BM25) if enabled in config.
 
         Args:
             query_vector: The query embedding
             top_k: Number of documents to retrieve
             date_from: Filter results from this date (YYYY-MM-DD)
             date_to: Filter results up to this date (YYYY-MM-DD)
+            query_text: Original query text (needed for BM25 in hybrid search)
 
         Returns:
             List of retrieved documents with metadata
@@ -247,7 +474,13 @@ class RAGQueryEngine:
         if self.qdrant_client is None:
             raise RuntimeError("Qdrant client not initialized. Call initialize() first.")
 
-        logger.info(f"Searching for top {top_k} documents...")
+        # Check if hybrid search is enabled and query_text is provided
+        use_hybrid = self.config.hybrid_search.enabled and query_text and self.bm25 is not None
+
+        if use_hybrid:
+            logger.info(f"Using hybrid search (vector + BM25) for top {top_k} documents...")
+        else:
+            logger.info(f"Using vector search for top {top_k} documents...")
 
         # Build date filter if specified - we'll do client-side filtering
         # to avoid Qdrant issues with None date values
@@ -256,10 +489,15 @@ class RAGQueryEngine:
             logger.info(f"Will apply client-side date filter: {date_from} to {date_to}")
 
         try:
-            # If date filtering is requested, retrieve more documents and filter client-side
-            # to handle cases where some documents don't have dates
-            effective_limit = top_k * 3 if (date_from or date_to) else top_k
+            # If hybrid search is enabled, retrieve more candidates
+            if use_hybrid:
+                effective_limit = top_k * self.config.hybrid_search.top_k_multiplier
+            elif date_from or date_to:
+                effective_limit = top_k * 3
+            else:
+                effective_limit = top_k
 
+            # 1. Vector search
             logger.info(f"Querying Qdrant with filter: {query_filter}, limit: {effective_limit}")
             results = self.qdrant_client.query_points(
                 collection_name=self.config.qdrant.collection_name,
@@ -268,7 +506,7 @@ class RAGQueryEngine:
                 query_filter=query_filter,
             ).points
 
-            documents = []
+            vector_documents = []
             for idx, hit in enumerate(results):
                 doc = {
                     "rank": idx + 1,
@@ -281,9 +519,36 @@ class RAGQueryEngine:
                     "duration_seconds": hit.payload.get("duration_seconds"),
                     "start_time": hit.payload.get("start_time"),
                     "end_time": hit.payload.get("end_time"),
+                    "start_time_seconds": hit.payload.get("start_time_seconds"),
+                    "end_time_seconds": hit.payload.get("end_time_seconds"),
+                    "is_chunk": hit.payload.get("is_chunk", False),
+                    "chunk_index": hit.payload.get("chunk_index"),
+                    "total_chunks": hit.payload.get("total_chunks"),
+                    "video_id": hit.payload.get("video_id"),
                 }
-                documents.append(doc)
-                logger.debug(f"Rank {idx + 1}: Score={hit.score:.4f}, Path={doc['path']}")
+                vector_documents.append(doc)
+                logger.debug(f"[Vector] Rank {idx + 1}: Score={hit.score:.4f}, Path={doc['path']}")
+
+            # 2. Hybrid search: combine with BM25 if enabled
+            if use_hybrid and query_text:
+                logger.info("Performing BM25 search...")
+                bm25_documents = self._search_bm25(query_text, effective_limit)
+                logger.info(f"Retrieved {len(bm25_documents)} BM25 results")
+
+                # Fuse scores
+                if self.config.hybrid_search.fusion_method == "rrf":
+                    logger.info("Fusing scores with RRF...")
+                    documents = self._fuse_scores_rrf(
+                        vector_documents, bm25_documents, k=self.config.hybrid_search.rrf_k
+                    )
+                else:  # weighted
+                    logger.info("Fusing scores with weighted sum...")
+                    documents = self._fuse_scores_weighted(
+                        vector_documents, bm25_documents, bm25_weight=self.config.hybrid_search.bm25_weight
+                    )
+                logger.info(f"Hybrid search produced {len(documents)} fused results")
+            else:
+                documents = vector_documents
 
             # Apply date filtering client-side if requested
             if date_from or date_to:
@@ -634,7 +899,7 @@ Question: {query}"""
         retrieval_k = self.config.reranker.initial_k if self.config.reranker.enabled else top_k
 
         documents = self.retrieve_documents(
-            query_vector, retrieval_k, date_from=date_from, date_to=date_to
+            query_vector, retrieval_k, date_from=date_from, date_to=date_to, query_text=question
         )
 
         # Step 3: Rerank if enabled
