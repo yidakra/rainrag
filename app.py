@@ -507,14 +507,14 @@ def render_message_bubble(message: dict[str, Any], lang: str):
             insights = []
             if has_hybrid:
                 fusion = chunks[0].get("fusion_method", "rrf").upper()
-                insights.append(f"🔀 Hybrid Search ({fusion})")
+                insights.append(f"Hybrid Search ({fusion})")
             if has_reranking:
-                insights.append("🎯 Reranked")
+                insights.append("Reranked")
             if has_time_boost:
-                insights.append("⏱️ Time-Boosted")
+                insights.append("Time-Boosted")
 
             if insights:
-                st.info(f"**Search Features Active:** {' • '.join(insights)}")
+                st.info(f"**Search Features Active:** {' | '.join(insights)}")
 
         with st.expander(get_text("context_header", lang), expanded=False):
             # Group chunks by video (to show en/ru versions together)
@@ -626,7 +626,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         col1, col2 = st.columns([1, 4])
                         with col1:
                             if st.button(
-                                "🔗 Find Related",
+                                "Find Related",
                                 key=f"related_{doc_id}_{chunk_idx}_{group_idx}",
                                 help="Find similar content",
                             ):
