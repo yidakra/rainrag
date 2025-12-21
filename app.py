@@ -286,6 +286,38 @@ async def query_rag(
         return response.json()
 
 
+async def get_related_chunks(chunk_id: str, top_k: int = 3, same_video_only: bool = False) -> list[dict[str, Any]]:
+    """
+    Get related chunks for a given chunk.
+
+    Args:
+        chunk_id: The ID of the source chunk
+        top_k: Number of related chunks to retrieve
+        same_video_only: If True, only return chunks from the same video
+
+    Returns:
+        List of related chunks
+
+    Raises:
+        httpx.HTTPStatusError: If API returns error status
+    """
+    payload = {
+        "chunk_id": chunk_id,
+        "top_k": top_k,
+        "same_video_only": same_video_only,
+    }
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
+        response = await client.post(
+            f"{API_BASE}/related-chunks",
+            json=payload,
+            headers=get_api_headers(),
+        )
+        response.raise_for_status()
+        result = response.json()
+        return result.get("related_chunks", [])
+
+
 def fetch_vtt_content(vtt_url: str) -> str | None:
     """
     Fetch VTT file content from the API.
@@ -347,6 +379,12 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     chunk_index = chunk.get("chunk_index")
     total_chunks = chunk.get("total_chunks")
 
+    # New metadata fields
+    rerank_score = chunk.get("rerank_score")
+    original_score = chunk.get("original_score")
+    time_boost = chunk.get("time_boost")
+    fusion_method = chunk.get("fusion_method")
+
     duration_str = ""
     if duration_seconds:
         mins = int(duration_seconds // 60)
@@ -365,7 +403,21 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
         else:
             chunk_info = f" **[Chunk {chunk_index + 1}/{total_chunks}]**"
 
-    meta_parts = [f"**{get_text('score_label', lang)}:** {score:.3f}"]
+    # Base metadata
+    meta_parts = [f"**Score:** {score:.3f}"]
+
+    # Show reranking info if available
+    if rerank_score is not None:
+        meta_parts[0] = f"**Score:** {score:.3f} (reranked from {original_score:.3f})"
+
+    # Show time boost if available
+    if time_boost is not None:
+        meta_parts.append(f"**Time Boost:** {time_boost:.2f}x")
+
+    # Show fusion method if available
+    if fusion_method:
+        meta_parts.append(f"**Fusion:** {fusion_method.upper()}")
+
     if chunk_date:
         meta_parts.append(f"**{get_text('date_label', lang)}:** {chunk_date}")
     if duration_str:
@@ -444,6 +496,26 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 
     # Show context if available
     if role == "assistant" and "context" in message:
+        # Show search insights if we have context
+        if message["context"]:
+            chunks = message["context"]
+            # Detect active features from chunk metadata
+            has_reranking = any(c.get("rerank_score") is not None for c in chunks)
+            has_time_boost = any(c.get("time_boost") is not None for c in chunks)
+            has_hybrid = any(c.get("fusion_method") is not None for c in chunks)
+
+            insights = []
+            if has_hybrid:
+                fusion = chunks[0].get("fusion_method", "rrf").upper()
+                insights.append(f"🔀 Hybrid Search ({fusion})")
+            if has_reranking:
+                insights.append("🎯 Reranked")
+            if has_time_boost:
+                insights.append("⏱️ Time-Boosted")
+
+            if insights:
+                st.info(f"**Search Features Active:** {' • '.join(insights)}")
+
         with st.expander(get_text("context_header", lang), expanded=False):
             # Group chunks by video (to show en/ru versions together)
             grouped_chunks = group_chunks_by_video(message["context"])
@@ -547,6 +619,45 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                 for chunk_idx, chunk in enumerate(group):
                     # Display context chunk metadata
                     st.markdown(format_context_chunk(chunk, chunk_idx + 1, lang))
+
+                    # Add "Find Related" button for each chunk
+                    doc_id = chunk.get("doc_id")
+                    if doc_id:
+                        col1, col2 = st.columns([1, 4])
+                        with col1:
+                            if st.button(
+                                "🔗 Find Related",
+                                key=f"related_{doc_id}_{chunk_idx}_{group_idx}",
+                                help="Find similar content",
+                            ):
+                                # Store the doc_id to fetch related chunks
+                                st.session_state[f"show_related_{doc_id}"] = True
+
+                        # Show related chunks if button was clicked
+                        if st.session_state.get(f"show_related_{doc_id}", False):
+                            with st.spinner("Finding related chunks..."):
+                                import asyncio
+
+                                try:
+                                    related_chunks = asyncio.run(
+                                        get_related_chunks(doc_id, top_k=3, same_video_only=False)
+                                    )
+                                    if related_chunks:
+                                        st.markdown("**Related Content:**")
+                                        for rel_idx, rel_chunk in enumerate(related_chunks, 1):
+                                            rel_filename = rel_chunk.get("filename", "Unknown")
+                                            rel_score = rel_chunk.get("score", 0.0)
+                                            rel_text = rel_chunk.get("text", "")[:150]
+                                            st.markdown(
+                                                f"{rel_idx}. `{rel_filename}` (Score: {rel_score:.3f})<br>"
+                                                f"_{rel_text}..._",
+                                                unsafe_allow_html=True,
+                                            )
+                                    else:
+                                        st.info("No related chunks found")
+                                except Exception as e:
+                                    st.error(f"Error finding related chunks: {e}")
+
                     # Do not display transcript text here (VTT viewer already provides full context)
 
                     # Add a small separator between language versions within a group
