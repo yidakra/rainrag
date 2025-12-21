@@ -1,5 +1,7 @@
 """Query interface for RainRAG using Mistral/OpenAI/Claude/Gemini API and Qdrant."""
 
+import re
+from datetime import datetime, timedelta
 from typing import Any
 
 import cohere
@@ -380,6 +382,213 @@ class RAGQueryEngine:
             results.append(doc)
 
         return results
+
+    def _detect_temporal_keywords(self, query: str) -> dict[str, Any]:
+        """
+        Detect temporal keywords in query and extract time context.
+
+        Args:
+            query: User query text
+
+        Returns:
+            Dictionary with temporal context:
+            - has_temporal: bool - Whether query contains temporal keywords
+            - time_sensitivity: str - "recent", "latest", "specific", or "none"
+            - date_from: str | None - Inferred start date
+            - date_to: str | None - Inferred end date
+        """
+        query_lower = query.lower()
+
+        # Temporal keywords by category
+        recent_keywords = {
+            # English
+            "recent", "recently", "latest", "last", "new", "current",
+            "today", "yesterday", "this week", "this month", "this year",
+            # Russian
+            "недавн", "последн", "новый", "свежий", "актуальн",
+            "сегодня", "вчера", "на этой неделе", "в этом месяце", "в этом году",
+        }
+
+        specific_time_patterns = [
+            # Dates: 2024, 2024-01-15, January 2024, etc.
+            r"\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b",  # YYYY-MM-DD
+            r"\b(20\d{2})\b",  # Just year
+            r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(20\d{2})\b",
+            r"\b(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\w*\s+(20\d{2})\b",
+        ]
+
+        # Check for recent/latest keywords
+        has_recent = any(keyword in query_lower for keyword in recent_keywords)
+
+        # Check for specific time patterns
+        has_specific_time = any(re.search(pattern, query_lower) for pattern in specific_time_patterns)
+
+        # Determine time sensitivity
+        if has_recent:
+            time_sensitivity = "recent"
+            # Default to last 30 days for "recent" queries
+            date_to = datetime.now().strftime("%Y-%m-%d")
+            date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        elif has_specific_time:
+            time_sensitivity = "specific"
+            # Try to extract specific dates (simplified - could be enhanced)
+            date_from = None
+            date_to = None
+        else:
+            time_sensitivity = "none"
+            date_from = None
+            date_to = None
+
+        return {
+            "has_temporal": has_recent or has_specific_time,
+            "time_sensitivity": time_sensitivity,
+            "date_from": date_from,
+            "date_to": date_to,
+        }
+
+    def _apply_time_decay_boost(
+        self, documents: list[dict[str, Any]], time_sensitivity: str = "none"
+    ) -> list[dict[str, Any]]:
+        """
+        Apply time-decay boosting to documents based on temporal context.
+
+        Args:
+            documents: List of retrieved documents
+            time_sensitivity: Time sensitivity from _detect_temporal_keywords
+
+        Returns:
+            Documents with adjusted scores based on recency
+        """
+        if time_sensitivity == "none" or not documents:
+            return documents
+
+        # Only apply boosting for "recent" queries
+        if time_sensitivity != "recent":
+            return documents
+
+        logger.info(f"Applying time-decay boosting for '{time_sensitivity}' query...")
+
+        current_date = datetime.now()
+        boosted_docs = []
+
+        for doc in documents:
+            doc_copy = doc.copy()
+            doc_date_str = doc.get("date")
+
+            if doc_date_str:
+                try:
+                    # Parse document date
+                    doc_date = datetime.strptime(doc_date_str, "%Y-%m-%d")
+
+                    # Calculate age in days
+                    age_days = (current_date - doc_date).days
+
+                    # Time decay formula: boost = 1.0 / (1.0 + age_days / decay_factor)
+                    # decay_factor controls how quickly boost decreases
+                    decay_factor = 30.0  # Half boost after 30 days
+
+                    time_boost = 1.0 / (1.0 + age_days / decay_factor)
+
+                    # Apply boost to score (multiply by time_boost)
+                    original_score = doc_copy.get("score", 0.0)
+                    doc_copy["score"] = original_score * (0.7 + 0.3 * time_boost)  # 70% original + 30% time-boosted
+                    doc_copy["time_boost"] = time_boost
+
+                    logger.debug(
+                        f"Document from {doc_date_str} (age: {age_days} days) - "
+                        f"Original score: {original_score:.4f}, Boosted score: {doc_copy['score']:.4f}, "
+                        f"Time boost: {time_boost:.4f}"
+                    )
+                except ValueError:
+                    logger.warning(f"Could not parse date: {doc_date_str}")
+
+            boosted_docs.append(doc_copy)
+
+        # Re-sort by boosted scores
+        boosted_docs.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+
+        return boosted_docs
+
+    def find_related_chunks(
+        self, chunk_id: str, top_k: int = 5, same_video_only: bool = False
+    ) -> list[dict[str, Any]]:
+        """
+        Find chunks related to a given chunk based on vector similarity.
+
+        Args:
+            chunk_id: The ID of the source chunk
+            top_k: Number of related chunks to return
+            same_video_only: If True, only return chunks from the same video
+
+        Returns:
+            List of related chunks with similarity scores
+        """
+        if self.qdrant_client is None:
+            raise RuntimeError("Qdrant client not initialized. Call initialize() first.")
+
+        logger.info(f"Finding {top_k} related chunks for chunk_id: {chunk_id}")
+
+        try:
+            # Get the source chunk
+            source_points = self.qdrant_client.retrieve(
+                collection_name=self.config.qdrant.collection_name,
+                ids=[chunk_id],
+                with_vectors=True,
+                with_payload=True,
+            )
+
+            if not source_points:
+                logger.warning(f"Chunk not found: {chunk_id}")
+                return []
+
+            source_point = source_points[0]
+            source_vector = source_point.vector
+            source_video_id = source_point.payload.get("video_id")
+
+            # Search for similar chunks
+            # Retrieve more if filtering by video_id
+            search_limit = top_k * 3 if same_video_only else top_k + 1
+
+            results = self.qdrant_client.query_points(
+                collection_name=self.config.qdrant.collection_name,
+                query=source_vector,
+                limit=search_limit,
+            ).points
+
+            related_chunks = []
+            for hit in results:
+                # Skip the source chunk itself
+                if hit.id == chunk_id:
+                    continue
+
+                # Filter by video_id if requested
+                if same_video_only and hit.payload.get("video_id") != source_video_id:
+                    continue
+
+                chunk_data = {
+                    "doc_id": hit.payload.get("doc_id", ""),
+                    "score": hit.score,
+                    "text": hit.payload.get("text", ""),
+                    "path": hit.payload.get("path", ""),
+                    "video_id": hit.payload.get("video_id"),
+                    "chunk_index": hit.payload.get("chunk_index"),
+                    "total_chunks": hit.payload.get("total_chunks"),
+                    "start_time": hit.payload.get("start_time"),
+                    "end_time": hit.payload.get("end_time"),
+                    "start_time_seconds": hit.payload.get("start_time_seconds"),
+                    "language": hit.payload.get("language", ""),
+                }
+                related_chunks.append(chunk_data)
+
+                if len(related_chunks) >= top_k:
+                    break
+
+            logger.info(f"Found {len(related_chunks)} related chunks")
+            return related_chunks
+
+        except Exception as e:
+            logger.error(f"Error finding related chunks: {e}")
+            return []
 
     def embed_query(self, query: str) -> list[float]:
         """
@@ -891,6 +1100,19 @@ Question: {query}"""
 
         logger.info(f"Processing query: {question[:100]}... (language: {language})")
 
+        # Step 0: Detect temporal context (if no explicit date filter provided)
+        temporal_context = None
+        if not date_from and not date_to:
+            temporal_context = self._detect_temporal_keywords(question)
+            if temporal_context["has_temporal"] and temporal_context["time_sensitivity"] == "recent":
+                # Use detected date range for "recent" queries
+                date_from = temporal_context.get("date_from")
+                date_to = temporal_context.get("date_to")
+                logger.info(
+                    f"Detected temporal query ('{temporal_context['time_sensitivity']}'), "
+                    f"applying date filter: {date_from} to {date_to}"
+                )
+
         # Step 1: Embed the query
         query_vector = self.embed_query(question)
 
@@ -901,6 +1123,12 @@ Question: {query}"""
         documents = self.retrieve_documents(
             query_vector, retrieval_k, date_from=date_from, date_to=date_to, query_text=question
         )
+
+        # Step 2.5: Apply time-decay boosting if temporal context detected
+        if temporal_context and temporal_context["has_temporal"]:
+            documents = self._apply_time_decay_boost(
+                documents, time_sensitivity=temporal_context["time_sensitivity"]
+            )
 
         # Step 3: Rerank if enabled
         if self.config.reranker.enabled and documents:
