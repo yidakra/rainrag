@@ -46,6 +46,7 @@ class ContextChunk(BaseModel):
     score: float
     rank: int
     doc_id: str
+    rerank_score: float | None = None  # Cohere reranking score (if available)
     video_url: str | None = None
     vtt_url: str | None = None
     group_id: str | None = None  # Base name for grouping multilingual versions
@@ -398,6 +399,7 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
                     score=doc["score"],
                     rank=doc["rank"],
                     doc_id=doc.get("doc_id", ""),
+                    rerank_score=doc.get("rerank_score"),
                     video_url=video_url,
                     vtt_url=vtt_url,
                     group_id=group_id,

@@ -12,7 +12,7 @@ paths:
 # Embedding model configuration
 embedding:
   # Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API, 'gemini' for Google Gemini API
-  provider: "local"
+  provider: "mistral"
   model_name: "intfloat/multilingual-e5-large"
   batch_size: 32
   max_seq_length: 512
@@ -37,7 +37,7 @@ llm:
 # Mistral API configuration
 mistral:
   api_key: ""  # Set your Mistral API key here or via MISTRAL_API_KEY environment variable
-  model_name: "mistral-small-latest"  # Options: mistral-small-latest, mistral-medium-latest, mistral-large-latest
+  model_name: "mistral-large-latest"  # Largest Mistral model for best quality
   max_tokens: 1024
   temperature: 0.3
   top_k: 5  # Number of documents to retrieve for context
