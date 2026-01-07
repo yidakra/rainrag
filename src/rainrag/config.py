@@ -146,6 +146,31 @@ class ChunkingConfig(BaseModel):
     )
 
 
+class HybridSearchConfig(BaseModel):
+    """Configuration for hybrid search (vector + BM25)."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable hybrid search combining vector similarity and BM25 keyword matching",
+    )
+    bm25_weight: float = Field(
+        default=0.3,
+        description="Weight for BM25 scores in hybrid search (0.0-1.0). Vector weight = 1 - bm25_weight",
+    )
+    top_k_multiplier: int = Field(
+        default=3,
+        description="Retrieve top_k * multiplier documents before reranking (to get more BM25 candidates)",
+    )
+    fusion_method: str = Field(
+        default="rrf",
+        description="Score fusion method: 'rrf' (Reciprocal Rank Fusion) or 'weighted' (weighted sum)",
+    )
+    rrf_k: int = Field(
+        default=60,
+        description="RRF constant (default: 60, standard value from literature)",
+    )
+
+
 class ProcessingConfig(BaseModel):
     """Configuration for data processing."""
 
@@ -224,6 +249,7 @@ class Config(BaseModel):
     cohere: CohereConfig = Field(default_factory=CohereConfig)
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
+    hybrid_search: HybridSearchConfig = Field(default_factory=HybridSearchConfig)
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)

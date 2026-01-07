@@ -430,6 +430,123 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 
+class RelatedChunksRequest(BaseModel):
+    """Request model for related chunks endpoint."""
+
+    chunk_id: str = Field(..., description="The ID of the source chunk", min_length=1)
+    top_k: int = Field(default=5, description="Number of related chunks to return", ge=1, le=10)
+    same_video_only: bool = Field(
+        default=False, description="If true, only return chunks from the same video"
+    )
+
+
+class RelatedChunksResponse(BaseModel):
+    """Response model for related chunks endpoint."""
+
+    chunk_id: str
+    related_chunks: list[ContextChunk]
+    num_related: int
+
+
+@app.post("/related-chunks", response_model=RelatedChunksResponse)
+async def get_related_chunks(request: RelatedChunksRequest, authorized: bool = Header(default=True)):
+    """
+    Find chunks related to a given chunk based on vector similarity.
+
+    Args:
+        request: Related chunks request containing chunk_id and parameters
+        authorized: Authorization check result (injected by dependency)
+
+    Returns:
+        List of related chunks with similarity scores
+    """
+    verify_auth_token()
+
+    if query_engine is None:
+        raise HTTPException(status_code=503, detail="Query engine not initialized")
+
+    try:
+        logger.info(
+            f"Finding related chunks for: {request.chunk_id} "
+            f"(top_k={request.top_k}, same_video_only={request.same_video_only})"
+        )
+
+        # Find related chunks
+        related_docs = query_engine.find_related_chunks(
+            chunk_id=request.chunk_id, top_k=request.top_k, same_video_only=request.same_video_only
+        )
+
+        # Format response with video and VTT URLs
+        related_chunks = []
+        for doc in related_docs:
+            vtt_path = doc["path"]
+
+            # Generate URLs for video and VTT files
+            video_url = None
+            vtt_url = None
+
+            if config and config.video.enabled:
+                # Find corresponding video file
+                video_file = find_video_file(vtt_path)
+                if video_file:
+                    # Create relative path from video_root
+                    video_root = (
+                        config.paths.video_root
+                        if config.paths.video_root
+                        else config.paths.archive_root
+                    )
+                    try:
+                        video_rel = Path(video_file).relative_to(video_root)
+                        video_url = f"/video/{video_rel}"
+                        # Add timecode fragment for video player to start at
+                        start_time = doc.get("start_time")
+                        if start_time:
+                            start_seconds = timecode_to_seconds(start_time)
+                            if start_seconds is not None:
+                                video_url = f"{video_url}#t={start_seconds}"
+                    except ValueError:
+                        pass
+
+                # VTT file URL
+                try:
+                    vtt_rel = Path(vtt_path).relative_to(config.paths.archive_root)
+                    vtt_url = f"/vtt/{vtt_rel}"
+                except ValueError:
+                    pass
+
+            # Get base name for grouping
+            group_id = get_video_base_name(vtt_path)
+
+            chunk = ContextChunk(
+                text=doc["text"],
+                filename=Path(vtt_path).name,
+                language=doc.get("language", "unknown"),
+                score=doc["score"],
+                rank=related_docs.index(doc) + 1,
+                doc_id=doc["doc_id"],
+                video_url=video_url,
+                vtt_url=vtt_url,
+                group_id=group_id,
+            )
+            related_chunks.append(chunk)
+
+        logger.info(f"Returning {len(related_chunks)} related chunks")
+
+        return RelatedChunksResponse(
+            chunk_id=request.chunk_id,
+            related_chunks=related_chunks,
+            num_related=len(related_chunks),
+        )
+
+    except Exception as e:
+        import traceback
+
+        error_details = traceback.format_exc()
+        logger.error(f"Finding related chunks failed: {e}")
+        logger.error(f"Full traceback:\n{error_details}")
+        raise HTTPException(status_code=500, detail=f"Finding related chunks failed: {str(e)}")
+
+
 @app.get("/")
 async def root():
     """Root endpoint with API information."""

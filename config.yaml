@@ -80,6 +80,23 @@ reranker:
   top_n: 5  # Number of documents to return after reranking
   initial_k: 20  # Number of candidates to retrieve before reranking
 
+# Chunking configuration
+chunking:
+  enabled: true  # Enable chunking of VTT files by time
+  chunk_duration_seconds: 300  # 5 minutes per chunk
+  overlap_seconds: 30  # 30-second overlap between chunks to prevent information loss
+  max_chunk_tokens: null  # Auto-detect based on embedding model (null = auto)
+  min_chunk_tokens: 50  # Minimum tokens per chunk
+  token_buffer: 50  # Buffer to account for special tokens
+
+# Hybrid search configuration (Vector + BM25)
+hybrid_search:
+  enabled: true  # Enable hybrid search combining vector similarity and BM25 keyword matching
+  bm25_weight: 0.3  # Weight for BM25 scores (0.0-1.0, vector weight = 1 - bm25_weight)
+  top_k_multiplier: 3  # Retrieve top_k * multiplier documents before reranking
+  fusion_method: "rrf"  # Score fusion method: 'rrf' (Reciprocal Rank Fusion) or 'weighted'
+  rrf_k: 60  # RRF constant (standard value from literature)
+
 # Processing configuration
 processing:
   # Number of worker threads for file processing
