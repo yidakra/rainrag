@@ -1,5 +1,6 @@
 """Query interface for RainRAG using Mistral/OpenAI/Claude/Gemini API and Qdrant."""
 
+import importlib
 import re
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -11,7 +12,6 @@ from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient
-from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
@@ -40,7 +40,7 @@ class RAGQueryEngine:
         self.qdrant_client: QdrantClient | None = None
 
         # BM25 for hybrid search
-        self.bm25: BM25Okapi | None = None
+        self.bm25: Any | None = None
         self.bm25_corpus: list[dict[str, Any]] = []  # Store documents for BM25
         self.bm25_tokenized_corpus: list[list[str]] = []  # Tokenized texts for BM25
 
@@ -76,7 +76,8 @@ class RAGQueryEngine:
 
         # Initialize Gemini client if needed
         if needs_gemini:
-            genai.configure(api_key=config.gemini.api_key)
+            genai_client = cast(Any, genai)
+            genai_client.configure(api_key=config.gemini.api_key)
             logger.info("Initialized Gemini client")
 
         # Initialize Cohere client if reranker is enabled
@@ -112,7 +113,8 @@ class RAGQueryEngine:
             logger.info(f"Loading local embedding model: {self.config.embedding.model_name}")
             try:
                 try:
-                    self.embedding_model = SentenceTransformer(
+                    model_cls = cast(Any, SentenceTransformer)
+                    self.embedding_model = model_cls(
                         self.config.embedding.model_name,
                         device=self.config.embedding.device,
                         model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
@@ -202,22 +204,23 @@ class RAGQueryEngine:
 
                 # Add documents to BM25 corpus
                 for point in points:
+                    payload = point.payload or {}  # Ensure payload is not None
                     doc = {
                         "id": point.id,
-                        "text": point.payload.get("text", ""),
-                        "path": point.payload.get("path", ""),
-                        "language": point.payload.get("language", ""),
-                        "doc_id": point.payload.get("doc_id", ""),
-                        "date": point.payload.get("date"),
-                        "duration_seconds": point.payload.get("duration_seconds"),
-                        "start_time": point.payload.get("start_time"),
-                        "end_time": point.payload.get("end_time"),
-                        "start_time_seconds": point.payload.get("start_time_seconds"),
-                        "end_time_seconds": point.payload.get("end_time_seconds"),
-                        "is_chunk": point.payload.get("is_chunk", False),
-                        "chunk_index": point.payload.get("chunk_index"),
-                        "total_chunks": point.payload.get("total_chunks"),
-                        "video_id": point.payload.get("video_id"),
+                        "text": payload.get("text", ""),
+                        "path": payload.get("path", ""),
+                        "language": payload.get("language", ""),
+                        "doc_id": payload.get("doc_id", ""),
+                        "date": payload.get("date"),
+                        "duration_seconds": payload.get("duration_seconds"),
+                        "start_time": payload.get("start_time"),
+                        "end_time": payload.get("end_time"),
+                        "start_time_seconds": payload.get("start_time_seconds"),
+                        "end_time_seconds": payload.get("end_time_seconds"),
+                        "is_chunk": payload.get("is_chunk", False),
+                        "chunk_index": payload.get("chunk_index"),
+                        "total_chunks": payload.get("total_chunks"),
+                        "video_id": payload.get("video_id"),
                     }
                     self.bm25_corpus.append(doc)
 
@@ -235,7 +238,15 @@ class RAGQueryEngine:
 
         # Build BM25 index
         if self.bm25_tokenized_corpus:
-            self.bm25 = BM25Okapi(self.bm25_tokenized_corpus)
+            try:
+                bm25_module = importlib.import_module("rank_bm25")
+                bm25_okapi = bm25_module.BM25Okapi
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "rank-bm25 is required for BM25 search. "
+                    "Install with `poetry install` or `pip install rank-bm25`."
+                ) from exc
+            self.bm25 = bm25_okapi(self.bm25_tokenized_corpus)
             logger.info(f"BM25 index built with {len(self.bm25_corpus)} documents")
         else:
             logger.warning("No documents found for BM25 indexing")
@@ -573,13 +584,17 @@ class RAGQueryEngine:
             source_point = source_points[0]
             source_vector = source_point.vector
             # Ensure source_vector is a list of floats for Qdrant
-            if hasattr(source_vector, 'tolist'):
-                source_vector = source_vector.tolist()
-            elif not isinstance(source_vector, list):
-                source_vector = list(source_vector)  # type: ignore
+            if not isinstance(source_vector, list):
+                tolist = getattr(source_vector, "tolist", None)
+                if callable(tolist):
+                    source_vector = tolist()
+                else:
+                    if source_vector is not None:
+                        source_vector = cast(list[float], list(source_vector))
             # Type cast for mypy - source_vector should be list[float]
             source_vector = cast(list[float], source_vector)
-            source_video_id = source_point.payload.get("video_id")
+            source_payload = source_point.payload or {}  # Ensure payload is not None
+            source_video_id = source_payload.get("video_id")
 
             # Search for similar chunks
             # Retrieve more if filtering by video_id
@@ -597,22 +612,24 @@ class RAGQueryEngine:
                 if hit.id == chunk_id:
                     continue
 
+                hit_payload = hit.payload or {}  # Ensure payload is not None
+
                 # Filter by video_id if requested
-                if same_video_only and hit.payload.get("video_id") != source_video_id:
+                if same_video_only and hit_payload.get("video_id") != source_video_id:
                     continue
 
                 chunk_data = {
-                    "doc_id": hit.payload.get("doc_id", ""),
+                    "doc_id": hit_payload.get("doc_id", ""),
                     "score": hit.score,
-                    "text": hit.payload.get("text", ""),
-                    "path": hit.payload.get("path", ""),
-                    "video_id": hit.payload.get("video_id"),
-                    "chunk_index": hit.payload.get("chunk_index"),
-                    "total_chunks": hit.payload.get("total_chunks"),
-                    "start_time": hit.payload.get("start_time"),
-                    "end_time": hit.payload.get("end_time"),
-                    "start_time_seconds": hit.payload.get("start_time_seconds"),
-                    "language": hit.payload.get("language", ""),
+                    "text": hit_payload.get("text", ""),
+                    "path": hit_payload.get("path", ""),
+                    "video_id": hit_payload.get("video_id"),
+                    "chunk_index": hit_payload.get("chunk_index"),
+                    "total_chunks": hit_payload.get("total_chunks"),
+                    "start_time": hit_payload.get("start_time"),
+                    "end_time": hit_payload.get("end_time"),
+                    "start_time_seconds": hit_payload.get("start_time_seconds"),
+                    "language": hit_payload.get("language", ""),
                 }
                 related_chunks.append(chunk_data)
 
@@ -639,14 +656,20 @@ class RAGQueryEngine:
         if self.config.embedding.provider == "mistral":
             # Use Mistral API embeddings
             logger.debug(f"Embedding query using Mistral API: {query[:100]}...")
-            try:
-                response = self.mistral_client.embeddings.create(
-                    model="mistral-embed", inputs=[query]
-                )
-                return response.data[0].embedding
-            except Exception as e:
-                logger.error(f"Failed to generate embeddings with Mistral API: {e}")
-                raise RuntimeError(f"Mistral embeddings API error: {e}") from e
+            if self.mistral_client is not None:
+                try:
+                    response = self.mistral_client.embeddings.create(
+                        model="mistral-embed", inputs=[query]
+                    )
+                    embedding = response.data[0].embedding
+                    if embedding is None:
+                        raise RuntimeError("Mistral embeddings API returned None embedding")
+                    return embedding
+                except Exception as e:
+                    logger.error(f"Failed to generate embeddings with Mistral API: {e}")
+                    raise RuntimeError(f"Mistral embeddings API error: {e}") from e
+            else:
+                raise RuntimeError("Mistral client not initialized. Call initialize() first.")
 
         elif self.config.embedding.provider == "local":
             # Use local SentenceTransformer model
@@ -662,7 +685,8 @@ class RAGQueryEngine:
                 normalize_embeddings=self.config.embedding.normalize_embeddings,
             )
 
-            return embedding.tolist()
+            embedding_list = getattr(embedding, "tolist", lambda: list(embedding))()
+            return cast(list[float], embedding_list)
 
         elif self.config.embedding.provider == "openai":
             # Use OpenAI API embeddings
@@ -680,7 +704,8 @@ class RAGQueryEngine:
             # Use Gemini API embeddings
             logger.debug(f"Embedding query using Gemini API: {query[:100]}...")
             try:
-                result = genai.embed_content(
+                genai_client = cast(Any, genai)
+                result = genai_client.embed_content(
                     model=self.config.gemini.embedding_model,
                     content=query,
                     task_type="retrieval_query",
@@ -753,23 +778,24 @@ class RAGQueryEngine:
 
             vector_documents = []
             for idx, hit in enumerate(results):
+                hit_payload = hit.payload or {}  # Ensure payload is not None
                 doc = {
                     "rank": idx + 1,
                     "score": hit.score,
-                    "text": hit.payload.get("text", ""),
-                    "path": hit.payload.get("path", ""),
-                    "language": hit.payload.get("language", ""),
-                    "doc_id": hit.payload.get("doc_id", ""),
-                    "date": hit.payload.get("date"),
-                    "duration_seconds": hit.payload.get("duration_seconds"),
-                    "start_time": hit.payload.get("start_time"),
-                    "end_time": hit.payload.get("end_time"),
-                    "start_time_seconds": hit.payload.get("start_time_seconds"),
-                    "end_time_seconds": hit.payload.get("end_time_seconds"),
-                    "is_chunk": hit.payload.get("is_chunk", False),
-                    "chunk_index": hit.payload.get("chunk_index"),
-                    "total_chunks": hit.payload.get("total_chunks"),
-                    "video_id": hit.payload.get("video_id"),
+                    "text": hit_payload.get("text", ""),
+                    "path": hit_payload.get("path", ""),
+                    "language": hit_payload.get("language", ""),
+                    "doc_id": hit_payload.get("doc_id", ""),
+                    "date": hit_payload.get("date"),
+                    "duration_seconds": hit_payload.get("duration_seconds"),
+                    "start_time": hit_payload.get("start_time"),
+                    "end_time": hit_payload.get("end_time"),
+                    "start_time_seconds": hit_payload.get("start_time_seconds"),
+                    "end_time_seconds": hit_payload.get("end_time_seconds"),
+                    "is_chunk": hit_payload.get("is_chunk", False),
+                    "chunk_index": hit_payload.get("chunk_index"),
+                    "total_chunks": hit_payload.get("total_chunks"),
+                    "video_id": hit_payload.get("video_id"),
                 }
                 vector_documents.append(doc)
                 logger.debug(f"[Vector] Rank {idx + 1}: Score={hit.score:.4f}, Path={doc['path']}")
@@ -1006,6 +1032,8 @@ Question: {query}"""
         """
         if self.config.llm.provider == "mistral":
             logger.info("Generating answer using Mistral API...")
+            if self.mistral_client is None:
+                raise RuntimeError("Mistral client not initialized. Call initialize() first.")
             try:
                 response = self.mistral_client.chat.complete(
                     model=self.config.mistral.model_name,
@@ -1066,7 +1094,8 @@ Question: {query}"""
             logger.info("Generating answer using Gemini API...")
             try:
                 # Convert messages to Gemini format
-                model = genai.GenerativeModel(self.config.gemini.model_name)
+                genai_client = cast(Any, genai)
+                model = genai_client.GenerativeModel(self.config.gemini.model_name)
 
                 # Extract system message and build conversation
                 system_instruction = ""
@@ -1087,14 +1116,14 @@ Question: {query}"""
                 else:
                     prompt = conversation_parts[-1]
 
-                response = model.generate_content(  # type: ignore[assignment]
+                response = model.generate_content(
                     prompt,
-                    generation_config=genai.GenerationConfig(
+                    generation_config=genai_client.GenerationConfig(
                         max_output_tokens=self.config.gemini.max_tokens,
                         temperature=self.config.gemini.temperature,
                     ),
                 )
-                answer = response.text.strip()  # type: ignore[attr-defined]
+                answer = response.text.strip()
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:

@@ -86,13 +86,14 @@ class VTTParser:
             Language code ('ru' or 'en')
         """
         path_str = str(file_path).lower()
+        tokens = set(filter(None, re.split(r"[^a-z0-9]+", path_str)))
 
         # Check for Russian indicators
-        if any(indicator in path_str for indicator in ["ru", "rus", "russian"]):
+        if any(indicator in tokens for indicator in ["ru", "rus", "russian"]):
             return "ru"
 
         # Check for English indicators
-        if any(indicator in path_str for indicator in ["en", "eng", "english"]):
+        if any(indicator in tokens for indicator in ["en", "eng", "english"]):
             return "en"
 
         # Default to English if no indicators found
