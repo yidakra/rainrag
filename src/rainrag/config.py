@@ -127,14 +127,16 @@ class ChunkingConfig(BaseModel):
         description="Chunking strategy: 'time' (time-based only), 'token' (token-based only), 'hybrid' (time-based with token validation)",
     )
     chunk_duration_seconds: int = Field(
-        default=300, description="Duration of each chunk in seconds (default: 5 minutes) - used for 'time' and 'hybrid' strategies"
+        default=300,
+        description="Duration of each chunk in seconds (default: 5 minutes) - used for 'time' and 'hybrid' strategies",
     )
     overlap_seconds: int = Field(
         default=30,
         description="Overlap between adjacent chunks in seconds (default: 30). Prevents information loss at chunk boundaries.",
     )
     min_chunk_tokens: int = Field(
-        default=50, description="Minimum tokens per chunk (chunks smaller than this may be merged with neighbors)"
+        default=50,
+        description="Minimum tokens per chunk (chunks smaller than this may be merged with neighbors)",
     )
     max_chunk_tokens: int | None = Field(
         default=None,

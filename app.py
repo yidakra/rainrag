@@ -286,7 +286,9 @@ async def query_rag(
         return response.json()
 
 
-async def get_related_chunks(chunk_id: str, top_k: int = 3, same_video_only: bool = False) -> list[dict[str, Any]]:
+async def get_related_chunks(
+    chunk_id: str, top_k: int = 3, same_video_only: bool = False
+) -> list[dict[str, Any]]:
     """
     Get related chunks for a given chunk.
 
@@ -530,7 +532,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     if video_url:
                         st.markdown(f"**{get_text('video_label', lang)}:**")
                         # Strip any existing fragment
-                        base_video_url = video_url.split('#', 1)[0]
+                        base_video_url = video_url.split("#", 1)[0]
                         video_full_url = f"{ASSET_BASE_URL}{base_video_url}"
 
                         # Add timestamp fragment for chunks to seek to start time

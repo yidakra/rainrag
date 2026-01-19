@@ -253,7 +253,7 @@ class VTTParser:
                     continue
 
                 # Skip NOTE comments
-                if line.startswith("NOTE"):  # type: ignore[unreachable]
+                if line.startswith("NOTE"):
                     continue
 
                 # Skip cue identifiers (lines that are just numbers or IDs)
@@ -313,7 +313,9 @@ class VTTParser:
                         parts = current_timestamp_line.split("-->")
                         if len(parts) == 2:
                             start = parts[0].strip().split(".")[0]  # Remove milliseconds
-                            end = parts[1].strip().split()[0].split(".")[0]  # Remove ms and positioning
+                            end = (
+                                parts[1].strip().split()[0].split(".")[0]
+                            )  # Remove ms and positioning
 
                             # Combine and clean text
                             combined_text = " ".join(current_text_lines)
@@ -423,10 +425,7 @@ class VTTParser:
                 chunk_start_seconds += chunk_duration_seconds - overlap_seconds
 
                 # Keep overlapping cues from previous chunk
-                chunk_cues = [
-                    c for c in chunk_cues
-                    if c.start_seconds >= chunk_start_seconds
-                ]
+                chunk_cues = [c for c in chunk_cues if c.start_seconds >= chunk_start_seconds]
 
             chunk_cues.append(cue)
 

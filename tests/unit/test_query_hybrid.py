@@ -172,7 +172,9 @@ def mock_qdrant_client_with_corpus():
 # ============================================================================
 
 
-def test_build_bm25_index_success(hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus):
+def test_build_bm25_index_success(
+    hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus
+):
     """Test successful BM25 index building from Qdrant collection."""
     with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client_with_corpus):
@@ -193,7 +195,9 @@ def test_build_bm25_index_success(hybrid_config, mock_openai_client, mock_qdrant
             assert mock_qdrant_client_with_corpus.scroll.called
 
 
-def test_build_bm25_index_disabled(hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus):
+def test_build_bm25_index_disabled(
+    hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus
+):
     """Test that BM25 index is not built when hybrid search is disabled."""
     hybrid_config.hybrid_search.enabled = False
 
@@ -234,7 +238,9 @@ def test_build_bm25_index_empty_collection(hybrid_config, mock_openai_client):
 # ============================================================================
 
 
-def test_search_bm25_keyword_matching(hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus):
+def test_search_bm25_keyword_matching(
+    hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus
+):
     """Test BM25 search finds documents by keyword matching."""
     with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client_with_corpus):
@@ -246,12 +252,16 @@ def test_search_bm25_keyword_matching(hybrid_config, mock_openai_client, mock_qd
 
             # Verify results
             assert len(results) > 0
-            assert results[0]["doc_id"] == "doc1"  # Should find doc1 which contains "machine learning"
+            assert (
+                results[0]["doc_id"] == "doc1"
+            )  # Should find doc1 which contains "machine learning"
             assert "score" in results[0]
             assert "rank" in results[0]
 
 
-def test_search_bm25_multiple_keywords(hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus):
+def test_search_bm25_multiple_keywords(
+    hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus
+):
     """Test BM25 search with multiple keywords."""
     with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client_with_corpus):
@@ -317,7 +327,9 @@ def test_fuse_scores_rrf_basic(hybrid_config, mock_openai_client, mock_qdrant_cl
             assert fused[0]["fusion_method"] == "rrf"
 
 
-def test_fuse_scores_rrf_single_list(hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus):
+def test_fuse_scores_rrf_single_list(
+    hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus
+):
     """Test RRF with results from only one source."""
     with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client_with_corpus):
@@ -337,7 +349,9 @@ def test_fuse_scores_rrf_single_list(hybrid_config, mock_openai_client, mock_qdr
             assert fused[0]["doc_id"] == "doc1"
 
 
-def test_fuse_scores_rrf_empty_lists(hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus):
+def test_fuse_scores_rrf_empty_lists(
+    hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus
+):
     """Test RRF with empty input lists."""
     with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client_with_corpus):
@@ -356,7 +370,9 @@ def test_fuse_scores_rrf_empty_lists(hybrid_config, mock_openai_client, mock_qdr
 # ============================================================================
 
 
-def test_fuse_scores_weighted_basic(hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus):
+def test_fuse_scores_weighted_basic(
+    hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus
+):
     """Test weighted score fusion with basic inputs."""
     hybrid_config.hybrid_search.fusion_method = "weighted"
 
@@ -473,7 +489,9 @@ def test_retrieve_documents_hybrid_disabled(
             assert engine.bm25 is None
 
 
-def test_query_full_pipeline_hybrid(hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus):
+def test_query_full_pipeline_hybrid(
+    hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus
+):
     """Test full query pipeline with hybrid search."""
     with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client_with_corpus):
@@ -522,7 +540,9 @@ def test_hybrid_search_top_k_multiplier(
             assert call_args[1]["limit"] == 15
 
 
-def test_hybrid_search_rrf_vs_weighted(hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus):
+def test_hybrid_search_rrf_vs_weighted(
+    hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus
+):
     """Test that RRF and weighted fusion methods both work."""
     with patch("src.rainrag.query.OpenAI", return_value=mock_openai_client):
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client_with_corpus):

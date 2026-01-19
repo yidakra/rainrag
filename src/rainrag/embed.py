@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Any, cast
 
 import google.generativeai as genai
 import numpy as np
@@ -133,10 +134,11 @@ class Embedder:
 
         # Load model
         try:
-            self.model = SentenceTransformer(
+            model_cls = cast(Any, SentenceTransformer)
+            self.model = model_cls(
                 self.config.embedding.model_name,
                 device=device,
-                model_kwargs={"dtype": "auto"},  # type: ignore  # Prefer new dtype kwarg when supported
+                model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
             )
         except TypeError:
             # Older sentence-transformers versions don't accept model_kwargs
@@ -145,6 +147,7 @@ class Embedder:
                 device=device,
             )
 
+        assert self.model is not None, "Model should be loaded after load_model() call"
         # Set max sequence length
         self.model.max_seq_length = self.config.embedding.max_seq_length
 
@@ -217,25 +220,32 @@ class Embedder:
         all_embeddings = []
 
         total_chunks = (len(documents) + chunk_size - 1) // chunk_size
-        logger.info(f"Starting chunked processing: {len(documents)} documents, chunk_size={chunk_size}")
+        logger.info(
+            f"Starting chunked processing: {len(documents)} documents, chunk_size={chunk_size}"
+        )
         logger.info(f"Total chunks to process: {total_chunks}")
 
         for i in range(0, len(documents), chunk_size):
-            chunk_docs = documents[i:i + chunk_size]
+            chunk_docs = documents[i : i + chunk_size]
             chunk_texts = [f"passage: {doc.text}" for doc in chunk_docs]
             chunk_number = i // chunk_size + 1
-            logger.info(f"Processing chunk {chunk_number}/{total_chunks} ({len(chunk_texts)} documents)")
+            logger.info(
+                f"Processing chunk {chunk_number}/{total_chunks} ({len(chunk_texts)} documents)"
+            )
 
             chunk_embeddings = self.model.encode(
                 chunk_texts,
                 batch_size=self.config.embedding.batch_size,
-                show_progress_bar=show_progress and len(chunk_texts) > self.config.embedding.batch_size,
+                show_progress_bar=show_progress
+                and len(chunk_texts) > self.config.embedding.batch_size,
                 normalize_embeddings=self.config.embedding.normalize_embeddings,
                 convert_to_numpy=True,
             )
             chunk_embeddings = np.array(chunk_embeddings)
             all_embeddings.append(chunk_embeddings)
-            logger.info(f"Completed chunk {chunk_number}, embeddings shape: {chunk_embeddings.shape}")
+            logger.info(
+                f"Completed chunk {chunk_number}, embeddings shape: {chunk_embeddings.shape}"
+            )
 
         embeddings = np.concatenate(all_embeddings, axis=0)
         logger.info(f"Generated embeddings with final shape: {embeddings.shape}")
@@ -247,15 +257,14 @@ class Embedder:
         """Generate embeddings using API providers."""
         # Initialize clients
         model = None  # Initialize to avoid unbound variable
+        client: Any = None  # Can be OpenAI, Mistral, or None
         if provider == "openai":
-            if not hasattr(self, 'openai_client'):
-                self.openai_client = openai.OpenAI(
-                    api_key=os.getenv("OPENAI_API_KEY")
-                )
+            if not hasattr(self, "openai_client"):
+                self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             client = self.openai_client
             model = self.config.openai.embedding_model
         elif provider == "mistral":
-            if not hasattr(self, 'mistral_client'):
+            if not hasattr(self, "mistral_client"):
                 self.mistral_client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
             client = self.mistral_client
             model = "mistral-embed"
@@ -278,21 +287,24 @@ class Embedder:
         batch_size = self.config.embedding.batch_size
 
         for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i+batch_size]
+            batch_texts = texts[i : i + batch_size]
             if show_progress:
-                logger.info(f"Processing batch {i//batch_size + 1}/{(len(texts) + batch_size - 1)//batch_size}")
+                logger.info(
+                    f"Processing batch {i//batch_size + 1}/{(len(texts) + batch_size - 1)//batch_size}"
+                )
 
             try:
                 if provider == "openai":
-                    response = client.embeddings.create(model=model, input=batch_texts)  # type: ignore
+                    response = client.embeddings.create(model=model, input=batch_texts)
                     batch_embeddings = [item.embedding for item in response.data]
                 elif provider == "mistral":
-                    response = client.embeddings.create(model=model, inputs=batch_texts)  # type: ignore
+                    response = client.embeddings.create(model=model, inputs=batch_texts)
                     batch_embeddings = [item.embedding for item in response.data]
                 elif provider == "gemini":
                     batch_embeddings = []
+                    genai_client = cast(Any, genai)
                     for text in batch_texts:
-                        result = genai.embed_content(  # type: ignore
+                        result = genai_client.embed_content(
                             model=model,
                             content=text,
                             task_type="retrieval_document",

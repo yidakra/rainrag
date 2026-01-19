@@ -449,7 +449,9 @@ class RelatedChunksResponse(BaseModel):
 
 
 @app.post("/related-chunks", response_model=RelatedChunksResponse)
-async def get_related_chunks(request: RelatedChunksRequest, authorized: bool = Header(default=True)):
+async def get_related_chunks(
+    request: RelatedChunksRequest, authorized: bool = Header(default=True)
+):
     """
     Find chunks related to a given chunk based on vector similarity.
 

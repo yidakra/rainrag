@@ -2,7 +2,7 @@
 
 import re
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import cohere
 import google.generativeai as genai
@@ -43,6 +43,9 @@ class RAGQueryEngine:
         self.bm25: BM25Okapi | None = None
         self.bm25_corpus: list[dict[str, Any]] = []  # Store documents for BM25
         self.bm25_tokenized_corpus: list[list[str]] = []  # Tokenized texts for BM25
+
+        # Cohere client for reranking
+        self.cohere_client: Any = None  # Can be ClientV2 or Client depending on SDK version
 
         # Initialize clients based on what's needed for LLM and embeddings
         needs_mistral = config.llm.provider == "mistral" or config.embedding.provider == "mistral"
@@ -321,7 +324,10 @@ class RAGQueryEngine:
         return results
 
     def _fuse_scores_weighted(
-        self, vector_results: list[dict[str, Any]], bm25_results: list[dict[str, Any]], bm25_weight: float = 0.3
+        self,
+        vector_results: list[dict[str, Any]],
+        bm25_results: list[dict[str, Any]],
+        bm25_weight: float = 0.3,
     ) -> list[dict[str, Any]]:
         """
         Fuse scores using weighted sum.
@@ -370,7 +376,9 @@ class RAGQueryEngine:
             combined_scores[doc_id] = vector_weight * vec_score + bm25_weight * bm_score
 
         # Sort by combined score
-        sorted_doc_ids = sorted(combined_scores.keys(), key=lambda d: combined_scores[d], reverse=True)
+        sorted_doc_ids = sorted(
+            combined_scores.keys(), key=lambda d: combined_scores[d], reverse=True
+        )
 
         # Build final results
         results = []
@@ -402,11 +410,28 @@ class RAGQueryEngine:
         # Temporal keywords by category
         recent_keywords = {
             # English
-            "recent", "recently", "latest", "last", "new", "current",
-            "today", "yesterday", "this week", "this month", "this year",
+            "recent",
+            "recently",
+            "latest",
+            "last",
+            "new",
+            "current",
+            "today",
+            "yesterday",
+            "this week",
+            "this month",
+            "this year",
             # Russian
-            "недавн", "последн", "новый", "свежий", "актуальн",
-            "сегодня", "вчера", "на этой неделе", "в этом месяце", "в этом году",
+            "недавн",
+            "последн",
+            "новый",
+            "свежий",
+            "актуальн",
+            "сегодня",
+            "вчера",
+            "на этой неделе",
+            "в этом месяце",
+            "в этом году",
         }
 
         specific_time_patterns = [
@@ -421,7 +446,9 @@ class RAGQueryEngine:
         has_recent = any(keyword in query_lower for keyword in recent_keywords)
 
         # Check for specific time patterns
-        has_specific_time = any(re.search(pattern, query_lower) for pattern in specific_time_patterns)
+        has_specific_time = any(
+            re.search(pattern, query_lower) for pattern in specific_time_patterns
+        )
 
         # Determine time sensitivity
         if has_recent:
@@ -491,7 +518,9 @@ class RAGQueryEngine:
 
                     # Apply boost to score (multiply by time_boost)
                     original_score = doc_copy.get("score", 0.0)
-                    doc_copy["score"] = original_score * (0.7 + 0.3 * time_boost)  # 70% original + 30% time-boosted
+                    doc_copy["score"] = original_score * (
+                        0.7 + 0.3 * time_boost
+                    )  # 70% original + 30% time-boosted
                     doc_copy["time_boost"] = time_boost
 
                     logger.debug(
@@ -543,6 +572,13 @@ class RAGQueryEngine:
 
             source_point = source_points[0]
             source_vector = source_point.vector
+            # Ensure source_vector is a list of floats for Qdrant
+            if hasattr(source_vector, 'tolist'):
+                source_vector = source_vector.tolist()
+            elif not isinstance(source_vector, list):
+                source_vector = list(source_vector)  # type: ignore
+            # Type cast for mypy - source_vector should be list[float]
+            source_vector = cast(list[float], source_vector)
             source_video_id = source_point.payload.get("video_id")
 
             # Search for similar chunks
@@ -753,7 +789,9 @@ class RAGQueryEngine:
                 else:  # weighted
                     logger.info("Fusing scores with weighted sum...")
                     documents = self._fuse_scores_weighted(
-                        vector_documents, bm25_documents, bm25_weight=self.config.hybrid_search.bm25_weight
+                        vector_documents,
+                        bm25_documents,
+                        bm25_weight=self.config.hybrid_search.bm25_weight,
                     )
                 logger.info(f"Hybrid search produced {len(documents)} fused results")
             else:
@@ -888,7 +926,9 @@ class RAGQueryEngine:
             # Document header
             doc_header = f"[Document {doc['rank']}]"
             if doc.get("is_chunk"):
-                doc_header += f" [Chunk {doc.get('chunk_index', 0) + 1}/{doc.get('total_chunks', 1)}]"
+                doc_header += (
+                    f" [Chunk {doc.get('chunk_index', 0) + 1}/{doc.get('total_chunks', 1)}]"
+                )
             context_parts.append(doc_header)
 
             # Include date if available
@@ -1104,7 +1144,10 @@ Question: {query}"""
         temporal_context = None
         if not date_from and not date_to:
             temporal_context = self._detect_temporal_keywords(question)
-            if temporal_context["has_temporal"] and temporal_context["time_sensitivity"] == "recent":
+            if (
+                temporal_context["has_temporal"]
+                and temporal_context["time_sensitivity"] == "recent"
+            ):
                 # Use detected date range for "recent" queries
                 date_from = temporal_context.get("date_from")
                 date_to = temporal_context.get("date_to")

@@ -229,7 +229,9 @@ Text in seventh minute
         assert cues is not None
 
         # Create 5-minute chunks (300 seconds) without overlap
-        chunks = VTTParser.create_chunks_from_cues(cues, chunk_duration_seconds=300, overlap_seconds=0)
+        chunks = VTTParser.create_chunks_from_cues(
+            cues, chunk_duration_seconds=300, overlap_seconds=0
+        )
 
         assert len(chunks) == 2  # 0-5min and 5-10min
         assert chunks[0].chunk_index == 0
