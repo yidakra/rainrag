@@ -22,7 +22,7 @@ class QdrantIndexer:
             config: Configuration object
         """
         self.config = config
-        self.client: QdrantClient = None
+        self.client: QdrantClient | None = None
 
     def connect(self) -> None:
         """Connect to Qdrant server."""
@@ -44,6 +44,12 @@ class QdrantIndexer:
             logger.error(f"Failed to connect to Qdrant: {e}")
             raise
 
+    def _get_client(self) -> QdrantClient:
+        """Return initialized Qdrant client."""
+        if self.client is None:
+            raise RuntimeError("Qdrant client is not initialized. Call connect() first.")
+        return self.client
+
     def create_collection(self, recreate: bool = False) -> None:
         """
         Create or recreate the collection.
@@ -51,16 +57,17 @@ class QdrantIndexer:
         Args:
             recreate: If True, delete existing collection before creating
         """
+        client = self._get_client()
         collection_name = self.config.qdrant.collection_name
 
         # Check if collection exists
-        collections = self.client.get_collections()
+        collections = client.get_collections()
         collection_exists = any(col.name == collection_name for col in collections.collections)
 
         if collection_exists:
             if recreate or self.config.qdrant.recreate_collection:
                 logger.warning(f"Deleting existing collection: {collection_name}")
-                self.client.delete_collection(collection_name)
+                client.delete_collection(collection_name)
                 collection_exists = False
             else:
                 logger.info(f"Collection {collection_name} already exists")
@@ -79,7 +86,7 @@ class QdrantIndexer:
             distance = distance_map.get(self.config.qdrant.distance, models.Distance.COSINE)
 
             # Create collection
-            self.client.create_collection(
+            client.create_collection(
                 collection_name=collection_name,
                 vectors_config=models.VectorParams(
                     size=self.config.qdrant.vector_size,
@@ -103,6 +110,7 @@ class QdrantIndexer:
         Returns:
             Number of documents indexed
         """
+        client = self._get_client()
         collection_name = self.config.qdrant.collection_name
 
         logger.info(f"Indexing {len(documents)} documents into {collection_name}")
@@ -135,7 +143,7 @@ class QdrantIndexer:
                     )
                 )
 
-            self.client.upsert(collection_name=collection_name, points=batch_points)
+            client.upsert(collection_name=collection_name, points=batch_points)
 
         logger.info(f"Successfully indexed {len(documents)} documents")
 
@@ -148,10 +156,11 @@ class QdrantIndexer:
         Returns:
             Dictionary with collection stats
         """
+        client = self._get_client()
         collection_name = self.config.qdrant.collection_name
 
         try:
-            info = self.client.get_collection(collection_name)
+            info = client.get_collection(collection_name)
 
             stats = {
                 "name": collection_name,
@@ -182,9 +191,10 @@ class QdrantIndexer:
         Returns:
             List of search results with scores and payloads
         """
+        client = self._get_client()
         collection_name = self.config.qdrant.collection_name
 
-        results = self.client.query_points(
+        results = client.query_points(
             collection_name=collection_name,
             query=query_vector.tolist(),
             limit=top_k,

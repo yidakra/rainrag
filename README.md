@@ -518,8 +518,11 @@ make streamlit
 #### Option 3: Using Docker Compose
 
 ```bash
-# Build the image first
-docker build -t rainrag:latest .
+# Build the image first (CPU)
+docker build -t rainrag:latest -f Dockerfile .
+
+# Build the image first (GPU)
+docker build -t rainrag:gpu -f Dockerfile.gpu .
 
 # Start all services
 docker-compose up -d
@@ -775,7 +778,11 @@ server {
 ### Build the Docker Image
 
 ```bash
-docker build -t rainrag:latest .
+# CPU image
+docker build -t rainrag:latest -f Dockerfile .
+
+# GPU image
+docker build -t rainrag:gpu -f Dockerfile.gpu .
 ```
 
 ### Run with Docker
@@ -788,6 +795,13 @@ docker run --rm \
   -v $(pwd)/embeddings:/data/embeddings \
   rainrag:latest ingest
 
+# Run ingestion on GPU
+docker run --rm --gpus all \
+  -v /path/to/vtt/files:/data/archive \
+  -v $(pwd)/data:/data/rainrag \
+  -v $(pwd)/embeddings:/data/embeddings \
+  rainrag:gpu ingest
+
 # Run full pipeline
 docker run --rm \
   -v /path/to/vtt/files:/data/archive \
@@ -795,6 +809,14 @@ docker run --rm \
   -v $(pwd)/embeddings:/data/embeddings \
   --network host \
   rainrag:latest pipeline
+
+# Run full pipeline on GPU
+docker run --rm --gpus all \
+  -v /path/to/vtt/files:/data/archive \
+  -v $(pwd)/data:/data/rainrag \
+  -v $(pwd)/embeddings:/data/embeddings \
+  --network host \
+  rainrag:gpu pipeline
 ```
 
 ## Kubernetes Deployment with Helm
