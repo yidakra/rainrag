@@ -214,3 +214,4 @@ logs/
 *.npy
 models/
 qdrant_storage/
+.DS_Store
