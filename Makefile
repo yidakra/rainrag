@@ -92,10 +92,30 @@ streamlit: ## Start Streamlit frontend
 	@echo "Note: Make sure API is running (make api) or set RAINRAG_API_URL"
 	poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860
 
-up: qdrant-start ## Start all services (Qdrant, API, Streamlit)
+check-qdrant-start: ## Check and start Qdrant if needed
+	@if curl -s http://localhost:6333/readyz > /dev/null 2>&1; then \
+		echo "Qdrant is already running"; \
+	else \
+		echo "Qdrant not running, attempting to start..."; \
+		$(MAKE) qdrant-start || echo "Warning: Could not start Qdrant (may require sudo)"; \
+	fi
+
+api-start: ## Start API and Streamlit services
+	@echo "Cleaning up old log files..."
+	@rm -f /tmp/rainrag-*.log
 	@echo "Starting API and Streamlit..."
 	@$(MAKE) api-bg
 	@$(MAKE) streamlit-bg
+
+up: check-root check-qdrant-start api-start ## Start all services (Qdrant, API, Streamlit)
+
+check-root: ## Check if running as root and provide guidance
+	@if [ "$$(id -u)" = "0" ]; then \
+		echo "⚠️  WARNING: Running 'make up' as root may cause permission issues."; \
+		echo "   It is recommended to run as ubuntu user: 'make up'"; \
+		echo "   Or use: 'sudo make qdrant-start' then 'make api-bg && make streamlit-bg'"; \
+		echo ""; \
+	fi
 	@echo ""
 	@echo "=== All Services Started ==="
 	@echo ""
@@ -144,8 +164,8 @@ down: qdrant-stop ## Stop all services
 	@echo "All services stopped"
 
 api-bg: ## Start API in background
-	@cd $(PWD) && set -a && [ -f .env ] && . ./.env || true && set +a && \
-		poetry run python -m uvicorn rainrag.api:app --host 0.0.0.0 --port 8001 > /tmp/rainrag-api.log 2>&1 &
+	@cd /home/ubuntu/rainrag && set -a && [ -f .env ] && . ./.env || true && set +a && \
+		PATH="/home/ubuntu/.local/bin:$$PATH" HOME="/home/ubuntu" poetry run python -m uvicorn rainrag.api:app --host 0.0.0.0 --port 8001 > /tmp/rainrag-api.log 2>&1 &
 	@echo "Waiting for API to be ready..."
 	@for i in $$(seq 1 30); do \
 		if curl -s http://localhost:8001/health > /dev/null 2>&1; then \
@@ -165,8 +185,8 @@ api-bg: ## Start API in background
 	fi
 
 streamlit-bg: ## Start Streamlit in background
-	@cd $(PWD) && set -a && [ -f .env ] && . ./.env || true && set +a && \
-		poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860 > /tmp/rainrag-streamlit.log 2>&1 &
+	@cd /home/ubuntu/rainrag && set -a && [ -f .env ] && . ./.env || true && set +a && \
+		PATH="/home/ubuntu/.local/bin:$$PATH" HOME="/home/ubuntu" poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860 > /tmp/rainrag-streamlit.log 2>&1 &
 	@sleep 3
 	@if pgrep -f "streamlit run app.py" > /dev/null; then \
 		echo "Streamlit started in background (logs: /tmp/rainrag-streamlit.log)"; \

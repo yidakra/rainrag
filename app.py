@@ -409,7 +409,7 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     meta_parts = [f"**Score:** {score:.3f}"]
 
     # Show reranking info if available
-    if rerank_score is not None:
+    if rerank_score is not None and original_score is not None:
         meta_parts[0] = f"**Score:** {score:.3f} (reranked from {original_score:.3f})"
 
     # Show time boost if available
@@ -430,7 +430,8 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     meta_parts.append(f"**{get_text('language_field', lang)}:** {chunk_lang}")
 
     return f"""
-**{get_text("source_label", lang)}:** `{filename}`{chunk_info}<br>
+**{get_text("source_label", lang)}:** `{filename}`{chunk_info}
+
 {" | ".join(meta_parts)}
 """
 

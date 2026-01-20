@@ -91,7 +91,7 @@ chunking:
 
 # Hybrid search configuration (Vector + BM25)
 hybrid_search:
-  enabled: true  # Enable hybrid search combining vector similarity and BM25 keyword matching
+  enabled: false  # Enable hybrid search combining vector similarity and BM25 keyword matching
   bm25_weight: 0.3  # Weight for BM25 scores (0.0-1.0, vector weight = 1 - bm25_weight)
   top_k_multiplier: 3  # Retrieve top_k * multiplier documents before reranking
   fusion_method: "rrf"  # Score fusion method: 'rrf' (Reciprocal Rank Fusion) or 'weighted'
