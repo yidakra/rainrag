@@ -15,7 +15,7 @@ embedding:
   # IMPORTANT: Ensure vector_size in qdrant section matches the chosen embedding model's output dimension
   provider: "local"
   model_name: "intfloat/multilingual-e5-large"
-  batch_size: 64   # Reduced for stability
+  batch_size: 64   # Increased for throughput
   max_seq_length: 512
   device: "cpu"  # Auto-detected at runtime if GPU available
   normalize_embeddings: true
@@ -25,14 +25,18 @@ qdrant:
   host: "localhost"
   port: 6333
   collection_name: "broadcast_transcripts"
-  vector_size: 1024  # Must match the embedding model's output dimension:
+  vector_size: 3072  # Must match the embedding model's output dimension:
                      #   - intfloat/multilingual-e5-large: 1024
                      #   - text-embedding-3-small: 1536
                      #   - text-embedding-3-large: 3072
                      #   - mistral-embed: 1024
-                     #   - gemini embedding-001: 768
+                     #   - models/text-embedding-004: 3072
   distance: "Cosine"
   # Set to true to recreate collection on indexing
+  # WARNING: Setting recreate_collection: false preserves existing data but will cause failures
+  # if collection parameters change. Users must manually drop/recreate the collection when changing
+  # embedding model parameters such as vector_size or distance (or switching embedding models).
+  # Reindex or recreate the collection to avoid schema/metric mismatches.
   recreate_collection: false
 
 # LLM provider configuration

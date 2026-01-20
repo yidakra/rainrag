@@ -242,6 +242,46 @@ class VTTParser:
             return None
 
     @classmethod
+    def _finalize_cue(cls, timestamp_line: str, text_lines: list[str]) -> VTTCue | None:
+        """
+        Finalize a cue from timestamp line and text lines.
+
+        Args:
+            timestamp_line: VTT timestamp line (e.g., "00:00:00.000 --> 00:00:10.160")
+            text_lines: List of text lines for the cue
+
+        Returns:
+            VTTCue object if valid, None if invalid timestamp or empty text
+        """
+        # Parse timestamp: "00:00:00.000 --> 00:00:10.160"
+        parts = timestamp_line.split("-->")
+        if len(parts) != 2:
+            return None
+
+        start = parts[0].strip().split(".")[0]  # Remove milliseconds
+        end = parts[1].strip().split()[0].split(".")[0]  # Remove ms and positioning
+
+        # Handle invalid timestamp parts
+        if not start or not end:
+            return None
+
+        # Combine and clean text
+        combined_text = " ".join(text_lines)
+        cleaned_text = cls.clean_text(combined_text)
+
+        if not cleaned_text:
+            return None
+
+        cue = VTTCue(
+            start_time=start,
+            end_time=end,
+            start_seconds=cls.timestamp_to_seconds(start),
+            end_seconds=cls.timestamp_to_seconds(end),
+            text=cleaned_text,
+        )
+        return cue
+
+    @classmethod
     def _parse_vtt_lines_to_cues(cls, lines: list[str]) -> list[VTTCue] | None:
         """
         Parse VTT file lines into individual cues with timestamps.
@@ -259,47 +299,29 @@ class VTTParser:
         cues: list[VTTCue] = []
         current_timestamp_line = None
         current_text_lines: list[str] = []
-        skip_next = False
 
-        for line in lines[1:]:  # Skip the WEBVTT header
+        for i, line in enumerate(lines[1:], 1):  # Skip the WEBVTT header
             line = line.strip()
 
             # Skip empty lines - finalize current cue if any
             if not line:
                 if current_timestamp_line and current_text_lines:
-                    # Parse timestamp: "00:00:00.000 --> 00:00:10.160"
-                    parts = current_timestamp_line.split("-->")
-                    if len(parts) == 2:
-                        start = parts[0].strip().split(".")[0]  # Remove milliseconds
-                        end = parts[1].strip().split()[0].split(".")[0]  # Remove ms and positioning
+                    cue = cls._finalize_cue(current_timestamp_line, current_text_lines)
+                    if cue:
+                        cues.append(cue)
 
-                        # Combine and clean text
-                        combined_text = " ".join(current_text_lines)
-                        cleaned_text = cls.clean_text(combined_text)
-
-                        if cleaned_text:
-                            cue = VTTCue(
-                                start_time=start,
-                                end_time=end,
-                                start_seconds=cls.timestamp_to_seconds(start),
-                                end_seconds=cls.timestamp_to_seconds(end),
-                                text=cleaned_text,
-                            )
-                            cues.append(cue)
-
-                    current_timestamp_line = None
-                    current_text_lines = []
+                current_timestamp_line = None
+                current_text_lines = []
                 continue
 
             # Capture timestamp lines
             if cls.TIMESTAMP_PATTERN.match(line):
                 current_timestamp_line = line
-                skip_next = False
                 continue
 
-            # Skip cue identifiers
-            if cls.CUE_ID_PATTERN.match(line) and skip_next is False:
-                skip_next = True
+            # Skip cue identifiers only if immediately followed by timestamp
+            next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            if cls.CUE_ID_PATTERN.match(line) and cls.TIMESTAMP_PATTERN.match(next_line):
                 continue
 
             # Skip NOTE comments
@@ -311,21 +333,9 @@ class VTTParser:
 
         # Don't forget the last cue if file doesn't end with empty line
         if current_timestamp_line and current_text_lines:
-            parts = current_timestamp_line.split("-->")
-            if len(parts) == 2:
-                start = parts[0].strip().split(".")[0]
-                end = parts[1].strip().split()[0].split(".")[0]
-                combined_text = " ".join(current_text_lines)
-                cleaned_text = cls.clean_text(combined_text)
-                if cleaned_text:
-                    cue = VTTCue(
-                        start_time=start,
-                        end_time=end,
-                        start_seconds=cls.timestamp_to_seconds(start),
-                        end_seconds=cls.timestamp_to_seconds(end),
-                        text=cleaned_text,
-                    )
-                    cues.append(cue)
+            cue = cls._finalize_cue(current_timestamp_line, current_text_lines)
+            if cue:
+                cues.append(cue)
 
         return cues if cues else None
 
@@ -434,7 +444,7 @@ class VTTParser:
 
     @classmethod
     def _merge_undersized_chunks(
-        cls, chunks: list[VTTChunk], min_tokens: int, language: str
+        cls, chunks: list[VTTChunk], min_tokens: int, max_tokens: int, language: str
     ) -> list[VTTChunk]:
         """
         Merge chunks that are smaller than min_tokens with their neighbors.
@@ -442,6 +452,7 @@ class VTTParser:
         Args:
             chunks: List of VTTChunk objects to process
             min_tokens: Minimum token count threshold for merging
+            max_tokens: Maximum token count threshold for merged chunks
             language: Language code for token estimation
 
         Returns:
@@ -471,7 +482,7 @@ class VTTParser:
 
                 # Only merge if the combined chunk doesn't exceed a reasonable limit
                 # Use a conservative limit to prevent creating oversized chunks
-                if combined_tokens <= 800:  # Conservative limit
+                if combined_tokens <= max_tokens:
                     # Merge with previous
                     merged_chunk = VTTChunk(
                         chunk_index=prev_chunk.chunk_index,
@@ -492,7 +503,7 @@ class VTTParser:
                 combined_text = current_chunk.text + " " + next_chunk.text
                 combined_tokens = cls.estimate_tokens(combined_text, language)
 
-                if combined_tokens <= 800:  # Conservative limit
+                if combined_tokens <= max_tokens:
                     # Merge with next
                     merged_chunk = VTTChunk(
                         chunk_index=current_chunk.chunk_index,
@@ -593,6 +604,40 @@ class VTTParser:
                 for cue in chunk_cues:
                     cue_tokens = cls.estimate_tokens(cue.text, language)
 
+                    # If cue itself exceeds limit, add it as a separate chunk
+                    if cue_tokens > max_tokens:
+                        # Cue is too large, add it as its own chunk
+                        if current_cues:
+                            # First finalize any pending sub-chunk
+                            sub_chunk_text = " ".join(c.text for c in current_cues)
+                            sub_chunk = VTTChunk(
+                                chunk_index=chunk_index,
+                                start_time=current_cues[0].start_time,
+                                end_time=current_cues[-1].end_time,
+                                start_seconds=current_cues[0].start_seconds,
+                                end_seconds=current_cues[-1].end_seconds,
+                                text=sub_chunk_text,
+                                cue_count=len(current_cues),
+                            )
+                            validated_chunks.append(sub_chunk)
+                            chunk_index += 1
+                            current_cues = []
+                            current_tokens = 0
+
+                        # Add the oversized cue as its own chunk
+                        sub_chunk = VTTChunk(
+                            chunk_index=chunk_index,
+                            start_time=cue.start_time,
+                            end_time=cue.end_time,
+                            start_seconds=cue.start_seconds,
+                            end_seconds=cue.end_seconds,
+                            text=cue.text,
+                            cue_count=1,
+                        )
+                        validated_chunks.append(sub_chunk)
+                        chunk_index += 1
+                        continue
+
                     # Check if adding this cue would exceed limit
                     if current_tokens + cue_tokens > max_tokens and current_cues:
                         # Finalize current sub-chunk
@@ -616,23 +661,96 @@ class VTTParser:
                         current_cues.append(cue)
                         current_tokens += cue_tokens
 
-                # Add final sub-chunk
+                # Add final sub-chunk (split if it exceeds token limit)
                 if current_cues:
                     sub_chunk_text = " ".join(c.text for c in current_cues)
-                    sub_chunk = VTTChunk(
-                        chunk_index=chunk_index,
-                        start_time=current_cues[0].start_time,
-                        end_time=current_cues[-1].end_time,
-                        start_seconds=current_cues[0].start_seconds,
-                        end_seconds=current_cues[-1].end_seconds,
-                        text=sub_chunk_text,
-                        cue_count=len(current_cues),
-                    )
-                    validated_chunks.append(sub_chunk)
-                    chunk_index += 1
+                    sub_chunk_tokens = cls.estimate_tokens(sub_chunk_text, language)
+
+                    # If final sub-chunk exceeds limit, split it into smaller pieces
+                    if sub_chunk_tokens > max_tokens:
+                        # Split final oversized chunk by recursively processing its cues
+                        temp_cues = current_cues
+                        temp_validated: list[VTTChunk] = []
+
+                        # Reset counters for sub-sub-chunks
+                        current_cues = []
+                        current_tokens = 0
+
+                        for cue in temp_cues:
+                            cue_tokens = cls.estimate_tokens(cue.text, language)
+
+                            # If cue itself exceeds limit, add it as a separate chunk
+                            if cue_tokens > max_tokens:
+                                # Cue is too large, add it as its own chunk
+                                sub_sub_chunk = VTTChunk(
+                                    chunk_index=chunk_index,
+                                    start_time=cue.start_time,
+                                    end_time=cue.end_time,
+                                    start_seconds=cue.start_seconds,
+                                    end_seconds=cue.end_seconds,
+                                    text=cue.text,
+                                    cue_count=1,
+                                )
+                                temp_validated.append(sub_sub_chunk)
+                                chunk_index += 1
+                                continue
+
+                            # If adding this cue would exceed limit and we have content, finalize current sub-sub-chunk
+                            if current_tokens + cue_tokens > max_tokens and current_cues:
+                                sub_sub_text = " ".join(c.text for c in current_cues)
+                                sub_sub_chunk = VTTChunk(
+                                    chunk_index=chunk_index,
+                                    start_time=current_cues[0].start_time,
+                                    end_time=current_cues[-1].end_time,
+                                    start_seconds=current_cues[0].start_seconds,
+                                    end_seconds=current_cues[-1].end_seconds,
+                                    text=sub_sub_text,
+                                    cue_count=len(current_cues),
+                                )
+                                temp_validated.append(sub_sub_chunk)
+                                chunk_index += 1
+
+                                # Start new sub-sub-chunk
+                                current_cues = [cue]
+                                current_tokens = cue_tokens
+                            else:
+                                current_cues.append(cue)
+                                current_tokens += cue_tokens
+
+                        # Add final sub-sub-chunk
+                        if current_cues:
+                            sub_sub_text = " ".join(c.text for c in current_cues)
+                            sub_sub_chunk = VTTChunk(
+                                chunk_index=chunk_index,
+                                start_time=current_cues[0].start_time,
+                                end_time=current_cues[-1].end_time,
+                                start_seconds=current_cues[0].start_seconds,
+                                end_seconds=current_cues[-1].end_seconds,
+                                text=sub_sub_text,
+                                cue_count=len(current_cues),
+                            )
+                            temp_validated.append(sub_sub_chunk)
+                            chunk_index += 1
+
+                        validated_chunks.extend(temp_validated)
+                    else:
+                        # Final sub-chunk is within limits, add it normally
+                        sub_chunk = VTTChunk(
+                            chunk_index=chunk_index,
+                            start_time=current_cues[0].start_time,
+                            end_time=current_cues[-1].end_time,
+                            start_seconds=current_cues[0].start_seconds,
+                            end_seconds=current_cues[-1].end_seconds,
+                            text=sub_chunk_text,
+                            cue_count=len(current_cues),
+                        )
+                        validated_chunks.append(sub_chunk)
+                        chunk_index += 1
 
         # Step 3: Merge undersized chunks with neighbors
-        merged_chunks = cls._merge_undersized_chunks(validated_chunks, min_tokens, language)
+        merged_chunks = cls._merge_undersized_chunks(
+            validated_chunks, min_tokens, max_tokens, language
+        )
 
         return merged_chunks
 
@@ -769,6 +887,7 @@ class Ingester:
         Args:
             config: Configuration object
         """
+        super().__init__()
         self.config = config
         self.parser = VTTParser()
 

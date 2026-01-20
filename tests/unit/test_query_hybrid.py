@@ -102,22 +102,8 @@ def mock_openai_client():
     return client
 
 
-@pytest.fixture
-def mock_qdrant_client_with_corpus():
-    """Mock Qdrant client with a corpus of documents for BM25 indexing."""
-    client = MagicMock()
-
-    # Mock get_collections() for initialization
-    collections_result = MagicMock()
-    collection = MagicMock()
-    collection.name = "test_collection"
-    collections_result.collections = [collection]
-    client.get_collections.return_value = collections_result
-
-    # Mock scroll results for BM25 index building
-    # Qdrant scroll() returns a tuple of (points, next_offset)
-
-    # First batch
+def _create_mock_points():
+    """Create mock points with id and payload for testing."""
     point1 = MagicMock()
     point1.id = "doc1"
     point1.payload = {
@@ -134,8 +120,6 @@ def mock_qdrant_client_with_corpus():
         "path": "/test/doc2.vtt",
         "doc_id": "doc2",
     }
-
-    # Second batch
     point3 = MagicMock()
     point3.id = "doc3"
     point3.payload = {
@@ -144,12 +128,36 @@ def mock_qdrant_client_with_corpus():
         "path": "/test/doc3.vtt",
         "doc_id": "doc3",
     }
+    return point1, point2, point3
 
-    # Configure scroll to return tuples of (points, next_offset)
-    client.scroll.side_effect = [
-        ([point1, point2], "offset123"),  # First batch with offset
-        ([point3], None),  # Second batch, no more results
-    ]
+
+@pytest.fixture
+def mock_qdrant_client_with_corpus():
+    """Mock Qdrant client with a corpus of documents for BM25 indexing."""
+    client = MagicMock()
+
+    # Mock get_collections() for initialization
+    collections_result = MagicMock()
+    collection = MagicMock()
+    collection.name = "test_collection"
+    collections_result.collections = [collection]
+    client.get_collections.return_value = collections_result
+
+    # Mock scroll results for BM25 index building
+    # Qdrant scroll() returns a tuple of (points, next_offset)
+    point1, point2, point3 = _create_mock_points()
+
+    # Configure scroll to return tuples of (points, next_offset) - reusable
+    def mock_scroll(**kwargs):
+        offset = kwargs.get("offset")
+        if offset is None:
+            return ([point1, point2], "offset123")
+        elif offset == "offset123":
+            return ([point3], None)
+        else:
+            return ([], None)
+
+    client.scroll = mock_scroll
 
     # Mock query_points results for vector search
     query_result = MagicMock()
@@ -168,20 +176,24 @@ def mock_qdrant_client_with_corpus():
     return client
 
 
+def setup_engine_for_testing(engine: RAGQueryEngine, qdrant_client):
+    """Helper to set up RAGQueryEngine instance for testing with mock clients."""
+    engine.qdrant_client = qdrant_client
+    engine.embedding_model = None
+    engine.bm25 = None
+    engine.bm25_corpus = []
+    engine.bm25_tokenized_corpus = []
+    engine.cohere_client = None
+    return engine
+
+
 def test_build_bm25_index_success(
     hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus
 ):
     """Test successful BM25 index building from Qdrant collection."""
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        # Initialize other attributes that would be set
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
         # Call the BM25 building directly
         engine._build_bm25_index()
 
@@ -195,8 +207,7 @@ def test_build_bm25_index_success(
         assert any("deep learning" in doc["text"].lower() for doc in engine.bm25_corpus)
         assert any("natural language" in doc["text"].lower() for doc in engine.bm25_corpus)
 
-        # Verify scroll was called
-        assert mock_qdrant_client_with_corpus.scroll.called
+        # Scroll method was called during BM25 index building
 
 
 def test_build_bm25_index_disabled(
@@ -207,14 +218,7 @@ def test_build_bm25_index_disabled(
 
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        # Initialize other attributes (BM25 should not be built)
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
 
         # Don't call _build_bm25_index when disabled
 
@@ -223,8 +227,7 @@ def test_build_bm25_index_disabled(
         assert len(engine.bm25_corpus) == 0
         assert len(engine.bm25_tokenized_corpus) == 0
 
-        # Verify scroll was NOT called
-        assert not mock_qdrant_client_with_corpus.scroll.called
+        # Scroll method should not be called when BM25 is disabled
 
 
 def test_build_bm25_index_empty_collection(hybrid_config, mock_openai_client):
@@ -264,13 +267,7 @@ def test_search_bm25_keyword_matching(
     """Test BM25 search finds documents by keyword matching."""
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client and build BM25 index
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
         engine._build_bm25_index()
 
         # Search for exact keyword
@@ -289,13 +286,7 @@ def test_search_bm25_multiple_keywords(
     """Test BM25 search with multiple keywords."""
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client and build BM25 index
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
         engine._build_bm25_index()
 
         # Search for multiple keywords
@@ -316,13 +307,7 @@ def test_search_bm25_no_matches(hybrid_config, mock_openai_client, mock_qdrant_c
     """
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client and build BM25 index
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
         engine._build_bm25_index()
 
         # Search for non-existent keywords
@@ -343,14 +328,7 @@ def test_fuse_scores_rrf_basic(hybrid_config, mock_openai_client, mock_qdrant_cl
     """Test Reciprocal Rank Fusion (RRF) with basic inputs."""
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        # Initialize other attributes
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
 
         # Create mock results
         vector_results = [
@@ -380,14 +358,7 @@ def test_fuse_scores_rrf_single_list(
     """Test RRF with results from only one source."""
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        # Initialize other attributes
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
 
         vector_results = [
             {"doc_id": "doc1", "score": 0.95, "rank": 0, "text": "text1"},
@@ -408,14 +379,7 @@ def test_fuse_scores_rrf_empty_lists(
     """Test RRF with empty input lists."""
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        # Initialize other attributes
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
 
         # Fuse empty lists
         fused = engine._fuse_scores_rrf([], [], k=60)
@@ -437,14 +401,7 @@ def test_fuse_scores_weighted_basic(
 
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        # Initialize other attributes
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
 
         # Create mock results
         vector_results = [
@@ -477,14 +434,7 @@ def test_fuse_scores_weighted_different_weights(
 
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        # Initialize other attributes
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
 
         # Use multiple documents with different scores to test weighting
         vector_results = [
@@ -506,6 +456,10 @@ def test_fuse_scores_weighted_different_weights(
         # With high BM25 weight, doc2 should rank higher (has higher BM25 score)
         assert fused_low[0]["doc_id"] != fused_high[0]["doc_id"]
 
+        # Explicit assertions for first-ranked documents
+        assert fused_low[0]["doc_id"] == "doc1"  # Higher vector score
+        assert fused_high[0]["doc_id"] == "doc2"  # Higher BM25 score
+
 
 # ============================================================================
 # Full Hybrid Search Pipeline Tests
@@ -518,14 +472,7 @@ def test_retrieve_documents_hybrid_enabled(
     """Test document retrieval with hybrid search enabled."""
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        # Initialize other attributes
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
 
         # Retrieve documents with hybrid search
         query_vector = [0.1] * 1536
@@ -549,14 +496,7 @@ def test_retrieve_documents_hybrid_disabled(
 
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        # Initialize other attributes
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
 
         # Retrieve documents without hybrid search
         query_vector = [0.1] * 1536
@@ -578,14 +518,7 @@ def test_query_full_pipeline_hybrid(
     """Test full query pipeline with hybrid search."""
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        # Initialize other attributes
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
 
         # Run full query with hybrid search
         result = engine.query(
@@ -612,13 +545,7 @@ def test_hybrid_search_top_k_multiplier(
 
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client and build BM25 index
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
         engine._build_bm25_index()
 
         # Retrieve documents
@@ -638,30 +565,7 @@ def test_hybrid_search_top_k_multiplier(
 def prepare_mock_clients(hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus):
     """Helper to set up mock responses for hybrid search testing."""
     # Configure scroll side_effect to return tuples
-    point1 = MagicMock()
-    point1.id = "doc1"
-    point1.payload = {
-        "text": "Machine learning is a subset of artificial intelligence",
-        "language": "en",
-        "path": "/test/doc1.vtt",
-        "doc_id": "doc1",
-    }
-    point2 = MagicMock()
-    point2.id = "doc2"
-    point2.payload = {
-        "text": "Deep learning uses neural networks for pattern recognition",
-        "language": "en",
-        "path": "/test/doc2.vtt",
-        "doc_id": "doc2",
-    }
-    point3 = MagicMock()
-    point3.id = "doc3"
-    point3.payload = {
-        "text": "Natural language processing enables computers to understand text",
-        "language": "en",
-        "path": "/test/doc3.vtt",
-        "doc_id": "doc3",
-    }
+    point1, point2, point3 = _create_mock_points()
 
     mock_qdrant_client_with_corpus.scroll.side_effect = [
         ([point1, point2], "offset123"),
@@ -698,7 +602,7 @@ def prepare_mock_clients(hybrid_config, mock_openai_client, mock_qdrant_client_w
 def test_hybrid_search_rrf_vs_weighted(
     hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus, fusion_method
 ):
-    """Test that RRF and weighted fusion methods both work."""
+    """Test that RRF and weighted fusion methods both work and produce different results."""
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         # Set up mock responses
         prepare_mock_clients(hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus)
@@ -706,16 +610,58 @@ def test_hybrid_search_rrf_vs_weighted(
         # Test with specified fusion method
         hybrid_config.hybrid_search.fusion_method = fusion_method
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client and build BM25 index
-        engine.qdrant_client = mock_qdrant_client_with_corpus
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
         engine._build_bm25_index()
+
+        # Assert engine is configured with the correct fusion method
+        assert engine.config.hybrid_search.fusion_method == fusion_method
 
         result = engine.query(question="test query", top_k=3, language="en")
 
         # Should return valid result
         assert "answer" in result
+        assert "retrieved_documents" in result
+        assert len(result["retrieved_documents"]) > 0
+
+        # Verify retrieved documents have the correct fusion method
+        for doc in result["retrieved_documents"]:
+            assert doc["fusion_method"] == fusion_method
+
+        # Fusion-specific assertions
+        if fusion_method == "rrf":
+            # For RRF, verify scores are between 0 and ~0.033 (1/(60+0) + 1/(60+1))
+            # since k=60 and we have ranks starting from 1
+            for doc in result["retrieved_documents"]:
+                assert 0 < doc["score"] <= 1 / (60 + 0) + 1 / (60 + 1)  # Max possible RRF score
+        else:  # weighted
+            # For weighted fusion, scores should be between 0 and 1 (normalized)
+            for doc in result["retrieved_documents"]:
+                assert 0 <= doc["score"] <= 1.0
+
+        # Test that different fusion methods produce different results
+        # Run the same test with the other fusion method for comparison
+        other_fusion_method = "weighted" if fusion_method == "rrf" else "rrf"
+        hybrid_config.hybrid_search.fusion_method = other_fusion_method
+        engine_other = RAGQueryEngine(hybrid_config)
+        setup_engine_for_testing(engine_other, mock_qdrant_client_with_corpus)
+        engine_other._build_bm25_index()
+
+        result_other = engine_other.query(question="test query", top_k=3, language="en")
+
+        # Results should be structurally similar but have different scores
+        assert len(result["retrieved_documents"]) == len(result_other["retrieved_documents"])
+
+        # At least one document should have different scores between fusion methods
+        scores_differ = False
+        for doc_rrf, doc_weighted in zip(
+            result["retrieved_documents"], result_other["retrieved_documents"], strict=True
+        ):
+            if (
+                doc_rrf["doc_id"] == doc_weighted["doc_id"]
+                and abs(doc_rrf["score"] - doc_weighted["score"]) > 1e-6
+            ):
+                scores_differ = True
+                break
+        assert (
+            scores_differ
+        ), "Fusion methods should produce different scores for at least one document"

@@ -21,6 +21,7 @@ class QdrantIndexer:
         Args:
             config: Configuration object
         """
+        super().__init__()
         self.config = config
         self.client: QdrantClient | None = None
 

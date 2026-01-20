@@ -1,5 +1,6 @@
 """Streamlit frontend for RainRAG - Multilingual RAG system for video transcripts."""
 
+import contextlib
 import html
 import json
 import os
@@ -544,8 +545,9 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         # Add timestamp fragment for chunks to seek to start time
                         start_time_seconds = group[0].get("start_time_seconds")
                         if start_time_seconds is not None:
-                            # HTML5 video supports #t=seconds for seeking
-                            video_full_url += f"#t={int(float(start_time_seconds))}"
+                            with contextlib.suppress(ValueError, TypeError):
+                                # HTML5 video supports #t=seconds for seeking
+                                video_full_url += f"#t={int(float(start_time_seconds))}"
 
                         try:
                             # Use HTML video player for better compatibility
@@ -603,12 +605,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 
                         # Download button
                         st.markdown(
-                            f'<a href="{vtt_full_url}" download="{vtt_filename}" '
-                            f'style="display: inline-block; padding: 0.4rem 0.8rem; '
-                            f'background-color: #0084ff; color: white; text-decoration: none; '
-                            f'border-radius: 0.25rem; text-align: center; width: 100%; '
-                            f'box-sizing: border-box; margin-bottom: 0.5rem;">'
-                            f'{get_text("download_vtt", lang)}</a>',
+                            f'<a href="{vtt_full_url}" download="{vtt_filename}" style="display: inline-block; padding: 0.4rem 0.8rem; background-color: #0084ff; color: white; text-decoration: none; border-radius: 0.25rem; text-align: center; width: 100%; box-sizing: border-box; margin-bottom: 0.5rem;">{get_text("download_vtt", lang)}</a>',
                             unsafe_allow_html=True,
                         )
 
@@ -618,12 +615,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                             # Display VTT in a scrollable container
                             # Use dark background that works in both light and dark modes
                             st.markdown(
-                                f'<div style="height: 400px; overflow-y: auto; '
-                                f"border: 1px solid #4a4a4a; border-radius: 0.25rem; "
-                                f"padding: 0.5rem; background-color: #1e1e1e; "
-                                f"color: #e0e0e0; "
-                                f"font-family: monospace; font-size: 0.8rem; "
-                                f'white-space: pre-wrap;">{vtt_content}</div>',
+                                f'<div style="height: 400px; overflow-y: auto; border: 1px solid #4a4a4a; border-radius: 0.25rem; padding: 0.5rem; background-color: #1e1e1e; color: #e0e0e0; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap;">{vtt_content}</div>',
                                 unsafe_allow_html=True,
                             )
                         else:
@@ -640,7 +632,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     # Add "Find Related" button for each chunk
                     doc_id = chunk.get("doc_id")
                     if doc_id:
-                        col1, col2 = st.columns([1, 4])
+                        col1 = st.columns([1, 4])[0]
                         with col1:
                             if st.button(
                                 "Find Related",
@@ -676,8 +668,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                                     rel_score = rel_chunk.get("score", 0.0)
                                     rel_text = html.escape(rel_chunk.get("text", "")[:150])
                                     st.markdown(
-                                        f"{rel_idx}. `{rel_filename}` (Score: {rel_score:.3f})<br>"
-                                        f"_{rel_text}..._",
+                                        f"{rel_idx}. `{rel_filename}` (Score: {rel_score:.3f})<br>_{rel_text}..._",
                                         unsafe_allow_html=True,
                                     )
                             else:

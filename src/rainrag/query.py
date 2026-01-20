@@ -28,6 +28,38 @@ class RAGQueryEngine:
     4. Send to Mistral API for answer generation
     """
 
+    # Class constants for temporal keyword detection
+    _RECENT_KEYWORDS = {
+        # English
+        "recent",
+        "recently",
+        "latest",
+        "last",
+        "new",
+        "current",
+        "today",
+        "yesterday",
+        "this week",
+        "this month",
+        "this year",
+        # Russian
+        "недавн",
+        "последн",
+        "новый",
+        "свежий",
+        "актуальн",
+        "сегодня",
+        "вчера",
+        "на этой неделе",
+        "в этом месяце",
+        "в этом году",
+    }
+
+    _RECENT_PATTERN = re.compile(
+        r"\b(?:" + "|".join(re.escape(keyword) for keyword in _RECENT_KEYWORDS) + r")\b",
+        re.IGNORECASE,
+    )
+
     def __init__(self, config: Config):
         """
         Initialize the query engine.
@@ -35,6 +67,7 @@ class RAGQueryEngine:
         Args:
             config: Configuration object containing all settings
         """
+        super().__init__()
         self.config = config
         self.embedding_model: SentenceTransformer | None = None
         self.qdrant_client: QdrantClient | None = None
@@ -243,8 +276,7 @@ class RAGQueryEngine:
                 bm25_okapi = bm25_module.BM25Okapi
             except ModuleNotFoundError as exc:
                 raise RuntimeError(
-                    "rank-bm25 is required for BM25 search. "
-                    "Install with `poetry install` or `pip install rank-bm25`."
+                    "rank-bm25 is required for BM25 search. Install with `poetry install` or `pip install rank-bm25`."
                 ) from exc
             self.bm25 = bm25_okapi(self.bm25_tokenized_corpus)
             logger.info(f"BM25 index built with {len(self.bm25_corpus)} documents")
@@ -418,38 +450,7 @@ class RAGQueryEngine:
         """
         query_lower = query.lower()
 
-        # Temporal keywords by category
-        recent_keywords = {
-            # English
-            "recent",
-            "recently",
-            "latest",
-            "last",
-            "new",
-            "current",
-            "today",
-            "yesterday",
-            "this week",
-            "this month",
-            "this year",
-            # Russian
-            "недавн",
-            "последн",
-            "новый",
-            "свежий",
-            "актуальн",
-            "сегодня",
-            "вчера",
-            "на этой неделе",
-            "в этом месяце",
-            "в этом году",
-        }
-
-        # Compile regex patterns for precise word-boundary matching
-        recent_pattern = re.compile(
-            r"\b(?:" + "|".join(re.escape(keyword) for keyword in recent_keywords) + r")\b",
-            re.IGNORECASE,
-        )
+        # Use pre-compiled pattern for recent keywords
 
         specific_time_patterns = [
             # Dates: 2024, 2024-01-15, January 2024, etc.
@@ -460,7 +461,7 @@ class RAGQueryEngine:
         ]
 
         # Check for recent/latest keywords using compiled regex
-        has_recent = bool(recent_pattern.search(query))
+        has_recent = bool(self._RECENT_PATTERN.search(query))
 
         # Check for specific time patterns
         has_specific_time = any(
@@ -541,9 +542,7 @@ class RAGQueryEngine:
                     doc_copy["time_boost"] = time_boost
 
                     logger.debug(
-                        f"Document from {doc_date_str} (age: {age_days} days) - "
-                        f"Original score: {original_score:.4f}, Boosted score: {doc_copy['score']:.4f}, "
-                        f"Time boost: {time_boost:.4f}"
+                        f"Document from {doc_date_str} (age: {age_days} days) - Original score: {original_score:.4f}, Boosted score: {doc_copy['score']:.4f}, Time boost: {time_boost:.4f}"
                     )
                 except ValueError:
                     logger.warning(f"Could not parse date: {doc_date_str}")
@@ -1200,8 +1199,7 @@ Question: {query}"""
                 date_from = temporal_context.get("date_from")
                 date_to = temporal_context.get("date_to")
                 logger.info(
-                    f"Detected temporal query ('{temporal_context['time_sensitivity']}'), "
-                    f"applying date filter: {date_from} to {date_to}"
+                    f"Detected temporal query ('{temporal_context['time_sensitivity']}'), applying date filter: {date_from} to {date_to}"
                 )
 
         # Step 1: Embed the query

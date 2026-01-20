@@ -283,7 +283,7 @@ app.add_middleware(
 )
 
 
-def verify_auth_token(authorization: str | None = Header(None)) -> bool:
+def verify_auth_token(authorization: str | None = Header()) -> bool:  # type: ignore
     """Verify authentication token if configured."""
     required_token = os.getenv("RAINRAG_AUTH_TOKEN")
 
@@ -368,7 +368,7 @@ async def health_check():
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest, authorized: bool = Header(default=True)):
+async def query(request: QueryRequest, authorized: bool = Header(True)):  # type: ignore
     """
     Query the RAG system.
 
@@ -468,7 +468,8 @@ class RelatedChunksResponse(BaseModel):
 
 @app.post("/related-chunks", response_model=RelatedChunksResponse)
 async def get_related_chunks(
-    request: RelatedChunksRequest, authorized: bool = Header(default=True)
+    request: RelatedChunksRequest,
+    authorized: bool = Header(True),  # type: ignore
 ):
     """
     Find chunks related to a given chunk based on vector similarity.
@@ -487,8 +488,7 @@ async def get_related_chunks(
 
     try:
         logger.info(
-            f"Finding related chunks for: {request.chunk_id} "
-            f"(top_k={request.top_k}, same_video_only={request.same_video_only})"
+            f"Finding related chunks for: {request.chunk_id} (top_k={request.top_k}, same_video_only={request.same_video_only})"
         )
 
         # Find related chunks

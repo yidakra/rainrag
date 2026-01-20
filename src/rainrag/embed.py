@@ -25,6 +25,7 @@ class EmbeddingCache:
         Args:
             cache_dir: Directory to store cache files
         """
+        super().__init__()
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -82,9 +83,7 @@ class EmbeddingCache:
         # Validate that embeddings and documents have matching lengths
         if len(embeddings) != len(documents):
             logger.error(
-                f"Embeddings/metadata mismatch in load(): "
-                f"embeddings count ({len(embeddings)}) != documents count ({len(documents)}), "
-                f"embeddings_file: {self.embeddings_file}, metadata_file: {self.metadata_file}"
+                f"Embeddings/metadata mismatch in load(): embeddings count ({len(embeddings)}) != documents count ({len(documents)}), embeddings_file: {self.embeddings_file}, metadata_file: {self.metadata_file}"
             )
             return None, None
 
@@ -110,9 +109,12 @@ class Embedder:
         Args:
             config: Configuration object
         """
+        super().__init__()
         self.config = config
         self.cache = EmbeddingCache(config.paths.embeddings_cache)
         self.model: SentenceTransformer | None = None
+        self.openai_client: Any = None
+        self.mistral_client: Any = None
 
     def load_model(self) -> None:
         """Load the embedding model based on provider."""
@@ -132,19 +134,43 @@ class Embedder:
         """Load the local sentence-transformers model."""
         logger.info(f"Loading local model: {self.config.embedding.model_name}")
 
-        # Determine device with auto-detection
-        if torch.cuda.is_available():
-            # Use CUDA if available, preferring the config-specified device or cuda:0
-            if self.config.embedding.device.startswith("cuda"):
-                device = self.config.embedding.device
-            else:
+        # Determine device based on configuration
+        configured_device = self.config.embedding.device
+
+        if configured_device == "auto":
+            # Auto-selection: try CUDA, then MPS, then CPU
+            if torch.cuda.is_available():
                 device = "cuda:0"
-            logger.info(f"Using CUDA device: {device}")
+            elif torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = "cpu"
+            logger.info(f"Auto-selected device: {device}")
         else:
-            # Fall back to CPU
-            device = "cpu"
-            if self.config.embedding.device != "cpu":
-                logger.info("CUDA not available, using CPU")
+            # Honor configured device if available
+            if configured_device.startswith("cuda"):
+                if torch.cuda.is_available():
+                    device = configured_device
+                else:
+                    logger.warning(
+                        f"CUDA not available, configured device '{configured_device}' not usable, falling back to CPU"
+                    )
+                    device = "cpu"
+            elif configured_device == "mps":
+                if torch.backends.mps.is_available():
+                    device = "mps"
+                else:
+                    logger.warning(
+                        f"MPS not available, configured device '{configured_device}' not usable, falling back to CPU"
+                    )
+                    device = "cpu"
+            elif configured_device == "cpu":
+                device = "cpu"
+            else:
+                logger.warning(f"Unknown device '{configured_device}', falling back to CPU")
+                device = "cpu"
+
+            logger.info(f"Using device: {device}")
 
         # Load model
         try:
@@ -312,14 +338,14 @@ class Embedder:
         # Initialize clients
         model = None  # Initialize to avoid unbound variable
         client: Any = None  # Can be OpenAI, Mistral, or None
+        genai_client: Any = None  # Initialize to avoid unbound variable
         if provider == "openai":
             if not hasattr(self, "openai_client"):
                 try:
                     import openai
                 except ImportError as e:
                     raise ImportError(
-                        "openai package is required for OpenAI embeddings. "
-                        "Install it with: pip install openai"
+                        "openai package is required for OpenAI embeddings. Install it with: pip install openai"
                     ) from e
                 api_key = os.getenv("OPENAI_API_KEY")
                 if api_key is None:
@@ -335,8 +361,7 @@ class Embedder:
                     from mistralai import Mistral
                 except ImportError as e:
                     raise ImportError(
-                        "mistralai package is required for Mistral embeddings. "
-                        "Install it with: pip install mistralai"
+                        "mistralai package is required for Mistral embeddings. Install it with: pip install mistralai"
                     ) from e
                 api_key = os.getenv("MISTRAL_API_KEY")
                 if api_key is None:
@@ -347,13 +372,17 @@ class Embedder:
             client = self.mistral_client
             model = "mistral-embed"
         elif provider == "gemini":
+            try:
+                import google.generativeai as genai
+            except ImportError as e:
+                raise ImportError(
+                    "google-generativeai package is required for Gemini embeddings. Install it with: pip install google-generativeai"
+                ) from e
+            genai_client = cast(Any, genai)
             client = None  # Gemini uses direct API calls
             model = self.config.gemini.embedding_model
         else:
             raise ValueError(f"Unsupported embedding provider: {provider}")
-
-        if model is None:
-            raise ValueError(f"Model not initialized for provider: {provider}")
 
         # For API embeddings, prefix passages appropriately
         if provider in ["openai", "mistral"]:
@@ -385,20 +414,25 @@ class Embedder:
                         response = client.embeddings.create(model=model, inputs=batch_texts)
                         batch_embeddings = [item.embedding for item in response.data]
                     elif provider == "gemini":
-                        try:
-                            import google.generativeai as genai
-                        except ImportError as e:
-                            raise ImportError(
-                                "google-generativeai package is required for Gemini embeddings. "
-                                "Install it with: pip install google-generativeai"
-                            ) from e
-                        genai_client = cast(Any, genai)
                         result = genai_client.embed_content(
                             model=model,
                             content=batch_texts,
                             task_type="retrieval_document",
                         )
-                        batch_embeddings = result["embedding"]
+                        # Handle different response formats for batch embeddings
+                        if isinstance(result, list):
+                            batch_embeddings = result
+                        elif "embeddings" in result:
+                            batch_embeddings = result["embeddings"]
+                        elif "embedding" in result:
+                            # Single embedding case
+                            batch_embeddings = [result["embedding"]]
+                        elif "data" in result and isinstance(result["data"], list):
+                            batch_embeddings = [item["embedding"] for item in result["data"]]
+                        else:
+                            raise ValueError(
+                                f"Unexpected Gemini embedding response format: {result.keys()}"
+                            )
 
                     all_embeddings.extend(batch_embeddings)
                     break  # Success, exit retry loop
@@ -407,10 +441,9 @@ class Embedder:
                     is_transient = self._is_transient_exception(e)
 
                     if retry_attempt < max_retries and is_transient:
-                        delay = backoff_factor**retry_attempt
+                        delay = backoff_factor * (2**retry_attempt)
                         logger.warning(
-                            f"Transient error in batch {batch_index} (attempt {retry_attempt + 1}/{max_retries + 1}): {e}. "
-                            f"Retrying in {delay:.1f} seconds..."
+                            f"Transient error in batch {batch_index} (attempt {retry_attempt + 1}/{max_retries + 1}): {e}. Retrying in {delay:.1f} seconds..."
                         )
                         time.sleep(delay)
                         continue

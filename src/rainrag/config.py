@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import yaml
 from dotenv import load_dotenv
@@ -37,10 +37,12 @@ class EmbeddingConfig(BaseModel):
     device: str = Field(default="cuda")
     normalize_embeddings: bool = Field(default=True)
     max_retries: int = Field(
-        default=3, description="Maximum number of retries for transient embedding API failures"
+        default=3,
+        ge=1,
+        description="Maximum number of retries for transient embedding API failures",
     )
     retry_backoff_factor: float = Field(
-        default=2.0, description="Exponential backoff factor for retries"
+        default=2.0, gt=0, description="Exponential backoff factor for retries"
     )
 
 
@@ -307,7 +309,7 @@ class Config(BaseModel):
             # Mistral models
             "mistral-embed": 512,
             # Gemini models
-            "models/text-embedding-004": 2048,
+            "models/text-embedding-004": 3072,
             "models/embedding-001": 2048,
         }
 
@@ -352,7 +354,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
     with open(config_file) as f:
-        config_data: dict[str, Any] = yaml.safe_load(f)
+        config_data = cast(dict[str, Any], yaml.safe_load(f))
 
     # Override Mistral API key from environment variable if set
     mistral_api_key = os.getenv("MISTRAL_API_KEY")
