@@ -261,7 +261,7 @@ netstat -an | grep 6333  # Windows
 
 1. **Start Qdrant**:
 ```bash
-docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant:v1.12.1
+docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant:v1.16.3
 ```
 
 2. **Check correct host/port in config**:
@@ -484,7 +484,7 @@ tail -f ./logs/rainrag.log
 1. **Ensure Qdrant is running**:
 ```bash
 # Start Qdrant with Docker
-docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant:v1.12.1
+docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant:v1.16.3
 ```
 
 2. **Verify config.yaml is valid**:

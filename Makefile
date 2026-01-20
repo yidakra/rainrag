@@ -60,7 +60,7 @@ qdrant-start: ## Start local Qdrant instance
 		docker run -d --name rainrag-qdrant \
 			-p 6333:6333 -p 6334:6334 \
 			-v $(PWD)/qdrant_storage:/qdrant/storage \
-			qdrant/qdrant:v1.12.1; \
+			qdrant/qdrant:v1.16.3; \
 	fi
 	@echo "Waiting for Qdrant to be ready..."
 	@for i in $$(seq 1 30); do \

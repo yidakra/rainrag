@@ -270,7 +270,7 @@ To change embedding providers, update the `provider` field in your `config.yaml`
 Start a local Qdrant instance using Docker:
 
 ```bash
-docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant:v1.12.1
+docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant:v1.16.3
 ```
 
 ## Usage
@@ -1517,7 +1517,7 @@ Ensure Qdrant is running:
 docker ps | grep qdrant
 
 # If not running, start it
-docker run -p 6333:6333 qdrant/qdrant:v1.12.1
+docker run -p 6333:6333 qdrant/qdrant:v1.16.3
 ```
 
 ### Queries Return No Results (Empty Collection)
