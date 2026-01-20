@@ -543,7 +543,16 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                             video_full_url += f"#t={int(start_time_seconds)}"
 
                         try:
-                            st.video(video_full_url)
+                            # Use HTML video player for better compatibility
+                            st.markdown(
+                                f"""
+                                <video controls style="max-width: 100%; height: auto;">
+                                    <source src="{video_full_url}" type="video/mp4">
+                                    Your browser does not support the video tag.
+                                </video>
+                                """,
+                                unsafe_allow_html=True
+                            )
                         except Exception as e:
                             logger.warning(f"Could not load video: {e}")
                             st.warning(get_text("no_video", lang))

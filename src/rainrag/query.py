@@ -11,7 +11,7 @@ from anthropic import Anthropic
 from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
@@ -365,7 +365,7 @@ class RAGQueryEngine:
             min_score = min(scores.values())
             score_range = max_score - min_score
             if score_range == 0:
-                return {doc_id: 1.0 for doc_id in scores}
+                return dict.fromkeys(scores.keys(), 1.0)
             return {doc_id: (score - min_score) / score_range for doc_id, score in scores.items()}
 
         vector_scores = normalize_scores(vector_results)
@@ -569,19 +569,27 @@ class RAGQueryEngine:
         logger.info(f"Finding {top_k} related chunks for chunk_id: {chunk_id}")
 
         try:
-            # Get the source chunk
-            source_points = self.qdrant_client.retrieve(
+            # Find the source chunk by doc_id in payload
+            source_results = self.qdrant_client.query_points(
                 collection_name=self.config.qdrant.collection_name,
-                ids=[chunk_id],
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="doc_id",
+                            match=models.MatchValue(value=chunk_id),
+                        )
+                    ]
+                ),
+                limit=1,
                 with_vectors=True,
                 with_payload=True,
-            )
+            ).points
 
-            if not source_points:
-                logger.warning(f"Chunk not found: {chunk_id}")
+            if not source_results:
+                logger.warning(f"Chunk not found with doc_id: {chunk_id}")
                 return []
 
-            source_point = source_points[0]
+            source_point = source_results[0]
             source_vector = source_point.vector
             # Ensure source_vector is a list of floats for Qdrant
             if not isinstance(source_vector, list):
@@ -609,7 +617,8 @@ class RAGQueryEngine:
             related_chunks = []
             for hit in results:
                 # Skip the source chunk itself
-                if hit.id == chunk_id:
+                hit_payload = hit.payload or {}
+                if hit_payload.get("doc_id") == chunk_id:
                     continue
 
                 hit_payload = hit.payload or {}  # Ensure payload is not None
