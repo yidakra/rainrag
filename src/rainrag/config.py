@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import load_dotenv
@@ -36,6 +36,12 @@ class EmbeddingConfig(BaseModel):
     )
     device: str = Field(default="cuda")
     normalize_embeddings: bool = Field(default=True)
+    max_retries: int = Field(
+        default=3, description="Maximum number of retries for transient embedding API failures"
+    )
+    retry_backoff_factor: float = Field(
+        default=2.0, description="Exponential backoff factor for retries"
+    )
 
 
 class QdrantConfig(BaseModel):
@@ -56,6 +62,10 @@ class MistralConfig(BaseModel):
     model_name: str = Field(
         default="mistral-small-latest",
         description="Mistral model to use: mistral-small-latest, mistral-medium-latest, mistral-large-latest, etc.",
+    )
+    embedding_model: str = Field(
+        default="mistral-embed",
+        description="Mistral embedding model",
     )
     max_tokens: int = Field(default=2048, description="Maximum tokens for response generation")
     temperature: float = Field(default=0.3)
@@ -122,7 +132,7 @@ class ChunkingConfig(BaseModel):
     """Configuration for VTT chunking."""
 
     enabled: bool = Field(default=True, description="Enable chunking of VTT files")
-    strategy: str = Field(
+    strategy: Literal["time", "token", "hybrid"] = Field(
         default="hybrid",
         description="Chunking strategy: 'time' (time-based only), 'token' (token-based only), 'hybrid' (time-based with token validation)",
     )
@@ -157,6 +167,8 @@ class HybridSearchConfig(BaseModel):
     )
     bm25_weight: float = Field(
         default=0.3,
+        ge=0.0,
+        le=1.0,
         description="Weight for BM25 scores in hybrid search (0.0-1.0). Vector weight = 1 - bm25_weight",
     )
     top_k_multiplier: int = Field(
@@ -217,12 +229,16 @@ class MCPConfig(BaseModel):
 
 
 class CohereConfig(BaseModel):
-    """Configuration for Cohere Rerank API."""
+    """Configuration for Cohere API (reranking and embeddings)."""
 
     api_key: str = Field(default="", description="Cohere API key")
     model_name: str = Field(
         default="rerank-v3.5",
         description="Cohere rerank model: rerank-v3.5, rerank-english-v3.0, rerank-multilingual-v3.0",
+    )
+    embedding_model: str = Field(
+        default="embed-multilingual-v3.0",
+        description="Cohere embedding model: embed-multilingual-v3.0, embed-english-v3.0, etc.",
     )
 
 
@@ -288,6 +304,8 @@ class Config(BaseModel):
             "embed-multilingual-v3.0": 512,
             "embed-english-light-v3.0": 512,
             "embed-multilingual-light-v3.0": 512,
+            # Mistral models
+            "mistral-embed": 512,
             # Gemini models
             "models/text-embedding-004": 2048,
             "models/embedding-001": 2048,
@@ -300,15 +318,19 @@ class Config(BaseModel):
             model_name = self.openai.embedding_model
         elif self.embedding.provider == "gemini":
             model_name = self.gemini.embedding_model
+        elif self.embedding.provider == "mistral":
+            model_name = self.mistral.embedding_model
+        elif self.embedding.provider == "cohere":
+            model_name = self.cohere.embedding_model
         else:
             # Default to configured max_seq_length
-            return self.embedding.max_seq_length - self.chunking.token_buffer
+            return max(1, self.embedding.max_seq_length - self.chunking.token_buffer)
 
         # Look up model limit
         limit = model_limits.get(model_name, self.embedding.max_seq_length)
 
         # Subtract safety buffer
-        return limit - self.chunking.token_buffer
+        return max(1, limit - self.chunking.token_buffer)
 
 
 def load_config(config_path: str = "config.yaml") -> Config:

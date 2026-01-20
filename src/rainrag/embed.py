@@ -2,15 +2,13 @@
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, cast
 
-import google.generativeai as genai
 import numpy as np
-import openai
 import torch
 from loguru import logger
-from mistralai import Mistral
 from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
@@ -81,6 +79,15 @@ class EmbeddingCache:
 
         logger.info(f"Loaded metadata for {len(documents)} documents")
 
+        # Validate that embeddings and documents have matching lengths
+        if len(embeddings) != len(documents):
+            logger.error(
+                f"Embeddings/metadata mismatch in load(): "
+                f"embeddings count ({len(embeddings)}) != documents count ({len(documents)}), "
+                f"embeddings_file: {self.embeddings_file}, metadata_file: {self.metadata_file}"
+            )
+            return None, None
+
         return embeddings, documents
 
     def exists(self) -> bool:
@@ -125,12 +132,19 @@ class Embedder:
         """Load the local sentence-transformers model."""
         logger.info(f"Loading local model: {self.config.embedding.model_name}")
 
-        # Determine device
-        if self.config.embedding.device == "cuda" and not torch.cuda.is_available():
-            logger.warning("CUDA not available, falling back to CPU")
-            device = "cpu"
+        # Determine device with auto-detection
+        if torch.cuda.is_available():
+            # Use CUDA if available, preferring the config-specified device or cuda:0
+            if self.config.embedding.device.startswith("cuda"):
+                device = self.config.embedding.device
+            else:
+                device = "cuda:0"
+            logger.info(f"Using CUDA device: {device}")
         else:
-            device = self.config.embedding.device
+            # Fall back to CPU
+            device = "cpu"
+            if self.config.embedding.device != "cpu":
+                logger.info("CUDA not available, using CPU")
 
         # Load model
         try:
@@ -152,6 +166,46 @@ class Embedder:
         self.model.max_seq_length = self.config.embedding.max_seq_length
 
         logger.info(f"Local model loaded on device: {device}")
+
+    def _is_transient_exception(self, exception: Exception) -> bool:
+        """
+        Check if an exception is transient and should be retried.
+
+        Args:
+            exception: The exception to check
+
+        Returns:
+            True if the exception is transient (rate limit, network error), False otherwise
+        """
+        # Check for rate limit errors
+        if hasattr(exception, "status_code"):
+            try:
+                status_code = exception.status_code  # type: ignore
+                if isinstance(status_code, int) and status_code in [
+                    429,
+                    502,
+                    503,
+                    504,
+                ]:  # Rate limit or server errors
+                    return True
+            except AttributeError:
+                pass
+
+        # Check for specific error messages that indicate transient issues
+        error_str = str(exception).lower()
+        transient_indicators = [
+            "rate limit",
+            "rate_limit",
+            "too many requests",
+            "service unavailable",
+            "temporary failure",
+            "connection error",
+            "network error",
+            "timeout",
+            "internal server error",
+        ]
+
+        return any(indicator in error_str for indicator in transient_indicators)
 
     def load_documents(self, docs_path: str) -> list[Document]:
         """
@@ -260,12 +314,36 @@ class Embedder:
         client: Any = None  # Can be OpenAI, Mistral, or None
         if provider == "openai":
             if not hasattr(self, "openai_client"):
-                self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+                try:
+                    import openai
+                except ImportError as e:
+                    raise ImportError(
+                        "openai package is required for OpenAI embeddings. "
+                        "Install it with: pip install openai"
+                    ) from e
+                api_key = os.getenv("OPENAI_API_KEY")
+                if api_key is None:
+                    raise ValueError(
+                        "OPENAI_API_KEY environment variable is required for OpenAI embeddings"
+                    )
+                self.openai_client = openai.OpenAI(api_key=api_key)
             client = self.openai_client
             model = self.config.openai.embedding_model
         elif provider == "mistral":
             if not hasattr(self, "mistral_client"):
-                self.mistral_client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
+                try:
+                    from mistralai import Mistral
+                except ImportError as e:
+                    raise ImportError(
+                        "mistralai package is required for Mistral embeddings. "
+                        "Install it with: pip install mistralai"
+                    ) from e
+                api_key = os.getenv("MISTRAL_API_KEY")
+                if api_key is None:
+                    raise ValueError(
+                        "MISTRAL_API_KEY environment variable is required for Mistral embeddings"
+                    )
+                self.mistral_client = Mistral(api_key=api_key)
             client = self.mistral_client
             model = "mistral-embed"
         elif provider == "gemini":
@@ -293,29 +371,58 @@ class Embedder:
                     f"Processing batch {i//batch_size + 1}/{(len(texts) + batch_size - 1)//batch_size}"
                 )
 
-            try:
-                if provider == "openai":
-                    response = client.embeddings.create(model=model, input=batch_texts)
-                    batch_embeddings = [item.embedding for item in response.data]
-                elif provider == "mistral":
-                    response = client.embeddings.create(model=model, inputs=batch_texts)
-                    batch_embeddings = [item.embedding for item in response.data]
-                elif provider == "gemini":
-                    batch_embeddings = []
-                    genai_client = cast(Any, genai)
-                    for text in batch_texts:
+            # Retry logic for transient failures
+            max_retries = self.config.embedding.max_retries
+            backoff_factor = self.config.embedding.retry_backoff_factor
+            batch_index = i // batch_size + 1
+
+            for retry_attempt in range(max_retries + 1):
+                try:
+                    if provider == "openai":
+                        response = client.embeddings.create(model=model, input=batch_texts)
+                        batch_embeddings = [item.embedding for item in response.data]
+                    elif provider == "mistral":
+                        response = client.embeddings.create(model=model, inputs=batch_texts)
+                        batch_embeddings = [item.embedding for item in response.data]
+                    elif provider == "gemini":
+                        try:
+                            import google.generativeai as genai
+                        except ImportError as e:
+                            raise ImportError(
+                                "google-generativeai package is required for Gemini embeddings. "
+                                "Install it with: pip install google-generativeai"
+                            ) from e
+                        genai_client = cast(Any, genai)
                         result = genai_client.embed_content(
                             model=model,
-                            content=text,
+                            content=batch_texts,
                             task_type="retrieval_document",
                         )
-                        batch_embeddings.append(result["embedding"])
+                        batch_embeddings = result["embedding"]
 
-                all_embeddings.extend(batch_embeddings)
+                    all_embeddings.extend(batch_embeddings)
+                    break  # Success, exit retry loop
 
-            except Exception as e:
-                logger.error(f"Failed to generate embeddings for batch {i//batch_size + 1}: {e}")
-                raise
+                except Exception as e:
+                    is_transient = self._is_transient_exception(e)
+
+                    if retry_attempt < max_retries and is_transient:
+                        delay = backoff_factor**retry_attempt
+                        logger.warning(
+                            f"Transient error in batch {batch_index} (attempt {retry_attempt + 1}/{max_retries + 1}): {e}. "
+                            f"Retrying in {delay:.1f} seconds..."
+                        )
+                        time.sleep(delay)
+                        continue
+                    else:
+                        # Either non-transient error or max retries exceeded
+                        if is_transient:
+                            logger.error(
+                                f"Failed to generate embeddings for batch {batch_index} after {max_retries + 1} attempts: {e}"
+                            )
+                        else:
+                            logger.error(f"Non-transient error in batch {batch_index}: {e}")
+                        raise
 
         embeddings_array = np.array(all_embeddings)
         logger.info(f"Generated embeddings with shape: {embeddings_array.shape}")

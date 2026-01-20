@@ -169,6 +169,53 @@ def find_video_file(vtt_path: str) -> str | None:
     return None
 
 
+def generate_media_urls(
+    vtt_path: str, start_time: str | None = None
+) -> tuple[str | None, str | None]:
+    """
+    Generate video and VTT URLs for a given VTT file path.
+
+    Args:
+        vtt_path: Path to the VTT file
+        start_time: Optional start time for video URL timecode
+
+    Returns:
+        Tuple of (video_url, vtt_url) - both may be None if video is disabled or files not found
+    """
+    video_url = None
+    vtt_url = None
+
+    if config and config.video.enabled:
+        # Find corresponding video file
+        video_file = find_video_file(vtt_path)
+        if video_file:
+            # Create relative path from video_root
+            video_root = (
+                config.paths.video_root if config.paths.video_root else config.paths.archive_root
+            )
+            try:
+                video_rel = Path(video_file).relative_to(video_root)
+                video_url = f"/video/{video_rel}"
+                # Add timecode fragment for video player to start at
+                if start_time:
+                    start_seconds = timecode_to_seconds(start_time)
+                    if start_seconds is not None:
+                        video_url = f"{video_url}#t={start_seconds}"
+            except ValueError as e:
+                logger.warning(f"Video file {video_file} is not under video_root {video_root}: {e}")
+
+        # VTT file URL
+        try:
+            vtt_rel = Path(vtt_path).relative_to(config.paths.archive_root)
+            vtt_url = f"/vtt/{vtt_rel}"
+        except ValueError as e:
+            logger.warning(
+                f"VTT file {vtt_path} is not under archive_root {config.paths.archive_root}: {e}"
+            )
+
+    return video_url, vtt_url
+
+
 def get_video_base_name(vtt_path: str) -> str:
     """
     Extract the base name from a VTT file path for grouping.
@@ -356,38 +403,7 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
             vtt_path = doc["path"]
 
             # Generate URLs for video and VTT files
-            video_url = None
-            vtt_url = None
-
-            if config and config.video.enabled:
-                # Find corresponding video file
-                video_file = find_video_file(vtt_path)
-                if video_file:
-                    # Create relative path from video_root
-                    video_root = (
-                        config.paths.video_root
-                        if config.paths.video_root
-                        else config.paths.archive_root
-                    )
-                    try:
-                        video_rel = Path(video_file).relative_to(video_root)
-                        video_url = f"/video/{video_rel}"
-                        # Add timecode fragment for video player to start at
-                        start_time = doc.get("start_time")
-                        if start_time:
-                            start_seconds = timecode_to_seconds(start_time)
-                            if start_seconds is not None:
-                                video_url = f"{video_url}#t={start_seconds}"
-                    except ValueError:
-                        logger.warning(f"Video file {video_file} is not under video_root")
-
-                # Create VTT URL
-                archive_root = config.paths.archive_root
-                try:
-                    vtt_rel = Path(vtt_path).relative_to(archive_root)
-                    vtt_url = f"/vtt/{vtt_rel}"
-                except ValueError:
-                    logger.warning(f"VTT file {vtt_path} is not under archive_root")
+            video_url, vtt_url = generate_media_urls(vtt_path, doc.get("start_time"))
 
             # Get group ID for grouping multilingual versions
             group_id = get_video_base_name(vtt_path)
@@ -482,41 +498,11 @@ async def get_related_chunks(
 
         # Format response with video and VTT URLs
         related_chunks = []
-        for doc in related_docs:
+        for idx, doc in enumerate(related_docs):
             vtt_path = doc["path"]
 
             # Generate URLs for video and VTT files
-            video_url = None
-            vtt_url = None
-
-            if config and config.video.enabled:
-                # Find corresponding video file
-                video_file = find_video_file(vtt_path)
-                if video_file:
-                    # Create relative path from video_root
-                    video_root = (
-                        config.paths.video_root
-                        if config.paths.video_root
-                        else config.paths.archive_root
-                    )
-                    try:
-                        video_rel = Path(video_file).relative_to(video_root)
-                        video_url = f"/video/{video_rel}"
-                        # Add timecode fragment for video player to start at
-                        start_time = doc.get("start_time")
-                        if start_time:
-                            start_seconds = timecode_to_seconds(start_time)
-                            if start_seconds is not None:
-                                video_url = f"{video_url}#t={start_seconds}"
-                    except ValueError:
-                        pass
-
-                # VTT file URL
-                try:
-                    vtt_rel = Path(vtt_path).relative_to(config.paths.archive_root)
-                    vtt_url = f"/vtt/{vtt_rel}"
-                except ValueError:
-                    pass
+            video_url, vtt_url = generate_media_urls(vtt_path, doc.get("start_time"))
 
             # Get base name for grouping
             group_id = get_video_base_name(vtt_path)
@@ -526,11 +512,15 @@ async def get_related_chunks(
                 filename=Path(vtt_path).name,
                 language=doc.get("language", "unknown"),
                 score=doc["score"],
-                rank=related_docs.index(doc) + 1,
-                doc_id=doc["doc_id"],
+                rank=idx + 1,
+                doc_id=doc.get("doc_id", ""),
                 video_url=video_url,
                 vtt_url=vtt_url,
                 group_id=group_id,
+                date=doc.get("date"),
+                duration_seconds=doc.get("duration_seconds"),
+                start_time=doc.get("start_time"),
+                end_time=doc.get("end_time"),
             )
             related_chunks.append(chunk)
 

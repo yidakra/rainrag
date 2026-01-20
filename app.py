@@ -1,5 +1,6 @@
 """Streamlit frontend for RainRAG - Multilingual RAG system for video transcripts."""
 
+import html
 import json
 import os
 from datetime import date
@@ -509,7 +510,11 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 
             insights = []
             if has_hybrid:
-                fusion = chunks[0].get("fusion_method", "rrf").upper()
+                fusion_method = next(
+                    (chunk.get("fusion_method") for chunk in chunks if chunk.get("fusion_method")),
+                    "rrf",
+                )
+                fusion = fusion_method.upper()
                 insights.append(f"Hybrid Search ({fusion})")
             if has_reranking:
                 insights.append("Reranked")
@@ -540,18 +545,18 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         start_time_seconds = group[0].get("start_time_seconds")
                         if start_time_seconds is not None:
                             # HTML5 video supports #t=seconds for seeking
-                            video_full_url += f"#t={int(start_time_seconds)}"
+                            video_full_url += f"#t={int(float(start_time_seconds))}"
 
                         try:
                             # Use HTML video player for better compatibility
                             st.markdown(
                                 f"""
                                 <video controls style="max-width: 100%; height: auto;">
-                                    <source src="{video_full_url}" type="video/mp4">
+                                    <source src="{html.escape(video_full_url)}" type="video/mp4">
                                     Your browser does not support the video tag.
                                 </video>
                                 """,
-                                unsafe_allow_html=True
+                                unsafe_allow_html=True,
                             )
                         except Exception as e:
                             logger.warning(f"Could not load video: {e}")
@@ -647,28 +652,36 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 
                         # Show related chunks if button was clicked
                         if st.session_state.get(f"show_related_{doc_id}", False):
-                            with st.spinner("Finding related chunks..."):
-                                import asyncio
+                            # Cache related chunks in session state
+                            cache_key = f"related_chunks_{doc_id}"
+                            if cache_key not in st.session_state:
+                                with st.spinner("Finding related chunks..."):
+                                    import asyncio
 
-                                try:
-                                    related_chunks = asyncio.run(
-                                        get_related_chunks(doc_id, top_k=3, same_video_only=False)
-                                    )
-                                    if related_chunks:
-                                        st.markdown("**Related Content:**")
-                                        for rel_idx, rel_chunk in enumerate(related_chunks, 1):
-                                            rel_filename = rel_chunk.get("filename", "Unknown")
-                                            rel_score = rel_chunk.get("score", 0.0)
-                                            rel_text = rel_chunk.get("text", "")[:150]
-                                            st.markdown(
-                                                f"{rel_idx}. `{rel_filename}` (Score: {rel_score:.3f})<br>"
-                                                f"_{rel_text}..._",
-                                                unsafe_allow_html=True,
+                                    try:
+                                        st.session_state[cache_key] = asyncio.run(
+                                            get_related_chunks(
+                                                doc_id, top_k=3, same_video_only=False
                                             )
-                                    else:
-                                        st.info("No related chunks found")
-                                except Exception as e:
-                                    st.error(f"Error finding related chunks: {e}")
+                                        )
+                                    except Exception as e:
+                                        st.error(f"Error finding related chunks: {e}")
+                                        st.session_state[cache_key] = []
+
+                            related_chunks = st.session_state[cache_key]
+                            if related_chunks:
+                                st.markdown("**Related Content:**")
+                                for rel_idx, rel_chunk in enumerate(related_chunks, 1):
+                                    rel_filename = html.escape(rel_chunk.get("filename", "Unknown"))
+                                    rel_score = rel_chunk.get("score", 0.0)
+                                    rel_text = html.escape(rel_chunk.get("text", "")[:150])
+                                    st.markdown(
+                                        f"{rel_idx}. `{rel_filename}` (Score: {rel_score:.3f})<br>"
+                                        f"_{rel_text}..._",
+                                        unsafe_allow_html=True,
+                                    )
+                            else:
+                                st.info("No related chunks found")
 
                     # Do not display transcript text here (VTT viewer already provides full context)
 

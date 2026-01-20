@@ -240,7 +240,7 @@ Text in seventh minute
         assert "Text in third minute" in chunks[0].text
 
         assert chunks[1].chunk_index == 1
-        assert chunks[1].start_seconds == 300.0  # 5 minutes (no overlap)
+        assert chunks[1].start_seconds == 360.0  # When cue 3 starts (00:06:00)
         assert "Text in seventh minute" in chunks[1].text
 
     def test_estimate_tokens_english(self) -> None:
@@ -284,7 +284,12 @@ Another short segment
 
         # Create chunks with generous token limit (should not split)
         chunks = VTTParser.create_chunks_hybrid(
-            cues, chunk_duration_seconds=300, max_tokens=500, min_tokens=10, language="en"
+            cues,
+            chunk_duration_seconds=300,
+            overlap_seconds=0,
+            max_tokens=500,
+            min_tokens=1,
+            language="en",
         )
 
         # Should create 2 chunks (0-5min and 5-10min), no splitting needed
@@ -294,12 +299,23 @@ Another short segment
 
     def test_create_chunks_hybrid_with_splitting(self, temp_dir: Path) -> None:
         """Test hybrid chunking splits oversized time-based chunks."""
-        # Create a VTT with very long content in first 5 minutes
-        long_text = " ".join([f"Word{i}" for i in range(200)])  # ~1000 characters
+        # Create a VTT with very long content split across multiple cues in first 5 minutes
+        # Split the long text into segments that will exceed token limits when combined
+        words = [f"Word{i}" for i in range(200)]
+        segment1 = " ".join(words[:80])  # ~80 tokens
+        segment2 = " ".join(words[80:160])  # ~80 tokens
+        segment3 = " ".join(words[160:])  # ~40 tokens
+
         vtt_content = f"""WEBVTT
 
-00:00:00.000 --> 00:04:00.000
-{long_text}
+00:00:00.000 --> 00:01:20.000
+{segment1}
+
+00:01:20.000 --> 00:02:40.000
+{segment2}
+
+00:02:40.000 --> 00:04:00.000
+{segment3}
 
 00:05:00.000 --> 00:06:00.000
 Short text in next chunk
@@ -316,8 +332,15 @@ Short text in next chunk
         )
 
         # First time-based chunk should be split due to token limit
-        # Should have more than 2 chunks
-        assert len(chunks) >= 2
+        # Combined segments (200 tokens) exceed 100 token limit, should split into at least 2 chunks
+        # Plus the second time chunk makes at least 3 total
+        assert len(chunks) >= 3
+
+        # Verify that at least one chunk has tokens <= max_tokens
+        token_counts = [VTTParser.estimate_tokens(chunk.text, "en") for chunk in chunks]
+        assert any(
+            count <= 100 for count in token_counts
+        ), f"All chunks exceed token limit: {token_counts}"
 
     def test_create_chunks_hybrid_multiple_time_chunks(self, temp_dir: Path) -> None:
         """Test hybrid chunking creates multiple time-based chunks when content is sparse."""
@@ -375,13 +398,13 @@ Follow-up information after boundary
         # Should create 2 chunks: 0-5min and 4:30-10min (30s overlap)
         assert len(chunks) == 2
 
-        # Verify first chunk (0-5min)
-        assert chunks[0].start_seconds == 0.0
+        # Verify first chunk (0-5min window, content starts at 4:30)
+        assert chunks[0].start_seconds == 270.0  # First cue at 4:30 (270s)
         assert "Important context before boundary" in chunks[0].text
         assert "Critical information spanning" in chunks[0].text
 
-        # Verify second chunk starts at 4:30 (270s), creating 30s overlap
-        assert chunks[1].start_seconds == 270.0
+        # Verify second chunk (4:30-10min window, content starts at 4:30 due to overlap)
+        assert chunks[1].start_seconds == 270.0  # Overlap starts at 4:30 (270s)
         # Second chunk should contain overlapping content from first chunk
         assert "Important context before boundary" in chunks[1].text
         assert "Critical information spanning" in chunks[1].text
@@ -585,6 +608,7 @@ Content in tenth minute
         test_config.chunking.enabled = True
         test_config.chunking.chunk_duration_seconds = 300  # 5 minutes
         test_config.chunking.overlap_seconds = 0  # No overlap for this test
+        test_config.chunking.min_chunk_tokens = 1  # Very low to prevent merging
 
         ingester = Ingester(test_config)
         docs = ingester.process_file(vtt_file)
@@ -604,7 +628,7 @@ Content in tenth minute
         assert docs[1].chunk_index == 1
         assert docs[1].total_chunks == 2
         assert "Content in seventh minute" in docs[1].text
-        assert docs[1].start_time_seconds == 300.0  # No overlap
+        assert docs[1].start_time_seconds == 360.0  # First cue at 6:00 (360 seconds)
 
         # Verify both have same video_id
         assert docs[0].video_id == docs[1].video_id

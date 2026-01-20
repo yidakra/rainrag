@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EMBEDDINGS_DIR="${EMBEDDINGS_DIR:-/root/rainrag/embeddings}"
+EMBEDDINGS_DIR="${EMBEDDINGS_DIR:-$HOME/rainrag/embeddings}"
 
 : "${R2_ACCOUNT_ID:?Set R2_ACCOUNT_ID}"
 : "${R2_ACCESS_KEY_ID:?Set R2_ACCESS_KEY_ID}"
@@ -18,8 +18,17 @@ export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-auto}"
 export AWS_EC2_METADATA_DISABLED=true
 
-aws s3 sync \
-  "s3://${R2_BUCKET}/${R2_PREFIX}" \
-  "$EMBEDDINGS_DIR" \
-  --endpoint-url "$ENDPOINT" \
-  --only-show-errors
+echo "Syncing embeddings from s3://${R2_BUCKET}/${R2_PREFIX} to $EMBEDDINGS_DIR"
+
+if [[ "${VERBOSE:-}" =~ ^(1|true|yes)$ ]]; then
+  aws s3 sync \
+    "s3://${R2_BUCKET}/${R2_PREFIX}" \
+    "$EMBEDDINGS_DIR" \
+    --endpoint-url "$ENDPOINT"
+else
+  aws s3 sync \
+    "s3://${R2_BUCKET}/${R2_PREFIX}" \
+    "$EMBEDDINGS_DIR" \
+    --endpoint-url "$ENDPOINT" \
+    --only-show-errors
+fi

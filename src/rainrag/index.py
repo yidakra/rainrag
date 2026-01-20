@@ -73,28 +73,27 @@ class QdrantIndexer:
                 logger.info(f"Collection {collection_name} already exists")
                 return
 
-        if not collection_exists:
-            logger.info(f"Creating collection: {collection_name}")
+        logger.info(f"Creating collection: {collection_name}")
 
-            # Map distance metric
-            distance_map = {
-                "Cosine": models.Distance.COSINE,
-                "Euclidean": models.Distance.EUCLID,
-                "Dot": models.Distance.DOT,
-            }
+        # Map distance metric
+        distance_map = {
+            "Cosine": models.Distance.COSINE,
+            "Euclidean": models.Distance.EUCLID,
+            "Dot": models.Distance.DOT,
+        }
 
-            distance = distance_map.get(self.config.qdrant.distance, models.Distance.COSINE)
+        distance = distance_map.get(self.config.qdrant.distance, models.Distance.COSINE)
 
-            # Create collection
-            client.create_collection(
-                collection_name=collection_name,
-                vectors_config=models.VectorParams(
-                    size=self.config.qdrant.vector_size,
-                    distance=distance,
-                ),
-            )
+        # Create collection
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=models.VectorParams(
+                size=self.config.qdrant.vector_size,
+                distance=distance,
+            ),
+        )
 
-            logger.info(f"Collection {collection_name} created successfully")
+        logger.info(f"Collection {collection_name} created successfully")
 
     def index_documents(
         self, embeddings: np.ndarray, documents: list[Document], batch_size: int = 50

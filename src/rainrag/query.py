@@ -224,8 +224,8 @@ class RAGQueryEngine:
                     }
                     self.bm25_corpus.append(doc)
 
-                    # Tokenize text for BM25 (simple whitespace + lowercase)
-                    tokenized = doc["text"].lower().split()
+                    # Tokenize text for BM25 (word-based regex + lowercase)
+                    tokenized = re.findall(r"\b\w+\b", doc["text"].lower())
                     self.bm25_tokenized_corpus.append(tokenized)
 
                 offset = next_offset
@@ -266,7 +266,7 @@ class RAGQueryEngine:
             raise RuntimeError("BM25 index not built. Enable hybrid_search and reinitialize.")
 
         # Tokenize query
-        query_tokens = query.lower().split()
+        query_tokens = re.findall(r"\b\w+\b", query.lower())
 
         # Get BM25 scores for all documents
         scores = self.bm25.get_scores(query_tokens)
@@ -445,6 +445,12 @@ class RAGQueryEngine:
             "в этом году",
         }
 
+        # Compile regex patterns for precise word-boundary matching
+        recent_pattern = re.compile(
+            r"\b(?:" + "|".join(re.escape(keyword) for keyword in recent_keywords) + r")\b",
+            re.IGNORECASE,
+        )
+
         specific_time_patterns = [
             # Dates: 2024, 2024-01-15, January 2024, etc.
             r"\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b",  # YYYY-MM-DD
@@ -453,8 +459,8 @@ class RAGQueryEngine:
             r"\b(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\w*\s+(20\d{2})\b",
         ]
 
-        # Check for recent/latest keywords
-        has_recent = any(keyword in query_lower for keyword in recent_keywords)
+        # Check for recent/latest keywords using compiled regex
+        has_recent = bool(recent_pattern.search(query))
 
         # Check for specific time patterns
         has_specific_time = any(
@@ -519,7 +525,7 @@ class RAGQueryEngine:
                     doc_date = datetime.strptime(doc_date_str, "%Y-%m-%d")
 
                     # Calculate age in days
-                    age_days = (current_date - doc_date).days
+                    age_days = max(0, (current_date - doc_date).days)
 
                     # Time decay formula: boost = 1.0 / (1.0 + age_days / decay_factor)
                     # decay_factor controls how quickly boost decreases
@@ -620,8 +626,6 @@ class RAGQueryEngine:
                 hit_payload = hit.payload or {}
                 if hit_payload.get("doc_id") == chunk_id:
                     continue
-
-                hit_payload = hit.payload or {}  # Ensure payload is not None
 
                 # Filter by video_id if requested
                 if same_video_only and hit_payload.get("video_id") != source_video_id:
@@ -1059,6 +1063,9 @@ Question: {query}"""
 
         elif self.config.llm.provider == "openai":
             logger.info("Generating answer using OpenAI API...")
+            if self.openai_client is None:
+                logger.error("OpenAI client not initialized")
+                raise RuntimeError("OpenAI client not initialized. Call initialize() first.")
             try:
                 response = self.openai_client.chat.completions.create(  # type: ignore[assignment]
                     model=self.config.openai.model_name,
@@ -1075,6 +1082,9 @@ Question: {query}"""
 
         elif self.config.llm.provider == "claude":
             logger.info("Generating answer using Claude API...")
+            if self.claude_client is None:
+                logger.error("Claude client not initialized")
+                raise RuntimeError("Claude client not initialized. Call initialize() first.")
             try:
                 # Extract system message and user messages for Claude API
                 system_message = ""

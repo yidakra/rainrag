@@ -12,11 +12,12 @@ paths:
 # Embedding model configuration
 embedding:
   # Embedding provider: 'local' for local model, 'mistral' for Mistral API, 'openai' for OpenAI API, 'gemini' for Google Gemini API
+  # IMPORTANT: Ensure vector_size in qdrant section matches the chosen embedding model's output dimension
   provider: "local"
   model_name: "intfloat/multilingual-e5-large"
   batch_size: 64   # Reduced for stability
   max_seq_length: 512
-  device: "cuda:0"  # GPU for maximum speed
+  device: "cpu"  # Auto-detected at runtime if GPU available
   normalize_embeddings: true
 
 # Qdrant vector store configuration
@@ -24,10 +25,15 @@ qdrant:
   host: "localhost"
   port: 6333
   collection_name: "broadcast_transcripts"
-  vector_size: 1024  # intfloat/multilingual-e5-large dimension
+  vector_size: 1024  # Must match the embedding model's output dimension:
+                     #   - intfloat/multilingual-e5-large: 1024
+                     #   - text-embedding-3-small: 1536
+                     #   - text-embedding-3-large: 3072
+                     #   - mistral-embed: 1024
+                     #   - gemini embedding-001: 768
   distance: "Cosine"
   # Set to true to recreate collection on indexing
-  recreate_collection: true
+  recreate_collection: false
 
 # LLM provider configuration
 llm:
@@ -46,7 +52,8 @@ mistral:
 openai:
   api_key: ""  # Set your OpenAI API key here or via OPENAI_API_KEY environment variable
   model_name: "gpt-4o-mini"  # Options: gpt-4o, gpt-4o-mini, gpt-3.5-turbo, etc.
-  embedding_model: "text-embedding-3-large"  # Options: text-embedding-3-small, text-embedding-3-large
+  embedding_model: "text-embedding-3-large"  # Options: text-embedding-3-small (1536-dim), text-embedding-3-large (3072-dim)
+                                              # IMPORTANT: Update qdrant.vector_size to match the chosen model's dimension
   max_tokens: 512
   temperature: 0.3
   top_k: 5  # Number of documents to retrieve for context

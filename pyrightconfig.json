@@ -1,6 +1,10 @@
 {
-  "venvPath": "/home/ubuntu/.cache/pypoetry/virtualenvs",
-  "venv": "rainrag-Gf6KsqoE-py3.12"
+    "pythonPath": "/Users/ark/Library/Caches/pypoetry/virtualenvs/rainrag-e7mZ07lE-py3.13/bin/python",
+    "venv": "rainrag-e7mZ07lE-py3.13",
+    "venvPath": "/Users/ark/Library/Caches/pypoetry/virtualenvs",
+    "pythonVersion": "3.13",
+    "include": ["src"],
+    "exclude": ["tests"]
 }
 
 

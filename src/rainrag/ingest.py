@@ -43,8 +43,8 @@ class VTTCue(BaseModel):
 
     start_time: str  # HH:MM:SS format
     end_time: str  # HH:MM:SS format
-    start_seconds: float  # Timestamp in seconds
-    end_seconds: float  # Timestamp in seconds
+    start_seconds: float | None  # Timestamp in seconds
+    end_seconds: float | None  # Timestamp in seconds
     text: str  # Cleaned text
 
 
@@ -54,8 +54,8 @@ class VTTChunk(BaseModel):
     chunk_index: int
     start_time: str  # HH:MM:SS format
     end_time: str  # HH:MM:SS format
-    start_seconds: float
-    end_seconds: float
+    start_seconds: float | None
+    end_seconds: float | None
     text: str
     cue_count: int  # Number of cues in this chunk
 
@@ -71,6 +71,9 @@ class VTTParser:
 
     # Pattern to remove VTT markup tags (e.g., <v Speaker>, <c>, positioning tags)
     MARKUP_PATTERN = re.compile(r"<[^>]+>")
+
+    # Large value to effectively disable time-based chunking in hybrid mode
+    INFINITE_CHUNK_DURATION = 9999999
 
     @staticmethod
     def detect_language(file_path: Path) -> str:
@@ -123,7 +126,7 @@ class VTTParser:
         return text
 
     @staticmethod
-    def timestamp_to_seconds(timestamp: str) -> float:
+    def timestamp_to_seconds(timestamp: str) -> float | None:
         """
         Convert HH:MM:SS timestamp to seconds.
 
@@ -131,7 +134,7 @@ class VTTParser:
             timestamp: Timestamp in HH:MM:SS format
 
         Returns:
-            Time in seconds
+            Time in seconds, or None if parsing fails
         """
         try:
             parts = timestamp.split(":")
@@ -141,7 +144,7 @@ class VTTParser:
             return hours * 3600 + minutes * 60 + seconds
         except (ValueError, IndexError) as e:
             logger.warning(f"Failed to parse timestamp '{timestamp}': {e}")
-            return 0.0
+            return None
 
     @staticmethod
     def seconds_to_timestamp(seconds: float) -> str:
@@ -219,65 +222,112 @@ class VTTParser:
             with open(file_path, encoding="utf-8") as f:
                 lines = f.readlines()
 
-            # VTT files should start with "WEBVTT"
-            if not lines or not lines[0].strip().startswith("WEBVTT"):
+            cues = cls._parse_vtt_lines_to_cues(lines)
+            if cues is None:
                 logger.warning(f"File {file_path} does not appear to be a valid VTT file")
                 return None
 
-            text_lines: list[str] = []
-            timecodes: list[tuple[str, str]] = []  # (start, end) pairs
-            skip_next = False
-
-            for line in lines[1:]:  # Skip the WEBVTT header
-                line = line.strip()
-
-                # Skip empty lines
-                if not line:
-                    continue
-
-                # Capture timestamp lines
-                if cls.TIMESTAMP_PATTERN.match(line):
-                    # Extract start and end times: "00:00:00.000 --> 00:00:10.160"
-                    parts = line.split("-->")
-                    if len(parts) == 2:
-                        start = parts[0].strip().split(".")[0]  # Remove milliseconds
-                        end = (
-                            parts[1].strip().split()[0].split(".")[0]
-                        )  # Remove ms and any positioning
-                        timecodes.append((start, end))
-                    skip_next = False
-                    continue
-
-                # Skip cue identifiers (lines that are just numbers or IDs)
-                if cls.CUE_ID_PATTERN.match(line) and skip_next is False:
-                    skip_next = True
-                    continue
-
-                # Skip NOTE comments
-                if line.startswith("NOTE"):
-                    continue
-
-                # Skip cue identifiers (lines that are just numbers or IDs)
-                if cls.CUE_ID_PATTERN.match(line):
-                    continue
-
-                # This is actual subtitle text
-                cleaned = cls.clean_text(line)
-                if cleaned:
-                    text_lines.append(cleaned)
-
-            # Join all text lines with spaces
-            full_text = " ".join(text_lines)
+            # Extract text and timecodes from cues
+            text_parts = [cue.text for cue in cues if cue.text]
+            full_text = " ".join(text_parts)
 
             # Get first and last timecodes
-            start_time = timecodes[0][0] if timecodes else None
-            end_time = timecodes[-1][1] if timecodes else None
+            start_time = cues[0].start_time if cues else None
+            end_time = cues[-1].end_time if cues else None
 
             return (full_text, start_time, end_time) if full_text else None
 
         except Exception as e:
             logger.error(f"Error parsing {file_path}: {e}")
             return None
+
+    @classmethod
+    def _parse_vtt_lines_to_cues(cls, lines: list[str]) -> list[VTTCue] | None:
+        """
+        Parse VTT file lines into individual cues with timestamps.
+
+        Args:
+            lines: List of lines from a VTT file
+
+        Returns:
+            List of VTTCue objects or None if parsing fails
+        """
+        # VTT files should start with "WEBVTT"
+        if not lines or not lines[0].strip().startswith("WEBVTT"):
+            return None
+
+        cues: list[VTTCue] = []
+        current_timestamp_line = None
+        current_text_lines: list[str] = []
+        skip_next = False
+
+        for line in lines[1:]:  # Skip the WEBVTT header
+            line = line.strip()
+
+            # Skip empty lines - finalize current cue if any
+            if not line:
+                if current_timestamp_line and current_text_lines:
+                    # Parse timestamp: "00:00:00.000 --> 00:00:10.160"
+                    parts = current_timestamp_line.split("-->")
+                    if len(parts) == 2:
+                        start = parts[0].strip().split(".")[0]  # Remove milliseconds
+                        end = parts[1].strip().split()[0].split(".")[0]  # Remove ms and positioning
+
+                        # Combine and clean text
+                        combined_text = " ".join(current_text_lines)
+                        cleaned_text = cls.clean_text(combined_text)
+
+                        if cleaned_text:
+                            cue = VTTCue(
+                                start_time=start,
+                                end_time=end,
+                                start_seconds=cls.timestamp_to_seconds(start),
+                                end_seconds=cls.timestamp_to_seconds(end),
+                                text=cleaned_text,
+                            )
+                            cues.append(cue)
+
+                    current_timestamp_line = None
+                    current_text_lines = []
+                continue
+
+            # Capture timestamp lines
+            if cls.TIMESTAMP_PATTERN.match(line):
+                current_timestamp_line = line
+                skip_next = False
+                continue
+
+            # Skip cue identifiers
+            if cls.CUE_ID_PATTERN.match(line) and skip_next is False:
+                skip_next = True
+                continue
+
+            # Skip NOTE comments
+            if line.lstrip().upper().startswith("NOTE"):
+                continue
+
+            # This is actual subtitle text
+            current_text_lines.append(line)
+
+        # Don't forget the last cue if file doesn't end with empty line
+        if current_timestamp_line and current_text_lines:
+            parts = current_timestamp_line.split("-->")
+            if len(parts) == 2:
+                start = parts[0].strip().split(".")[0]
+                end = parts[1].strip().split()[0].split(".")[0]
+                combined_text = " ".join(current_text_lines)
+                cleaned_text = cls.clean_text(combined_text)
+                if cleaned_text:
+                    cue = VTTCue(
+                        start_time=start,
+                        end_time=end,
+                        start_seconds=cls.timestamp_to_seconds(start),
+                        end_seconds=cls.timestamp_to_seconds(end),
+                        text=cleaned_text,
+                    )
+                    cues.append(cue)
+
+        return cues if cues else None
 
     @classmethod
     def parse_vtt_to_cues(cls, file_path: Path) -> list[VTTCue] | None:
@@ -294,85 +344,10 @@ class VTTParser:
             with open(file_path, encoding="utf-8") as f:
                 lines = f.readlines()
 
-            # VTT files should start with "WEBVTT"
-            if not lines or not lines[0].strip().startswith("WEBVTT"):
+            cues = cls._parse_vtt_lines_to_cues(lines)
+            if cues is None:
                 logger.warning(f"File {file_path} does not appear to be a valid VTT file")
-                return None
-
-            cues: list[VTTCue] = []
-            current_timestamp_line = None
-            current_text_lines: list[str] = []
-            skip_next = False
-
-            for line in lines[1:]:  # Skip the WEBVTT header
-                line = line.strip()
-
-                # Skip empty lines - finalize current cue if any
-                if not line:
-                    if current_timestamp_line and current_text_lines:
-                        # Parse timestamp: "00:00:00.000 --> 00:00:10.160"
-                        parts = current_timestamp_line.split("-->")
-                        if len(parts) == 2:
-                            start = parts[0].strip().split(".")[0]  # Remove milliseconds
-                            end = (
-                                parts[1].strip().split()[0].split(".")[0]
-                            )  # Remove ms and positioning
-
-                            # Combine and clean text
-                            combined_text = " ".join(current_text_lines)
-                            cleaned_text = cls.clean_text(combined_text)
-
-                            if cleaned_text:
-                                cue = VTTCue(
-                                    start_time=start,
-                                    end_time=end,
-                                    start_seconds=cls.timestamp_to_seconds(start),
-                                    end_seconds=cls.timestamp_to_seconds(end),
-                                    text=cleaned_text,
-                                )
-                                cues.append(cue)
-
-                        current_timestamp_line = None
-                        current_text_lines = []
-                    continue
-
-                # Capture timestamp lines
-                if cls.TIMESTAMP_PATTERN.match(line):
-                    current_timestamp_line = line
-                    skip_next = False
-                    continue
-
-                # Skip cue identifiers
-                if cls.CUE_ID_PATTERN.match(line) and skip_next is False:
-                    skip_next = True
-                    continue
-
-                # Skip NOTE comments
-                if line.startswith("NOTE"):
-                    continue
-
-                # This is actual subtitle text
-                current_text_lines.append(line)
-
-            # Don't forget the last cue if file doesn't end with empty line
-            if current_timestamp_line and current_text_lines:
-                parts = current_timestamp_line.split("-->")
-                if len(parts) == 2:
-                    start = parts[0].strip().split(".")[0]
-                    end = parts[1].strip().split()[0].split(".")[0]
-                    combined_text = " ".join(current_text_lines)
-                    cleaned_text = cls.clean_text(combined_text)
-                    if cleaned_text:
-                        cue = VTTCue(
-                            start_time=start,
-                            end_time=end,
-                            start_seconds=cls.timestamp_to_seconds(start),
-                            end_seconds=cls.timestamp_to_seconds(end),
-                            text=cleaned_text,
-                        )
-                        cues.append(cue)
-
-            return cues if cues else None
+            return cues
 
         except Exception as e:
             logger.error(f"Error parsing {file_path} to cues: {e}")
@@ -402,19 +377,25 @@ class VTTParser:
         chunk_cues: list[VTTCue] = []
 
         for cue in cues:
+            # Skip cues with invalid timestamps
+            if cue.start_seconds is None or cue.end_seconds is None:
+                logger.warning(
+                    f"Skipping cue with invalid timestamp: {cue.start_time} -> {cue.end_time}"
+                )
+                continue
+
             # Check if this cue starts a new chunk
             if cue.start_seconds >= chunk_start_seconds + chunk_duration_seconds:
                 # Finalize current chunk if it has content
                 if chunk_cues:
-                    chunk_end_seconds = chunk_cues[-1].end_seconds
                     chunk_text = " ".join(c.text for c in chunk_cues)
 
                     chunk = VTTChunk(
                         chunk_index=chunk_index,
                         start_time=chunk_cues[0].start_time,
                         end_time=chunk_cues[-1].end_time,
-                        start_seconds=chunk_start_seconds,
-                        end_seconds=chunk_end_seconds,
+                        start_seconds=chunk_cues[0].start_seconds,
+                        end_seconds=chunk_cues[-1].end_seconds,
                         text=chunk_text,
                         cue_count=len(chunk_cues),
                     )
@@ -426,27 +407,112 @@ class VTTParser:
                 chunk_start_seconds += chunk_duration_seconds - overlap_seconds
 
                 # Keep overlapping cues from previous chunk
-                chunk_cues = [c for c in chunk_cues if c.start_seconds >= chunk_start_seconds]
+                chunk_cues = [
+                    c
+                    for c in chunk_cues
+                    if c.start_seconds is not None and c.start_seconds >= chunk_start_seconds
+                ]
 
             chunk_cues.append(cue)
 
         # Add final chunk
         if chunk_cues:
-            chunk_end_seconds = chunk_cues[-1].end_seconds
             chunk_text = " ".join(c.text for c in chunk_cues)
 
             chunk = VTTChunk(
                 chunk_index=chunk_index,
                 start_time=chunk_cues[0].start_time,
                 end_time=chunk_cues[-1].end_time,
-                start_seconds=chunk_start_seconds,
-                end_seconds=chunk_end_seconds,
+                start_seconds=chunk_cues[0].start_seconds,
+                end_seconds=chunk_cues[-1].end_seconds,
                 text=chunk_text,
                 cue_count=len(chunk_cues),
             )
             chunks.append(chunk)
 
         return chunks
+
+    @classmethod
+    def _merge_undersized_chunks(
+        cls, chunks: list[VTTChunk], min_tokens: int, language: str
+    ) -> list[VTTChunk]:
+        """
+        Merge chunks that are smaller than min_tokens with their neighbors.
+
+        Args:
+            chunks: List of VTTChunk objects to process
+            min_tokens: Minimum token count threshold for merging
+            language: Language code for token estimation
+
+        Returns:
+            List of merged VTTChunk objects
+        """
+        if not chunks:
+            return chunks
+
+        merged_chunks: list[VTTChunk] = []
+        i = 0
+
+        while i < len(chunks):
+            current_chunk = chunks[i]
+            current_tokens = cls.estimate_tokens(current_chunk.text, language)
+
+            # If current chunk is large enough, keep it
+            if current_tokens >= min_tokens:
+                merged_chunks.append(current_chunk)
+                i += 1
+                continue
+
+            # Current chunk is too small, try to merge with previous chunk
+            if merged_chunks:
+                prev_chunk = merged_chunks[-1]
+                combined_text = prev_chunk.text + " " + current_chunk.text
+                combined_tokens = cls.estimate_tokens(combined_text, language)
+
+                # Only merge if the combined chunk doesn't exceed a reasonable limit
+                # Use a conservative limit to prevent creating oversized chunks
+                if combined_tokens <= 800:  # Conservative limit
+                    # Merge with previous
+                    merged_chunk = VTTChunk(
+                        chunk_index=prev_chunk.chunk_index,
+                        start_time=prev_chunk.start_time,
+                        end_time=current_chunk.end_time,
+                        start_seconds=prev_chunk.start_seconds,
+                        end_seconds=current_chunk.end_seconds,
+                        text=combined_text,
+                        cue_count=prev_chunk.cue_count + current_chunk.cue_count,
+                    )
+                    merged_chunks[-1] = merged_chunk
+                    i += 1
+                    continue
+
+            # If we couldn't merge with previous, try merging with next chunk
+            if i + 1 < len(chunks):
+                next_chunk = chunks[i + 1]
+                combined_text = current_chunk.text + " " + next_chunk.text
+                combined_tokens = cls.estimate_tokens(combined_text, language)
+
+                if combined_tokens <= 800:  # Conservative limit
+                    # Merge with next
+                    merged_chunk = VTTChunk(
+                        chunk_index=current_chunk.chunk_index,
+                        start_time=current_chunk.start_time,
+                        end_time=next_chunk.end_time,
+                        start_seconds=current_chunk.start_seconds,
+                        end_seconds=next_chunk.end_seconds,
+                        text=combined_text,
+                        cue_count=current_chunk.cue_count + next_chunk.cue_count,
+                    )
+                    merged_chunks.append(merged_chunk)
+                    i += 2  # Skip the next chunk since we merged it
+                    continue
+
+            # If we couldn't merge with either neighbor, keep the small chunk as-is
+            # This preserves temporal boundaries when merging would create problems
+            merged_chunks.append(current_chunk)
+            i += 1
+
+        return merged_chunks
 
     @classmethod
     def create_chunks_hybrid(
@@ -511,7 +577,13 @@ class VTTParser:
                 chunk_cues = [
                     cue
                     for cue in cues
-                    if time_chunk.start_seconds <= cue.start_seconds < time_chunk.end_seconds
+                    if (
+                        cue.start_seconds is not None
+                        and cue.end_seconds is not None
+                        and time_chunk.start_seconds is not None
+                        and time_chunk.end_seconds is not None
+                        and time_chunk.start_seconds <= cue.start_seconds < time_chunk.end_seconds
+                    )
                 ]
 
                 # Build token-based sub-chunks
@@ -559,11 +631,10 @@ class VTTParser:
                     validated_chunks.append(sub_chunk)
                     chunk_index += 1
 
-        # Step 3: Merge undersized chunks (optional optimization)
-        # For now, we'll keep all chunks to preserve temporal boundaries
-        # Future enhancement: merge chunks < min_tokens with neighbors
+        # Step 3: Merge undersized chunks with neighbors
+        merged_chunks = cls._merge_undersized_chunks(validated_chunks, min_tokens, language)
 
-        return validated_chunks
+        return merged_chunks
 
     @staticmethod
     def generate_id(file_path: Path, chunk_index: int | None = None) -> str:
@@ -780,15 +851,19 @@ class Ingester:
                     chunk_duration_seconds=self.config.chunking.chunk_duration_seconds,
                     overlap_seconds=self.config.chunking.overlap_seconds,
                 )
-            else:  # token strategy
+            elif self.config.chunking.strategy == "token":
                 # Pure token-based chunking (disable overlap for token-only)
                 chunks = self.parser.create_chunks_hybrid(
                     cues,
-                    chunk_duration_seconds=9999999,  # Effectively disable time chunking
+                    chunk_duration_seconds=self.parser.INFINITE_CHUNK_DURATION,  # Effectively disable time chunking
                     overlap_seconds=0,  # No overlap for pure token strategy
                     max_tokens=max_tokens,
                     min_tokens=self.config.chunking.min_chunk_tokens,
                     language=language,
+                )
+            else:
+                raise ValueError(
+                    f"Unknown chunking strategy: '{self.config.chunking.strategy}'. Valid strategies are: 'hybrid', 'time', 'token'"
                 )
 
             if not chunks:
