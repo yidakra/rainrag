@@ -528,6 +528,8 @@ class VTTParser:
     @classmethod
     def _create_chunk_from_cues(cls, cues: list[VTTCue], chunk_index: int) -> VTTChunk:
         """Create a VTTChunk from a list of cues."""
+        if not cues:
+            raise ValueError("cues must not be empty")
         text = " ".join(c.text for c in cues)
         return VTTChunk(
             chunk_index=chunk_index,
@@ -577,7 +579,10 @@ class VTTParser:
                 continue
 
             # Check if adding this cue would exceed limit
-            if current_tokens + cue_tokens > max_tokens and current_cues:
+            if (
+                current_tokens + cue_tokens + (1 if current_cues else 0) > max_tokens
+                and current_cues
+            ):
                 # Finalize current chunk
                 chunks.append(cls._create_chunk_from_cues(current_cues, chunk_index))
                 chunk_index += 1
@@ -587,7 +592,7 @@ class VTTParser:
                 current_tokens = cue_tokens
             else:
                 current_cues.append(cue)
-                current_tokens += cue_tokens
+                current_tokens += cue_tokens + (1 if current_cues else 0)
 
         # Add final chunk
         if current_cues:

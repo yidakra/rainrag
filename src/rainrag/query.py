@@ -5,14 +5,14 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, cast
 
-import cohere
-import google.generativeai as genai
-from anthropic import Anthropic
-from loguru import logger
-from mistralai import Mistral
-from openai import OpenAI
-from qdrant_client import QdrantClient, models
-from sentence_transformers import SentenceTransformer
+import cohere  # type: ignore
+import google.generativeai as genai  # type: ignore
+from anthropic import Anthropic  # type: ignore
+from loguru import logger  # type: ignore
+from mistralai import Mistral  # type: ignore
+from openai import OpenAI  # type: ignore
+from qdrant_client import QdrantClient, models  # type: ignore
+from sentence_transformers import SentenceTransformer  # type: ignore
 
 from rainrag.config import Config
 
@@ -86,6 +86,7 @@ class RAGQueryEngine:
         Args:
             config: Configuration object containing all settings
         """
+        super().__init__()
         self.config = config
         self.embedding_model: SentenceTransformer | None = None
         self.qdrant_client: QdrantClient | None = None
@@ -212,6 +213,7 @@ class RAGQueryEngine:
 
         # Test connection
         try:
+            assert self.qdrant_client is not None
             collections = self.qdrant_client.get_collections()
             logger.info(
                 f"Connected to Qdrant. Available collections: {len(collections.collections)}"
@@ -276,7 +278,7 @@ class RAGQueryEngine:
                     self.bm25_corpus.append(doc)
 
                     # Tokenize text for BM25 (language-aware regex for Russian + lowercase)
-                    tokenized = re.findall(r"\b[\w\-а-яА-ЯёЁ]+\b", doc["text"].lower())
+                    tokenized = re.findall(r"[\w\-а-яА-ЯёЁ]+", doc["text"].lower())
                     self.bm25_tokenized_corpus.append(tokenized)
 
                 offset = next_offset
@@ -793,7 +795,7 @@ class RAGQueryEngine:
                 effective_limit = top_k
 
             # 1. Vector search
-            if query_filter is None and (date_from or date_to):
+            if date_from or date_to:
                 logger.info(
                     f"Querying Qdrant with no server-side filter (client-side date filtering will be applied), limit: {effective_limit}"
                 )
@@ -1205,6 +1207,9 @@ Question: {query}"""
             else:
                 top_k = 5  # Default fallback
 
+        # At this point, top_k is guaranteed to be an int
+        assert isinstance(top_k, int)
+
         logger.info(f"Processing query: {question[:100]}... (language: {language})")
 
         # Step 0: Detect temporal context (if no explicit date filter provided)
@@ -1228,6 +1233,7 @@ Question: {query}"""
         # Step 2: Retrieve relevant documents with optional date filter
         # If reranking is enabled, retrieve more candidates
         retrieval_k = self.config.reranker.initial_k if self.config.reranker.enabled else top_k
+        assert isinstance(retrieval_k, int)
 
         documents = self.retrieve_documents(
             query_vector, retrieval_k, date_from=date_from, date_to=date_to, query_text=question

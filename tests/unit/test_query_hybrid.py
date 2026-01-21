@@ -656,17 +656,17 @@ def test_hybrid_search_rrf_vs_weighted(
 
         # At least one document should have different scores between fusion methods
         # Build maps from doc_id to score for position-independent comparison
-        score_map_rrf = {doc["doc_id"]: doc["score"] for doc in result["retrieved_documents"]}
-        score_map_weighted = {
+        score_map_result = {doc["doc_id"]: doc["score"] for doc in result["retrieved_documents"]}
+        score_map_result_other = {
             doc["doc_id"]: doc["score"] for doc in result_other["retrieved_documents"]
         }
 
         # Find intersection of doc_ids present in both results
-        common_doc_ids = set(score_map_rrf.keys()) & set(score_map_weighted.keys())
+        common_doc_ids = set(score_map_result.keys()) & set(score_map_result_other.keys())
 
         # Check that at least one common document has different scores
         scores_differ = any(
-            abs(score_map_rrf[doc_id] - score_map_weighted[doc_id]) > 1e-6
+            abs(score_map_result[doc_id] - score_map_result_other[doc_id]) > 1e-6
             for doc_id in common_doc_ids
         )
         assert (

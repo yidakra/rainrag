@@ -215,3 +215,6 @@ logs/
 models/
 qdrant_storage/
 .DS_Store
+
+# Pyright local configuration
+.pyrightconfig.local.json

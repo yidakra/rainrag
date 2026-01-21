@@ -208,6 +208,7 @@ class Embedder:
         status_code = getattr(exception, "status_code", None)
         if isinstance(status_code, int) and status_code in [
             429,
+            500,
             502,
             503,
             504,
@@ -336,7 +337,7 @@ class Embedder:
         model = None  # Initialize to avoid unbound variable
         client: Any = None  # Can be OpenAI, Mistral, or None
         if provider == "openai":
-            if not hasattr(self, "openai_client"):
+            if self.openai_client is None:
                 try:
                     import openai
                 except ImportError as e:
@@ -352,7 +353,7 @@ class Embedder:
             client = self.openai_client
             model = self.config.openai.embedding_model
         elif provider == "mistral":
-            if not hasattr(self, "mistral_client"):
+            if self.mistral_client is None:
                 try:
                     from mistralai import Mistral
                 except ImportError as e:
