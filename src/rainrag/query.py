@@ -6,8 +6,9 @@ from datetime import datetime, timedelta
 from typing import Any, cast
 
 import cohere  # type: ignore
-import google.generativeai as genai  # type: ignore
+import pydantic
 from anthropic import Anthropic  # type: ignore
+from google import genai  # type: ignore
 from loguru import logger  # type: ignore
 from mistralai import Mistral  # type: ignore
 from openai import OpenAI  # type: ignore
@@ -92,12 +93,14 @@ class RAGQueryEngine:
         self.qdrant_client: QdrantClient | None = None
 
         # BM25 for hybrid search
-        self.bm25: Any | None = None
+        self.bm25: pydantic.SkipValidation[Any] | None = None
         self.bm25_corpus: list[dict[str, Any]] = []  # Store documents for BM25
         self.bm25_tokenized_corpus: list[list[str]] = []  # Tokenized texts for BM25
 
         # Cohere client for reranking
-        self.cohere_client: Any = None  # Can be ClientV2 or Client depending on SDK version
+        self.cohere_client: pydantic.SkipValidation[Any] = (
+            None  # Can be ClientV2 or Client depending on SDK version
+        )
 
         # Initialize clients based on what's needed for LLM and embeddings
         needs_mistral = config.llm.provider == "mistral" or config.embedding.provider == "mistral"
@@ -128,8 +131,7 @@ class RAGQueryEngine:
 
         # Initialize Gemini client if needed
         if needs_gemini:
-            genai_client = cast(Any, genai)
-            genai_client.configure(api_key=config.gemini.api_key)
+            self.genai_client = genai.Client(api_key=config.gemini.api_key)
             logger.info("Initialized Gemini client")
 
         # Initialize Cohere client if reranker is enabled
@@ -729,13 +731,12 @@ class RAGQueryEngine:
             # Use Gemini API embeddings
             logger.debug(f"Embedding query using Gemini API: {query[:100]}...")
             try:
-                genai_client = cast(Any, genai)
-                result = genai_client.embed_content(
+                result = self.genai_client.models.embed_content(
                     model=self.config.gemini.embedding_model,
-                    content=query,
-                    task_type="retrieval_query",
+                    contents=[query],
+                    config=genai.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
                 )
-                return result["embedding"]
+                return result.embeddings[0].values
             except Exception as e:
                 logger.error(f"Failed to generate embeddings with Gemini API: {e}")
                 raise RuntimeError(f"Gemini embeddings API error: {e}") from e
@@ -1134,31 +1135,33 @@ Question: {query}"""
             logger.info("Generating answer using Gemini API...")
             try:
                 # Convert messages to Gemini format
-                genai_client = cast(Any, genai)
-                model = genai_client.GenerativeModel(self.config.gemini.model_name)
+                contents = []
+                system_instruction = None
 
-                # Extract system message and build conversation
-                system_instruction = ""
-                conversation_parts = []
                 for msg in messages:
                     if msg["role"] == "system":
                         system_instruction = msg["content"]
                     elif msg["role"] == "user":
-                        conversation_parts.append(msg["content"])
+                        contents.append(
+                            genai.Content(role="user", parts=[genai.Part(text=msg["content"])])
+                        )
                     elif msg["role"] == "assistant":
-                        # Gemini doesn't use explicit assistant messages in the same way
-                        # For now, we'll skip assistant messages or handle them differently
-                        pass
+                        contents.append(
+                            genai.Content(role="model", parts=[genai.Part(text=msg["content"])])
+                        )
 
-                # Combine system instruction with user message
-                if system_instruction:
-                    prompt = f"{system_instruction}\n\n{conversation_parts[-1]}"
-                else:
-                    prompt = conversation_parts[-1]
+                # If there's a system instruction, add it to the first user message
+                if system_instruction and contents:
+                    first_content = contents[0]
+                    if first_content.role == "user" and first_content.parts:
+                        first_content.parts[
+                            0
+                        ].text = f"{system_instruction}\n\n{first_content.parts[0].text}"
 
-                response = model.generate_content(
-                    prompt,
-                    generation_config=genai_client.GenerationConfig(
+                response = self.genai_client.models.generate_content(
+                    model=self.config.gemini.model_name,
+                    contents=contents,
+                    config=genai.GenerateContentConfig(
                         max_output_tokens=self.config.gemini.max_tokens,
                         temperature=self.config.gemini.temperature,
                     ),

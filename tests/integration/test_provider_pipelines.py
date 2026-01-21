@@ -312,9 +312,12 @@ def test_claude_llm_with_gemini_embeddings(mock_qdrant_client):
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.Anthropic") as mock_anthropic_class:
             with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-                # Mock Gemini embeddings
-                mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
-                mock_genai.configure = MagicMock()
+                # Mock Gemini client and embeddings
+                mock_client = MagicMock()
+                mock_genai.Client.return_value = mock_client
+                mock_result = MagicMock()
+                mock_result.embeddings = [MagicMock(values=[0.1] * 768)]
+                mock_client.models.embed_content.return_value = mock_result
 
                 # Mock Claude LLM
                 mock_claude = MagicMock()
@@ -330,7 +333,7 @@ def test_claude_llm_with_gemini_embeddings(mock_qdrant_client):
                 result = engine.query("test", top_k=5, language="en")
 
                 # Verify Gemini embeddings were used
-                assert mock_genai.embed_content.called
+                mock_client.models.embed_content.assert_called()
                 # Verify Claude LLM was used
                 assert mock_claude.messages.create.called
                 # Verify result
@@ -454,13 +457,11 @@ def test_multilingual_query_russian(mock_qdrant_client):
                 mock_st.return_value = mock_model
 
                 # Mock Gemini
-                mock_gemini_model = MagicMock()
-                response = MagicMock()
-                response.text = "Машинное обучение - это метод искусственного интеллекта."
-                mock_gemini_model.generate_content.return_value = response
-                mock_genai.GenerativeModel.return_value = mock_gemini_model
-                mock_genai.GenerationConfig = MagicMock()
-                mock_genai.configure = MagicMock()
+                mock_client = MagicMock()
+                mock_genai.Client.return_value = mock_client
+                mock_response = MagicMock()
+                mock_response.text = "Машинное обучение - это метод искусственного интеллекта."
+                mock_client.models.generate_content.return_value = mock_response
 
                 # Run query in Russian
                 engine = RAGQueryEngine(config)

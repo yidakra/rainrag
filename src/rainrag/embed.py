@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
+import pydantic
 import torch
 from loguru import logger
 from sentence_transformers import SentenceTransformer  # type: ignore
@@ -113,9 +114,9 @@ class Embedder:
         self.config = config
         self.cache = EmbeddingCache(config.paths.embeddings_cache)
         self.model: SentenceTransformer | None = None
-        self.openai_client: Any = None
-        self.mistral_client: Any = None
-        self.genai_client: Any = None
+        self.openai_client: pydantic.SkipValidation[Any] = None
+        self.mistral_client: pydantic.SkipValidation[Any] = None
+        self.genai_client: pydantic.SkipValidation[Any] = None
 
     def load_model(self) -> None:
         """Load the embedding model based on provider."""
@@ -335,7 +336,7 @@ class Embedder:
         """Generate embeddings using API providers."""
         # Initialize clients
         model = None  # Initialize to avoid unbound variable
-        client: Any = None  # Can be OpenAI, Mistral, or None
+        client: pydantic.SkipValidation[Any] = None  # Can be OpenAI, Mistral, or None
         if provider == "openai":
             if self.openai_client is None:
                 try:
@@ -371,12 +372,12 @@ class Embedder:
         elif provider == "gemini":
             if self.genai_client is None:
                 try:
-                    import google.generativeai as genai
+                    from google import genai
                 except ImportError as e:
                     raise ImportError(
-                        "google-generativeai package is required for Gemini embeddings. Install it with: pip install google-generativeai"
+                        "google-genai package is required for Gemini embeddings. Install it with: pip install google-genai"
                     ) from e
-                self.genai_client = cast(Any, genai)
+                self.genai_client = genai.Client(api_key=self.config.gemini.api_key)
             client = None  # Gemini uses direct API calls
             model = self.config.gemini.embedding_model
         else:
@@ -412,35 +413,12 @@ class Embedder:
                         response = client.embeddings.create(model=model, inputs=batch_texts)
                         batch_embeddings = [item.embedding for item in response.data]
                     elif provider == "gemini":
-                        result = self.genai_client.embed_content(
+                        result = self.genai_client.models.embed_content(
                             model=model,
-                            content=batch_texts,
-                            task_type="retrieval_document",
+                            contents=batch_texts,
+                            config=genai.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
                         )
-                        # Handle different response formats for batch embeddings
-                        if isinstance(result, list):
-                            batch_embeddings = result
-                        elif "embeddings" in result:
-                            batch_embeddings = result["embeddings"]
-                        elif "embedding" in result:
-                            # Single embedding case
-                            batch_embeddings = [result["embedding"]]
-                        elif "data" in result and isinstance(result["data"], list):
-                            batch_embeddings = [item["embedding"] for item in result["data"]]
-                        else:
-                            if isinstance(result, dict):
-                                result_info = f"dict with keys: {list(result.keys())}"
-                            else:
-                                result_repr = repr(result)
-                                truncated_repr = (
-                                    result_repr[:200] + "..."
-                                    if len(result_repr) > 200
-                                    else result_repr
-                                )
-                                result_info = f"{type(result).__name__}: {truncated_repr}"
-                            raise ValueError(
-                                f"Unexpected Gemini embedding response format: {result_info}"
-                            )
+                        batch_embeddings = [embedding.values for embedding in result.embeddings]
 
                     all_embeddings.extend(batch_embeddings)
                     break  # Success, exit retry loop

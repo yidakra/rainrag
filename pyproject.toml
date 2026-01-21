@@ -17,7 +17,7 @@ loguru = "^0.7.2"
 tqdm = "^4.66.0"
 typer = {extras = ["all"], version = "^0.16.0"}
 pyyaml = "^6.0.1"
-numpy = "^2.1.0"
+numpy = "^1.24.0"
 # Mistral API client
 mistralai = "^1.0.0"
 # Web frontend dependencies
@@ -28,7 +28,7 @@ httpx = "^0.27.0"
 python-dotenv = "^1.2.1"
 openai = "^2.8.1"
 anthropic = "^0.39.0"
-google-generativeai = "^0.8.0"
+google-genai = "^0.8.0"
 cohere = "^5.20.0"
 # MCP server
 mcp = {extras = ["cli"], version = "^1.22.0"}
@@ -148,7 +148,7 @@ module = [
     "tqdm.*",
     "qdrant_client.*",
     "mistralai.*",
-    "google.generativeai.*",
+    "google.genai.*",
     "anthropic.*",
     "cohere.*",
     "streamlit.*",
