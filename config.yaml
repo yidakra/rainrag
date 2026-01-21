@@ -25,7 +25,7 @@ qdrant:
   host: "localhost"
   port: 6333
   collection_name: "broadcast_transcripts"
-  vector_size: 3072  # Must match the embedding model's output dimension:
+  vector_size: 1024  # Must match the embedding model's output dimension:
                      #   - intfloat/multilingual-e5-large: 1024
                      #   - text-embedding-3-small: 1536
                      #   - text-embedding-3-large: 3072

@@ -157,7 +157,7 @@ def mock_qdrant_client_with_corpus():
         else:
             return ([], None)
 
-    client.scroll = mock_scroll
+    client.scroll = MagicMock(side_effect=mock_scroll)
 
     # Mock query_points results for vector search
     query_result = MagicMock()
@@ -207,7 +207,8 @@ def test_build_bm25_index_success(
         assert any("deep learning" in doc["text"].lower() for doc in engine.bm25_corpus)
         assert any("natural language" in doc["text"].lower() for doc in engine.bm25_corpus)
 
-        # Scroll method was called during BM25 index building
+        # Verify scroll method was called during BM25 index building
+        assert mock_qdrant_client_with_corpus.scroll.called
 
 
 def test_build_bm25_index_disabled(
@@ -228,6 +229,7 @@ def test_build_bm25_index_disabled(
         assert len(engine.bm25_tokenized_corpus) == 0
 
         # Scroll method should not be called when BM25 is disabled
+        mock_qdrant_client_with_corpus.scroll.assert_not_called()
 
 
 def test_build_bm25_index_empty_collection(hybrid_config, mock_openai_client):
@@ -238,14 +240,7 @@ def test_build_bm25_index_empty_collection(hybrid_config, mock_openai_client):
 
     with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
         engine = RAGQueryEngine(hybrid_config)
-        # Directly set the mock client
-        engine.qdrant_client = client
-        # Initialize other attributes
-        engine.embedding_model = None
-        engine.bm25 = None
-        engine.bm25_corpus = []
-        engine.bm25_tokenized_corpus = []
-        engine.cohere_client = None
+        setup_engine_for_testing(engine, client)
         # Call the BM25 building directly
         engine._build_bm25_index()
 
@@ -642,6 +637,14 @@ def test_hybrid_search_rrf_vs_weighted(
         # Run the same test with the other fusion method for comparison
         other_fusion_method = "weighted" if fusion_method == "rrf" else "rrf"
         hybrid_config.hybrid_search.fusion_method = other_fusion_method
+
+        # Reset mock scroll side_effect for the second engine
+        point1, point2, point3 = _create_mock_points()
+        mock_qdrant_client_with_corpus.scroll.side_effect = [
+            ([point1, point2], "offset123"),
+            ([point3], None),
+        ]
+
         engine_other = RAGQueryEngine(hybrid_config)
         setup_engine_for_testing(engine_other, mock_qdrant_client_with_corpus)
         engine_other._build_bm25_index()
@@ -652,16 +655,20 @@ def test_hybrid_search_rrf_vs_weighted(
         assert len(result["retrieved_documents"]) == len(result_other["retrieved_documents"])
 
         # At least one document should have different scores between fusion methods
-        scores_differ = False
-        for doc_rrf, doc_weighted in zip(
-            result["retrieved_documents"], result_other["retrieved_documents"], strict=True
-        ):
-            if (
-                doc_rrf["doc_id"] == doc_weighted["doc_id"]
-                and abs(doc_rrf["score"] - doc_weighted["score"]) > 1e-6
-            ):
-                scores_differ = True
-                break
+        # Build maps from doc_id to score for position-independent comparison
+        score_map_rrf = {doc["doc_id"]: doc["score"] for doc in result["retrieved_documents"]}
+        score_map_weighted = {
+            doc["doc_id"]: doc["score"] for doc in result_other["retrieved_documents"]
+        }
+
+        # Find intersection of doc_ids present in both results
+        common_doc_ids = set(score_map_rrf.keys()) & set(score_map_weighted.keys())
+
+        # Check that at least one common document has different scores
+        scores_differ = any(
+            abs(score_map_rrf[doc_id] - score_map_weighted[doc_id]) > 1e-6
+            for doc_id in common_doc_ids
+        )
         assert (
             scores_differ
         ), "Fusion methods should produce different scores for at least one document"

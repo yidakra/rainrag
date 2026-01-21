@@ -9,7 +9,7 @@ from typing import Any, cast
 import numpy as np
 import torch
 from loguru import logger
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer  # type: ignore
 
 from rainrag.config import Config
 from rainrag.ingest import Document
@@ -115,6 +115,7 @@ class Embedder:
         self.model: SentenceTransformer | None = None
         self.openai_client: Any = None
         self.mistral_client: Any = None
+        self.genai_client: Any = None
 
     def load_model(self) -> None:
         """Load the embedding model based on provider."""
@@ -141,7 +142,7 @@ class Embedder:
             # Auto-selection: try CUDA, then MPS, then CPU
             if torch.cuda.is_available():
                 device = "cuda:0"
-            elif torch.backends.mps.is_available():
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 device = "mps"
             else:
                 device = "cpu"
@@ -157,7 +158,7 @@ class Embedder:
                     )
                     device = "cpu"
             elif configured_device == "mps":
-                if torch.backends.mps.is_available():
+                if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                     device = "mps"
                 else:
                     logger.warning(
@@ -204,18 +205,14 @@ class Embedder:
             True if the exception is transient (rate limit, network error), False otherwise
         """
         # Check for rate limit errors
-        if hasattr(exception, "status_code"):
-            try:
-                status_code = exception.status_code  # type: ignore
-                if isinstance(status_code, int) and status_code in [
-                    429,
-                    502,
-                    503,
-                    504,
-                ]:  # Rate limit or server errors
-                    return True
-            except AttributeError:
-                pass
+        status_code = getattr(exception, "status_code", None)
+        if isinstance(status_code, int) and status_code in [
+            429,
+            502,
+            503,
+            504,
+        ]:  # Rate limit or server errors
+            return True
 
         # Check for specific error messages that indicate transient issues
         error_str = str(exception).lower()
@@ -338,7 +335,6 @@ class Embedder:
         # Initialize clients
         model = None  # Initialize to avoid unbound variable
         client: Any = None  # Can be OpenAI, Mistral, or None
-        genai_client: Any = None  # Initialize to avoid unbound variable
         if provider == "openai":
             if not hasattr(self, "openai_client"):
                 try:
@@ -372,13 +368,14 @@ class Embedder:
             client = self.mistral_client
             model = "mistral-embed"
         elif provider == "gemini":
-            try:
-                import google.generativeai as genai
-            except ImportError as e:
-                raise ImportError(
-                    "google-generativeai package is required for Gemini embeddings. Install it with: pip install google-generativeai"
-                ) from e
-            genai_client = cast(Any, genai)
+            if self.genai_client is None:
+                try:
+                    import google.generativeai as genai
+                except ImportError as e:
+                    raise ImportError(
+                        "google-generativeai package is required for Gemini embeddings. Install it with: pip install google-generativeai"
+                    ) from e
+                self.genai_client = cast(Any, genai)
             client = None  # Gemini uses direct API calls
             model = self.config.gemini.embedding_model
         else:
@@ -414,7 +411,7 @@ class Embedder:
                         response = client.embeddings.create(model=model, inputs=batch_texts)
                         batch_embeddings = [item.embedding for item in response.data]
                     elif provider == "gemini":
-                        result = genai_client.embed_content(
+                        result = self.genai_client.embed_content(
                             model=model,
                             content=batch_texts,
                             task_type="retrieval_document",
@@ -430,8 +427,18 @@ class Embedder:
                         elif "data" in result and isinstance(result["data"], list):
                             batch_embeddings = [item["embedding"] for item in result["data"]]
                         else:
+                            if isinstance(result, dict):
+                                result_info = f"dict with keys: {list(result.keys())}"
+                            else:
+                                result_repr = repr(result)
+                                truncated_repr = (
+                                    result_repr[:200] + "..."
+                                    if len(result_repr) > 200
+                                    else result_repr
+                                )
+                                result_info = f"{type(result).__name__}: {truncated_repr}"
                             raise ValueError(
-                                f"Unexpected Gemini embedding response format: {result.keys()}"
+                                f"Unexpected Gemini embedding response format: {result_info}"
                             )
 
                     all_embeddings.extend(batch_embeddings)

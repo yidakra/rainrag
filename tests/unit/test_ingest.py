@@ -304,7 +304,7 @@ Another short segment
         words = [f"Word{i}" for i in range(150)]
         segment1 = " ".join(words[:40])  # ~40 tokens
         segment2 = " ".join(words[40:80])  # ~40 tokens
-        segment3 = " ".join(words[80:])  # ~30 tokens
+        segment3 = " ".join(words[80:110])  # ~30 tokens
 
         vtt_content = f"""WEBVTT
 
@@ -332,17 +332,21 @@ Short text in next chunk
         )
 
         # First time-based chunk should be split due to token limit
-        # Combined segments (~110 tokens) exceed 70 token limit, should split into at least 2 chunks
+        # Combined segments (~110 tokens) exceed 70 token limit, should split into multiple chunks
         # Plus the second time chunk makes at least 3 total
         assert len(chunks) >= 3
 
         # Verify that splitting occurred (we should have multiple chunks from the first time period)
         # The exact token limits may vary due to merging logic, so just check we got reasonable chunks
         token_counts = [VTTParser.estimate_tokens(chunk.text, "en") for chunk in chunks]
-        assert len(chunks) >= 3, f"Expected at least 3 chunks for splitting test, got {len(chunks)}"
         assert all(
             count > 0 for count in token_counts
         ), f"All chunks should have content: {token_counts}"
+
+        # Verify per-chunk token limits with tolerance for estimator variance
+        assert all(
+            count <= 70 * 1.3 for count in token_counts
+        ), f"Chunks should not exceed max_tokens=70 with tolerance: {token_counts}"
 
     def test_create_chunks_hybrid_multiple_time_chunks(self, temp_dir: Path) -> None:
         """Test hybrid chunking creates multiple time-based chunks when content is sparse."""

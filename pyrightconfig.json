@@ -1,12 +1,14 @@
 {
     "pythonVersion": "3.13",
+    "venvPath": "/Users/ark/Library/Caches/pypoetry/virtualenvs",
+    "venv": "rainrag-e7mZ07lE-py3.13",
     "include": ["src", "tests"],
     // Include tests for import resolution but with lenient type checking
     // Tests may have missing type annotations or more lenient typing requirements
     // that are acceptable for test code but would fail strict type checking.
     // This matches the mypy configuration in pyproject.toml.
     "exclude": [],
-    "extraPaths": ["src", "/opt/homebrew/anaconda3/lib/python3.13/site-packages"],
+    "extraPaths": ["src"],
     "reportMissingImports": "warning",
     "reportMissingTypeStubs": "warning",
     "reportImportCycles": "warning",
@@ -29,8 +31,8 @@
     "reportAssertAlwaysTrue": "warning",
     "reportSelfClsParameterName": "warning",
     "reportImplicitStringConcatenation": "warning",
-    "reportUndefinedVariable": "warning",
-    "reportUnboundVariable": "warning",
+    "reportUndefinedVariable": "error",
+    "reportUnboundVariable": "error",
     "reportInvalidStubStatement": "warning",
     "reportIncompleteStub": "warning",
     "reportUnsupportedDunderAll": "warning",

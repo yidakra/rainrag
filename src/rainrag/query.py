@@ -29,8 +29,8 @@ class RAGQueryEngine:
     """
 
     # Class constants for temporal keyword detection
-    _RECENT_KEYWORDS = {
-        # English
+    _RECENT_SINGLE_KEYWORDS = {
+        # English single words
         "recent",
         "recently",
         "latest",
@@ -39,10 +39,7 @@ class RAGQueryEngine:
         "current",
         "today",
         "yesterday",
-        "this week",
-        "this month",
-        "this year",
-        # Russian
+        # Russian single words
         "недавн",
         "последн",
         "новый",
@@ -50,15 +47,37 @@ class RAGQueryEngine:
         "актуальн",
         "сегодня",
         "вчера",
+    }
+
+    _RECENT_PHRASES = {
+        # English multi-word phrases
+        "this week",
+        "this month",
+        "this year",
+        # Russian multi-word phrases
         "на этой неделе",
         "в этом месяце",
         "в этом году",
     }
 
-    _RECENT_PATTERN = re.compile(
-        r"\b(?:" + "|".join(re.escape(keyword) for keyword in _RECENT_KEYWORDS) + r")\b",
+    _RECENT_SINGLE_PATTERN = re.compile(
+        r"\b(?:" + "|".join(re.escape(keyword) for keyword in _RECENT_SINGLE_KEYWORDS) + r")\b",
         re.IGNORECASE,
     )
+
+    # Pre-compiled specific time patterns
+    _SPECIFIC_TIME_PATTERNS = [
+        re.compile(r"\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b", re.IGNORECASE),  # YYYY-MM-DD
+        re.compile(r"\b(20\d{2})\b", re.IGNORECASE),  # Just year
+        re.compile(
+            r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(20\d{2})\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\w*\s+(20\d{2})\b",
+            re.IGNORECASE,
+        ),
+    ]
 
     def __init__(self, config: Config):
         """
@@ -67,7 +86,6 @@ class RAGQueryEngine:
         Args:
             config: Configuration object containing all settings
         """
-        super().__init__()
         self.config = config
         self.embedding_model: SentenceTransformer | None = None
         self.qdrant_client: QdrantClient | None = None
@@ -257,8 +275,8 @@ class RAGQueryEngine:
                     }
                     self.bm25_corpus.append(doc)
 
-                    # Tokenize text for BM25 (word-based regex + lowercase)
-                    tokenized = re.findall(r"\b\w+\b", doc["text"].lower())
+                    # Tokenize text for BM25 (language-aware regex for Russian + lowercase)
+                    tokenized = re.findall(r"\b[\w\-а-яА-ЯёЁ]+\b", doc["text"].lower())
                     self.bm25_tokenized_corpus.append(tokenized)
 
                 offset = next_offset
@@ -412,10 +430,11 @@ class RAGQueryEngine:
                 doc_map[result["doc_id"]] = result
 
         # Compute weighted scores
+        baseline_score = 0.1
         combined_scores: dict[str, float] = {}
         for doc_id in doc_map:
-            vec_score = vector_scores.get(doc_id, 0.0)
-            bm_score = bm25_scores.get(doc_id, 0.0)
+            vec_score = vector_scores.get(doc_id, baseline_score)
+            bm_score = bm25_scores.get(doc_id, baseline_score)
             combined_scores[doc_id] = vector_weight * vec_score + bm25_weight * bm_score
 
         # Sort by combined score
@@ -450,22 +469,14 @@ class RAGQueryEngine:
         """
         query_lower = query.lower()
 
-        # Use pre-compiled pattern for recent keywords
+        # Check for recent/latest keywords using compiled regex and phrase matching
+        has_recent = bool(self._RECENT_SINGLE_PATTERN.search(query)) or any(
+            phrase in query_lower for phrase in self._RECENT_PHRASES
+        )
 
-        specific_time_patterns = [
-            # Dates: 2024, 2024-01-15, January 2024, etc.
-            r"\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b",  # YYYY-MM-DD
-            r"\b(20\d{2})\b",  # Just year
-            r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(20\d{2})\b",
-            r"\b(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\w*\s+(20\d{2})\b",
-        ]
-
-        # Check for recent/latest keywords using compiled regex
-        has_recent = bool(self._RECENT_PATTERN.search(query))
-
-        # Check for specific time patterns
+        # Check for specific time patterns using pre-compiled regexes
         has_specific_time = any(
-            re.search(pattern, query_lower) for pattern in specific_time_patterns
+            pattern.search(query_lower) for pattern in self._SPECIFIC_TIME_PATTERNS
         )
 
         # Determine time sensitivity
@@ -768,7 +779,9 @@ class RAGQueryEngine:
         # to avoid Qdrant issues with None date values
         query_filter = None
         if date_from or date_to:
-            logger.info(f"Will apply client-side date filter: {date_from} to {date_to}")
+            logger.info(
+                f"No server-side filter applied; applying client-side date filter: {date_from} to {date_to}"
+            )
 
         try:
             # If hybrid search is enabled, retrieve more candidates
@@ -780,7 +793,14 @@ class RAGQueryEngine:
                 effective_limit = top_k
 
             # 1. Vector search
-            logger.info(f"Querying Qdrant with filter: {query_filter}, limit: {effective_limit}")
+            if query_filter is None and (date_from or date_to):
+                logger.info(
+                    f"Querying Qdrant with no server-side filter (client-side date filtering will be applied), limit: {effective_limit}"
+                )
+            else:
+                logger.info(
+                    f"Querying Qdrant with filter: {query_filter}, limit: {effective_limit}"
+                )
             results = self.qdrant_client.query_points(
                 collection_name=self.config.qdrant.collection_name,
                 query=query_vector,
