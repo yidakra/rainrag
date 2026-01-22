@@ -472,32 +472,8 @@ def render_message_bubble(message: dict[str, Any], lang: str):
     role = message["role"]
     content = message["content"]
 
-    if role == "user":
-        # User message (right-aligned, blue)
-        st.markdown(
-            f"""
-            <div style="display: flex; justify-content: flex-end; margin: 10px 0;">
-                <div style="background-color: #0084ff; color: white; padding: 10px 15px;
-                           border-radius: 18px; max-width: 70%; text-align: left;">
-                    {content}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        # Assistant message (left-aligned, gray)
-        st.markdown(
-            f"""
-            <div style="display: flex; justify-content: flex-start; margin: 10px 0;">
-                <div style="background-color: #f0f0f0; color: black; padding: 10px 15px;
-                           border-radius: 18px; max-width: 70%; text-align: left;">
-                    {content}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    with st.chat_message(role):
+        st.markdown(content)
 
     # Show context if available
     if role == "assistant" and "context" in message:
