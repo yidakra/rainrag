@@ -477,29 +477,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 
     # Show context if available
     if role == "assistant" and "context" in message:
-        # Show search insights if we have context
-        if message["context"]:
-            chunks = message["context"]
-            # Detect active features from chunk metadata
-            has_reranking = any(c.get("rerank_score") is not None for c in chunks)
-            has_time_boost = any(c.get("time_boost") is not None for c in chunks)
-            has_hybrid = any(c.get("fusion_method") is not None for c in chunks)
-
-            insights = []
-            if has_hybrid:
-                fusion_method = next(
-                    (chunk.get("fusion_method") for chunk in chunks if chunk.get("fusion_method")),
-                    "rrf",
-                )
-                fusion = fusion_method.upper()
-                insights.append(f"Hybrid Search ({fusion})")
-            if has_reranking:
-                insights.append("Reranked")
-            if has_time_boost:
-                insights.append("Time-Boosted")
-
-            if insights:
-                st.info(f"**Search Features Active:** {' | '.join(insights)}")
+        # Search insights are available in chunk metadata if needed for debugging
 
         with st.expander(get_text("context_header", lang), expanded=False):
             # Group chunks by video (to show en/ru versions together)
@@ -761,6 +739,22 @@ def render_sidebar(lang: str):
                             f"**{get_text('embedding_label', lang)}:** {embedding_provider} ({embedding_model})"
                         )
                         st.markdown(f"**{get_text('collection_label', lang)}:** {collection_name}")
+
+                        # Show search features configuration
+                        search_features = []
+
+                        if health_info.get("hybrid_search_enabled", False):
+                            fusion_method = health_info.get("fusion_method", "rrf").upper()
+                            search_features.append(f"Hybrid ({fusion_method})")
+                        if health_info.get("reranker_enabled", False):
+                            search_features.append("Reranker")
+                        if health_info.get("temporal_enabled", False):
+                            search_features.append("Temporal")
+
+                        if search_features:
+                            st.markdown(f"**Search Features:** {' | '.join(search_features)}")
+                        else:
+                            st.markdown("**Search Features:** Standard vector search")
                     else:
                         st.error(get_text("health_check_failed", lang))
                 except Exception as e:
