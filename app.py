@@ -1,5 +1,7 @@
 """Streamlit frontend for RainRAG - Multilingual RAG system for video transcripts."""
 
+import contextlib
+import html
 import json
 import os
 from datetime import date
@@ -286,6 +288,40 @@ async def query_rag(
         return response.json()
 
 
+async def get_related_chunks(
+    chunk_id: str, top_k: int = 3, same_video_only: bool = False
+) -> list[dict[str, Any]]:
+    """
+    Get related chunks for a given chunk.
+
+    Args:
+        chunk_id: The ID of the source chunk
+        top_k: Number of related chunks to retrieve
+        same_video_only: If True, only return chunks from the same video
+
+    Returns:
+        List of related chunks
+
+    Raises:
+        httpx.HTTPStatusError: If API returns error status
+    """
+    payload = {
+        "chunk_id": chunk_id,
+        "top_k": top_k,
+        "same_video_only": same_video_only,
+    }
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
+        response = await client.post(
+            f"{API_BASE}/related-chunks",
+            json=payload,
+            headers=get_api_headers(),
+        )
+        response.raise_for_status()
+        result = response.json()
+        return result.get("related_chunks", [])
+
+
 def fetch_vtt_content(vtt_url: str) -> str | None:
     """
     Fetch VTT file content from the API.
@@ -343,6 +379,15 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     duration_seconds = chunk.get("duration_seconds")
     start_time = chunk.get("start_time")
     end_time = chunk.get("end_time")
+    is_chunk = chunk.get("is_chunk", False)
+    chunk_index = chunk.get("chunk_index")
+    total_chunks = chunk.get("total_chunks")
+
+    # New metadata fields
+    rerank_score = chunk.get("rerank_score")
+    original_score = chunk.get("original_score")
+    time_boost = chunk.get("time_boost")
+    fusion_method = chunk.get("fusion_method")
 
     duration_str = ""
     if duration_seconds:
@@ -354,17 +399,41 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     if start_time and end_time:
         timecode_str = f"{start_time}-{end_time}"
 
-    meta_parts = [f"**{get_text('score_label', lang)}:** {score:.3f}"]
+    # Build chunk info string with time range
+    chunk_info = ""
+    if is_chunk and chunk_index is not None and total_chunks is not None:
+        if timecode_str:
+            chunk_info = f" **[Chunk {chunk_index + 1}/{total_chunks}: {timecode_str}]**"
+        else:
+            chunk_info = f" **[Chunk {chunk_index + 1}/{total_chunks}]**"
+
+    # Base metadata
+    meta_parts = [f"**Score:** {score:.3f}"]
+
+    # Show reranking info if available
+    if rerank_score is not None and original_score is not None:
+        meta_parts[0] = f"**Score:** {score:.3f} (reranked from {original_score:.3f})"
+
+    # Show time boost if available
+    if time_boost is not None:
+        meta_parts.append(f"**Time Boost:** {time_boost:.2f}x")
+
+    # Show fusion method if available
+    if fusion_method:
+        meta_parts.append(f"**Fusion:** {fusion_method.upper()}")
+
     if chunk_date:
         meta_parts.append(f"**{get_text('date_label', lang)}:** {chunk_date}")
     if duration_str:
         meta_parts.append(f"**{get_text('duration_label', lang)}:** {duration_str}")
-    if timecode_str:
+    # Don't duplicate timecode in metadata if already shown in chunk info
+    if timecode_str and not is_chunk:
         meta_parts.append(f"**{get_text('timecode_label', lang)}:** {timecode_str}")
     meta_parts.append(f"**{get_text('language_field', lang)}:** {chunk_lang}")
 
     return f"""
-**{get_text("source_label", lang)}:** `{filename}`<br>
+**{get_text("source_label", lang)}:** `{filename}`{chunk_info}
+
 {" | ".join(meta_parts)}
 """
 
@@ -432,6 +501,30 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 
     # Show context if available
     if role == "assistant" and "context" in message:
+        # Show search insights if we have context
+        if message["context"]:
+            chunks = message["context"]
+            # Detect active features from chunk metadata
+            has_reranking = any(c.get("rerank_score") is not None for c in chunks)
+            has_time_boost = any(c.get("time_boost") is not None for c in chunks)
+            has_hybrid = any(c.get("fusion_method") is not None for c in chunks)
+
+            insights = []
+            if has_hybrid:
+                fusion_method = next(
+                    (chunk.get("fusion_method") for chunk in chunks if chunk.get("fusion_method")),
+                    "rrf",
+                )
+                fusion = fusion_method.upper()
+                insights.append(f"Hybrid Search ({fusion})")
+            if has_reranking:
+                insights.append("Reranked")
+            if has_time_boost:
+                insights.append("Time-Boosted")
+
+            if insights:
+                st.info(f"**Search Features Active:** {' | '.join(insights)}")
+
         with st.expander(get_text("context_header", lang), expanded=False):
             # Group chunks by video (to show en/ru versions together)
             grouped_chunks = group_chunks_by_video(message["context"])
@@ -445,11 +538,28 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     video_url = group[0].get("video_url")
                     if video_url:
                         st.markdown(f"**{get_text('video_label', lang)}:**")
-                        # Streamlit treats non-URL strings as local file paths. Use an absolute URL for browser playback.
-                        # Strip the fragment (#t=...) because some embeds can be finicky with it.
-                        video_full_url = f"{ASSET_BASE_URL}{video_url.split('#', 1)[0]}"
+                        # Strip any existing fragment
+                        base_video_url = video_url.split("#", 1)[0]
+                        video_full_url = f"{ASSET_BASE_URL}{base_video_url}"
+
+                        # Add timestamp fragment for chunks to seek to start time
+                        start_time_seconds = group[0].get("start_time_seconds")
+                        if start_time_seconds is not None:
+                            with contextlib.suppress(ValueError, TypeError):
+                                # HTML5 video supports #t=seconds for seeking
+                                video_full_url += f"#t={int(float(start_time_seconds))}"
+
                         try:
-                            st.video(video_full_url)
+                            # Use HTML video player for better compatibility
+                            st.markdown(
+                                f"""
+                                <video controls style="max-width: 100%; height: auto;">
+                                    <source src="{html.escape(video_full_url)}" type="video/mp4">
+                                    Your browser does not support the video tag.
+                                </video>
+                                """,
+                                unsafe_allow_html=True,
+                            )
                         except Exception as e:
                             logger.warning(f"Could not load video: {e}")
                             st.warning(get_text("no_video", lang))
@@ -495,12 +605,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 
                         # Download button
                         st.markdown(
-                            f'<a href="{vtt_full_url}" download="{vtt_filename}" '
-                            f'style="display: inline-block; padding: 0.4rem 0.8rem; '
-                            f'background-color: #0084ff; color: white; text-decoration: none; '
-                            f'border-radius: 0.25rem; text-align: center; width: 100%; '
-                            f'box-sizing: border-box; margin-bottom: 0.5rem;">'
-                            f'{get_text("download_vtt", lang)}</a>',
+                            f'<a href="{vtt_full_url}" download="{vtt_filename}" style="display: inline-block; padding: 0.4rem 0.8rem; background-color: #0084ff; color: white; text-decoration: none; border-radius: 0.25rem; text-align: center; width: 100%; box-sizing: border-box; margin-bottom: 0.5rem;">{get_text("download_vtt", lang)}</a>',
                             unsafe_allow_html=True,
                         )
 
@@ -510,12 +615,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                             # Display VTT in a scrollable container
                             # Use dark background that works in both light and dark modes
                             st.markdown(
-                                f'<div style="height: 400px; overflow-y: auto; '
-                                f"border: 1px solid #4a4a4a; border-radius: 0.25rem; "
-                                f"padding: 0.5rem; background-color: #1e1e1e; "
-                                f"color: #e0e0e0; "
-                                f"font-family: monospace; font-size: 0.8rem; "
-                                f'white-space: pre-wrap;">{vtt_content}</div>',
+                                f'<div style="height: 400px; overflow-y: auto; border: 1px solid #4a4a4a; border-radius: 0.25rem; padding: 0.5rem; background-color: #1e1e1e; color: #e0e0e0; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap;">{vtt_content}</div>',
                                 unsafe_allow_html=True,
                             )
                         else:
@@ -528,6 +628,52 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                 for chunk_idx, chunk in enumerate(group):
                     # Display context chunk metadata
                     st.markdown(format_context_chunk(chunk, chunk_idx + 1, lang))
+
+                    # Add "Find Related" button for each chunk
+                    doc_id = chunk.get("doc_id")
+                    if doc_id:
+                        col1 = st.columns([1, 4])[0]
+                        with col1:
+                            if st.button(
+                                "Find Related",
+                                key=f"related_{doc_id}_{chunk_idx}_{group_idx}",
+                                help="Find similar content",
+                            ):
+                                # Store the doc_id to fetch related chunks
+                                st.session_state[f"show_related_{doc_id}"] = True
+
+                        # Show related chunks if button was clicked
+                        if st.session_state.get(f"show_related_{doc_id}", False):
+                            # Cache related chunks in session state
+                            cache_key = f"related_chunks_{doc_id}"
+                            if cache_key not in st.session_state:
+                                with st.spinner("Finding related chunks..."):
+                                    import asyncio
+
+                                    try:
+                                        st.session_state[cache_key] = asyncio.run(
+                                            get_related_chunks(
+                                                doc_id, top_k=3, same_video_only=False
+                                            )
+                                        )
+                                    except Exception as e:
+                                        st.error(f"Error finding related chunks: {e}")
+                                        st.session_state[cache_key] = []
+
+                            related_chunks = st.session_state[cache_key]
+                            if related_chunks:
+                                st.markdown("**Related Content:**")
+                                for rel_idx, rel_chunk in enumerate(related_chunks, 1):
+                                    rel_filename = html.escape(rel_chunk.get("filename", "Unknown"))
+                                    rel_score = rel_chunk.get("score", 0.0)
+                                    rel_text = html.escape(rel_chunk.get("text", "")[:150])
+                                    st.markdown(
+                                        f"{rel_idx}. `{rel_filename}` (Score: {rel_score:.3f})<br>_{rel_text}..._",
+                                        unsafe_allow_html=True,
+                                    )
+                            else:
+                                st.info("No related chunks found")
+
                     # Do not display transcript text here (VTT viewer already provides full context)
 
                     # Add a small separator between language versions within a group

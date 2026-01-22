@@ -1,6 +1,6 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
-*.py[codz]
+*.py[cod]
 *$py.class
 
 # C extensions
@@ -214,3 +214,7 @@ logs/
 *.npy
 models/
 qdrant_storage/
+.DS_Store
+
+# Pyright local configuration
+.pyrightconfig.local.json

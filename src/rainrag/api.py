@@ -46,6 +46,8 @@ class ContextChunk(BaseModel):
     score: float
     rank: int
     doc_id: str
+    rerank_score: float | None = None  # Cohere reranking score (if available)
+    original_score: float | None = None  # Original score before reranking (if reranked)
     video_url: str | None = None
     vtt_url: str | None = None
     group_id: str | None = None  # Base name for grouping multilingual versions
@@ -167,6 +169,53 @@ def find_video_file(vtt_path: str) -> str | None:
     return None
 
 
+def generate_media_urls(
+    vtt_path: str, start_time: str | None = None
+) -> tuple[str | None, str | None]:
+    """
+    Generate video and VTT URLs for a given VTT file path.
+
+    Args:
+        vtt_path: Path to the VTT file
+        start_time: Optional start time for video URL timecode
+
+    Returns:
+        Tuple of (video_url, vtt_url) - both may be None if video is disabled or files not found
+    """
+    video_url = None
+    vtt_url = None
+
+    if config and config.video.enabled:
+        # Find corresponding video file
+        video_file = find_video_file(vtt_path)
+        if video_file:
+            # Create relative path from video_root
+            video_root = (
+                config.paths.video_root if config.paths.video_root else config.paths.archive_root
+            )
+            try:
+                video_rel = Path(video_file).relative_to(video_root)
+                video_url = f"/video/{video_rel}"
+                # Add timecode fragment for video player to start at
+                if start_time:
+                    start_seconds = timecode_to_seconds(start_time)
+                    if start_seconds is not None:
+                        video_url = f"{video_url}#t={start_seconds}"
+            except ValueError as e:
+                logger.warning(f"Video file {video_file} is not under video_root {video_root}: {e}")
+
+        # VTT file URL
+        try:
+            vtt_rel = Path(vtt_path).relative_to(config.paths.archive_root)
+            vtt_url = f"/vtt/{vtt_rel}"
+        except ValueError as e:
+            logger.warning(
+                f"VTT file {vtt_path} is not under archive_root {config.paths.archive_root}: {e}"
+            )
+
+    return video_url, vtt_url
+
+
 def get_video_base_name(vtt_path: str) -> str:
     """
     Extract the base name from a VTT file path for grouping.
@@ -234,7 +283,7 @@ app.add_middleware(
 )
 
 
-def verify_auth_token(authorization: str | None = Header(None)) -> bool:
+def verify_auth_token(authorization: str | None = Header()) -> bool:  # type: ignore
     """Verify authentication token if configured."""
     required_token = os.getenv("RAINRAG_AUTH_TOKEN")
 
@@ -319,7 +368,7 @@ async def health_check():
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest, authorized: bool = Header(default=True)):
+async def query(request: QueryRequest, authorized: bool = Header(True)):  # type: ignore
     """
     Query the RAG system.
 
@@ -354,38 +403,7 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
             vtt_path = doc["path"]
 
             # Generate URLs for video and VTT files
-            video_url = None
-            vtt_url = None
-
-            if config and config.video.enabled:
-                # Find corresponding video file
-                video_file = find_video_file(vtt_path)
-                if video_file:
-                    # Create relative path from video_root
-                    video_root = (
-                        config.paths.video_root
-                        if config.paths.video_root
-                        else config.paths.archive_root
-                    )
-                    try:
-                        video_rel = Path(video_file).relative_to(video_root)
-                        video_url = f"/video/{video_rel}"
-                        # Add timecode fragment for video player to start at
-                        start_time = doc.get("start_time")
-                        if start_time:
-                            start_seconds = timecode_to_seconds(start_time)
-                            if start_seconds is not None:
-                                video_url = f"{video_url}#t={start_seconds}"
-                    except ValueError:
-                        logger.warning(f"Video file {video_file} is not under video_root")
-
-                # Create VTT URL
-                archive_root = config.paths.archive_root
-                try:
-                    vtt_rel = Path(vtt_path).relative_to(archive_root)
-                    vtt_url = f"/vtt/{vtt_rel}"
-                except ValueError:
-                    logger.warning(f"VTT file {vtt_path} is not under archive_root")
+            video_url, vtt_url = generate_media_urls(vtt_path, doc.get("start_time"))
 
             # Get group ID for grouping multilingual versions
             group_id = get_video_base_name(vtt_path)
@@ -398,6 +416,8 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
                     score=doc["score"],
                     rank=doc["rank"],
                     doc_id=doc.get("doc_id", ""),
+                    rerank_score=doc.get("rerank_score"),
+                    original_score=doc.get("original_score"),
                     video_url=video_url,
                     vtt_url=vtt_url,
                     group_id=group_id,
@@ -426,6 +446,99 @@ async def query(request: QueryRequest, authorized: bool = Header(default=True)):
         logger.error(f"Query failed: {e}")
         logger.error(f"Full traceback:\n{error_details}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+class RelatedChunksRequest(BaseModel):
+    """Request model for related chunks endpoint."""
+
+    chunk_id: str = Field(..., description="The ID of the source chunk", min_length=1)
+    top_k: int = Field(default=5, description="Number of related chunks to return", ge=1, le=10)
+    same_video_only: bool = Field(
+        default=False, description="If true, only return chunks from the same video"
+    )
+
+
+class RelatedChunksResponse(BaseModel):
+    """Response model for related chunks endpoint."""
+
+    chunk_id: str
+    related_chunks: list[ContextChunk]
+    num_related: int
+
+
+@app.post("/related-chunks", response_model=RelatedChunksResponse)
+async def get_related_chunks(
+    request: RelatedChunksRequest,
+    authorized: bool = Header(True),  # type: ignore
+):
+    """
+    Find chunks related to a given chunk based on vector similarity.
+
+    Args:
+        request: Related chunks request containing chunk_id and parameters
+        authorized: Authorization check result (injected by dependency)
+
+    Returns:
+        List of related chunks with similarity scores
+    """
+    verify_auth_token()
+
+    if query_engine is None:
+        raise HTTPException(status_code=503, detail="Query engine not initialized")
+
+    try:
+        logger.info(
+            f"Finding related chunks for: {request.chunk_id} (top_k={request.top_k}, same_video_only={request.same_video_only})"
+        )
+
+        # Find related chunks
+        related_docs = query_engine.find_related_chunks(
+            chunk_id=request.chunk_id, top_k=request.top_k, same_video_only=request.same_video_only
+        )
+
+        # Format response with video and VTT URLs
+        related_chunks = []
+        for idx, doc in enumerate(related_docs):
+            vtt_path = doc["path"]
+
+            # Generate URLs for video and VTT files
+            video_url, vtt_url = generate_media_urls(vtt_path, doc.get("start_time"))
+
+            # Get base name for grouping
+            group_id = get_video_base_name(vtt_path)
+
+            chunk = ContextChunk(
+                text=doc["text"],
+                filename=Path(vtt_path).name,
+                language=doc.get("language", "unknown"),
+                score=doc["score"],
+                rank=idx + 1,
+                doc_id=doc.get("doc_id", ""),
+                video_url=video_url,
+                vtt_url=vtt_url,
+                group_id=group_id,
+                date=doc.get("date"),
+                duration_seconds=doc.get("duration_seconds"),
+                start_time=doc.get("start_time"),
+                end_time=doc.get("end_time"),
+            )
+            related_chunks.append(chunk)
+
+        logger.info(f"Returning {len(related_chunks)} related chunks")
+
+        return RelatedChunksResponse(
+            chunk_id=request.chunk_id,
+            related_chunks=related_chunks,
+            num_related=len(related_chunks),
+        )
+
+    except Exception as e:
+        import traceback
+
+        error_details = traceback.format_exc()
+        logger.error(f"Finding related chunks failed: {e}")
+        logger.error(f"Full traceback:\n{error_details}")
+        raise HTTPException(status_code=500, detail=f"Finding related chunks failed: {str(e)}")
 
 
 @app.get("/")

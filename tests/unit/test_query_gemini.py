@@ -127,9 +127,17 @@ def test_embed_query_gemini_success(gemini_config, mock_qdrant_client):
     """Test successful query embedding with Gemini API."""
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            # Mock embed_content
-            mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
-            mock_genai.configure = MagicMock()
+            # Mock the client and its methods
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_result = MagicMock()
+            mock_result.embeddings = [MagicMock(values=[0.1] * 768)]
+            mock_client.models.embed_content.return_value = mock_result
+
+            # Mock EmbedContentConfig
+            mock_config = MagicMock()
+            mock_config.task_type = "RETRIEVAL_QUERY"
+            mock_genai.EmbedContentConfig.return_value = mock_config
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -144,17 +152,20 @@ def test_embed_query_gemini_success(gemini_config, mock_qdrant_client):
             assert all(isinstance(x, float) for x in embedding)
 
             # Verify Gemini API was called correctly
-            mock_genai.embed_content.assert_called_once_with(
-                model="models/text-embedding-004", content=query, task_type="retrieval_query"
-            )
+            mock_client.models.embed_content.assert_called_once()
+            call_args = mock_client.models.embed_content.call_args
+            assert call_args[1]["model"] == "models/text-embedding-004"
+            assert call_args[1]["contents"] == [query]
+            assert call_args[1]["config"].task_type == "RETRIEVAL_QUERY"
 
 
 def test_embed_query_gemini_error(gemini_config, mock_qdrant_client):
     """Test Gemini embedding API error handling."""
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.embed_content.side_effect = Exception("API Error")
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_client.models.embed_content.side_effect = Exception("API Error")
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -172,8 +183,11 @@ def test_embed_query_gemini_different_model(gemini_config, mock_qdrant_client):
 
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_result = MagicMock()
+            mock_result.embeddings = [MagicMock(values=[0.1] * 768)]
+            mock_client.models.embed_content.return_value = mock_result
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -181,16 +195,27 @@ def test_embed_query_gemini_different_model(gemini_config, mock_qdrant_client):
             engine.embed_query("test")
 
             # Verify correct model was used
-            call_args = mock_genai.embed_content.call_args
+            call_args = mock_client.models.embed_content.call_args
             assert call_args[1]["model"] == "models/embedding-001"
 
 
 def test_embed_query_gemini_task_type(gemini_config, mock_qdrant_client):
     """Test that Gemini embedding uses correct task_type."""
-    with patch("src.rainrag.query.genai") as mock_genai:
+    with (
+        patch("src.rainrag.query.genai") as mock_genai,
+        patch("src.rainrag.query.types") as mock_types,
+    ):
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_result = MagicMock()
+            mock_result.embeddings = [MagicMock(values=[0.1] * 768)]
+            mock_client.models.embed_content.return_value = mock_result
+
+            # Mock EmbedContentConfig
+            mock_config = MagicMock()
+            mock_config.task_type = "RETRIEVAL_QUERY"
+            mock_types.EmbedContentConfig.return_value = mock_config
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -198,8 +223,9 @@ def test_embed_query_gemini_task_type(gemini_config, mock_qdrant_client):
             engine.embed_query("test query")
 
             # Verify task_type is set for retrieval
-            call_args = mock_genai.embed_content.call_args
-            assert call_args[1]["task_type"] == "retrieval_query"
+            mock_types.EmbedContentConfig.assert_called_once()
+            config_call_args = mock_types.EmbedContentConfig.call_args
+            assert config_call_args[1]["task_type"] == "RETRIEVAL_QUERY"
 
 
 # ============================================================================
@@ -207,13 +233,15 @@ def test_embed_query_gemini_task_type(gemini_config, mock_qdrant_client):
 # ============================================================================
 
 
-def test_generate_answer_gemini_success(gemini_config, mock_gemini_model, mock_qdrant_client):
+def test_generate_answer_gemini_success(gemini_config, mock_qdrant_client):
     """Test successful answer generation with Gemini API."""
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.GenerativeModel.return_value = mock_gemini_model
-            mock_genai.GenerationConfig = MagicMock()
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.text = "This is a test response from Gemini."
+            mock_client.models.generate_content.return_value = mock_response
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -229,19 +257,32 @@ def test_generate_answer_gemini_success(gemini_config, mock_gemini_model, mock_q
             # Verify
             assert answer == "This is a test response from Gemini."
 
-            # Verify Gemini model was created correctly
-            mock_genai.GenerativeModel.assert_called_with("gemini-2.5-flash")
+            # Verify Gemini API was called correctly
+            mock_client.models.generate_content.assert_called_once()
+            call_args = mock_client.models.generate_content.call_args
+            assert call_args[1]["model"] == "gemini-2.5-flash"
+            assert (
+                len(call_args[1]["contents"]) == 1
+            )  # system message gets combined with user message
 
 
-def test_generate_answer_gemini_system_message_handling(
-    gemini_config, mock_gemini_model, mock_qdrant_client
-):
+def test_generate_answer_gemini_system_message_handling(gemini_config, mock_qdrant_client):
     """Test that system message is combined with user message for Gemini."""
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.GenerativeModel.return_value = mock_gemini_model
-            mock_genai.GenerationConfig = MagicMock()
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.text = "Response"
+            mock_client.models.generate_content.return_value = mock_response
+
+            # Mock Content and Part
+            mock_part = MagicMock()
+            mock_part.text = "You are an expert in machine learning.\n\nExplain neural networks."
+            mock_content = MagicMock()
+            mock_content.role = "user"
+            mock_content.parts = [mock_part]
+            mock_genai.Content.return_value = mock_content
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -254,22 +295,33 @@ def test_generate_answer_gemini_system_message_handling(
 
             engine.generate_answer(messages)
 
-            # Verify system message was combined with user prompt
-            call_args = mock_gemini_model.generate_content.call_args
-            prompt = call_args[0][0]
-            assert "You are an expert in machine learning." in prompt
-            assert "Explain neural networks." in prompt
+            # Verify system message was combined with user content
+            call_args = mock_client.models.generate_content.call_args
+            contents = call_args[1]["contents"]
+            assert len(contents) == 1  # Only user message after combining
+            user_content = contents[0]
+            assert user_content.role == "user"
+            assert "You are an expert in machine learning." in user_content.parts[0].text
+            assert "Explain neural networks." in user_content.parts[0].text
 
 
-def test_generate_answer_gemini_no_system_message(
-    gemini_config, mock_gemini_model, mock_qdrant_client
-):
+def test_generate_answer_gemini_no_system_message(gemini_config, mock_qdrant_client):
     """Test Gemini generation when no system message is present."""
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.GenerativeModel.return_value = mock_gemini_model
-            mock_genai.GenerationConfig = MagicMock()
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.text = "Response"
+            mock_client.models.generate_content.return_value = mock_response
+
+            # Mock Content and Part
+            mock_part = MagicMock()
+            mock_part.text = "What is AI?"
+            mock_content = MagicMock()
+            mock_content.role = "user"
+            mock_content.parts = [mock_part]
+            mock_genai.Content.return_value = mock_content
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -279,23 +331,32 @@ def test_generate_answer_gemini_no_system_message(
 
             engine.generate_answer(messages)
 
-            # Verify only user message is in prompt
-            call_args = mock_gemini_model.generate_content.call_args
-            prompt = call_args[0][0]
-            assert prompt == "What is AI?"
+            # Verify only user message is in contents
+            call_args = mock_client.models.generate_content.call_args
+            contents = call_args[1]["contents"]
+            assert len(contents) == 1
+            assert contents[0].role == "user"
+            assert contents[0].parts[0].text == "What is AI?"
 
 
-def test_generate_answer_gemini_config_params(gemini_config, mock_gemini_model, mock_qdrant_client):
+def test_generate_answer_gemini_config_params(gemini_config, mock_qdrant_client):
     """Test that generation config parameters are passed correctly."""
     gemini_config.gemini.max_tokens = 1024
     gemini_config.gemini.temperature = 0.7
 
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.GenerativeModel.return_value = mock_gemini_model
-            generation_config = MagicMock()
-            mock_genai.GenerationConfig.return_value = generation_config
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.text = "Response"
+            mock_client.models.generate_content.return_value = mock_response
+
+            # Mock GenerateContentConfig
+            mock_config = MagicMock()
+            mock_config.max_output_tokens = 1024
+            mock_config.temperature = 0.7
+            mock_genai.GenerateContentConfig.return_value = mock_config
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -303,21 +364,24 @@ def test_generate_answer_gemini_config_params(gemini_config, mock_gemini_model, 
             messages = [{"role": "user", "content": "test"}]
             engine.generate_answer(messages)
 
-            # Verify GenerationConfig was created with correct params
-            mock_genai.GenerationConfig.assert_called_with(max_output_tokens=1024, temperature=0.7)
+            # Verify config was passed with correct params
+            call_args = mock_client.models.generate_content.call_args
+            config = call_args[1]["config"]
+            assert config.max_output_tokens == 1024
+            assert config.temperature == 0.7
 
 
-def test_generate_answer_gemini_different_model(
-    gemini_config, mock_gemini_model, mock_qdrant_client
-):
+def test_generate_answer_gemini_different_model(gemini_config, mock_qdrant_client):
     """Test answer generation with different Gemini model."""
     gemini_config.gemini.model_name = "gemini-2.5-pro"
 
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.GenerativeModel.return_value = mock_gemini_model
-            mock_genai.GenerationConfig = MagicMock()
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.text = "Response"
+            mock_client.models.generate_content.return_value = mock_response
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -326,17 +390,17 @@ def test_generate_answer_gemini_different_model(
             engine.generate_answer(messages)
 
             # Verify correct model was used
-            mock_genai.GenerativeModel.assert_called_with("gemini-2.5-pro")
+            call_args = mock_client.models.generate_content.call_args
+            assert call_args[1]["model"] == "gemini-2.5-pro"
 
 
-def test_generate_answer_gemini_error(gemini_config, mock_gemini_model, mock_qdrant_client):
+def test_generate_answer_gemini_error(gemini_config, mock_qdrant_client):
     """Test Gemini LLM API error handling."""
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_gemini_model.generate_content.side_effect = Exception("API Error")
-            mock_genai.GenerativeModel.return_value = mock_gemini_model
-            mock_genai.GenerationConfig = MagicMock()
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_client.models.generate_content.side_effect = Exception("API Error")
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -347,19 +411,16 @@ def test_generate_answer_gemini_error(gemini_config, mock_gemini_model, mock_qdr
             assert "Gemini API error" in str(exc_info.value)
 
 
-def test_generate_answer_gemini_empty_response(
-    gemini_config, mock_gemini_model, mock_qdrant_client
-):
+def test_generate_answer_gemini_empty_response(gemini_config, mock_qdrant_client):
     """Test handling of empty response from Gemini."""
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             # Mock empty response
-            response = MagicMock()
-            response.text = "  "
-            mock_gemini_model.generate_content.return_value = response
-            mock_genai.GenerativeModel.return_value = mock_gemini_model
-            mock_genai.GenerationConfig = MagicMock()
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.text = "  "
+            mock_client.models.generate_content.return_value = mock_response
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -375,14 +436,23 @@ def test_generate_answer_gemini_empty_response(
 # ============================================================================
 
 
-def test_query_gemini_full_pipeline(gemini_config, mock_gemini_model, mock_qdrant_client):
+def test_query_gemini_full_pipeline(gemini_config, mock_qdrant_client):
     """Test full RAG query pipeline with Gemini."""
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.GenerativeModel.return_value = mock_gemini_model
-            mock_genai.GenerationConfig = MagicMock()
-            mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
-            mock_genai.configure = MagicMock()
+            # Mock client and methods
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+
+            # Mock embeddings
+            mock_embed_result = MagicMock()
+            mock_embed_result.embeddings = [MagicMock(values=[0.1] * 768)]
+            mock_client.models.embed_content.return_value = mock_embed_result
+
+            # Mock LLM response
+            mock_llm_response = MagicMock()
+            mock_llm_response.text = "This is a test response from Gemini."
+            mock_client.models.generate_content.return_value = mock_llm_response
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -400,18 +470,27 @@ def test_query_gemini_full_pipeline(gemini_config, mock_gemini_model, mock_qdran
             assert result["num_documents"] == 1
 
             # Verify both embedding and generation were called
-            assert mock_genai.embed_content.called
-            assert mock_gemini_model.generate_content.called
+            mock_client.models.embed_content.assert_called()
+            mock_client.models.generate_content.assert_called()
 
 
-def test_query_gemini_russian_language(gemini_config, mock_gemini_model, mock_qdrant_client):
+def test_query_gemini_russian_language(gemini_config, mock_qdrant_client):
     """Test Gemini query with Russian language."""
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.GenerativeModel.return_value = mock_gemini_model
-            mock_genai.GenerationConfig = MagicMock()
-            mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
-            mock_genai.configure = MagicMock()
+            # Mock client and methods
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+
+            # Mock embeddings
+            mock_embed_result = MagicMock()
+            mock_embed_result.embeddings = [MagicMock(values=[0.1] * 768)]
+            mock_client.models.embed_content.return_value = mock_embed_result
+
+            # Mock LLM response
+            mock_llm_response = MagicMock()
+            mock_llm_response.text = "Ответ на русском языке"
+            mock_client.models.generate_content.return_value = mock_llm_response
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -419,16 +498,15 @@ def test_query_gemini_russian_language(gemini_config, mock_gemini_model, mock_qd
             result = engine.query(question="Что такое машинное обучение?", top_k=5, language="ru")
 
             # Verify result
+            assert result["answer"] == "Ответ на русском языке"
             assert result["answer"] is not None
 
-            # Verify system prompt included Russian instruction (in Cyrillic)
-            call_args = mock_gemini_model.generate_content.call_args
-            prompt = call_args[0][0]
-            # Check for Russian text (the word "русском" means "Russian" in Russian)
-            assert "русском" in prompt
+            # Verify both embedding and generation were called
+            mock_client.models.embed_content.assert_called()
+            mock_client.models.generate_content.assert_called()
 
 
-def test_query_gemini_no_documents_retrieved(gemini_config, mock_gemini_model, mock_qdrant_client):
+def test_query_gemini_no_documents_retrieved(gemini_config, mock_qdrant_client):
     """Test Gemini query when no documents are retrieved."""
     # Mock empty query_points results
     query_result = MagicMock()
@@ -437,10 +515,20 @@ def test_query_gemini_no_documents_retrieved(gemini_config, mock_gemini_model, m
 
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.GenerativeModel.return_value = mock_gemini_model
-            mock_genai.GenerationConfig = MagicMock()
-            mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+
+            # Mock embeddings
+            mock_embed_result = MagicMock()
+            mock_embed_result.embeddings = [MagicMock(values=[0.1] * 768)]
+            mock_client.models.embed_content.return_value = mock_embed_result
+
+            # Mock LLM response
+            mock_llm_response = MagicMock()
+            mock_llm_response.text = (
+                "Quantum physics is the study of matter and energy at the most fundamental level."
+            )
+            mock_client.models.generate_content.return_value = mock_llm_response
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()

@@ -148,6 +148,274 @@ class TestVTTParser:
 
         assert id1 != id2
 
+    def test_timestamp_to_seconds(self) -> None:
+        """Test timestamp to seconds conversion."""
+        assert VTTParser.timestamp_to_seconds("00:00:00") == 0.0
+        assert VTTParser.timestamp_to_seconds("00:01:00") == 60.0
+        assert VTTParser.timestamp_to_seconds("00:00:30") == 30.0
+        assert VTTParser.timestamp_to_seconds("01:30:45") == 5445.0
+
+    def test_seconds_to_timestamp(self) -> None:
+        """Test seconds to timestamp conversion."""
+        assert VTTParser.seconds_to_timestamp(0) == "00:00:00"
+        assert VTTParser.seconds_to_timestamp(60) == "00:01:00"
+        assert VTTParser.seconds_to_timestamp(30) == "00:00:30"
+        assert VTTParser.seconds_to_timestamp(5445) == "01:30:45"
+
+    def test_generate_video_id_consistency(self, temp_dir: Path) -> None:
+        """Test that video_id is same for different languages of same video."""
+        path_en = temp_dir / "abc123.en.vtt"
+        path_ru = temp_dir / "abc123.ru.vtt"
+
+        id_en = VTTParser.generate_video_id(path_en)
+        id_ru = VTTParser.generate_video_id(path_ru)
+
+        # Same video in different languages should have same video_id
+        assert id_en == id_ru
+
+    def test_generate_video_id_different_videos(self, temp_dir: Path) -> None:
+        """Test that different videos have different video_ids."""
+        path1 = temp_dir / "abc123.en.vtt"
+        path2 = temp_dir / "xyz456.en.vtt"
+
+        id1 = VTTParser.generate_video_id(path1)
+        id2 = VTTParser.generate_video_id(path2)
+
+        assert id1 != id2
+
+    def test_parse_vtt_to_cues(self, temp_dir: Path) -> None:
+        """Test parsing VTT into individual cues."""
+        vtt_content = """WEBVTT
+
+00:00:00.000 --> 00:00:05.000
+First subtitle
+
+00:00:05.000 --> 00:00:10.000
+Second subtitle
+
+00:00:10.000 --> 00:00:15.000
+Third subtitle
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+
+        assert cues is not None
+        assert len(cues) == 3
+        assert cues[0].text == "First subtitle"
+        assert cues[0].start_time == "00:00:00"
+        assert cues[0].end_time == "00:00:05"
+        assert cues[0].start_seconds == 0.0
+        assert cues[0].end_seconds == 5.0
+
+    def test_create_chunks_from_cues(self, temp_dir: Path) -> None:
+        """Test creating time-based chunks from cues."""
+        vtt_content = """WEBVTT
+
+00:00:00.000 --> 00:01:00.000
+Text in first minute
+
+00:02:00.000 --> 00:03:00.000
+Text in third minute
+
+00:06:00.000 --> 00:07:00.000
+Text in seventh minute
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+        assert cues is not None
+
+        # Create 5-minute chunks (300 seconds) without overlap
+        chunks = VTTParser.create_chunks_from_cues(
+            cues, chunk_duration_seconds=300, overlap_seconds=0
+        )
+
+        assert len(chunks) == 2  # 0-5min and 5-10min
+        assert chunks[0].chunk_index == 0
+        assert chunks[0].start_seconds == 0.0
+        assert "Text in first minute" in chunks[0].text
+        assert "Text in third minute" in chunks[0].text
+
+        assert chunks[1].chunk_index == 1
+        assert chunks[1].start_seconds == 360.0  # When cue 3 starts (00:06:00)
+        assert "Text in seventh minute" in chunks[1].text
+
+    def test_estimate_tokens_english(self) -> None:
+        """Test token estimation for English text."""
+        # English: ~4 chars per token
+        text = "This is a test sentence with approximately twenty characters per word."
+        estimated = VTTParser.estimate_tokens(text, "en")
+        # 72 characters / 4 = ~18 tokens
+        assert 15 <= estimated <= 21
+
+    def test_estimate_tokens_russian(self) -> None:
+        """Test token estimation for Russian text."""
+        # Russian: ~2.5 chars per token
+        text = "Это тестовое предложение с примерным количеством символов."
+        estimated = VTTParser.estimate_tokens(text, "ru")
+        # 60 characters / 2.5 = ~24 tokens
+        assert 20 <= estimated <= 28
+
+    def test_estimate_tokens_default(self) -> None:
+        """Test token estimation with unknown language falls back to default."""
+        text = "A" * 350  # 350 characters
+        estimated = VTTParser.estimate_tokens(text, "unknown")
+        # Default: ~3.5 chars per token -> 350 / 3.5 = 100 tokens
+        assert 95 <= estimated <= 105
+
+    def test_create_chunks_hybrid_no_splitting(self, temp_dir: Path) -> None:
+        """Test hybrid chunking when time-based chunks fit within token limits."""
+        vtt_content = """WEBVTT
+
+00:00:00.000 --> 00:02:00.000
+Short content that fits easily within token limits
+
+00:05:00.000 --> 00:07:00.000
+Another short segment
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+        assert cues is not None
+
+        # Create chunks with generous token limit (should not split)
+        chunks = VTTParser.create_chunks_hybrid(
+            cues,
+            chunk_duration_seconds=300,
+            overlap_seconds=0,
+            max_tokens=500,
+            min_tokens=1,
+            language="en",
+        )
+
+        # Should create 2 chunks (0-5min and 5-10min), no splitting needed
+        assert len(chunks) == 2
+        assert "Short content" in chunks[0].text
+        assert "Another short segment" in chunks[1].text
+
+    def test_create_chunks_hybrid_with_splitting(self, temp_dir: Path) -> None:
+        """Test hybrid chunking splits oversized time-based chunks."""
+        # Create a VTT with moderately long content split across multiple cues in first 5 minutes
+        # Split the text into segments that will exceed token limits when combined but not individually
+        words = [f"Word{i}" for i in range(150)]
+        segment1 = " ".join(words[:40])  # ~40 tokens
+        segment2 = " ".join(words[40:80])  # ~40 tokens
+        segment3 = " ".join(words[80:110])  # ~30 tokens
+
+        vtt_content = f"""WEBVTT
+
+00:00:00.000 --> 00:01:20.000
+{segment1}
+
+00:01:20.000 --> 00:02:40.000
+{segment2}
+
+00:02:40.000 --> 00:04:00.000
+{segment3}
+
+00:05:00.000 --> 00:06:00.000
+Short text in next chunk
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+        assert cues is not None
+
+        # Create chunks with token limit that will force splitting of combined segments
+        chunks = VTTParser.create_chunks_hybrid(
+            cues, chunk_duration_seconds=300, max_tokens=70, min_tokens=10, language="en"
+        )
+
+        # First time-based chunk should be split due to token limit
+        # Combined segments (~110 tokens) exceed 70 token limit, should split into multiple chunks
+        # Plus the second time chunk makes at least 3 total
+        assert len(chunks) >= 3
+
+        # Verify that splitting occurred (we should have multiple chunks from the first time period)
+        # The exact token limits may vary due to merging logic, so just check we got reasonable chunks
+        token_counts = [VTTParser.estimate_tokens(chunk.text, "en") for chunk in chunks]
+        assert all(
+            count > 0 for count in token_counts
+        ), f"All chunks should have content: {token_counts}"
+
+        # Verify per-chunk token limits with tolerance for estimator variance
+        assert all(
+            count <= 70 * 1.3 for count in token_counts
+        ), f"Chunks should not exceed max_tokens=70 with tolerance: {token_counts}"
+
+    def test_create_chunks_hybrid_multiple_time_chunks(self, temp_dir: Path) -> None:
+        """Test hybrid chunking creates multiple time-based chunks when content is sparse."""
+        vtt_content = """WEBVTT
+
+00:00:00.000 --> 00:00:05.000
+Content in first 5 minute chunk
+
+00:05:00.000 --> 00:06:00.000
+Content in second 5 minute chunk
+
+00:10:00.000 --> 00:11:00.000
+Content in third 5 minute chunk
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+        assert cues is not None
+
+        chunks = VTTParser.create_chunks_hybrid(
+            cues, chunk_duration_seconds=300, max_tokens=500, min_tokens=5, language="en"
+        )
+
+        # Should create 3 time-based chunks (0-5min, 5-10min, 10-15min)
+        assert len(chunks) == 3
+        assert "first 5 minute chunk" in chunks[0].text
+        assert "second 5 minute chunk" in chunks[1].text
+        assert "third 5 minute chunk" in chunks[2].text
+
+    def test_create_chunks_with_overlap(self, temp_dir: Path) -> None:
+        """Test chunk overlap prevents information loss at boundaries."""
+        vtt_content = """WEBVTT
+
+00:04:30.000 --> 00:04:45.000
+Important context before boundary
+
+00:04:50.000 --> 00:05:10.000
+Critical information spanning the 5-minute mark
+
+00:05:15.000 --> 00:05:30.000
+Follow-up information after boundary
+"""
+        vtt_file = temp_dir / "test.vtt"
+        vtt_file.write_text(vtt_content)
+
+        cues = VTTParser.parse_vtt_to_cues(vtt_file)
+        assert cues is not None
+
+        # Create chunks with 5-minute duration and 30-second overlap
+        chunks = VTTParser.create_chunks_from_cues(
+            cues, chunk_duration_seconds=300, overlap_seconds=30
+        )
+
+        # Should create 2 chunks: 0-5min and 4:30-10min (30s overlap)
+        assert len(chunks) == 2
+
+        # Verify first chunk (0-5min window, content starts at 4:30)
+        assert chunks[0].start_seconds == 270.0  # First cue at 4:30 (270s)
+        assert "Important context before boundary" in chunks[0].text
+        assert "Critical information spanning" in chunks[0].text
+
+        # Verify second chunk (4:30-10min window, content starts at 4:30 due to overlap)
+        assert chunks[1].start_seconds == 270.0  # Overlap starts at 4:30 (270s)
+        # Second chunk should contain overlapping content from first chunk
+        assert "Important context before boundary" in chunks[1].text
+        assert "Critical information spanning" in chunks[1].text
+        assert "Follow-up information after boundary" in chunks[1].text
+
 
 class TestDocument:
     """Tests for Document model."""
@@ -207,14 +475,19 @@ class TestIngester:
         vtt_file.parent.mkdir(parents=True)
         vtt_file.write_text(sample_vtt_en)
 
+        # Disable chunking for this test to get single document
+        test_config.chunking.enabled = False
         ingester = Ingester(test_config)
-        doc = ingester.process_file(vtt_file)
+        docs = ingester.process_file(vtt_file)
 
-        assert doc is not None
+        assert len(docs) == 1
+        doc = docs[0]
         assert doc.language == "en"
         assert "Hello, this is a test subtitle" in doc.text
         assert doc.length > 0
         assert doc.path == str(vtt_file.absolute())
+        assert doc.video_id is not None
+        assert doc.is_chunk is False
 
     def test_process_file_too_short(self, test_config: Config, temp_dir: Path) -> None:
         """Test skipping files with text too short."""
@@ -226,11 +499,12 @@ Hi
         vtt_file = temp_dir / "short.vtt"
         vtt_file.write_text(vtt_content)
 
+        test_config.chunking.enabled = False
         ingester = Ingester(test_config)
-        doc = ingester.process_file(vtt_file)
+        docs = ingester.process_file(vtt_file)
 
-        # Should be None because text is too short (min_text_length=10)
-        assert doc is None
+        # Should be empty list because text is too short (min_text_length=10)
+        assert len(docs) == 0
 
     def test_process_file_invalid(
         self, test_config: Config, temp_dir: Path, invalid_vtt: str
@@ -239,14 +513,16 @@ Hi
         vtt_file = temp_dir / "invalid.vtt"
         vtt_file.write_text(invalid_vtt)
 
+        test_config.chunking.enabled = False
         ingester = Ingester(test_config)
-        doc = ingester.process_file(vtt_file)
+        docs = ingester.process_file(vtt_file)
 
-        assert doc is None
+        assert len(docs) == 0
 
     def test_ingest_pipeline(self, test_config: Config, archive_with_vtt_files: Path) -> None:
-        """Test full ingestion pipeline."""
+        """Test full ingestion pipeline without chunking."""
         test_config.paths.archive_root = str(archive_with_vtt_files)
+        test_config.chunking.enabled = False  # Disable chunking for predictable count
         ingester = Ingester(test_config)
 
         doc_count = ingester.ingest()
@@ -269,6 +545,7 @@ Hi
         assert all("id" in doc for doc in docs)
         assert all("text" in doc for doc in docs)
         assert all("language" in doc for doc in docs)
+        assert all("video_id" in doc for doc in docs)
 
         # Check we have both languages
         languages = {doc["language"] for doc in docs}
@@ -312,3 +589,112 @@ Hi
 
         # Large file should be skipped
         assert len(vtt_files) == 0
+
+    def test_process_file_with_chunking(self, test_config: Config, temp_dir: Path) -> None:
+        """Test file processing with chunking enabled."""
+        # Create a VTT file with 10 minutes of content
+        vtt_content = """WEBVTT
+
+00:00:00.000 --> 00:01:00.000
+Content in first minute
+
+00:02:00.000 --> 00:03:00.000
+Content in third minute
+
+00:06:00.000 --> 00:07:00.000
+Content in seventh minute
+
+00:09:00.000 --> 00:10:00.000
+Content in tenth minute
+"""
+        vtt_file = temp_dir / "test.en.vtt"
+        vtt_file.write_text(vtt_content)
+
+        # Enable chunking with 5-minute chunks and no overlap
+        test_config.chunking.enabled = True
+        test_config.chunking.chunk_duration_seconds = 300  # 5 minutes
+        test_config.chunking.overlap_seconds = 0  # No overlap for this test
+        test_config.chunking.min_chunk_tokens = 1  # Very low to prevent merging
+
+        ingester = Ingester(test_config)
+        docs = ingester.process_file(vtt_file)
+
+        # Should create 2 chunks (0-5min and 5-10min)
+        assert len(docs) == 2
+
+        # Verify first chunk
+        assert docs[0].is_chunk is True
+        assert docs[0].chunk_index == 0
+        assert docs[0].total_chunks == 2
+        assert "Content in first minute" in docs[0].text
+        assert docs[0].start_time_seconds == 0.0
+
+        # Verify second chunk
+        assert docs[1].is_chunk is True
+        assert docs[1].chunk_index == 1
+        assert docs[1].total_chunks == 2
+        assert "Content in seventh minute" in docs[1].text
+        assert docs[1].start_time_seconds == 360.0  # First cue at 6:00 (360 seconds)
+
+        # Verify both have same video_id
+        assert docs[0].video_id == docs[1].video_id
+
+
+class TestConfig:
+    """Tests for Config model and methods."""
+
+    def test_get_max_chunk_tokens_e5_model(self, test_config: Config) -> None:
+        """Test token limit detection for E5 embedding models."""
+        test_config.embedding.provider = "local"
+        test_config.embedding.model_name = "intfloat/multilingual-e5-large"
+        test_config.chunking.token_buffer = 50
+
+        max_tokens = test_config.get_max_chunk_tokens()
+
+        # E5 has 512 token limit, minus 50 buffer = 462
+        assert max_tokens == 462
+
+    def test_get_max_chunk_tokens_openai_model(self, test_config: Config) -> None:
+        """Test token limit detection for OpenAI embedding models."""
+        test_config.embedding.provider = "openai"
+        test_config.openai.embedding_model = "text-embedding-3-small"
+        test_config.chunking.token_buffer = 50
+
+        max_tokens = test_config.get_max_chunk_tokens()
+
+        # OpenAI has 8191 token limit, minus 50 buffer = 8141
+        assert max_tokens == 8141
+
+    def test_get_max_chunk_tokens_gemini_model(self, test_config: Config) -> None:
+        """Test token limit detection for Gemini embedding models."""
+        test_config.embedding.provider = "gemini"
+        test_config.gemini.embedding_model = "models/text-embedding-004"
+        test_config.chunking.token_buffer = 50
+
+        max_tokens = test_config.get_max_chunk_tokens()
+
+        # Gemini text-embedding-004 has 3072 token limit, minus 50 buffer = 3022
+        assert max_tokens == 3022
+
+    def test_get_max_chunk_tokens_explicit_override(self, test_config: Config) -> None:
+        """Test that explicit max_chunk_tokens overrides auto-detection."""
+        test_config.embedding.provider = "local"
+        test_config.embedding.model_name = "intfloat/multilingual-e5-large"
+        test_config.chunking.max_chunk_tokens = 300  # Explicit override
+
+        max_tokens = test_config.get_max_chunk_tokens()
+
+        # Should use explicit value, not auto-detected
+        assert max_tokens == 300
+
+    def test_get_max_chunk_tokens_unknown_model(self, test_config: Config) -> None:
+        """Test fallback for unknown embedding models."""
+        test_config.embedding.provider = "local"
+        test_config.embedding.model_name = "unknown/model"
+        test_config.embedding.max_seq_length = 512
+        test_config.chunking.token_buffer = 50
+
+        max_tokens = test_config.get_max_chunk_tokens()
+
+        # Should fall back to max_seq_length minus buffer
+        assert max_tokens == 462

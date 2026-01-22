@@ -1,12 +1,16 @@
 """Embedding generation module using multilingual-e5-large."""
 
 import json
+import os
+import time
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import torch
+from google.genai import types  # type: ignore[import]
 from loguru import logger
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer  # type: ignore
 
 from rainrag.config import Config
 from rainrag.ingest import Document
@@ -22,6 +26,7 @@ class EmbeddingCache:
         Args:
             cache_dir: Directory to store cache files
         """
+        super().__init__()
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -76,6 +81,13 @@ class EmbeddingCache:
 
         logger.info(f"Loaded metadata for {len(documents)} documents")
 
+        # Validate that embeddings and documents have matching lengths
+        if len(embeddings) != len(documents):
+            logger.error(
+                f"Embeddings/metadata mismatch in load(): embeddings count ({len(embeddings)}) != documents count ({len(documents)}), embeddings_file: {self.embeddings_file}, metadata_file: {self.metadata_file}"
+            )
+            return None, None
+
         return embeddings, documents
 
     def exists(self) -> bool:
@@ -98,24 +110,74 @@ class Embedder:
         Args:
             config: Configuration object
         """
+        super().__init__()
         self.config = config
         self.cache = EmbeddingCache(config.paths.embeddings_cache)
         self.model: SentenceTransformer | None = None
+        self.openai_client: Any = None  # type: ignore[assignment]
+        self.mistral_client: Any = None  # type: ignore[assignment]
+        self.genai_client: Any = None  # type: ignore[assignment]
 
     def load_model(self) -> None:
-        """Load the sentence-transformers model."""
-        logger.info(f"Loading model: {self.config.embedding.model_name}")
+        """Load the embedding model based on provider."""
+        provider = self.config.embedding.provider
 
-        # Determine device
-        if self.config.embedding.device == "cuda" and not torch.cuda.is_available():
-            logger.warning("CUDA not available, falling back to CPU")
-            device = "cpu"
+        if provider == "local":
+            self._load_local_model()
+        elif provider in ["mistral", "openai", "gemini"]:
+            logger.info(f"Using {provider.upper()} API for embeddings")
+            # For API providers, we don't need to preload models
+            # They'll be called during generate_embeddings
+            self.model = None
         else:
-            device = self.config.embedding.device
+            raise ValueError(f"Unknown embedding provider: {provider}")
+
+    def _load_local_model(self) -> None:
+        """Load the local sentence-transformers model."""
+        logger.info(f"Loading local model: {self.config.embedding.model_name}")
+
+        # Determine device based on configuration
+        configured_device = self.config.embedding.device
+
+        if configured_device == "auto":
+            # Auto-selection: try CUDA, then MPS, then CPU
+            if torch.cuda.is_available():
+                device = "cuda:0"
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = "cpu"
+            logger.info(f"Auto-selected device: {device}")
+        else:
+            # Honor configured device if available
+            if configured_device.startswith("cuda"):
+                if torch.cuda.is_available():
+                    device = configured_device
+                else:
+                    logger.warning(
+                        f"CUDA not available, configured device '{configured_device}' not usable, falling back to CPU"
+                    )
+                    device = "cpu"
+            elif configured_device == "mps":
+                if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                    device = "mps"
+                else:
+                    logger.warning(
+                        f"MPS not available, configured device '{configured_device}' not usable, falling back to CPU"
+                    )
+                    device = "cpu"
+            elif configured_device == "cpu":
+                device = "cpu"
+            else:
+                logger.warning(f"Unknown device '{configured_device}', falling back to CPU")
+                device = "cpu"
+
+            logger.info(f"Using device: {device}")
 
         # Load model
         try:
-            self.model = SentenceTransformer(
+            model_cls = cast(Any, SentenceTransformer)
+            self.model = model_cls(
                 self.config.embedding.model_name,
                 device=device,
                 model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
@@ -127,10 +189,48 @@ class Embedder:
                 device=device,
             )
 
+        assert self.model is not None, "Model should be loaded after load_model() call"
         # Set max sequence length
         self.model.max_seq_length = self.config.embedding.max_seq_length
 
-        logger.info(f"Model loaded on device: {device}")
+        logger.info(f"Local model loaded on device: {device}")
+
+    def _is_transient_exception(self, exception: Exception) -> bool:
+        """
+        Check if an exception is transient and should be retried.
+
+        Args:
+            exception: The exception to check
+
+        Returns:
+            True if the exception is transient (rate limit, network error), False otherwise
+        """
+        # Check for rate limit errors
+        status_code = getattr(exception, "status_code", None)
+        if isinstance(status_code, int) and status_code in [
+            429,
+            500,
+            502,
+            503,
+            504,
+        ]:  # Rate limit or server errors
+            return True
+
+        # Check for specific error messages that indicate transient issues
+        error_str = str(exception).lower()
+        transient_indicators = [
+            "rate limit",
+            "rate_limit",
+            "too many requests",
+            "service unavailable",
+            "temporary failure",
+            "connection error",
+            "network error",
+            "timeout",
+            "internal server error",
+        ]
+
+        return any(indicator in error_str for indicator in transient_indicators)
 
     def load_documents(self, docs_path: str) -> list[Document]:
         """
@@ -171,28 +271,189 @@ class Embedder:
         Returns:
             NumPy array of embeddings (shape: [N, D])
         """
+        provider = self.config.embedding.provider
+        logger.info(f"Generating embeddings for {len(documents)} documents using {provider}")
+
+        if provider == "local":
+            return self._generate_local_embeddings(documents, show_progress)
+        elif provider == "mistral":
+            return self._generate_api_embeddings(documents, show_progress, "mistral")
+        elif provider == "openai":
+            return self._generate_api_embeddings(documents, show_progress, "openai")
+        elif provider == "gemini":
+            return self._generate_api_embeddings(documents, show_progress, "gemini")
+        else:
+            raise ValueError(f"Unknown embedding provider: {provider}")
+
+    def _generate_local_embeddings(
+        self, documents: list[Document], show_progress: bool = True
+    ) -> np.ndarray:
+        """Generate embeddings using local SentenceTransformer model."""
         if self.model is None:
             self.load_model()
 
-        logger.info(f"Generating embeddings for {len(documents)} documents")
+        assert self.model is not None, "Model should be loaded after load_model() call"
 
-        # For E5 models, it's recommended to prefix queries with "query: "
-        # and passages with "passage: ". Since we're building a search index,
-        # we treat all documents as passages.
-        texts = [f"passage: {doc.text}" for doc in documents]
+        # Process documents in chunks to avoid memory issues and show progress
+        chunk_size = 10000
+        all_embeddings = []
 
-        # Generate embeddings in batches
-        embeddings = self.model.encode(
-            texts,
-            batch_size=self.config.embedding.batch_size,
-            show_progress_bar=show_progress,
-            normalize_embeddings=self.config.embedding.normalize_embeddings,
-            convert_to_numpy=True,
+        total_chunks = (len(documents) + chunk_size - 1) // chunk_size
+        logger.info(
+            f"Starting chunked processing: {len(documents)} documents, chunk_size={chunk_size}"
         )
+        logger.info(f"Total chunks to process: {total_chunks}")
 
-        logger.info(f"Generated embeddings with shape: {embeddings.shape}")
+        for i in range(0, len(documents), chunk_size):
+            chunk_docs = documents[i : i + chunk_size]
+            chunk_texts = [f"passage: {doc.text}" for doc in chunk_docs]
+            chunk_number = i // chunk_size + 1
+            logger.info(
+                f"Processing chunk {chunk_number}/{total_chunks} ({len(chunk_texts)} documents)"
+            )
 
+            chunk_embeddings = self.model.encode(
+                chunk_texts,
+                batch_size=self.config.embedding.batch_size,
+                show_progress_bar=show_progress
+                and len(chunk_texts) > self.config.embedding.batch_size,
+                normalize_embeddings=self.config.embedding.normalize_embeddings,
+                convert_to_numpy=True,
+            )
+            chunk_embeddings = np.array(chunk_embeddings)
+            all_embeddings.append(chunk_embeddings)
+            logger.info(
+                f"Completed chunk {chunk_number}, embeddings shape: {chunk_embeddings.shape}"
+            )
+
+        embeddings = np.concatenate(all_embeddings, axis=0)
+        logger.info(f"Generated embeddings with final shape: {embeddings.shape}")
         return embeddings
+
+    def _generate_api_embeddings(
+        self, documents: list[Document], show_progress: bool = True, provider: str = "openai"
+    ) -> np.ndarray:
+        """Generate embeddings using API providers."""
+        # Initialize clients
+        model = None  # Initialize to avoid unbound variable
+        client: Any = None  # Can be OpenAI, Mistral, or None
+        if provider == "openai":
+            if self.openai_client is None:
+                try:
+                    import openai
+                except ImportError as e:
+                    raise ImportError(
+                        "openai package is required for OpenAI embeddings. Install it with: pip install openai"
+                    ) from e
+                api_key = os.getenv("OPENAI_API_KEY")
+                if api_key is None:
+                    raise ValueError(
+                        "OPENAI_API_KEY environment variable is required for OpenAI embeddings"
+                    )
+                self.openai_client = openai.OpenAI(api_key=api_key)
+            client = self.openai_client
+            model = self.config.openai.embedding_model
+        elif provider == "mistral":
+            if self.mistral_client is None:
+                try:
+                    from mistralai import Mistral
+                except ImportError as e:
+                    raise ImportError(
+                        "mistralai package is required for Mistral embeddings. Install it with: pip install mistralai"
+                    ) from e
+                api_key = os.getenv("MISTRAL_API_KEY")
+                if api_key is None:
+                    raise ValueError(
+                        "MISTRAL_API_KEY environment variable is required for Mistral embeddings"
+                    )
+                self.mistral_client = Mistral(api_key=api_key)
+            client = self.mistral_client
+            model = "mistral-embed"
+        elif provider == "gemini":
+            if self.genai_client is None:
+                try:
+                    from google import genai  # type: ignore[import]
+                except ImportError as e:
+                    raise ImportError(
+                        "google-genai package is required for Gemini embeddings. Install it with: pip install google-genai"
+                    ) from e
+                self.genai_client = genai.Client(api_key=self.config.gemini.api_key)
+            client = None  # Gemini uses direct API calls
+            model = self.config.gemini.embedding_model
+        else:
+            raise ValueError(f"Unsupported embedding provider: {provider}")
+
+        # For API embeddings, prefix passages appropriately
+        if provider in ["openai", "mistral"]:
+            texts = [f"passage: {doc.text}" for doc in documents]
+        else:
+            texts = [doc.text for doc in documents]
+
+        all_embeddings = []
+        batch_size = self.config.embedding.batch_size
+
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i : i + batch_size]
+            if show_progress:
+                logger.info(
+                    f"Processing batch {i//batch_size + 1}/{(len(texts) + batch_size - 1)//batch_size}"
+                )
+
+            # Retry logic for transient failures
+            max_retries = self.config.embedding.max_retries
+            backoff_factor = self.config.embedding.retry_backoff_factor
+            batch_index = i // batch_size + 1
+
+            for retry_attempt in range(max_retries + 1):
+                try:
+                    if provider == "openai":
+                        response = client.embeddings.create(model=model, input=batch_texts)
+                        batch_embeddings = [item.embedding for item in response.data]
+                    elif provider == "mistral":
+                        response = client.embeddings.create(model=model, inputs=batch_texts)
+                        batch_embeddings = [item.embedding for item in response.data]
+                    elif provider == "gemini":
+                        result = self.genai_client.models.embed_content(
+                            model=model,
+                            contents=batch_texts,
+                            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
+                        )
+                        if result and result.embeddings:
+                            batch_embeddings = []
+                            for embedding in result.embeddings:
+                                if embedding.values is not None:
+                                    batch_embeddings.append(embedding.values)
+                                else:
+                                    raise RuntimeError("Gemini embeddings API returned None values")
+                        else:
+                            raise RuntimeError("Gemini embeddings API returned invalid response")
+
+                    all_embeddings.extend(batch_embeddings)
+                    break  # Success, exit retry loop
+
+                except Exception as e:
+                    is_transient = self._is_transient_exception(e)
+
+                    if retry_attempt < max_retries and is_transient:
+                        delay = backoff_factor * (2**retry_attempt)
+                        logger.warning(
+                            f"Transient error in batch {batch_index} (attempt {retry_attempt + 1}/{max_retries + 1}): {e}. Retrying in {delay:.1f} seconds..."
+                        )
+                        time.sleep(delay)
+                        continue
+                    else:
+                        # Either non-transient error or max retries exceeded
+                        if is_transient:
+                            logger.error(
+                                f"Failed to generate embeddings for batch {batch_index} after {max_retries + 1} attempts: {e}"
+                            )
+                        else:
+                            logger.error(f"Non-transient error in batch {batch_index}: {e}")
+                        raise
+
+        embeddings_array = np.array(all_embeddings)
+        logger.info(f"Generated embeddings with shape: {embeddings_array.shape}")
+        return embeddings_array
 
     def embed(self, force_regenerate: bool = False) -> tuple[np.ndarray, list[Document]]:
         """
@@ -246,8 +507,10 @@ def run_embedding(
     Returns:
         Tuple of (embeddings array, list of documents)
     """
+    logger.info("run_embedding function STARTED")
     from rainrag.config import load_config
 
     config = load_config(config_path)
+    logger.info("Config loaded")
     embedder = Embedder(config)
     return embedder.embed(force_regenerate=force_regenerate)

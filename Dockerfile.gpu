@@ -1,5 +1,5 @@
 # Build stage
-FROM python:3.10-slim as builder
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime as builder
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -24,12 +24,7 @@ RUN poetry config virtualenvs.create false
 RUN poetry install --without dev --no-interaction --no-ansi
 
 # Runtime stage
-FROM python:3.10-slim
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 
 # Set working directory
 WORKDIR /app
@@ -51,7 +46,7 @@ ENV PYTHONPATH=/app/src
 
 # Install the package
 COPY pyproject.toml /app/
-RUN pip install -e .
+RUN pip install .
 
 # Set the entrypoint
 ENTRYPOINT ["rainrag"]

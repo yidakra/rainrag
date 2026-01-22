@@ -5,7 +5,7 @@ qdrant:
   enabled: true
   image:
     repository: qdrant/qdrant
-    tag: v1.12.1
+    tag: v1.16.3
     pullPolicy: IfNotPresent
 
   service:
