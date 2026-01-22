@@ -5,15 +5,15 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, cast
 
-import cohere  # type: ignore
-import pydantic
-from anthropic import Anthropic  # type: ignore
-from google import genai  # type: ignore
-from loguru import logger  # type: ignore
-from mistralai import Mistral  # type: ignore
-from openai import OpenAI  # type: ignore
-from qdrant_client import QdrantClient, models  # type: ignore
-from sentence_transformers import SentenceTransformer  # type: ignore
+import cohere
+from anthropic import Anthropic
+from google import genai  # type: ignore[import]
+from google.genai import types  # type: ignore[import]
+from loguru import logger
+from mistralai import Mistral
+from openai import OpenAI
+from qdrant_client import QdrantClient, models
+from sentence_transformers import SentenceTransformer  # type: ignore[import]
 
 from rainrag.config import Config
 
@@ -93,14 +93,12 @@ class RAGQueryEngine:
         self.qdrant_client: QdrantClient | None = None
 
         # BM25 for hybrid search
-        self.bm25: pydantic.SkipValidation[Any] | None = None
+        self.bm25: Any = None
         self.bm25_corpus: list[dict[str, Any]] = []  # Store documents for BM25
         self.bm25_tokenized_corpus: list[list[str]] = []  # Tokenized texts for BM25
 
         # Cohere client for reranking
-        self.cohere_client: pydantic.SkipValidation[Any] = (
-            None  # Can be ClientV2 or Client depending on SDK version
-        )
+        self.cohere_client: Any = None  # Can be ClientV2 or Client depending on SDK version
 
         # Initialize clients based on what's needed for LLM and embeddings
         needs_mistral = config.llm.provider == "mistral" or config.embedding.provider == "mistral"
@@ -683,20 +681,18 @@ class RAGQueryEngine:
         if self.config.embedding.provider == "mistral":
             # Use Mistral API embeddings
             logger.debug(f"Embedding query using Mistral API: {query[:100]}...")
-            if self.mistral_client is not None:
-                try:
-                    response = self.mistral_client.embeddings.create(
-                        model="mistral-embed", inputs=[query]
-                    )
-                    embedding = response.data[0].embedding
-                    if embedding is None:
-                        raise RuntimeError("Mistral embeddings API returned None embedding")
-                    return embedding
-                except Exception as e:
-                    logger.error(f"Failed to generate embeddings with Mistral API: {e}")
-                    raise RuntimeError(f"Mistral embeddings API error: {e}") from e
-            else:
-                raise RuntimeError("Mistral client not initialized. Call initialize() first.")
+            try:
+                assert self.mistral_client is not None, "Mistral client not initialized"
+                response = self.mistral_client.embeddings.create(
+                    model="mistral-embed", inputs=[query]
+                )
+                embedding = response.data[0].embedding
+                if embedding is None:
+                    raise RuntimeError("Mistral embeddings API returned None embedding")
+                return embedding
+            except Exception as e:
+                logger.error(f"Failed to generate embeddings with Mistral API: {e}")
+                raise RuntimeError(f"Mistral embeddings API error: {e}") from e
 
         elif self.config.embedding.provider == "local":
             # Use local SentenceTransformer model
@@ -719,7 +715,8 @@ class RAGQueryEngine:
             # Use OpenAI API embeddings
             logger.debug(f"Embedding query using OpenAI API: {query[:100]}...")
             try:
-                response = self.openai_client.embeddings.create(  # type: ignore[assignment]
+                assert self.openai_client is not None, "OpenAI client not initialized"
+                response = self.openai_client.embeddings.create(
                     model=self.config.openai.embedding_model, input=query
                 )
                 return response.data[0].embedding
@@ -734,9 +731,16 @@ class RAGQueryEngine:
                 result = self.genai_client.models.embed_content(
                     model=self.config.gemini.embedding_model,
                     contents=[query],
-                    config=genai.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
+                    config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
                 )
-                return result.embeddings[0].values
+                if result and result.embeddings and len(result.embeddings) > 0:
+                    embedding = result.embeddings[0].values
+                    if embedding is not None:
+                        return embedding
+                    else:
+                        raise RuntimeError("Gemini embeddings API returned None values")
+                else:
+                    raise RuntimeError("Gemini embeddings API returned invalid response")
             except Exception as e:
                 logger.error(f"Failed to generate embeddings with Gemini API: {e}")
                 raise RuntimeError(f"Gemini embeddings API error: {e}") from e
@@ -1067,16 +1071,30 @@ Question: {query}"""
         """
         if self.config.llm.provider == "mistral":
             logger.info("Generating answer using Mistral API...")
-            if self.mistral_client is None:
-                raise RuntimeError("Mistral client not initialized. Call initialize() first.")
             try:
-                response = self.mistral_client.chat.complete(
+                assert self.mistral_client is not None, "Mistral client not initialized"
+                response = self.mistral_client.chat.complete(  # type: ignore[assignment]
                     model=self.config.mistral.model_name,
                     messages=messages,  # type: ignore[arg-type]
                     max_tokens=self.config.mistral.max_tokens,
                     temperature=self.config.mistral.temperature,
                 )
-                answer = response.choices[0].message.content.strip()  # type: ignore[union-attr]
+                if (
+                    response
+                    and response.choices
+                    and len(response.choices) > 0
+                    and response.choices[0].message
+                ):
+                    content = response.choices[0].message.content
+                    if isinstance(content, str):
+                        answer = content.strip()
+                    elif isinstance(content, list) and content:
+                        # Handle list of content chunks (e.g., from Mistral API)
+                        answer = "".join(str(chunk) for chunk in content).strip()
+                    else:
+                        raise RuntimeError("Mistral API returned invalid content format")
+                else:
+                    raise RuntimeError("Mistral API returned invalid response structure")
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:
@@ -1085,17 +1103,30 @@ Question: {query}"""
 
         elif self.config.llm.provider == "openai":
             logger.info("Generating answer using OpenAI API...")
-            if self.openai_client is None:
-                logger.error("OpenAI client not initialized")
-                raise RuntimeError("OpenAI client not initialized. Call initialize() first.")
             try:
+                assert self.openai_client is not None, "OpenAI client not initialized"
                 response = self.openai_client.chat.completions.create(  # type: ignore[assignment]
                     model=self.config.openai.model_name,
                     messages=messages,  # type: ignore[arg-type]
                     max_tokens=self.config.openai.max_tokens,
                     temperature=self.config.openai.temperature,
                 )
-                answer = response.choices[0].message.content.strip()  # type: ignore[union-attr]
+                if (
+                    response
+                    and response.choices
+                    and len(response.choices) > 0
+                    and response.choices[0].message
+                ):
+                    content = response.choices[0].message.content
+                    if isinstance(content, str):
+                        answer = content.strip()
+                    elif isinstance(content, list) and content:  # type: ignore[unreachable]
+                        # Handle list of content chunks (if OpenAI API returns list)
+                        answer = "".join(str(chunk) for chunk in content).strip()  # type: ignore[union-attr]
+                    else:
+                        raise RuntimeError("OpenAI API returned invalid content format")
+                else:
+                    raise RuntimeError("OpenAI API returned invalid response structure")
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:
@@ -1104,10 +1135,8 @@ Question: {query}"""
 
         elif self.config.llm.provider == "claude":
             logger.info("Generating answer using Claude API...")
-            if self.claude_client is None:
-                logger.error("Claude client not initialized")
-                raise RuntimeError("Claude client not initialized. Call initialize() first.")
             try:
+                assert self.claude_client is not None, "Claude client not initialized"
                 # Extract system message and user messages for Claude API
                 system_message = ""
                 claude_messages = []
@@ -1124,7 +1153,27 @@ Question: {query}"""
                     system=system_message,
                     messages=claude_messages,  # type: ignore[arg-type]
                 )
-                answer = response.content[0].text.strip()  # type: ignore[attr-defined]
+                if response and response.content and len(response.content) > 0:
+                    content_block = response.content[0]
+                    # Check if it's a text block with text attribute
+                    try:
+                        text_content = getattr(content_block, "text", None)
+                        if text_content:
+                            if isinstance(text_content, str):
+                                answer = text_content.strip()
+                            elif isinstance(text_content, list) and text_content:
+                                # Handle list of text chunks (if Claude API returns list)
+                                answer = "".join(str(chunk) for chunk in text_content).strip()
+                            else:
+                                raise RuntimeError("Claude API returned invalid text format")
+                        else:
+                            raise RuntimeError("Claude API returned non-text content block")
+                    except AttributeError:
+                        raise RuntimeError(
+                            "Claude API returned content block without text attribute"
+                        )
+                else:
+                    raise RuntimeError("Claude API returned invalid response structure")
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:
@@ -1143,11 +1192,11 @@ Question: {query}"""
                         system_instruction = msg["content"]
                     elif msg["role"] == "user":
                         contents.append(
-                            genai.Content(role="user", parts=[genai.Part(text=msg["content"])])
+                            types.Content(role="user", parts=[types.Part(text=msg["content"])])
                         )
                     elif msg["role"] == "assistant":
                         contents.append(
-                            genai.Content(role="model", parts=[genai.Part(text=msg["content"])])
+                            types.Content(role="model", parts=[types.Part(text=msg["content"])])
                         )
 
                 # If there's a system instruction, add it to the first user message
@@ -1161,12 +1210,15 @@ Question: {query}"""
                 response = self.genai_client.models.generate_content(
                     model=self.config.gemini.model_name,
                     contents=contents,
-                    config=genai.GenerateContentConfig(
+                    config=types.GenerateContentConfig(
                         max_output_tokens=self.config.gemini.max_tokens,
                         temperature=self.config.gemini.temperature,
                     ),
                 )
-                answer = response.text.strip()
+                if response and response.text:
+                    answer = response.text.strip()
+                else:
+                    raise RuntimeError("Gemini API returned invalid response")
                 logger.info("Answer generated successfully")
                 return answer
             except Exception as e:

@@ -38,6 +38,7 @@ class QdrantIndexer:
         )
 
         # Test connection
+        assert self.client is not None  # Ensures type checker knows client is not None
         try:
             collections = self.client.get_collections()
             logger.info(f"Connected to Qdrant. Found {len(collections.collections)} collections")

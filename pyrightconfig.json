@@ -1,16 +1,13 @@
 {
-    "pythonVersion": "3.13",
-    "venvPath": "/Users/ark/Library/Caches/pypoetry/virtualenvs",
-    "venv": "rainrag-e7mZ07lE-py3.13",
+    "pythonVersion": "3.12",
+    "venvPath": "/home/ubuntu/.cache/pypoetry/virtualenvs",
+    "venv": "rainrag-Gf6KsqoE-py3.12",
     "include": ["src", "tests"],
-    // Include tests for import resolution but with lenient type checking
-    // Tests may have missing type annotations or more lenient typing requirements
-    // that are acceptable for test code but would fail strict type checking.
-    // This matches the mypy configuration in pyproject.toml.
     "exclude": [],
     "extraPaths": ["src"],
     "reportMissingImports": "warning",
-    "reportMissingTypeStubs": "warning",
+    "reportMissingTypeStubs": "none",
+    "ignoreMissingImports": true,
     "reportImportCycles": "warning",
     "reportUnusedImport": "warning",
     "reportUnusedClass": "warning",

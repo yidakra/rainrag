@@ -144,11 +144,12 @@ exclude = [
 # Per-module options for third-party libraries
 [[tool.mypy.overrides]]
 module = [
+    "numpy.*",
     "sentence_transformers.*",
     "tqdm.*",
     "qdrant_client.*",
     "mistralai.*",
-    "google.genai.*",
+    "google.*",
     "anthropic.*",
     "cohere.*",
     "streamlit.*",

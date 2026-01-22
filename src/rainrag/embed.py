@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
-import pydantic
 import torch
+from google.genai import types  # type: ignore[import]
 from loguru import logger
 from sentence_transformers import SentenceTransformer  # type: ignore
 
@@ -114,9 +114,9 @@ class Embedder:
         self.config = config
         self.cache = EmbeddingCache(config.paths.embeddings_cache)
         self.model: SentenceTransformer | None = None
-        self.openai_client: pydantic.SkipValidation[Any] = None
-        self.mistral_client: pydantic.SkipValidation[Any] = None
-        self.genai_client: pydantic.SkipValidation[Any] = None
+        self.openai_client: Any = None  # type: ignore[assignment]
+        self.mistral_client: Any = None  # type: ignore[assignment]
+        self.genai_client: Any = None  # type: ignore[assignment]
 
     def load_model(self) -> None:
         """Load the embedding model based on provider."""
@@ -336,7 +336,7 @@ class Embedder:
         """Generate embeddings using API providers."""
         # Initialize clients
         model = None  # Initialize to avoid unbound variable
-        client: pydantic.SkipValidation[Any] = None  # Can be OpenAI, Mistral, or None
+        client: Any = None  # Can be OpenAI, Mistral, or None
         if provider == "openai":
             if self.openai_client is None:
                 try:
@@ -372,7 +372,7 @@ class Embedder:
         elif provider == "gemini":
             if self.genai_client is None:
                 try:
-                    from google import genai
+                    from google import genai  # type: ignore[import]
                 except ImportError as e:
                     raise ImportError(
                         "google-genai package is required for Gemini embeddings. Install it with: pip install google-genai"
@@ -416,9 +416,17 @@ class Embedder:
                         result = self.genai_client.models.embed_content(
                             model=model,
                             contents=batch_texts,
-                            config=genai.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
+                            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
                         )
-                        batch_embeddings = [embedding.values for embedding in result.embeddings]
+                        if result and result.embeddings:
+                            batch_embeddings = []
+                            for embedding in result.embeddings:
+                                if embedding.values is not None:
+                                    batch_embeddings.append(embedding.values)
+                                else:
+                                    raise RuntimeError("Gemini embeddings API returned None values")
+                        else:
+                            raise RuntimeError("Gemini embeddings API returned invalid response")
 
                     all_embeddings.extend(batch_embeddings)
                     break  # Success, exit retry loop

@@ -201,7 +201,10 @@ def test_embed_query_gemini_different_model(gemini_config, mock_qdrant_client):
 
 def test_embed_query_gemini_task_type(gemini_config, mock_qdrant_client):
     """Test that Gemini embedding uses correct task_type."""
-    with patch("src.rainrag.query.genai") as mock_genai:
+    with (
+        patch("src.rainrag.query.genai") as mock_genai,
+        patch("src.rainrag.query.types") as mock_types,
+    ):
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             mock_client = MagicMock()
             mock_genai.Client.return_value = mock_client
@@ -212,7 +215,7 @@ def test_embed_query_gemini_task_type(gemini_config, mock_qdrant_client):
             # Mock EmbedContentConfig
             mock_config = MagicMock()
             mock_config.task_type = "RETRIEVAL_QUERY"
-            mock_genai.EmbedContentConfig.return_value = mock_config
+            mock_types.EmbedContentConfig.return_value = mock_config
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()
@@ -220,8 +223,8 @@ def test_embed_query_gemini_task_type(gemini_config, mock_qdrant_client):
             engine.embed_query("test query")
 
             # Verify task_type is set for retrieval
-            mock_genai.EmbedContentConfig.assert_called_once()
-            config_call_args = mock_genai.EmbedContentConfig.call_args
+            mock_types.EmbedContentConfig.assert_called_once()
+            config_call_args = mock_types.EmbedContentConfig.call_args
             assert config_call_args[1]["task_type"] == "RETRIEVAL_QUERY"
 
 
@@ -503,7 +506,7 @@ def test_query_gemini_russian_language(gemini_config, mock_qdrant_client):
             mock_client.models.generate_content.assert_called()
 
 
-def test_query_gemini_no_documents_retrieved(gemini_config, mock_gemini_model, mock_qdrant_client):
+def test_query_gemini_no_documents_retrieved(gemini_config, mock_qdrant_client):
     """Test Gemini query when no documents are retrieved."""
     # Mock empty query_points results
     query_result = MagicMock()
@@ -512,10 +515,20 @@ def test_query_gemini_no_documents_retrieved(gemini_config, mock_gemini_model, m
 
     with patch("src.rainrag.query.genai") as mock_genai:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
-            mock_genai.GenerativeModel.return_value = mock_gemini_model
-            mock_genai.GenerationConfig = MagicMock()
-            mock_genai.embed_content.return_value = {"embedding": [0.1] * 768}
-            mock_genai.configure = MagicMock()
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+
+            # Mock embeddings
+            mock_embed_result = MagicMock()
+            mock_embed_result.embeddings = [MagicMock(values=[0.1] * 768)]
+            mock_client.models.embed_content.return_value = mock_embed_result
+
+            # Mock LLM response
+            mock_llm_response = MagicMock()
+            mock_llm_response.text = (
+                "Quantum physics is the study of matter and energy at the most fundamental level."
+            )
+            mock_client.models.generate_content.return_value = mock_llm_response
 
             engine = RAGQueryEngine(gemini_config)
             engine.initialize()

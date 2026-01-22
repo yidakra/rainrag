@@ -10,6 +10,37 @@ from loguru import logger
 # Some commands (and even `--help`) should be fast in CI and tooling, so we
 # import pipeline components lazily inside the command functions.
 
+# Define typer options at module level to avoid function calls in parameter defaults
+CONFIG_OPTION = typer.Option("config.yaml", "--config", "-c", help="Path to configuration file")
+FORCE_OPTION = typer.Option(
+    False, "--force", "-f", help="Force regeneration of embeddings even if cache exists"
+)
+RECREATE_OPTION = typer.Option(
+    False, "--recreate", "-r", help="Recreate the collection (deletes existing data)"
+)
+RECREATE_INDEX_OPTION = typer.Option(
+    False, "--recreate-index", help="Recreate the Qdrant collection"
+)
+SKIP_INGEST_OPTION = typer.Option(False, "--skip-ingest", help="Skip ingestion step")
+SKIP_EMBED_OPTION = typer.Option(False, "--skip-embed", help="Skip embedding step")
+TOP_K_OPTION = typer.Option(
+    None, "--top-k", "-k", help="Number of documents to retrieve (default from config)"
+)
+VERBOSE_OPTION = typer.Option(False, "--verbose", "-v", help="Show retrieved documents and sources")
+TRANSPORT_OPTION = typer.Option(
+    None,
+    "--transport",
+    "-t",
+    help="Transport protocol (stdio, sse, streamable-http). Defaults to config value.",
+)
+HOST_OPTION = typer.Option(
+    None, "--host", "-h", help="Host for HTTP-based transports. Defaults to config value."
+)
+PORT_OPTION = typer.Option(
+    None, "--port", "-p", help="Port for HTTP-based transports. Defaults to config value."
+)
+QUESTION_ARGUMENT = typer.Argument(..., help="The question to ask")
+
 
 def load_config(config_path: str):
     from rainrag.config import load_config as _load_config
@@ -88,12 +119,7 @@ def setup_logging(config_path: str = "config.yaml") -> None:
 
 @app.command()
 def ingest(
-    config: str = typer.Option(
-        "config.yaml",
-        "--config",
-        "-c",
-        help="Path to configuration file",
-    ),
+    config: str = CONFIG_OPTION,
 ) -> None:
     """
     Ingest and parse VTT files from archive directory.
@@ -120,18 +146,8 @@ def ingest(
 
 @app.command()
 def embed(
-    config: str = typer.Option(
-        "config.yaml",
-        "--config",
-        "-c",
-        help="Path to configuration file",
-    ),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        "-f",
-        help="Force regeneration of embeddings even if cache exists",
-    ),
+    config: str = CONFIG_OPTION,
+    force: bool = FORCE_OPTION,
 ) -> None:
     """
     Generate embeddings for parsed documents.
@@ -159,18 +175,8 @@ def embed(
 
 @app.command()
 def index(
-    config: str = typer.Option(
-        "config.yaml",
-        "--config",
-        "-c",
-        help="Path to configuration file",
-    ),
-    recreate: bool = typer.Option(
-        False,
-        "--recreate",
-        "-r",
-        help="Recreate the collection (deletes existing data)",
-    ),
+    config: str = CONFIG_OPTION,
+    recreate: bool = RECREATE_OPTION,
 ) -> None:
     """
     Index embeddings into Qdrant vector store.
@@ -200,27 +206,10 @@ def index(
 
 @app.command()
 def pipeline(
-    config: str = typer.Option(
-        "config.yaml",
-        "--config",
-        "-c",
-        help="Path to configuration file",
-    ),
-    skip_ingest: bool = typer.Option(
-        False,
-        "--skip-ingest",
-        help="Skip ingestion step",
-    ),
-    skip_embed: bool = typer.Option(
-        False,
-        "--skip-embed",
-        help="Skip embedding step",
-    ),
-    recreate_index: bool = typer.Option(
-        False,
-        "--recreate-index",
-        help="Recreate the Qdrant collection",
-    ),
+    config: str = CONFIG_OPTION,
+    skip_ingest: bool = SKIP_INGEST_OPTION,
+    skip_embed: bool = SKIP_EMBED_OPTION,
+    recreate_index: bool = RECREATE_INDEX_OPTION,
 ) -> None:
     """
     Run the full pipeline: ingest -> embed -> index.
@@ -243,7 +232,7 @@ def pipeline(
         # Step 2: Embed
         if not skip_embed:
             typer.echo("\nStep 2/3: Embedding")
-            embeddings, documents = run_embedding(config)
+            _, documents = run_embedding(config)
             typer.echo(f"   Generated embeddings for {len(documents)} documents")
         else:
             typer.echo("\nStep 2/3: Embedding (skipped)")
@@ -263,25 +252,10 @@ def pipeline(
 
 @app.command()
 def ask(
-    question: str = typer.Argument(..., help="The question to ask"),
-    config: str = typer.Option(
-        "config.yaml",
-        "--config",
-        "-c",
-        help="Path to configuration file",
-    ),
-    top_k: int = typer.Option(
-        None,
-        "--top-k",
-        "-k",
-        help="Number of documents to retrieve (default from config)",
-    ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Show retrieved documents and sources",
-    ),
+    question: str = QUESTION_ARGUMENT,
+    config: str = CONFIG_OPTION,
+    top_k: int = TOP_K_OPTION,
+    verbose: bool = VERBOSE_OPTION,
 ) -> None:
     """
     Ask a question and get an answer based on the video transcripts.
@@ -326,12 +300,7 @@ def ask(
 
 @app.command()
 def info(
-    config: str = typer.Option(
-        "config.yaml",
-        "--config",
-        "-c",
-        help="Path to configuration file",
-    ),
+    config: str = CONFIG_OPTION,
 ) -> None:
     """
     Display information about the current configuration and state.
@@ -411,30 +380,10 @@ def info(
 
 @app.command()
 def mcp(
-    config: str = typer.Option(
-        "config.yaml",
-        "--config",
-        "-c",
-        help="Path to configuration file",
-    ),
-    transport: str = typer.Option(
-        None,
-        "--transport",
-        "-t",
-        help="Transport protocol (stdio, sse, streamable-http). Defaults to config value.",
-    ),
-    host: str = typer.Option(
-        None,
-        "--host",
-        "-h",
-        help="Host for HTTP-based transports. Defaults to config value.",
-    ),
-    port: int = typer.Option(
-        None,
-        "--port",
-        "-p",
-        help="Port for HTTP-based transports. Defaults to config value.",
-    ),
+    config: str = CONFIG_OPTION,
+    transport: str | None = TRANSPORT_OPTION,
+    host: str | None = HOST_OPTION,
+    port: int | None = PORT_OPTION,
 ) -> None:
     """
     Run the MCP (Model Context Protocol) server.
