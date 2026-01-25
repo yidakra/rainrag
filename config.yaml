@@ -22,7 +22,7 @@ embedding:
 
 # Qdrant vector store configuration
 qdrant:
-  host: "localhost"
+  host: "qdrant"
   port: 6333
   collection_name: "broadcast_transcripts"
   vector_size: 1024  # Must match the embedding model's output dimension:

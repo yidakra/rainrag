@@ -25,25 +25,29 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8001:8001"
+    env_file:
+      - .env
     environment:
       - RAINRAG_CONFIG=/app/config.yaml
       - RAINRAG_AUTH_TOKEN=${RAINRAG_AUTH_TOKEN:-}
+      - MISTRAL_API_KEY=dgqzJiAYYfOZ6FSTAnGpJL0DrLRfRw1d
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - COHERE_API_KEY=${COHERE_API_KEY}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - ./data:/data/rainrag
-      - ./embeddings:/data/embeddings
-    command: >
-      python -m uvicorn rainrag.api:app
-      --host 0.0.0.0
-      --port 8001
-    depends_on:
-      qdrant:
-        condition: service_healthy
+      - ./data:/app/data
+      - ./embeddings:/app/embeddings
+    entrypoint: ["python", "-m", "uvicorn", "rainrag.api:app", "--host", "0.0.0.0", "--port", "8001"]
+    # depends_on:
+    #   qdrant:
+    #     condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # Streamlit frontend
   streamlit:
@@ -54,19 +58,16 @@ services:
       dockerfile: Dockerfile
     ports:
       - "7860:7860"
+    env_file:
+      - .env
     environment:
       - RAINRAG_API_URL=http://api:8001
       - STREAMLIT_AUTH_TOKEN=${STREAMLIT_AUTH_TOKEN:-}
     volumes:
       - ./app.py:/app/app.py:ro
-    command: >
-      streamlit run /app/app.py
-      --server.address 0.0.0.0
-      --server.port 7860
-      --server.headless true
+    entrypoint: ["streamlit", "run", "/app/app.py", "--server.address", "0.0.0.0", "--server.port", "7860", "--server.headless", "true"]
     depends_on:
-      api:
-        condition: service_healthy
+      - api
 
   # MCP Server (for Claude Desktop, ChatGPT, Cursor integration)
   mcp:

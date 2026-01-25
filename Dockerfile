@@ -29,6 +29,7 @@ FROM python:3.10-slim
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libgomp1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
