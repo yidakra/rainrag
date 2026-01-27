@@ -80,7 +80,9 @@ class HealthResponse(BaseModel):
     # Search features configuration
     hybrid_search_enabled: bool = False
     reranker_enabled: bool = False
-    temporal_enabled: bool = False
+    chunking_enabled: bool = (
+        False  # Reports whether chunking is enabled (used for temporal features)
+    )
     fusion_method: str = "rrf"
     # Deprecated fields (kept for backwards compatibility)
     mistral_model: str
@@ -370,7 +372,7 @@ async def health_check():
         # Search features configuration
         hybrid_search_enabled=query_engine.config.hybrid_search.enabled,
         reranker_enabled=query_engine.config.reranker.enabled,
-        temporal_enabled=query_engine.config.chunking.enabled,  # Using chunking as proxy for temporal features
+        chunking_enabled=query_engine.config.chunking.enabled,  # Reports chunking status (enables temporal features)
         fusion_method=query_engine.config.hybrid_search.fusion_method,
         # Deprecated field (kept for backwards compatibility)
         mistral_model=llm_model,
