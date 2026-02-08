@@ -255,6 +255,24 @@ class RerankerConfig(BaseModel):
     )
 
 
+class WebMetadataConfig(BaseModel):
+    """Configuration for web metadata integration."""
+
+    enabled: bool = Field(
+        default=False, description="Enable loading of web metadata from JSON files"
+    )
+    path: str = Field(
+        default="./web_metadata", description="Path to directory containing web metadata JSON files"
+    )
+    min_content_length: int = Field(
+        default=10, description="Minimum content length for web description text"
+    )
+    require_web_metadata: bool = Field(
+        default=False,
+        description="If True, only ingest videos that have corresponding web metadata; if False, ingest all videos with empty web fields when metadata is missing",
+    )
+
+
 class Config(BaseModel):
     """Main configuration model."""
 
@@ -274,6 +292,7 @@ class Config(BaseModel):
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    web_metadata: WebMetadataConfig = Field(default_factory=WebMetadataConfig)
 
     def get_max_chunk_tokens(self) -> int:
         """

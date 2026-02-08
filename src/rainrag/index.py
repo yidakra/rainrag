@@ -140,6 +140,11 @@ class QdrantIndexer:
                             "duration_seconds": doc.duration_seconds,
                             "start_time": doc.start_time,
                             "end_time": doc.end_time,
+                            "web_title": doc.web_title,
+                            "web_date": doc.web_date,
+                            "web_date_ts": doc.web_date_ts,
+                            "web_description": doc.web_description,
+                            "web_url": doc.web_url,
                         },
                     )
                 )

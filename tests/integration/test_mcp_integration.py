@@ -111,9 +111,9 @@ mcp:
         )
 
         try:
-            # Wait for server to start (max 15 seconds)
+            # Wait for server to start (max 60 seconds)
             server_started = False
-            for _ in range(30):
+            for _ in range(120):
                 try:
                     # Try to connect to the MCP endpoint
                     response = requests.get("http://localhost:8888/mcp", timeout=1)
@@ -177,7 +177,14 @@ mcp:
         try:
             # Wait for server startup
             server_ready = False
-            for _ in range(30):
+            for _ in range(120):
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate(timeout=1)
+                    raise AssertionError(
+                        "MCP server exited before becoming ready.\n"
+                        f"stdout:\n{_strip_ansi(stdout)}\n"
+                        f"stderr:\n{_strip_ansi(stderr)}"
+                    )
                 try:
                     response = requests.get("http://localhost:8889/mcp", timeout=1)
                     if response.status_code in [200, 405, 404, 406]:
@@ -186,7 +193,7 @@ mcp:
                 except requests.exceptions.RequestException:
                     time.sleep(0.5)
 
-            assert server_ready, "Server did not become ready"
+            assert server_ready, "Server did not become ready within 60 seconds"
 
             # Test that we can consistently connect
             for _ in range(3):

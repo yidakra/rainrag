@@ -389,6 +389,12 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     time_boost = chunk.get("time_boost")
     fusion_method = chunk.get("fusion_method")
 
+    # Web metadata fields
+    web_title = chunk.get("web_title")
+    web_date = chunk.get("web_date")
+    chunk.get("web_description")
+    web_url = chunk.get("web_url")
+
     duration_str = ""
     if duration_seconds:
         mins = int(duration_seconds // 60)
@@ -430,6 +436,14 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     if timecode_str and not is_chunk:
         meta_parts.append(f"**{get_text('timecode_label', lang)}:** {timecode_str}")
     meta_parts.append(f"**{get_text('language_field', lang)}:** {chunk_lang}")
+
+    # Add web metadata if available
+    if web_title:
+        meta_parts.append(f"**Title:** {web_title}")
+    if web_date:
+        meta_parts.append(f"**Web Date:** {web_date}")
+    if web_url:
+        meta_parts.append(f"**URL:** [{web_url}]({web_url})")
 
     return f"""
 **{get_text("source_label", lang)}:** `{filename}`{chunk_info}
@@ -878,5 +892,5 @@ def main():
                 logger.error(f"Unexpected error: {e}")
 
 
-if __name__ == "__main__":
-    main()
+# Run the main function when the module is imported by Streamlit
+main()

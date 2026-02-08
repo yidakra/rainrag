@@ -1,12 +1,14 @@
 """Ingestion module for parsing VTT subtitle files."""
 
 import hashlib
+import html
 import json
 import re
 import subprocess
 from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel
@@ -36,6 +38,13 @@ class Document(BaseModel):
     total_chunks: int | None = None  # Total number of chunks for this video
     start_time_seconds: float | None = None  # Start time in seconds for precise filtering
     end_time_seconds: float | None = None  # End time in seconds for precise filtering
+
+    # Web metadata fields
+    web_title: str | None = None  # Title from web metadata
+    web_date: str | None = None  # ISO date from web metadata (preferred over date)
+    web_date_ts: float | None = None  # Timestamp from web metadata
+    web_description: str | None = None  # Description from web metadata
+    web_url: str | None = None  # URL from web metadata
 
 
 class VTTCue(BaseModel):
@@ -809,6 +818,129 @@ class VTTParser:
         return date_iso, duration, date_ts
 
 
+class WebMetadataLoader:
+    """Loader for web metadata JSON files."""
+
+    def __init__(self, metadata_path: Path):
+        """
+        Initialize the web metadata loader.
+
+        Args:
+            metadata_path: Path to directory containing web metadata JSON files
+        """
+        self.metadata_path = metadata_path
+
+    def load_metadata(self, video_hash: str) -> dict[str, Any] | None:
+        """
+        Load web metadata for a video by its hash.
+
+        Args:
+            video_hash: Video hash (filename without extension)
+
+        Returns:
+            Dictionary containing web metadata, or None if not found
+        """
+        metadata_file = self.metadata_path / f"{video_hash}.json"
+        if not metadata_file.exists():
+            return None
+
+        try:
+            with open(metadata_file, encoding="utf-8") as f:
+                data = json.load(f)
+            return data
+        except (json.JSONDecodeError, FileNotFoundError, KeyError) as e:
+            logger.debug(f"Could not load web metadata for {video_hash}: {e}")
+            return None
+
+    def extract_clean_metadata(self, raw_metadata: dict[str, Any]) -> dict[str, Any]:
+        """
+        Extract and clean web metadata for use in documents.
+
+        Args:
+            raw_metadata: Raw metadata from JSON file
+
+        Returns:
+            Cleaned metadata dictionary
+        """
+
+        # Extract basic fields
+        title = raw_metadata.get("name", "").strip()
+        date_active_start = raw_metadata.get("date_active_start")
+        url = raw_metadata.get("url", "").strip()
+
+        # Clean and combine text content
+        preview_text = html.unescape(raw_metadata.get("preview_text", ""))
+        detail_text = html.unescape(raw_metadata.get("detail_text", ""))
+
+        # Skip if detail_text is empty or just whitespace/HTML entities
+        if not detail_text or detail_text.strip() in ("&nbsp;", "\u00a0"):
+            logger.debug(f"Skipping video with empty detail_text: {title}")
+            return {}
+
+        # Combine preview and detail text for description
+        description_parts = []
+        if preview_text and preview_text.strip():
+            description_parts.append(preview_text.strip())
+        if detail_text and detail_text.strip():
+            description_parts.append(detail_text.strip())
+
+        description = " ".join(description_parts) if description_parts else None
+
+        # Parse date
+        web_date = None
+        web_date_ts = None
+        if date_active_start:
+            try:
+                # Parse ISO format with Z suffix
+                dt = datetime.fromisoformat(date_active_start.replace("Z", "+00:00"))
+                web_date = dt.strftime("%Y-%m-%d")
+                web_date_ts = dt.timestamp()
+            except (ValueError, AttributeError) as e:
+                logger.debug(f"Could not parse web date {date_active_start}: {e}")
+
+        return {
+            "web_title": title if title else None,
+            "web_date": web_date,
+            "web_date_ts": web_date_ts,
+            "web_description": description,
+            "web_url": url if url else None,
+        }
+
+    def list_video_hashes(self) -> list[str]:
+        """
+        List video hashes that have web metadata available.
+
+        Returns:
+            List of video hash strings (derived from metadata filenames).
+        """
+        if not self.metadata_path.exists():
+            return []
+
+        hashes: list[str] = []
+        for metadata_file in self.metadata_path.glob("*.json"):
+            if metadata_file.is_file():
+                hashes.append(metadata_file.stem)
+        return hashes
+
+    @staticmethod
+    def hash_to_archive_dir(video_hash: str) -> Path:
+        """
+        Convert a video hash to its archive directory path (relative).
+
+        Example:
+            0c14229efcba436a4c22f8d96f67e0cb93bc9076
+            -> 0c/14/22/9e/fc/ba/43/6a/4c/22/f8/d9/6f/67/e0/cb/93/bc/90/76
+
+        Args:
+            video_hash: Video hash string
+
+        Returns:
+            Relative Path object with split hash segments
+        """
+        parts = [video_hash[i : i + 2] for i in range(0, len(video_hash), 2)]
+        return Path(*parts)
+
+
 class Ingester:
     """Main ingestion class for crawling and parsing VTT files."""
 
@@ -822,6 +954,11 @@ class Ingester:
         super().__init__()
         self.config = config
         self.parser = VTTParser()
+        self.web_metadata_loader = (
+            WebMetadataLoader(Path(config.web_metadata.path))
+            if config.web_metadata.enabled
+            else None
+        )
 
     def find_vtt_files(self, root_path: Path) -> Generator[Path, None, None]:
         """
@@ -835,7 +972,21 @@ class Ingester:
         """
         logger.info(f"Scanning for .vtt files in {root_path}")
 
-        vtt_files = list(root_path.rglob("*.vtt"))
+        vtt_files: list[Path] = []
+
+        if self.web_metadata_loader:
+            video_hashes = self.web_metadata_loader.list_video_hashes()
+            logger.info(f"Restricting scan to {len(video_hashes)} web_metadata hashes")
+
+            for video_hash in video_hashes:
+                relative_dir = self.web_metadata_loader.hash_to_archive_dir(video_hash)
+                target_dir = root_path / relative_dir
+                if not target_dir.exists():
+                    continue
+                vtt_files.extend(target_dir.rglob("*.vtt"))
+        else:
+            vtt_files = list(root_path.rglob("*.vtt"))
+
         logger.info(f"Found {len(vtt_files)} .vtt files")
 
         for vtt_file in vtt_files:
@@ -871,6 +1022,28 @@ class Ingester:
         source_video = self.parser.find_source_video(file_path)
         if source_video:
             date_iso, duration, date_ts = self.parser.get_video_metadata(source_video)
+
+        # Load web metadata if enabled
+        web_metadata = {}
+        if self.web_metadata_loader:
+            # Extract video hash from filename (same as find_source_video logic)
+            stem = file_path.stem  # e.g., "abc123.ru"
+            video_hash = stem.rsplit(".", 1)[0] if "." in stem else stem  # e.g., "abc123"
+            raw_web_data = self.web_metadata_loader.load_metadata(video_hash)
+            if raw_web_data:
+                web_metadata = self.web_metadata_loader.extract_clean_metadata(raw_web_data)
+                # Skip this video if web metadata indicates empty content
+                if not web_metadata:
+                    logger.debug(f"Skipping {file_path} due to empty web metadata content")
+                    return []
+            elif self.config.web_metadata.require_web_metadata:
+                # Skip this video if web metadata is required but not found
+                logger.debug(f"Skipping {file_path} because web metadata is required but not found")
+                return []
+
+        # Prioritize web metadata dates over video mtime
+        final_date = web_metadata.get("web_date") or date_iso
+        final_date_ts = web_metadata.get("web_date_ts") or date_ts
 
         # Check if chunking is enabled
         if self.config.chunking.enabled:
@@ -941,8 +1114,8 @@ class Ingester:
                     language=language,
                     text=text,
                     length=len(text),
-                    date=date_iso,
-                    date_ts=date_ts,
+                    date=final_date,
+                    date_ts=final_date_ts,
                     duration_seconds=duration,
                     start_time=chunk.start_time,
                     end_time=chunk.end_time,
@@ -952,6 +1125,11 @@ class Ingester:
                     total_chunks=total_chunks,
                     start_time_seconds=chunk.start_seconds,
                     end_time_seconds=chunk.end_seconds,
+                    web_title=web_metadata.get("web_title"),
+                    web_date=web_metadata.get("web_date"),
+                    web_date_ts=web_metadata.get("web_date_ts"),
+                    web_description=web_metadata.get("web_description"),
+                    web_url=web_metadata.get("web_url"),
                 )
                 documents.append(doc)
 
@@ -987,8 +1165,8 @@ class Ingester:
                 language=language,
                 text=text,
                 length=len(text),
-                date=date_iso,
-                date_ts=date_ts,
+                date=final_date,
+                date_ts=final_date_ts,
                 duration_seconds=duration,
                 start_time=start_time,
                 end_time=end_time,
@@ -996,6 +1174,11 @@ class Ingester:
                 is_chunk=False,
                 start_time_seconds=start_seconds,
                 end_time_seconds=end_seconds,
+                web_title=web_metadata.get("web_title"),
+                web_date=web_metadata.get("web_date"),
+                web_date_ts=web_metadata.get("web_date_ts"),
+                web_description=web_metadata.get("web_description"),
+                web_url=web_metadata.get("web_url"),
             )
 
             return [doc]

@@ -274,6 +274,11 @@ class RAGQueryEngine:
                         "chunk_index": payload.get("chunk_index"),
                         "total_chunks": payload.get("total_chunks"),
                         "video_id": payload.get("video_id"),
+                        "web_title": payload.get("web_title"),
+                        "web_date": payload.get("web_date"),
+                        "web_date_ts": payload.get("web_date_ts"),
+                        "web_description": payload.get("web_description"),
+                        "web_url": payload.get("web_url"),
                     }
                     self.bm25_corpus.append(doc)
 
@@ -835,6 +840,11 @@ class RAGQueryEngine:
                     "chunk_index": hit_payload.get("chunk_index"),
                     "total_chunks": hit_payload.get("total_chunks"),
                     "video_id": hit_payload.get("video_id"),
+                    "web_title": hit_payload.get("web_title"),
+                    "web_date": hit_payload.get("web_date"),
+                    "web_date_ts": hit_payload.get("web_date_ts"),
+                    "web_description": hit_payload.get("web_description"),
+                    "web_url": hit_payload.get("web_url"),
                 }
                 vector_documents.append(doc)
                 logger.debug(f"[Vector] Rank {idx + 1}: Score={hit.score:.4f}, Path={doc['path']}")
@@ -885,7 +895,8 @@ class RAGQueryEngine:
 
                 filtered_documents = []
                 for doc in documents:
-                    doc_date_raw = doc.get("date")
+                    # Prioritize web_date over regular date for filtering
+                    doc_date_raw = doc.get("web_date") or doc.get("date")
                     doc_date = _parse_date(doc_date_raw)
                     if doc_date is None:
                         continue  # Skip documents without dates

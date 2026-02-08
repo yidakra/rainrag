@@ -139,6 +139,11 @@ def test_config(temp_dir: Path) -> Config:
             "format": "{message}",
             "log_file": str(temp_dir / "test.log"),
         },
+        web_metadata={
+            "enabled": False,  # Disable web metadata for tests
+            "path": str(temp_dir / "web_metadata"),
+            "min_content_length": 10,
+        },
     )
 
 

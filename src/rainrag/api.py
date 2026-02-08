@@ -56,6 +56,13 @@ class ContextChunk(BaseModel):
     start_time: str | None = None  # First timecode (HH:MM:SS)
     end_time: str | None = None  # Last timecode (HH:MM:SS)
 
+    # Web metadata fields
+    web_title: str | None = None
+    web_date: str | None = None
+    web_date_ts: float | None = None
+    web_description: str | None = None
+    web_url: str | None = None
+
 
 class QueryResponse(BaseModel):
     """Response model for query endpoint."""
@@ -197,11 +204,11 @@ def generate_media_urls(
         video_file = find_video_file(vtt_path)
         if video_file:
             # Create relative path from video_root
-            video_root = (
+            video_root = Path(
                 config.paths.video_root if config.paths.video_root else config.paths.archive_root
-            )
+            ).resolve()
             try:
-                video_rel = Path(video_file).relative_to(video_root)
+                video_rel = Path(video_file).resolve().relative_to(video_root)
                 video_url = f"/video/{video_rel}"
                 # Add timecode fragment for video player to start at
                 if start_time:
@@ -213,12 +220,11 @@ def generate_media_urls(
 
         # VTT file URL
         try:
-            vtt_rel = Path(vtt_path).relative_to(config.paths.archive_root)
+            archive_root = Path(config.paths.archive_root).resolve()
+            vtt_rel = Path(vtt_path).resolve().relative_to(archive_root)
             vtt_url = f"/vtt/{vtt_rel}"
         except ValueError as e:
-            logger.warning(
-                f"VTT file {vtt_path} is not under archive_root {config.paths.archive_root}: {e}"
-            )
+            logger.warning(f"VTT file {vtt_path} is not under archive_root {archive_root}: {e}")
 
     return video_url, vtt_url
 
@@ -437,6 +443,11 @@ async def query(request: QueryRequest, authorized: bool = Header(True)):  # type
                     duration_seconds=doc.get("duration_seconds"),
                     start_time=doc.get("start_time"),
                     end_time=doc.get("end_time"),
+                    web_title=doc.get("web_title"),
+                    web_date=doc.get("web_date"),
+                    web_date_ts=doc.get("web_date_ts"),
+                    web_description=doc.get("web_description"),
+                    web_url=doc.get("web_url"),
                 )
             )
 
@@ -533,6 +544,11 @@ async def get_related_chunks(
                 duration_seconds=doc.get("duration_seconds"),
                 start_time=doc.get("start_time"),
                 end_time=doc.get("end_time"),
+                web_title=doc.get("web_title"),
+                web_date=doc.get("web_date"),
+                web_date_ts=doc.get("web_date_ts"),
+                web_description=doc.get("web_description"),
+                web_url=doc.get("web_url"),
             )
             related_chunks.append(chunk)
 
@@ -587,14 +603,14 @@ async def serve_video(file_path: str):
         raise HTTPException(status_code=404, detail="Video serving is disabled")
 
     # Convert to absolute path
-    video_root = config.paths.video_root if config.paths.video_root else config.paths.archive_root
-    full_path = Path(video_root) / file_path
+    video_root = Path(
+        config.paths.video_root if config.paths.video_root else config.paths.archive_root
+    ).resolve()
+    full_path = (video_root / file_path).resolve()
 
     # Security check: ensure the path is within video_root
     try:
-        full_path = full_path.resolve()
-        video_root_resolved = Path(video_root).resolve()
-        if not str(full_path).startswith(str(video_root_resolved)):
+        if not str(full_path).startswith(str(video_root)):
             raise HTTPException(status_code=403, detail="Access denied")
     except Exception as e:
         logger.error(f"Path resolution error: {e}")
@@ -642,14 +658,12 @@ async def serve_vtt(file_path: str):
         raise HTTPException(status_code=503, detail="Server not initialized")
 
     # Convert to absolute path
-    archive_root = config.paths.archive_root
-    full_path = Path(archive_root) / file_path
+    archive_root = Path(config.paths.archive_root).resolve()
+    full_path = (archive_root / file_path).resolve()
 
     # Security check: ensure the path is within archive_root
     try:
-        full_path = full_path.resolve()
-        archive_root_resolved = Path(archive_root).resolve()
-        if not str(full_path).startswith(str(archive_root_resolved)):
+        if not str(full_path).startswith(str(archive_root)):
             raise HTTPException(status_code=403, detail="Access denied")
     except Exception as e:
         logger.error(f"Path resolution error: {e}")

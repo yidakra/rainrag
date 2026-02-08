@@ -21,6 +21,7 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 - **Flexible Embeddings**: Local model or API-based (Mistral, OpenAI, Gemini)
 - **Hybrid Search**: Combines vector similarity with BM25 keyword matching using Reciprocal Rank Fusion
 - **Temporal Context**: Automatic detection of "recent" queries with time-decay boosting for relevant results
+- **Web Metadata**: Enrich transcripts with titles, accurate dates, descriptions, and URLs from web sources
 - **Reranking**: Cohere Rerank API integration for 10-15% accuracy improvement
 - **Related Chunks**: Discover similar content and explore related video segments
 - **Chunk Overlap**: 30-second overlaps between chunks to prevent information loss at boundaries
@@ -39,6 +40,7 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 ┌─────────────────┐
 │  Ingestion      │ Parse & clean VTT files
 │  (ingest.py)    │ Detect language
+│                 │ Load web metadata (optional)
 └────────┬────────┘ Output: docs.jsonl
          │
          ▼
@@ -1032,6 +1034,13 @@ rainrag/
 - `extensions`: List of supported video file extensions
 - `vtt_extensions`: List of supported VTT file extensions
 
+### Web Metadata
+
+- `enabled`: Enable loading of web metadata from JSON files (default: false)
+- `path`: Path to directory containing web metadata JSON files (default: "./web_metadata")
+- `min_content_length`: Minimum content length for web description text (default: 10)
+- `require_web_metadata`: If true, only ingest videos that have corresponding web metadata; if false, ingest all videos with empty web fields when metadata is missing (default: false)
+
 ### Chunking
 
 - `enabled`: Enable automatic chunking of VTT files (default: true)
@@ -1197,6 +1206,68 @@ Since loading full tokenizers during ingestion is slow, RainRAG uses fast charac
 - **Default**: ~3.5 characters per token
 
 This provides 95%+ accuracy without the overhead of loading embedding model tokenizers.
+
+## Web Metadata Integration
+
+RainRAG can enrich video transcripts with additional metadata from web sources (titles, accurate dates, descriptions, URLs).
+
+### How It Works
+
+1. **Metadata Files**: Place JSON files in the `web_metadata/` directory, named after video hashes (e.g., `abc123.json`)
+2. **Automatic Loading**: During ingestion, RainRAG looks for matching metadata files for each VTT file
+3. **Field Enrichment**: Web metadata fields are added to documents:
+   - `web_title`: Video title from web source
+   - `web_date`: Accurate publication date (preferred over file mtime)
+   - `web_description`: Video description/summary
+   - `web_url`: Original web URL
+
+### Two Ingestion Modes
+
+#### Mode 1: Ingest All Videos (Default)
+```yaml
+web_metadata:
+  enabled: true
+  require_web_metadata: false  # Default
+```
+- Processes all VTT files regardless of metadata availability
+- Videos without metadata get `None` values for web fields
+- Useful for gradual enrichment of existing archives
+
+#### Mode 2: Curated Dataset Only
+```yaml
+web_metadata:
+  enabled: true
+  require_web_metadata: true
+```
+- Only ingests videos that have corresponding web metadata files
+- Skips videos without metadata entirely
+- Useful for creating high-quality, curated datasets
+
+### Metadata File Format
+
+Each JSON file should contain web-scraped metadata:
+
+```json
+{
+  "name": "Video Title Here",
+  "date_active_start": "2024-01-15T10:30:00Z",
+  "url": "https://example.com/video/123",
+  "preview_text": "Short preview text...",
+  "detail_text": "Full description with HTML entities like &nbsp; and &amp;"
+}
+```
+
+RainRAG automatically:
+- HTML-decodes content (`&nbsp;` → ` `, `&amp;` → `&`)
+- Parses ISO dates to timestamps
+- Validates content length (configurable minimum)
+
+### Benefits
+
+- **Accurate Dates**: Web publication dates instead of file modification times
+- **Rich Context**: Titles and descriptions improve search relevance
+- **Source Attribution**: URLs link back to original content
+- **Flexible Deployment**: Choose between comprehensive or curated indexing
 
 ## Hybrid Search (Vector + BM25)
 
