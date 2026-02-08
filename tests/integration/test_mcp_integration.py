@@ -120,8 +120,8 @@ mcp:
                     stdout, stderr = process.communicate(timeout=1)
                     raise AssertionError(
                         "MCP server exited before becoming ready.\n"
-                        f"stdout:\n{_strip_ansi(stdout)}\n"
-                        f"stderr:\n{_strip_ansi(stderr)}"
+                        + f"stdout:\n{_strip_ansi(stdout)}\n"
+                        + f"stderr:\n{_strip_ansi(stderr)}"
                     )
                 try:
                     # Try to connect to the MCP endpoint
@@ -191,8 +191,8 @@ mcp:
                     stdout, stderr = process.communicate(timeout=1)
                     raise AssertionError(
                         "MCP server exited before becoming ready.\n"
-                        f"stdout:\n{_strip_ansi(stdout)}\n"
-                        f"stderr:\n{_strip_ansi(stderr)}"
+                        + f"stdout:\n{_strip_ansi(stdout)}\n"
+                        + f"stderr:\n{_strip_ansi(stderr)}"
                     )
                 try:
                     response = requests.get("http://localhost:8889/mcp", timeout=1)
