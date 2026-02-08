@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -249,7 +250,7 @@ class VTTParser:
 
             cues = cls._parse_vtt_lines_to_cues(lines)
             if cues is None:
-                logger.warning(f"File {file_path} does not appear to be a valid VTT file")
+                logger.debug(f"File {file_path} does not appear to be a valid VTT file")
                 return None
 
             # Extract text and timecodes from cues
@@ -381,7 +382,7 @@ class VTTParser:
 
             cues = cls._parse_vtt_lines_to_cues(lines)
             if cues is None:
-                logger.warning(f"File {file_path} does not appear to be a valid VTT file")
+                logger.debug(f"File {file_path} does not appear to be a valid VTT file")
             return cues
 
         except Exception as e:
@@ -982,6 +983,8 @@ class Ingester:
         super().__init__()
         self.config = config
         self.parser = VTTParser()
+        self.invalid_vtt_count = 0
+        self.no_cues_count = 0
 
         # Initialize web metadata loader with validation
         if config.web_metadata.enabled:
@@ -1011,18 +1014,50 @@ class Ingester:
 
         vtt_files: list[Path] = []
 
-        if self.web_metadata_loader:
-            video_hashes = self.web_metadata_loader.list_video_hashes()
-            logger.info(f"Restricting scan to {len(video_hashes)} web_metadata hashes")
+        if self.config.web_metadata.require_web_metadata:
+            if not self.web_metadata_loader:
+                logger.warning("require_web_metadata is True but web_metadata not available")
+                vtt_files = []
+            else:
+                video_hashes = self.web_metadata_loader.list_video_hashes()
+                logger.info(f"Restricting scan to {len(video_hashes)} web_metadata hashes")
 
-            for video_hash in video_hashes:
-                relative_dir = self.web_metadata_loader.hash_to_archive_dir(video_hash)
-                target_dir = root_path / relative_dir
-                if not target_dir.exists():
-                    continue
-                vtt_files.extend(target_dir.rglob("*.vtt"))
+                for video_hash in video_hashes:
+                    relative_dir = self.web_metadata_loader.hash_to_archive_dir(video_hash)
+                    target_dir = root_path / relative_dir
+                    if not target_dir.exists():
+                        continue
+                    vtt_files.extend(target_dir.rglob("*.vtt"))
         else:
-            vtt_files = list(root_path.rglob("*.vtt"))
+            # Parallel scanning for better performance
+            import os
+
+            def scan_subdirectory(subdir: Path) -> list[Path]:
+                vtt_files = []
+                for root, _dirs, files in os.walk(subdir):
+                    for file in files:
+                        if file.endswith(".vtt"):
+                            vtt_files.append(Path(root) / file)
+                return vtt_files
+
+            subdirs = [d for d in root_path.iterdir() if d.is_dir()]
+            vtt_files = []
+
+            if subdirs:
+                logger.info(f"Scanning {len(subdirs)} subdirectories in parallel...")
+                with ThreadPoolExecutor(max_workers=min(16, len(subdirs))) as executor:
+                    results = executor.map(scan_subdirectory, subdirs)
+                    for i, result in enumerate(results):
+                        vtt_files.extend(result)
+                        if (i + 1) % 10 == 0:
+                            logger.info(
+                                f"Processed {i + 1}/{len(subdirs)} subdirectories, total files: {len(vtt_files)}"
+                            )
+                        if len(vtt_files) % 10000 == 0 and len(vtt_files) > 0:
+                            logger.info(f"Scanned {len(vtt_files)} .vtt files so far...")
+            else:
+                # Fallback for flat structure
+                vtt_files = list(root_path.rglob("*.vtt"))
 
         logger.info(f"Found {len(vtt_files)} .vtt files")
 
@@ -1092,8 +1127,26 @@ class Ingester:
             # Parse VTT into cues
             cues = self.parser.parse_vtt_to_cues(file_path)
 
+            if cues is None:
+                self.invalid_vtt_count += 1
+                if self.invalid_vtt_count % 1000 == 0:
+                    logger.warning(
+                        "Invalid VTT files so far: "
+                        + f"{self.invalid_vtt_count} (latest: {file_path})"
+                    )
+                else:
+                    logger.debug(f"Invalid VTT file: {file_path}")
+                return []
+
             if not cues:
-                logger.warning(f"No cues extracted from {file_path}")
+                self.no_cues_count += 1
+                if self.no_cues_count % 1000 == 0:
+                    logger.warning(
+                        "VTT files with no cues so far: "
+                        + f"{self.no_cues_count} (latest: {file_path})"
+                    )
+                else:
+                    logger.debug(f"No cues extracted from {file_path}")
                 return []
 
             # Get max tokens based on embedding model
@@ -1270,6 +1323,10 @@ class Ingester:
         logger.info(
             f"Ingestion complete! Processed {file_count} files into {doc_count} documents (chunking: {chunking_status})"
         )
+        if self.invalid_vtt_count or self.no_cues_count:
+            logger.info(
+                f"Ingestion summary: invalid_vtt={self.invalid_vtt_count}, no_cues={self.no_cues_count}"
+            )
         logger.info(f"Output saved to {output_path}")
 
         return doc_count

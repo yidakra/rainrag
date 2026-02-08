@@ -3,7 +3,9 @@
 # Data paths
 paths:
   # Root directory containing .vtt files
-  archive_root: "/mnt/vod/srv/storage/transcoded"
+  # IMPORTANT: Ensure this path is correct and accessible. The system will recursively search for .vtt files in this directory.
+  # archive_root: "/mnt/vod/srv/storage/transcoded"
+  archive_root: "/data/archive"
   # Output directory for parsed documents
   docs_output: "./data/docs.jsonl"
   # Directory for cached embeddings
@@ -17,7 +19,7 @@ embedding:
   model_name: "intfloat/multilingual-e5-large"
   batch_size: 64   # Increased for throughput
   max_seq_length: 512
-  device: "cpu"  # Auto-detected at runtime if GPU available
+  device: "cuda"  # Auto-detected at runtime if GPU available
   normalize_embeddings: true
 
 # Qdrant vector store configuration

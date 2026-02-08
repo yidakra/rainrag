@@ -30,8 +30,8 @@ FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 WORKDIR /app
 
 # Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /opt/conda/lib/python3.10/site-packages /opt/conda/lib/python3.10/site-packages
+COPY --from=builder /opt/conda/bin /opt/conda/bin
 
 # Copy application code
 COPY src/ /app/src/
