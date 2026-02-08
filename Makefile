@@ -40,7 +40,7 @@ lint: ## Run linters
 
 # Docker commands
 docker-build: ## Build Docker image
-	docker build -t rainrag:latest .
+	docker buildx build --load -t rainrag:latest .
 
 docker-push: ## Push Docker image to registry (set REGISTRY variable)
 	docker tag rainrag:latest $(REGISTRY)/rainrag:latest

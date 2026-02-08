@@ -521,10 +521,10 @@ make streamlit
 
 ```bash
 # Build the image first (CPU)
-docker build -t rainrag:latest -f Dockerfile .
+docker buildx build --load -t rainrag:latest -f Dockerfile .
 
 # Build the image first (GPU)
-docker build -t rainrag:gpu -f Dockerfile.gpu .
+docker buildx build --load -t rainrag:gpu -f Dockerfile.gpu .
 
 # Start all services
 docker-compose up -d
@@ -781,10 +781,10 @@ server {
 
 ```bash
 # CPU image
-docker build -t rainrag:latest -f Dockerfile .
+docker buildx build --load -t rainrag:latest -f Dockerfile .
 
 # GPU image
-docker build -t rainrag:gpu -f Dockerfile.gpu .
+docker buildx build --load -t rainrag:gpu -f Dockerfile.gpu .
 ```
 
 ### Run with Docker
