@@ -17,7 +17,7 @@ loguru = "^0.7.2"
 tqdm = "^4.66.0"
 typer = {extras = ["all"], version = "^0.16.0"}
 pyyaml = "^6.0.1"
-numpy = "1.26.4"
+numpy = "^1.26.4"
 # Mistral API client
 mistralai = "^1.0.0"
 # Web frontend dependencies

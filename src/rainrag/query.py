@@ -536,7 +536,8 @@ class RAGQueryEngine:
 
         for doc in documents:
             doc_copy = doc.copy()
-            doc_date_str = doc.get("date")
+            # Use prioritized date (web_date or date) for consistency
+            doc_date_str = doc.get("web_date") or doc.get("date")
 
             if doc_date_str:
                 try:
@@ -1007,9 +1008,10 @@ class RAGQueryEngine:
                 )
             context_parts.append(doc_header)
 
-            # Include date if available
-            if doc.get("date"):
-                context_parts.append(f"Date: {doc['date']}")
+            # Include date if available (prioritize web_date over date)
+            doc_date = doc.get("web_date") or doc.get("date")
+            if doc_date:
+                context_parts.append(f"Date: {doc_date}")
 
             # Include duration if available (format as mm:ss)
             if doc.get("duration_seconds"):

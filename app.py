@@ -72,6 +72,10 @@ TRANSLATIONS = {
         "date_from_label": "С",
         "date_to_label": "По",
         "clear_dates": "Сбросить даты",
+        "web_title_label": "Заголовок",
+        "web_date_label": "Дата веб-страницы",
+        "url_label": "URL",
+        "description_label": "Описание",
     },
     "en": {
         "title": "RainRAG - Video Transcript Search",
@@ -115,6 +119,10 @@ TRANSLATIONS = {
         "date_from_label": "From",
         "date_to_label": "To",
         "clear_dates": "Clear Dates",
+        "web_title_label": "Title",
+        "web_date_label": "Web Date",
+        "url_label": "URL",
+        "description_label": "Description",
     },
 }
 
@@ -370,6 +378,31 @@ def group_chunks_by_video(chunks: list[dict[str, Any]]) -> list[list[dict[str, A
     return sorted_groups
 
 
+def sanitize_web_url(url: str) -> str | None:
+    """Sanitize web URL for safe Markdown embedding.
+
+    - Allow only http/https schemes
+    - Escape Markdown-breaking characters
+    - Return None if invalid
+    """
+    if not url:
+        return None
+
+    # Parse URL to check scheme
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+
+    # Allow only http and https schemes
+    if parsed.scheme not in ("http", "https"):
+        return None
+
+    # Escape Markdown-breaking characters (like parentheses)
+    safe_url = url.replace(")", "\\)").replace("(", "\\(")
+
+    return safe_url
+
+
 def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     """Format a context chunk metadata for display (without text content)."""
     filename = chunk.get("filename", "Unknown")
@@ -392,7 +425,7 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
     # Web metadata fields
     web_title = chunk.get("web_title")
     web_date = chunk.get("web_date")
-    chunk.get("web_description")
+    web_description = chunk.get("web_description")
     web_url = chunk.get("web_url")
 
     duration_str = ""
@@ -439,11 +472,15 @@ def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
 
     # Add web metadata if available
     if web_title:
-        meta_parts.append(f"**Title:** {web_title}")
+        meta_parts.append(f"**{get_text('web_title_label', lang)}:** {web_title}")
     if web_date:
-        meta_parts.append(f"**Web Date:** {web_date}")
+        meta_parts.append(f"**{get_text('web_date_label', lang)}:** {web_date}")
+    if web_description:
+        meta_parts.append(f"**{get_text('description_label', lang)}:** {web_description}")
     if web_url:
-        meta_parts.append(f"**URL:** [{web_url}]({web_url})")
+        sanitized_url = sanitize_web_url(web_url)
+        if sanitized_url:
+            meta_parts.append(f"**{get_text('url_label', lang)}:** <{sanitized_url}>")
 
     return f"""
 **{get_text("source_label", lang)}:** `{filename}`{chunk_info}
@@ -892,5 +929,6 @@ def main():
                 logger.error(f"Unexpected error: {e}")
 
 
-# Run the main function when the module is imported by Streamlit
-main()
+if __name__ == "__main__":
+    # Run the main function when the module is executed directly
+    main()

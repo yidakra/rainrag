@@ -265,7 +265,7 @@ class WebMetadataConfig(BaseModel):
         default="./web_metadata", description="Path to directory containing web metadata JSON files"
     )
     min_content_length: int = Field(
-        default=10, description="Minimum content length for web description text"
+        default=10, ge=1, description="Minimum content length for web description text"
     )
     require_web_metadata: bool = Field(
         default=False,

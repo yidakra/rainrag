@@ -37,7 +37,7 @@ qdrant:
   # if collection parameters change. Users must manually drop/recreate the collection when changing
   # embedding model parameters such as vector_size or distance (or switching embedding models).
   # Reindex or recreate the collection to avoid schema/metric mismatches.
-  recreate_collection: true
+  recreate_collection: false
 
 # LLM provider configuration
 llm:
@@ -151,5 +151,5 @@ mcp:
 web_metadata:
   enabled: true
   path: "./web_metadata"
-  min_content_length: 10
-  require_web_metadata: true  # Mode 2: Only ingest videos with web metadata
+  min_content_length: 10  # Intentionally permissive threshold to prevent near-empty content ingestion
+  require_web_metadata: false  # Mode 2: Only ingest videos with web metadata; Mode 1 (false): Ingest all videos with null web fields when metadata missing

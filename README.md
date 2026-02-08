@@ -1039,7 +1039,9 @@ rainrag/
 - `enabled`: Enable loading of web metadata from JSON files (default: false)
 - `path`: Path to directory containing web metadata JSON files (default: "./web_metadata")
 - `min_content_length`: Minimum content length for web description text (default: 10)
-- `require_web_metadata`: If true, only ingest videos that have corresponding web metadata; if false, ingest all videos with empty web fields when metadata is missing (default: false)
+- `require_web_metadata`: Controls ingestion behavior for missing web metadata (default: false)
+  - `true`: Only ingest videos that have matching web metadata JSON files; skip videos without metadata entirely
+  - `false`: Ingest all videos regardless of metadata availability; populate web-related fields (`web_title`, `web_date`, `web_description`, `web_url`) with `null`/`None` values when metadata is missing
 
 ### Chunking
 
@@ -1211,15 +1213,83 @@ This provides 95%+ accuracy without the overhead of loading embedding model toke
 
 RainRAG can enrich video transcripts with additional metadata from web sources (titles, accurate dates, descriptions, URLs).
 
+### File Naming and Matching
+
+RainRAG matches web metadata JSON files to VTT/video files using the video hash derived from the VTT filename:
+
+1. **Video Hash Extraction**: For a VTT file named `episode_001.en.vtt`, the video hash is `episode_001` (filename stem without extension)
+2. **JSON Filename**: The corresponding metadata file must be named `{video_hash}.json` (e.g., `episode_001.json`)
+3. **Hash Algorithm**: The video hash is typically computed as SHA-256 of the original video filename:
+
+```bash
+# Example: Generate hash for episode_001.mp4
+echo -n "episode_001.mp4" | sha256sum
+d9f2eb1b7c0db375ce4456cdd6401e4a831f91e2badb9011534357b3792707f4  -
+
+# Use first 16 characters for short hash: d9f2eb1b7c0db375
+```
+
+The hash can be derived from either the video filename (e.g., `episode_001.mp4`) or VTT filename (e.g., `episode_001.en.vtt`) - both should produce the same stem.
+
 ### How It Works
 
-1. **Metadata Files**: Place JSON files in the `web_metadata/` directory, named after video hashes (e.g., `abc123.json`)
+1. **Metadata Files**: Place JSON files in the `web_metadata/` directory, named after video hashes (e.g., `episode_001.json`)
 2. **Automatic Loading**: During ingestion, RainRAG looks for matching metadata files for each VTT file
-3. **Field Enrichment**: Web metadata fields are added to documents:
-   - `web_title`: Video title from web source
-   - `web_date`: Accurate publication date (preferred over file mtime)
-   - `web_description`: Video description/summary
-   - `web_url`: Original web URL
+3. **Field Enrichment**: Web metadata fields are added to documents with the `web_` prefix
+
+### Field Mapping
+
+JSON fields are mapped to document metadata keys as follows:
+
+| JSON Field | Document Key | Required | Description |
+|------------|--------------|----------|-------------|
+| `name` | `web_title` | Optional | Video title from web source |
+| `date_active_start` | `web_date` | Optional | Publication date (ISO format, parsed to YYYY-MM-DD) |
+| `date_active_start` | `web_date_ts` | Optional | Publication timestamp (Unix timestamp) |
+| `url` | `web_url` | Optional | Original web URL |
+| `preview_text` + `detail_text` | `web_description` | Required* | Combined description (HTML-decoded, concatenated with space) |
+
+**Notes**:
+- `detail_text` must be non-empty (after HTML decoding and whitespace trimming) for the metadata to be considered valid
+- `preview_text` is optional and prepended to `detail_text` if present
+- HTML entities in `preview_text` and `detail_text` are automatically decoded (`&nbsp;` → ` `, `&amp;` → `&`)
+- Dates are parsed from ISO format (e.g., `2024-01-15T10:30:00Z`) to YYYY-MM-DD and Unix timestamp
+- Invalid dates are logged as warnings and ignored
+
+### Topics Covered by Web Metadata
+
+The web metadata covers episodes discussing concrete topics such as:
+
+- 30 тыс погибли на протестах в Иране
+- 9 человек умерли в ПНИ
+- Telegram частично блокируют
+- Wildberries откроет свои отели
+- Z-военкоры хвалят атаку США на Венесуэлу
+- «Госуслуги» зовут в «университет спецназа»
+- «Монахини-шпионки» ГРУ
+- «Путин залег на дно»: куда он исчез после ареста Мадуро и что с Кадыровым | Белковский
+- «СВО» сравнялась с ВОВ
+- «Свошник» задушил женщину
+- «Совет мира» с Путиным и Лукашенко
+- «Узкие» против Гудкова
+- «Чебурашка» против «Буратино» в прокате
+- «Шереметьево» купило «Домодедово»
+- Автор «Дозоров» зетнулся
+- Агутин поет для военных
+- Адам Кадыров поправляется
+- Актер в РФ выступил против войны
+- Аресты протестующих в Петербурге
+- Астронавты полетят на Луну
+
+These represent the specific subjects and headlines from episodes that have web metadata enrichment, enabling targeted retrieval of videos on these topics.
+
+### Error Handling
+
+- **Malformed JSON**: Files with invalid JSON are skipped with debug logging
+- **Missing Files**: Videos without matching metadata get `None` values for all `web_*` fields
+- **Invalid Dates**: Unparseable `date_active_start` values are logged and ignored
+- **Empty Content**: Videos with empty/whitespace-only `detail_text` are skipped entirely
+- **Config Toggle**: The `web_metadata.require_web_metadata` setting controls whether missing metadata causes ingestion to fail or continue with `None` values
 
 ### Two Ingestion Modes
 

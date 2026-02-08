@@ -8,6 +8,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
+from shutil import which
 
 import pytest
 import requests
@@ -114,6 +115,14 @@ mcp:
             # Wait for server to start (max 60 seconds)
             server_started = False
             for _ in range(120):
+                # Check if server process has terminated
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate(timeout=1)
+                    raise AssertionError(
+                        "MCP server exited before becoming ready.\n"
+                        f"stdout:\n{_strip_ansi(stdout)}\n"
+                        f"stderr:\n{_strip_ansi(stderr)}"
+                    )
                 try:
                     # Try to connect to the MCP endpoint
                     response = requests.get("http://localhost:8888/mcp", timeout=1)
@@ -295,14 +304,19 @@ class TestMCPServerWithInspector:
     npm install -g @modelcontextprotocol/inspector
     """
 
-    @pytest.mark.skip(reason="Requires MCP Inspector npm package - run manually if needed")
     def test_mcp_inspector_connection(self, tmp_path: Path) -> None:
-        """Test MCP server can be inspected with MCP Inspector.
+        """Smoke test that MCP Inspector CLI is available.
 
-        This is a manual test - run it only if you have the inspector installed.
+        If the inspector is installed, verify the CLI responds to --help.
         """
-        # This test is intentionally skipped by default
-        # To run it manually:
-        # 1. Install inspector: npm install -g @modelcontextprotocol/inspector
-        # 2. pytest -v tests/integration/test_mcp_integration.py::TestMCPServerWithInspector::test_mcp_inspector_connection -s
-        pass
+        if which("mcp-inspector") is None:
+            pytest.skip("MCP Inspector CLI not found in PATH")
+
+        result = subprocess.run(
+            ["mcp-inspector", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, "MCP Inspector CLI did not run successfully"

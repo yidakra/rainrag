@@ -85,6 +85,22 @@ class VTTParser:
     INFINITE_CHUNK_DURATION = 9999999
 
     @staticmethod
+    def extract_video_hash(path: Path | str) -> str:
+        """
+        Extract the video hash from a file path or filename.
+
+        Handles filenames like "abc123.ru.vtt" -> "abc123" or "abc123.vtt" -> "abc123"
+
+        Args:
+            path: File path or filename string
+
+        Returns:
+            Video hash without language suffix or extension
+        """
+        stem = Path(path).stem  # Remove extension: "abc123.ru"
+        return stem.rsplit(".", 1)[0] if "." in stem else stem  # Remove language suffix: "abc123"
+
+    @staticmethod
     def detect_language(file_path: Path) -> str:
         """
         Detect language from file path or name.
@@ -726,9 +742,7 @@ class VTTParser:
             Video ID (hash of base filename without language suffix)
         """
         # Extract the hash from filename (e.g., "abc123.ru.vtt" -> "abc123")
-        stem = file_path.stem  # "abc123.ru"
-        # Remove language suffix if present
-        video_hash = stem.rsplit(".", 1)[0] if "." in stem else stem  # "abc123"
+        video_hash = VTTParser.extract_video_hash(file_path)
 
         # Combine with parent directory for uniqueness
         parent_str = str(file_path.parent.absolute())
@@ -751,8 +765,7 @@ class VTTParser:
             Path to source video or None if not found
         """
         # Extract the hash from filename (e.g., "abc123.ru.vtt" -> "abc123")
-        stem = vtt_path.stem  # "abc123.ru"
-        video_hash = stem.rsplit(".", 1)[0] if "." in stem else stem  # "abc123"
+        video_hash = VTTParser.extract_video_hash(vtt_path)
 
         parent = vtt_path.parent
 
@@ -821,13 +834,14 @@ class VTTParser:
 class WebMetadataLoader:
     """Loader for web metadata JSON files."""
 
-    def __init__(self, metadata_path: Path):
+    def __init__(self, metadata_path: Path) -> None:
         """
         Initialize the web metadata loader.
 
         Args:
             metadata_path: Path to directory containing web metadata JSON files
         """
+        super().__init__()
         self.metadata_path = metadata_path
 
     def load_metadata(self, video_hash: str) -> dict[str, Any] | None:
@@ -848,7 +862,7 @@ class WebMetadataLoader:
             with open(metadata_file, encoding="utf-8") as f:
                 data = json.load(f)
             return data
-        except (json.JSONDecodeError, FileNotFoundError, KeyError) as e:
+        except (json.JSONDecodeError, FileNotFoundError) as e:
             logger.debug(f"Could not load web metadata for {video_hash}: {e}")
             return None
 
@@ -873,7 +887,7 @@ class WebMetadataLoader:
         detail_text = html.unescape(raw_metadata.get("detail_text", ""))
 
         # Skip if detail_text is empty or just whitespace/HTML entities
-        if not detail_text or detail_text.strip() in ("&nbsp;", "\u00a0"):
+        if not detail_text or detail_text.strip() in ("\u00a0", ""):
             logger.debug(f"Skipping video with empty detail_text: {title}")
             return {}
 
@@ -937,6 +951,20 @@ class WebMetadataLoader:
         Returns:
             Relative Path object with split hash segments
         """
+        # Validate input
+        video_hash = video_hash.strip()
+        if not video_hash:
+            raise ValueError("video_hash cannot be empty")
+
+        if len(video_hash) % 2 != 0:
+            raise ValueError(f"video_hash must have even length, got {len(video_hash)}")
+
+        # Check for valid hex characters
+        if not all(c in "0123456789abcdefABCDEF" for c in video_hash):
+            raise ValueError(
+                "video_hash contains invalid characters, must be hexadecimal (0-9, a-f, A-F)"
+            )
+
         parts = [video_hash[i : i + 2] for i in range(0, len(video_hash), 2)]
         return Path(*parts)
 
@@ -954,11 +982,20 @@ class Ingester:
         super().__init__()
         self.config = config
         self.parser = VTTParser()
-        self.web_metadata_loader = (
-            WebMetadataLoader(Path(config.web_metadata.path))
-            if config.web_metadata.enabled
-            else None
-        )
+
+        # Initialize web metadata loader with validation
+        if config.web_metadata.enabled:
+            web_metadata_path = Path(config.web_metadata.path)
+            if not web_metadata_path.exists():
+                logger.warning(f"Web metadata path does not exist: {web_metadata_path}")
+                self.web_metadata_loader = None
+            elif not web_metadata_path.is_dir():
+                logger.warning(f"Web metadata path is not a directory: {web_metadata_path}")
+                self.web_metadata_loader = None
+            else:
+                self.web_metadata_loader = WebMetadataLoader(web_metadata_path)
+        else:
+            self.web_metadata_loader = None
 
     def find_vtt_files(self, root_path: Path) -> Generator[Path, None, None]:
         """
@@ -1026,9 +1063,8 @@ class Ingester:
         # Load web metadata if enabled
         web_metadata = {}
         if self.web_metadata_loader:
-            # Extract video hash from filename (same as find_source_video logic)
-            stem = file_path.stem  # e.g., "abc123.ru"
-            video_hash = stem.rsplit(".", 1)[0] if "." in stem else stem  # e.g., "abc123"
+            # Extract video hash from filename
+            video_hash = VTTParser.extract_video_hash(file_path)
             raw_web_data = self.web_metadata_loader.load_metadata(video_hash)
             if raw_web_data:
                 web_metadata = self.web_metadata_loader.extract_clean_metadata(raw_web_data)
@@ -1042,8 +1078,14 @@ class Ingester:
                 return []
 
         # Prioritize web metadata dates over video mtime
-        final_date = web_metadata.get("web_date") or date_iso
-        final_date_ts = web_metadata.get("web_date_ts") or date_ts
+        final_date = (
+            web_metadata.get("web_date") if web_metadata.get("web_date") is not None else date_iso
+        )
+        final_date_ts = (
+            web_metadata.get("web_date_ts")
+            if web_metadata.get("web_date_ts") is not None
+            else date_ts
+        )
 
         # Check if chunking is enabled
         if self.config.chunking.enabled:
