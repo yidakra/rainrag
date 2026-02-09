@@ -884,11 +884,11 @@ class WebMetadataLoader:
         url = raw_metadata.get("url", "").strip()
 
         # Clean and combine text content
-        preview_text = html.unescape(raw_metadata.get("preview_text", ""))
-        detail_text = html.unescape(raw_metadata.get("detail_text", ""))
+        preview_text = self._clean_html_text(raw_metadata.get("preview_text", ""))
+        detail_text = self._clean_html_text(raw_metadata.get("detail_text", ""))
 
-        # Skip if detail_text is empty or just whitespace/HTML entities
-        if not detail_text or detail_text.strip() in ("\u00a0", ""):
+        # Skip if detail_text is empty after cleaning
+        if not detail_text:
             logger.debug(f"Skipping video with empty detail_text: {title}")
             return {}
 
@@ -920,6 +920,17 @@ class WebMetadataLoader:
             "web_description": description,
             "web_url": url if url else None,
         }
+
+    @staticmethod
+    def _clean_html_text(text: str) -> str:
+        """Strip HTML tags and normalize whitespace in metadata text."""
+        if not text:
+            return ""
+        cleaned = html.unescape(text)
+        cleaned = cleaned.replace("\u00a0", " ")
+        cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
 
     def list_video_hashes(self) -> list[str]:
         """
