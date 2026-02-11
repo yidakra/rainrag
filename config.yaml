@@ -4,12 +4,13 @@
 paths:
   # Root directory containing .vtt files
   # IMPORTANT: Ensure this path is correct and accessible. The system will recursively search for .vtt files in this directory.
-  # archive_root: "/mnt/vod/srv/storage/transcoded"
-  archive_root: "/data/archive"
+  archive_root: "/mnt/vod/srv/storage/transcoded"
   # Output directory for parsed documents
   docs_output: "./data/docs.jsonl"
   # Directory for cached embeddings
   embeddings_cache: "./embeddings"
+  # Root directory containing video files (defaults to archive_root if not specified)
+  video_root: "/mnt/vod/srv/storage/transcoded"
 
 # Embedding model configuration
 embedding:
@@ -50,8 +51,8 @@ llm:
 mistral:
   api_key: ""  # Set your Mistral API key here or via MISTRAL_API_KEY environment variable
   model_name: "mistral-large-latest"  # Largest Mistral model for best quality
-  max_tokens: 1024
-  temperature: 0.3
+  max_tokens: 2048
+  temperature: 0
   top_k: 5  # Number of documents to retrieve for context
 
 # OpenAI API configuration
@@ -60,16 +61,16 @@ openai:
   model_name: "gpt-4o-mini"  # Options: gpt-4o, gpt-4o-mini, gpt-3.5-turbo, etc.
   embedding_model: "text-embedding-3-large"  # Options: text-embedding-3-small (1536-dim), text-embedding-3-large (3072-dim)
                                               # IMPORTANT: Update qdrant.vector_size to match the chosen model's dimension
-  max_tokens: 512
-  temperature: 0.3
+  max_tokens: 2048
+  temperature: 0
   top_k: 5  # Number of documents to retrieve for context
 
 # Anthropic Claude API configuration
 claude:
   api_key: ""  # Set your Anthropic API key here or via ANTHROPIC_API_KEY environment variable
   model_name: "claude-haiku-4-5-20251001"
-  max_tokens: 512
-  temperature: 0.3
+  max_tokens: 2048
+  temperature: 0
   top_k: 5  # Number of documents to retrieve for context
 
 # Google Gemini API configuration
@@ -77,8 +78,8 @@ gemini:
   api_key: ""  # Set your Google API key here or via GOOGLE_API_KEY environment variable
   model_name: "gemini-2.5-flash"  # Options: gemini-2.5-flash, gemini-2.5-pro, gemini-2.5-flash-exp, etc.
   embedding_model: "models/text-embedding-004"  # Options: models/text-embedding-004, models/embedding-001, etc.
-  max_tokens: 512
-  temperature: 0.3
+  max_tokens: 2048
+  temperature: 0
   top_k: 5  # Number of documents to retrieve for context
 
 # Cohere API configuration (for reranking)

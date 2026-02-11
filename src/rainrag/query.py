@@ -14,6 +14,7 @@ from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer  # type: ignore[import]
+import torch
 
 from rainrag.config import Config
 
@@ -160,23 +161,57 @@ class RAGQueryEngine:
         """Initialize the embedding model and Qdrant client."""
         logger.info("Initializing query engine...")
 
+        def _resolve_device(configured_device: str) -> str:
+            if configured_device == "auto":
+                if torch.cuda.is_available():
+                    device = "cuda:0"
+                elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                    device = "mps"
+                else:
+                    device = "cpu"
+                logger.info(f"Auto-selected device: {device}")
+                return device
+
+            if configured_device.startswith("cuda"):
+                if torch.cuda.is_available():
+                    return configured_device
+                logger.warning(
+                    f"CUDA not available, configured device '{configured_device}' not usable, falling back to CPU"
+                )
+                return "cpu"
+            if configured_device == "mps":
+                if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                    return "mps"
+                logger.warning(
+                    f"MPS not available, configured device '{configured_device}' not usable, falling back to CPU"
+                )
+                return "cpu"
+            if configured_device == "cpu":
+                return "cpu"
+
+            logger.warning(f"Unknown device '{configured_device}', falling back to CPU")
+            return "cpu"
+
         # Load embedding model only if using local provider
         if self.config.embedding.provider == "local":
             logger.info(f"Loading local embedding model: {self.config.embedding.model_name}")
             try:
+                device = _resolve_device(self.config.embedding.device)
                 try:
                     model_cls = cast(Any, SentenceTransformer)
                     self.embedding_model = model_cls(
                         self.config.embedding.model_name,
-                        device=self.config.embedding.device,
+                        device=device,
                         model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
                     )
                 except TypeError:
                     # Older sentence-transformers versions don't accept model_kwargs
                     self.embedding_model = SentenceTransformer(
                         self.config.embedding.model_name,
-                        device=self.config.embedding.device,
+                        device=device,
                     )
+                if self.embedding_model is not None:
+                    self.embedding_model.max_seq_length = self.config.embedding.max_seq_length
             except OSError as e:
                 # Handle offline mode / model not cached
                 error_msg = (

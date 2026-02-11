@@ -5,6 +5,7 @@ import hmac
 import html
 import json
 import os
+import re
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -140,6 +141,7 @@ TRANSLATIONS = {
         "loading_system": "Загрузка информации о системе...",
         "auth_title": "Вход в систему",
         "auth_prompt": "Введите токен доступа:",
+        "auth_help": "Введите системный пароль, предоставленный администратором",
         "auth_button": "Войти",
         "auth_invalid": "Неверный токен доступа",
         "health_check_failed": "Не удалось подключиться к API",
@@ -159,6 +161,42 @@ TRANSLATIONS = {
         "web_date_label": "Дата веб-страницы",
         "url_label": "URL",
         "description_label": "Описание",
+        "copy_answer": "Копировать ответ",
+        "copied": "Скопировано!",
+        "search_history": "История поиска",
+        "no_history": "История пуста",
+        "export_chat": "Экспорт беседы",
+        "export_markdown": "Скачать Markdown",
+        "export_text": "Скачать текст",
+        "example_queries": "Примеры запросов",
+        "try_example": "Попробовать",
+        "sidebar_search_settings": "⚙️ Настройки поиска",
+        "sidebar_conversation": "💬 Беседа",
+        "sidebar_session": "👤 Сессия",
+        "search_features_label": "Функции поиска:",
+        "search_features_standard": "Стандартный векторный поиск",
+        "searching": "Поиск видео транскриптов...",
+        "found_clips": "Найдено {count} релевантных фрагментов!",
+        "session_expires": "Сессия истекает через:",
+        "session_expired_warning": "Сессия истекла из-за неактивности. Пожалуйста, войдите снова.",
+        "logout": "Выход",
+        "vtt_language": "Язык",
+        "vtt_error": "Не удалось загрузить VTT",
+        "no_vtt": "VTT недоступен",
+        "find_related": "Найти похожее",
+        "related_content": "Похожий контент:",
+        "no_related": "Похожих фрагментов не найдено",
+        "finding_related": "Поиск похожих фрагментов...",
+        "error_finding_related": "Ошибка поиска похожих фрагментов:",
+        "auth_not_configured": "ОШИБКА БЕЗОПАСНОСТИ: Аутентификация не настроена!",
+        "auth_set_password": "Пожалуйста, установите переменную окружения RAINRAG_PASSWORD_HASH.",
+        "auth_use_script": "Используйте scripts/generate_password_hash.py для генерации безопасного хеша.",
+        "account_locked_message": "Аккаунт заблокирован из-за большого количества неудачных попыток.",
+        "try_again_in": "Пожалуйста, попробуйте снова через {time}",
+        "attempts_remaining": "{count} попыток осталось до блокировки аккаунта",
+        "auth_success": "Аутентификация успешна!",
+        "attempts_left": "{count} попыток осталось",
+        "account_locked_final": "Аккаунт заблокирован! Слишком много неудачных попыток.",
     },
     "en": {
         "title": "RainRAG - Video Transcript Search",
@@ -187,6 +225,7 @@ TRANSLATIONS = {
         "loading_system": "Loading system information...",
         "auth_title": "System Login",
         "auth_prompt": "Enter access token:",
+        "auth_help": "Enter the system password provided by your administrator",
         "auth_button": "Login",
         "auth_invalid": "Invalid access token",
         "health_check_failed": "Failed to connect to API",
@@ -206,6 +245,42 @@ TRANSLATIONS = {
         "web_date_label": "Web Date",
         "url_label": "URL",
         "description_label": "Description",
+        "copy_answer": "Copy Answer",
+        "copied": "Copied!",
+        "search_history": "Search History",
+        "no_history": "No history",
+        "export_chat": "Export Conversation",
+        "export_markdown": "Download Markdown",
+        "export_text": "Download Text",
+        "example_queries": "Example Queries",
+        "try_example": "Try it",
+        "sidebar_search_settings": "⚙️ Search Settings",
+        "sidebar_conversation": "💬 Conversation",
+        "sidebar_session": "👤 Session",
+        "search_features_label": "Search Features:",
+        "search_features_standard": "Standard vector search",
+        "searching": "Searching video transcripts...",
+        "found_clips": "Found {count} relevant clips!",
+        "session_expires": "Session expires in:",
+        "session_expired_warning": "Session expired due to inactivity. Please login again.",
+        "logout": "Logout",
+        "vtt_language": "Language",
+        "vtt_error": "Could not load VTT",
+        "no_vtt": "No VTT available",
+        "find_related": "Find Related",
+        "related_content": "Related Content:",
+        "no_related": "No related chunks found",
+        "finding_related": "Finding related chunks...",
+        "error_finding_related": "Error finding related chunks:",
+        "auth_not_configured": "SECURITY ERROR: No authentication configured!",
+        "auth_set_password": "Please set RAINRAG_PASSWORD_HASH environment variable.",
+        "auth_use_script": "Use scripts/generate_password_hash.py to generate a secure hash.",
+        "account_locked_message": "Account locked due to too many failed attempts.",
+        "try_again_in": "Please try again in {time}",
+        "attempts_remaining": "{count} attempt(s) remaining before account lockout",
+        "auth_success": "Authentication successful!",
+        "attempts_left": "{count} attempt(s) remaining",
+        "account_locked_final": "Account locked! Too many failed attempts.",
     },
 }
 
@@ -438,10 +513,11 @@ def check_authentication() -> bool:
         True if authenticated, False otherwise
     """
     # SECURITY: Authentication is now MANDATORY
+    lang = st.session_state.get("language", "ru")
     if not AUTH_PASSWORD_HASH and not AUTH_TOKEN:
-        st.error("SECURITY ERROR: No authentication configured!")
-        st.error("Please set RAINRAG_PASSWORD_HASH environment variable.")
-        st.error("Use scripts/generate_password_hash.py to generate a secure hash.")
+        st.error(get_text("auth_not_configured", lang))
+        st.error(get_text("auth_set_password", lang))
+        st.error(get_text("auth_use_script", lang))
         st.stop()
         return False
 
@@ -451,7 +527,7 @@ def check_authentication() -> bool:
         if is_session_expired():
             st.session_state["authenticated"] = False
             audit_log("SESSION_EXPIRED", "Session timed out due to inactivity", success=False)
-            st.warning("Session expired due to inactivity. Please login again.")
+            st.warning(get_text("session_expired_warning", st.session_state.get("language", "ru")))
             time.sleep(1)
             st.rerun()
             return False
@@ -461,12 +537,13 @@ def check_authentication() -> bool:
         return True
 
     # Check if account is locked
+    lang = st.session_state.get("language", "ru")
     is_locked, seconds_remaining = is_account_locked()
     if is_locked:
         minutes = int(seconds_remaining / 60)
         seconds = int(seconds_remaining % 60)
-        st.error("Account locked due to too many failed attempts.")
-        st.error(f"Please try again in {minutes}m {seconds}s")
+        st.error(get_text("account_locked_message", lang))
+        st.error(get_text("try_again_in", lang).format(time=f"{minutes}m {seconds}s"))
         audit_log(
             "LOGIN_BLOCKED",
             f"Login attempt while locked ({seconds_remaining}s remaining)",
@@ -477,20 +554,19 @@ def check_authentication() -> bool:
         return False
 
     # Show login form
-    lang = st.session_state.get("language", "ru")
     st.title(get_text("auth_title", lang))
 
     # Display security info
     attempts = get_failed_attempts()
     remaining_attempts = MAX_LOGIN_ATTEMPTS - attempts["count"]
     if attempts["count"] > 0:
-        st.warning(f"{remaining_attempts} attempt(s) remaining before account lockout")
+        st.warning(get_text("attempts_remaining", lang).format(count=remaining_attempts))
 
     with st.form("login_form"):
         password_input = st.text_input(
             get_text("auth_prompt", lang),
             type="password",
-            help="Enter the system password provided by your administrator",
+            help=get_text("auth_help", lang),
         )
         submit = st.form_submit_button(get_text("auth_button", lang))
 
@@ -521,7 +597,7 @@ def check_authentication() -> bool:
                 st.session_state["last_activity"] = datetime.now()
                 reset_failed_attempts()
                 audit_log("LOGIN_SUCCESS", "User authenticated successfully", success=True)
-                st.success("Authentication successful!")
+                st.success(get_text("auth_success", lang))
                 time.sleep(0.5)
                 st.rerun()
                 return True
@@ -537,9 +613,9 @@ def check_authentication() -> bool:
                 st.error(get_text("auth_invalid", lang))
 
                 if attempts_left > 0:
-                    st.warning(f"{attempts_left} attempt(s) remaining")
+                    st.warning(get_text("attempts_left", lang).format(count=attempts_left))
                 else:
-                    st.error("Account locked! Too many failed attempts.")
+                    st.error(get_text("account_locked_final", lang))
 
                 return False
 
@@ -564,6 +640,28 @@ def initialize_session_state():
         st.session_state.date_to = None
     if "date_input_reset_counter" not in st.session_state:
         st.session_state.date_input_reset_counter = 0
+    # Search history tracking
+    if "search_history" not in st.session_state:
+        st.session_state.search_history = []
+    # Query suggestions (based on actual topics in web metadata)
+    if "example_queries" not in st.session_state:
+        st.session_state.example_queries = {
+            "ru": [
+                "30 тысяч погибли на протестах в Иране",
+                "«Совет мира» с Путиным и Лукашенко",
+                "ДТП в Грозном: что с Адамом Кадыровым?",
+                "«Госуслуги» зовут в университет спецназа"
+            ],
+            "en": [
+                "30 thousand killed in Iran protests",
+                "Peace Council with Putin and Lukashenko",
+                "Car accident in Grozny: what happened to Adam Kadyrov?",
+                "Gosuslugi invites to special forces university"
+            ]
+        }
+    # Pending query flag for example buttons
+    if "pending_query" not in st.session_state:
+        st.session_state.pending_query = None
     if "client_ip" not in st.session_state:
         # Try to get client IP from Streamlit context (for audit logging)
         try:
@@ -803,6 +901,31 @@ def sanitize_web_url(url: str) -> str | None:
     return safe_url
 
 
+def strip_html_tags(text: str) -> str:
+    """
+    Remove HTML tags from text and clean up whitespace.
+
+    Args:
+        text: Text potentially containing HTML tags
+
+    Returns:
+        Plain text with HTML tags removed
+    """
+    if not text:
+        return ""
+
+    # Remove HTML tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Decode HTML entities
+    text = html.unescape(text)
+    # Clean up excessive whitespace
+    text = re.sub(r"\s+", " ", text)
+    # Remove leading/trailing whitespace
+    text = text.strip()
+
+    return text
+
+
 def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
     """Format a context chunk metadata for display (without text content)."""
     filename = chunk.get("filename", "Unknown")
@@ -870,23 +993,50 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
         meta_parts.append(f"**{get_text('timecode_label', lang)}:** {timecode_str}")
     meta_parts.append(f"**{get_text('language_field', lang)}:** {chunk_lang}")
 
-    # Add web metadata if available
+    # Build metadata display - prioritize user-facing information
+    lines = []
+
+    # 1. Title (most important - show prominently if available)
     if web_title:
-        meta_parts.append(f"**{get_text('web_title_label', lang)}:** {web_title}")
-    if web_date:
-        meta_parts.append(f"**{get_text('web_date_label', lang)}:** {web_date}")
+        lines.append(f"### {web_title}")
+
+    # 2. Video metadata (date, duration, timecode)
+    video_meta = []
+    if chunk_date:
+        video_meta.append(f"📅 {chunk_date}")
+    if duration_str:
+        video_meta.append(f"⏱ {duration_str}")
+    if timecode_str:
+        video_meta.append(f"⏰ {timecode_str}")
+
+    if video_meta:
+        lines.append(" • ".join(video_meta))
+
+    # 3. Description (if available)
     if web_description:
-        meta_parts.append(f"**{get_text('description_label', lang)}:** {web_description}")
+        clean_description = strip_html_tags(web_description)
+        lines.append(f"\n{clean_description}")
+
+    # 4. URL (if available)
     if web_url:
         sanitized_url = sanitize_web_url(web_url)
         if sanitized_url:
-            meta_parts.append(f"**{get_text('url_label', lang)}:** <{sanitized_url}>")
+            lines.append(f"\n🔗 <{sanitized_url}>")
 
-    return f"""
-**{get_text("source_label", lang)}:** `{filename}`{chunk_info}
+    # 5. Technical details (collapsed/minimized)
+    tech_details = []
+    tech_details.append(f"Score: {score:.3f}")
+    if rerank_score is not None and original_score is not None:
+        tech_details[-1] = f"Score: {score:.3f} (reranked from {original_score:.3f})"
+    if time_boost is not None:
+        tech_details.append(f"Boost: {time_boost:.2f}x")
+    if fusion_method:
+        tech_details.append(f"Fusion: {fusion_method.upper()}")
+    tech_details.append(f"Lang: {chunk_lang}")
 
-{" | ".join(meta_parts)}
-"""
+    lines.append(f"\n`{' | '.join(tech_details)}`")
+
+    return "\n".join(lines)
 
 
 def get_text_preview(text: str, max_lines: int = 3, max_chars: int = 200) -> tuple[str, bool]:
@@ -955,10 +1105,12 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                                 video_full_url += f"#t={int(float(start_time_seconds))}"
 
                         try:
-                            # Use HTML video player for better compatibility
+                            # HTML5 video player with native controls
                             st.markdown(
                                 f"""
-                                <video controls style="max-width: 100%; height: auto;">
+                                <video controls controlsList="nodownload"
+                                       style="max-width: 100%; height: auto; border-radius: 8px;"
+                                       preload="metadata">
                                     <source src="{html.escape(video_full_url)}" type="video/mp4">
                                     Your browser does not support the video tag.
                                 </video>
@@ -990,9 +1142,9 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     if vtt_languages:
                         # Language selector for VTT
                         if len(vtt_languages) > 1:
-                            lang_display = {"ru": "Русский ", "en": "English "}
+                            lang_display = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
                             selected_vtt_lang = st.radio(
-                                "Language",
+                                get_text("vtt_language", lang),
                                 options=list(vtt_languages.keys()),
                                 format_func=lambda x, ld=lang_display: ld.get(x, x),
                                 horizontal=True,
@@ -1024,9 +1176,9 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                                 unsafe_allow_html=True,
                             )
                         else:
-                            st.error("Could not load VTT")
+                            st.error(get_text("vtt_error", lang))
                     else:
-                        st.info("No VTT available")
+                        st.info(get_text("no_vtt", lang))
 
                 # Display text context and metadata below the video/VTT layout
                 st.markdown("---")
@@ -1040,9 +1192,9 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         col1 = st.columns([1, 4])[0]
                         with col1:
                             if st.button(
-                                "Find Related",
+                                get_text("find_related", lang),
                                 key=f"related_{doc_id}_{chunk_idx}_{group_idx}",
-                                help="Find similar content",
+                                help=get_text("find_related", lang),
                             ):
                                 # Store the doc_id to fetch related chunks
                                 st.session_state[f"show_related_{doc_id}"] = True
@@ -1052,7 +1204,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                             # Cache related chunks in session state
                             cache_key = f"related_chunks_{doc_id}"
                             if cache_key not in st.session_state:
-                                with st.spinner("Finding related chunks..."):
+                                with st.spinner(get_text("finding_related", lang)):
                                     import asyncio
 
                                     try:
@@ -1062,12 +1214,12 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                                             )
                                         )
                                     except Exception as e:
-                                        st.error(f"Error finding related chunks: {e}")
+                                        st.error(f"{get_text('error_finding_related', lang)} {e}")
                                         st.session_state[cache_key] = []
 
                             related_chunks = st.session_state[cache_key]
                             if related_chunks:
-                                st.markdown("**Related Content:**")
+                                st.markdown(f"**{get_text('related_content', lang)}**")
                                 for rel_idx, rel_chunk in enumerate(related_chunks, 1):
                                     rel_filename = html.escape(rel_chunk.get("filename", "Unknown"))
                                     rel_score = rel_chunk.get("score", 0.0)
@@ -1077,7 +1229,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                                         unsafe_allow_html=True,
                                     )
                             else:
-                                st.info("No related chunks found")
+                                st.info(get_text("no_related", lang))
 
                     # Do not display transcript text here (VTT viewer already provides full context)
 
@@ -1093,14 +1245,18 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 def render_sidebar(lang: str):
     """Render the sidebar with controls and system information."""
     with st.sidebar:
+        # ===== SEARCH SETTINGS =====
+        st.markdown(f"### {get_text('sidebar_search_settings', lang)}")
+
         # Language selection
-        language_options = {"ru": "Русский ", "en": "English "}
-        selected_lang = st.selectbox(
+        language_options = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
+        selected_lang = st.radio(
             get_text("language_label", lang),
             options=list(language_options.keys()),
             format_func=lambda x: language_options[x],
             index=0 if st.session_state.language == "ru" else 1,
             key="lang_select",
+            horizontal=True,
         )
 
         # Update language if changed
@@ -1117,104 +1273,108 @@ def render_sidebar(lang: str):
             step=1,
         )
 
+        # Date range filter
+        with st.expander(get_text("date_filter_label", lang), expanded=False):
+            min_date, max_date = get_archive_date_range()
+            # Clamp stored dates to available range (if known)
+            if min_date and st.session_state.date_from and st.session_state.date_from < min_date:
+                st.session_state.date_from = min_date
+            if max_date and st.session_state.date_from and st.session_state.date_from > max_date:
+                st.session_state.date_from = max_date
+            if min_date and st.session_state.date_to and st.session_state.date_to < min_date:
+                st.session_state.date_to = min_date
+            if max_date and st.session_state.date_to and st.session_state.date_to > max_date:
+                st.session_state.date_to = max_date
+
+            col1, col2 = st.columns(2)
+            with col1:
+                date_from = st.date_input(
+                    get_text("date_from_label", lang),
+                    value=st.session_state.date_from,
+                    min_value=min_date or date(1900, 1, 1),
+                    max_value=max_date or date.today(),
+                    key=f"date_from_input_{st.session_state.date_input_reset_counter}",
+                )
+                st.session_state.date_from = date_from if date_from else None
+            with col2:
+                date_to = st.date_input(
+                    get_text("date_to_label", lang),
+                    value=st.session_state.date_to,
+                    min_value=min_date or date(1900, 1, 1),
+                    max_value=max_date or date.today(),
+                    key=f"date_to_input_{st.session_state.date_input_reset_counter}",
+                )
+                st.session_state.date_to = date_to if date_to else None
+
+            if st.button(get_text("clear_dates", lang), use_container_width=True):
+                st.session_state.date_from = None
+                st.session_state.date_to = None
+                st.session_state.date_input_reset_counter += 1
+                st.rerun()
+
         st.divider()
 
-        # Date range filter
-        st.markdown(f"**{get_text('date_filter_label', lang)}**")
+        # ===== CONVERSATION ACTIONS =====
+        st.markdown(f"### {get_text('sidebar_conversation', lang)}")
 
-        min_date, max_date = get_archive_date_range()
-        # Clamp stored dates to available range (if known)
-        if min_date and st.session_state.date_from and st.session_state.date_from < min_date:
-            st.session_state.date_from = min_date
-        if max_date and st.session_state.date_from and st.session_state.date_from > max_date:
-            st.session_state.date_from = max_date
-        if min_date and st.session_state.date_to and st.session_state.date_to < min_date:
-            st.session_state.date_to = min_date
-        if max_date and st.session_state.date_to and st.session_state.date_to > max_date:
-            st.session_state.date_to = max_date
+        # Search history
+        if st.session_state.search_history:
+            with st.expander(get_text("search_history", lang), expanded=False):
+                for idx, query in enumerate(st.session_state.search_history[:5]):
+                    if st.button(
+                        f"{query[:40]}..." if len(query) > 40 else query,
+                        key=f"history_{idx}",
+                        use_container_width=True
+                    ):
+                        st.session_state.messages.append({"role": "user", "content": query})
+                        st.rerun()
 
-        col1, col2 = st.columns(2)
-        with col1:
-            date_from = st.date_input(
-                get_text("date_from_label", lang),
-                value=st.session_state.date_from,
-                min_value=min_date or date(1900, 1, 1),
-                max_value=max_date or date.today(),
-                key=f"date_from_input_{st.session_state.date_input_reset_counter}",
-            )
-            st.session_state.date_from = date_from if date_from else None
-        with col2:
-            date_to = st.date_input(
-                get_text("date_to_label", lang),
-                value=st.session_state.date_to,
-                min_value=min_date or date(1900, 1, 1),
-                max_value=max_date or date.today(),
-                key=f"date_to_input_{st.session_state.date_input_reset_counter}",
-            )
-            st.session_state.date_to = date_to if date_to else None
+        # Export conversation
+        if st.session_state.messages:
+            with st.expander(get_text("export_chat", lang), expanded=False):
+                # Generate markdown export
+                markdown_content = f"# {get_text('title', lang)}\n\n"
+                markdown_content += f"**{datetime.now().strftime('%Y-%m-%d %H:%M')}**\n\n"
+                for msg in st.session_state.messages:
+                    role_label = "User" if msg["role"] == "user" else "Assistant"
+                    markdown_content += f"## {role_label}\n\n{msg['content']}\n\n"
 
-        if st.button(get_text("clear_dates", lang), use_container_width=True):
-            st.session_state.date_from = None
-            st.session_state.date_to = None
-            st.session_state.date_input_reset_counter += 1
+                # Generate text export
+                text_content = f"{get_text('title', lang)}\n"
+                text_content += f"{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                text_content += "=" * 50 + "\n\n"
+                for msg in st.session_state.messages:
+                    role_label = "USER" if msg["role"] == "user" else "ASSISTANT"
+                    text_content += f"{role_label}:\n{msg['content']}\n\n{'-' * 50}\n\n"
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        label=get_text("export_markdown", lang),
+                        data=markdown_content,
+                        file_name=f"chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                        mime="text/markdown",
+                        use_container_width=True
+                    )
+                with col2:
+                    st.download_button(
+                        label=get_text("export_text", lang),
+                        data=text_content,
+                        file_name=f"chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+
+        # Clear history button
+        if st.button(get_text("clear_button", lang), use_container_width=True, type="primary"):
+            st.session_state.messages = []
+            st.session_state.search_history = []
             st.rerun()
 
         st.divider()
 
-        # System information (collapsible + compact)
-        with st.expander(get_text("system_info_label", lang), expanded=False):
-            with st.spinner(get_text("loading_system", lang)):
-                import asyncio
-
-                try:
-                    health_info = asyncio.run(check_api_health())
-                    if health_info:
-                        status_color = (
-                            "[OK]" if health_info.get("status") == "healthy" else "[WARN]"
-                        )
-                        qdrant_status = "[OK]" if health_info.get("qdrant_connected") else "[ERR]"
-                        model_status = "[OK]" if health_info.get("model_loaded") else "[ERR]"
-
-                        st.markdown(
-                            f"**{get_text('status_label', lang)}:** {status_color} | **Qdrant:** {qdrant_status} | **Embeddings:** {model_status}"
-                        )
-
-                        llm_provider = health_info.get("llm_provider", "Unknown")
-                        llm_model = health_info.get("llm_model", "Unknown")
-                        embedding_provider = health_info.get("embedding_provider", "Unknown")
-                        embedding_model = health_info.get("embedding_model", "Unknown")
-                        collection_name = health_info.get("qdrant_collection", "Unknown")
-
-                        st.markdown(
-                            f"**{get_text('model_label', lang)}:** {llm_provider} ({llm_model})"
-                        )
-                        st.markdown(
-                            f"**{get_text('embedding_label', lang)}:** {embedding_provider} ({embedding_model})"
-                        )
-                        st.markdown(f"**{get_text('collection_label', lang)}:** {collection_name}")
-
-                        # Show search features configuration
-                        search_features = []
-
-                        if health_info.get("hybrid_search_enabled", False):
-                            fusion_method = health_info.get("fusion_method", "rrf").upper()
-                            search_features.append(f"Hybrid ({fusion_method})")
-                        if health_info.get("reranker_enabled", False):
-                            search_features.append("Reranker")
-                        if health_info.get("temporal_enabled", False):
-                            search_features.append("Temporal")
-
-                        if search_features:
-                            st.markdown(f"**Search Features:** {' | '.join(search_features)}")
-                        else:
-                            st.markdown("**Search Features:** Standard vector search")
-                    else:
-                        st.error(get_text("health_check_failed", lang))
-                except Exception as e:
-                    logger.error(f"Failed to get health info: {e}")
-                    st.error(get_text("health_check_failed", lang))
-
-        st.divider()
+        # ===== SESSION & SYSTEM =====
+        st.markdown(f"### {get_text('sidebar_session', lang)}")
 
         # Session info and logout
         if st.session_state.get("authenticated", False):
@@ -1230,21 +1390,51 @@ def render_sidebar(lang: str):
                     timeout_str = f"{hours}h {mins}m"
                 else:
                     timeout_str = f"{minutes_remaining}m"
-                st.caption(f"Session expires in: {timeout_str}")
+                st.caption(f"{get_text('session_expires', lang)} {timeout_str}")
 
-            if st.button("Logout", use_container_width=True, type="secondary"):
+            if st.button(get_text("logout", lang), use_container_width=True, type="secondary"):
                 audit_log("LOGOUT", "User logged out", success=True)
                 st.session_state.authenticated = False
                 st.session_state.last_activity = None
                 st.session_state.messages = []
                 st.rerun()
 
-        st.divider()
+        # System information (collapsible + compact)
+        with st.expander(get_text("system_info_label", lang), expanded=False):
+            with st.spinner(get_text("loading_system", lang)):
+                import asyncio
 
-        # Clear history button
-        if st.button(get_text("clear_button", lang), use_container_width=True):
-            st.session_state.messages = []
-            st.rerun()
+                try:
+                    health_info = asyncio.run(check_api_health())
+                    if health_info:
+                        # Get configuration
+                        llm_provider = health_info.get('llm_provider', 'Unknown')
+                        llm_model = health_info.get('llm_model', 'Unknown')
+                        embedding_provider = health_info.get('embedding_provider', 'Unknown')
+                        embedding_model = health_info.get('embedding_model', 'Unknown')
+                        collection = health_info.get("qdrant_collection", "Unknown")
+
+                        # Search features
+                        features = []
+                        if health_info.get("hybrid_search_enabled", False):
+                            features.append(f"Hybrid ({health_info.get('fusion_method', 'rrf').upper()})")
+                        if health_info.get("reranker_enabled", False):
+                            features.append("Reranker")
+                        if health_info.get("temporal_enabled", False):
+                            features.append("Temporal")
+
+                        features_display = " | ".join(features) if features else "Vector"
+
+                        # Simple list format
+                        st.text(f"LLM: {llm_provider} ({llm_model})")
+                        st.text(f"Embeddings: {embedding_provider} ({embedding_model})")
+                        st.text(f"Collection: {collection}")
+                        st.text(f"Search: {features_display}")
+                    else:
+                        st.error(get_text("health_check_failed", lang))
+                except Exception as e:
+                    logger.error(f"Failed to get health info: {e}")
+                    st.error(get_text("health_check_failed", lang))
 
 
 def main():
@@ -1270,12 +1460,27 @@ def main():
     st.markdown(
         """
         <style>
-        .stTextInput > div > div > input {
-            border-radius: 20px;
-        }
+        /* Button styling */
         .stButton > button {
-            border-radius: 20px;
-            width: 100%;
+            border-radius: 8px;
+        }
+
+        /* Download button styling */
+        .stDownloadButton > button {
+            border-radius: 8px;
+        }
+
+        /* Video controls */
+        video {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        /* Video player control buttons */
+        button[onclick] {
+            transition: background-color 0.2s ease;
+        }
+        button[onclick]:hover {
+            background-color: #e0e0e0 !important;
         }
         </style>
         """,
@@ -1301,23 +1506,59 @@ def main():
     st.divider()
 
     # Display chat messages
-    for message in st.session_state.messages:
-        render_message_bubble(message, lang)
+    if st.session_state.messages:
+        for message in st.session_state.messages:
+            render_message_bubble(message, lang)
+    else:
+        # Show example queries when no messages
+        st.markdown(f"### {get_text('example_queries', lang)}")
+        st.markdown("")
+
+        examples = st.session_state.example_queries.get(lang, st.session_state.example_queries["ru"])
+        cols = st.columns(2)
+
+        for idx, example in enumerate(examples):
+            with cols[idx % 2]:
+                if st.button(
+                    example,
+                    key=f"example_{idx}",
+                    use_container_width=True
+                ):
+                    # Set the pending query flag
+                    st.session_state.pending_query = example
+                    st.rerun()
+
+        st.markdown("")
+        st.markdown("---")
 
     # Chat input
     user_input = st.chat_input(get_text("input_placeholder", lang))
+
+    # Check for pending query from example buttons
+    if "pending_query" in st.session_state and st.session_state.pending_query:
+        user_input = st.session_state.pending_query
+        st.session_state.pending_query = None
 
     if user_input:
         # Add user message to chat
         st.session_state.messages.append({"role": "user", "content": user_input})
 
+        # Add to search history (keep last 10)
+        if user_input not in st.session_state.search_history:
+            st.session_state.search_history.insert(0, user_input)
+            st.session_state.search_history = st.session_state.search_history[:10]
+
         # Display user message immediately
         render_message_bubble({"role": "user", "content": user_input}, lang)
 
-        # Show thinking indicator
+        # Show enhanced loading indicator
+        status_container = st.empty()
         with st.spinner(get_text("thinking", lang)):
             try:
                 import asyncio
+
+                # Show loading steps
+                status_container.info(get_text("searching", lang))
 
                 # Query the RAG system
                 date_from = (
@@ -1341,6 +1582,12 @@ def main():
                     "context": response.get("context", []),
                 }
                 st.session_state.messages.append(assistant_message)
+
+                # Show completion and clear status
+                clip_count = len(response.get('context', []))
+                status_container.success(get_text("found_clips", lang).format(count=clip_count))
+                time.sleep(0.5)
+                status_container.empty()
 
                 # Rerun to display the response
                 st.rerun()
