@@ -1162,6 +1162,21 @@ class Ingester:
 
             # Get max tokens based on embedding model
             max_tokens = self.config.get_max_chunk_tokens()
+            adjusted_max_tokens = max_tokens
+            metadata_block = self._build_web_metadata_block(web_metadata)
+            if (
+                self.config.web_metadata.include_in_text
+                and self.config.web_metadata.append_to_each_chunk
+                and metadata_block
+            ):
+                metadata_tokens = VTTParser.estimate_tokens(metadata_block, language)
+                adjusted_max_tokens = max(1, max_tokens - metadata_tokens)
+                if adjusted_max_tokens < max_tokens:
+                    logger.debug(
+                        "Reserving token budget for metadata: "
+                        + f"max_tokens={max_tokens}, metadata_tokens={metadata_tokens}, "
+                        + f"adjusted_max_tokens={adjusted_max_tokens}"
+                    )
 
             # Create chunks based on strategy
             if self.config.chunking.strategy == "hybrid":
@@ -1170,7 +1185,7 @@ class Ingester:
                     cues,
                     chunk_duration_seconds=self.config.chunking.chunk_duration_seconds,
                     overlap_seconds=self.config.chunking.overlap_seconds,
-                    max_tokens=max_tokens,
+                    max_tokens=adjusted_max_tokens,
                     min_tokens=self.config.chunking.min_chunk_tokens,
                     language=language,
                 )
@@ -1187,7 +1202,7 @@ class Ingester:
                     cues,
                     chunk_duration_seconds=self.parser.INFINITE_CHUNK_DURATION,  # Effectively disable time chunking
                     overlap_seconds=0,  # No overlap for pure token strategy
-                    max_tokens=max_tokens,
+                    max_tokens=adjusted_max_tokens,
                     min_tokens=self.config.chunking.min_chunk_tokens,
                     language=language,
                 )
@@ -1211,7 +1226,13 @@ class Ingester:
             for chunk in chunks:
                 # Chunks are already validated by the chunking strategy
                 # No need for additional length checks
-                text = self._append_web_metadata(chunk.text, web_metadata)
+                text = self._append_web_metadata(
+                    chunk.text,
+                    web_metadata,
+                    max_tokens=max_tokens,
+                    language=language,
+                    metadata_block=metadata_block,
+                )
                 doc_id = self.parser.generate_id(file_path, chunk.chunk_index)
 
                 doc = Document(
@@ -1290,7 +1311,14 @@ class Ingester:
 
             return [doc]
 
-    def _append_web_metadata(self, text: str, web_metadata: dict[str, Any]) -> str:
+    def _append_web_metadata(
+        self,
+        text: str,
+        web_metadata: dict[str, Any],
+        max_tokens: int | None = None,
+        language: str = "en",
+        metadata_block: str | None = None,
+    ) -> str:
         """Append web metadata to the document text when configured."""
         if not self.config.web_metadata.include_in_text:
             return text
@@ -1301,12 +1329,37 @@ class Ingester:
         if not self.config.web_metadata.append_to_each_chunk:
             return text
 
+        block = metadata_block or self._build_web_metadata_block(web_metadata)
+        if not block:
+            return text
+
+        combined = f"{text}\n\n{block}"
+        if max_tokens is not None:
+            combined_tokens = VTTParser.estimate_tokens(combined, language)
+            if combined_tokens > max_tokens:
+                logger.warning(
+                    "Metadata append would exceed max_tokens; "
+                    + f"dropping metadata (tokens {combined_tokens} > {max_tokens})."
+                )
+                return text
+        return combined
+
+    def _build_web_metadata_block(self, web_metadata: dict[str, Any]) -> str | None:
+        if not web_metadata:
+            return None
+
         field_map = {
             "title": ("Title", web_metadata.get("web_title")),
             "date": ("Date", web_metadata.get("web_date")),
             "description": ("Description", web_metadata.get("web_description")),
             "url": ("URL", web_metadata.get("web_url")),
         }
+
+        unknowns = [field for field in self.config.web_metadata.fields if field not in field_map]
+        if unknowns:
+            logger.warning(
+                f"Unrecognized web metadata fields: {unknowns}. Accepted fields: {list(field_map.keys())}"
+            )
 
         lines = []
         for field in self.config.web_metadata.fields:
@@ -1315,11 +1368,10 @@ class Ingester:
                 lines.append(f"{label}: {value}")
 
         if not lines:
-            return text
+            return None
 
         label = self.config.web_metadata.append_label
-        block = "\n".join([label, *lines])
-        return f"{text}\n\n{block}"
+        return "\n".join([label, *lines])
 
     def ingest(self) -> int:
         """
