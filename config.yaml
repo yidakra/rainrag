@@ -17,7 +17,7 @@ embedding:
   # IMPORTANT: Ensure vector_size in qdrant section matches the chosen embedding model's output dimension
   provider: "local"
   model_name: "intfloat/multilingual-e5-large"
-  batch_size: 64   # Increased for throughput
+  batch_size: 128   # Increased for throughput
   max_seq_length: 512
   device: "cuda"  # Auto-detected at runtime if GPU available
   normalize_embeddings: true
@@ -154,4 +154,8 @@ web_metadata:
   enabled: true
   path: "./web_metadata"
   min_content_length: 10  # Intentionally permissive threshold to prevent near-empty content ingestion
+  include_in_text: true
+  append_label: "[Web]"
+  append_to_each_chunk: true
+  fields: ["title", "date", "description"]
   require_web_metadata: false  # Mode 2: Only ingest videos with web metadata; Mode 1 (false): Ingest all videos with null web fields when metadata missing

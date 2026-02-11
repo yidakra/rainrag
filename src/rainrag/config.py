@@ -267,6 +267,22 @@ class WebMetadataConfig(BaseModel):
     min_content_length: int = Field(
         default=10, ge=1, description="Minimum content length for web description text"
     )
+    include_in_text: bool = Field(
+        default=False,
+        description="If True, append web metadata to document text for retrieval",
+    )
+    append_label: str = Field(
+        default="[Web]",
+        description="Label used when appending web metadata to document text",
+    )
+    append_to_each_chunk: bool = Field(
+        default=True,
+        description="If True, append web metadata to each chunk text",
+    )
+    fields: list[str] = Field(
+        default=["title", "date", "description", "url"],
+        description="Web metadata fields to append to document text",
+    )
     require_web_metadata: bool = Field(
         default=False,
         description="If True, only ingest videos that have corresponding web metadata; if False, ingest all videos with empty web fields when metadata is missing",

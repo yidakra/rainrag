@@ -894,10 +894,10 @@ class WebMetadataLoader:
 
         # Combine preview and detail text for description
         description_parts = []
-        if preview_text and preview_text.strip():
-            description_parts.append(preview_text.strip())
-        if detail_text and detail_text.strip():
-            description_parts.append(detail_text.strip())
+        if preview_text:
+            description_parts.append(preview_text)
+        if detail_text:
+            description_parts.append(detail_text)
 
         description = " ".join(description_parts) if description_parts else None
 
@@ -922,7 +922,7 @@ class WebMetadataLoader:
         }
 
     @staticmethod
-    def _clean_html_text(text: str) -> str:
+    def _clean_html_text(text: str | None) -> str:
         """Strip HTML tags and normalize whitespace in metadata text."""
         if not text:
             return ""
@@ -1211,7 +1211,7 @@ class Ingester:
             for chunk in chunks:
                 # Chunks are already validated by the chunking strategy
                 # No need for additional length checks
-                text = chunk.text
+                text = self._append_web_metadata(chunk.text, web_metadata)
                 doc_id = self.parser.generate_id(file_path, chunk.chunk_index)
 
                 doc = Document(
@@ -1251,6 +1251,7 @@ class Ingester:
                 return []
 
             text, start_time, end_time = result
+            text = self._append_web_metadata(text, web_metadata)
 
             # Check minimum text length
             if len(text) < self.config.processing.min_text_length:
@@ -1288,6 +1289,37 @@ class Ingester:
             )
 
             return [doc]
+
+    def _append_web_metadata(self, text: str, web_metadata: dict[str, Any]) -> str:
+        """Append web metadata to the document text when configured."""
+        if not self.config.web_metadata.include_in_text:
+            return text
+
+        if not web_metadata:
+            return text
+
+        if not self.config.web_metadata.append_to_each_chunk:
+            return text
+
+        field_map = {
+            "title": ("Title", web_metadata.get("web_title")),
+            "date": ("Date", web_metadata.get("web_date")),
+            "description": ("Description", web_metadata.get("web_description")),
+            "url": ("URL", web_metadata.get("web_url")),
+        }
+
+        lines = []
+        for field in self.config.web_metadata.fields:
+            label, value = field_map.get(field, (None, None))
+            if label and value:
+                lines.append(f"{label}: {value}")
+
+        if not lines:
+            return text
+
+        label = self.config.web_metadata.append_label
+        block = "\n".join([label, *lines])
+        return f"{text}\n\n{block}"
 
     def ingest(self) -> int:
         """
