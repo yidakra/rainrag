@@ -34,7 +34,10 @@ class EmbeddingConfig(BaseModel):
         default=512,
         description="Maximum sequence length in tokens for embedding model (multilingual-e5-large supports up to 512)",
     )
-    device: str = Field(default="cuda")
+    device: str = Field(
+        default="auto",
+        description="Device selection: 'auto' (default), 'cuda', 'cuda:0', 'mps', or 'cpu'",
+    )
     normalize_embeddings: bool = Field(default=True)
     max_retries: int = Field(
         default=3,

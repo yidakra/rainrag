@@ -1216,7 +1216,7 @@ class Ingester:
                 return []
 
             logger.debug(
-                f"Created {len(chunks)} chunks from {file_path} using '{self.config.chunking.strategy}' strategy (max_tokens={max_tokens})"
+                f"Created {len(chunks)} chunks from {file_path} using '{self.config.chunking.strategy}' strategy (max_tokens={adjusted_max_tokens})"
             )
 
             # Create Document objects for each chunk
@@ -1337,7 +1337,7 @@ class Ingester:
         if max_tokens is not None:
             combined_tokens = VTTParser.estimate_tokens(combined, language)
             if combined_tokens > max_tokens:
-                logger.warning(
+                logger.debug(
                     "Metadata append would exceed max_tokens; "
                     + f"dropping metadata (tokens {combined_tokens} > {max_tokens})."
                 )

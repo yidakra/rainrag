@@ -1711,6 +1711,7 @@ If runtime works but the editor shows missing imports, ensure the editor uses th
 - [x] Build a web UI for querying the index (Streamlit + FastAPI)
 - [ ] Add multi-node Qdrant support for horizontal scaling
 - [ ] Implement incremental indexing (delta updates)
+- [ ] Make embedding batch_size runtime-configurable (configure per available VRAM)
 - [ ] Add metrics and monitoring (Prometheus/Grafana)
 - [ ] Add VPN access configuration guide
 - [ ] Implement query history persistence

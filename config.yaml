@@ -17,9 +17,9 @@ embedding:
   # IMPORTANT: Ensure vector_size in qdrant section matches the chosen embedding model's output dimension
   provider: "local"
   model_name: "intfloat/multilingual-e5-large"
-  batch_size: 128   # VRAM guide: recommend >=12–16GB for embeddings at 128; 4–8GB GPUs may OOM—reduce to 32–64 for low-memory devices or make batch_size runtime-configurable
+  batch_size: 128   # VRAM guide: recommend >=12–16GB for embeddings at 128; 4–8GB GPUs may OOM—reduce to 32–64 for low-memory devices
   max_seq_length: 512
-  device: "cuda"  # Auto-detected at runtime if GPU available
+  device: "auto"  # Auto-selects cuda/mps/cpu at runtime based on availability
   normalize_embeddings: true
 
 # Qdrant vector store configuration
