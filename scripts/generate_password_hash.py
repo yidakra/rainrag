@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate a bcrypt password hash for RainRAG authentication.
+Generate an Argon2 password hash for RainRAG authentication.
 
 This script helps administrators create secure password hashes for the
 RAINRAG_PASSWORD_HASH environment variable.
@@ -9,7 +9,7 @@ Usage:
     python scripts/generate_password_hash.py
 
 Security:
-    - Uses bcrypt with automatic salt generation
+    - Uses Argon2 with secure parameters (memory-hard, resistant to attacks)
     - Passwords are not logged or stored
     - Hash can be safely stored in environment variables
 """
@@ -17,11 +17,12 @@ Security:
 import getpass
 import sys
 
+
 try:
-    import bcrypt
+    from argon2 import PasswordHasher
 except ImportError:
-    print("ERROR: bcrypt library not installed")
-    print("Please install it with: pip install bcrypt")
+    print("ERROR: argon2-cffi library not installed")
+    print("Please install it with: pip install argon2-cffi")
     sys.exit(1)
 
 
@@ -57,18 +58,24 @@ def validate_password_strength(password: str) -> tuple[bool, list[str]]:
 
 def generate_hash(password: str) -> str:
     """
-    Generate a bcrypt hash for the given password.
+    Generate an Argon2 hash for the given password.
 
     Args:
         password: Plain text password
 
     Returns:
-        Bcrypt hash as a string
+        Argon2 hash as a string
     """
-    salt = bcrypt.gensalt(rounds=12)  # 12 rounds is a good balance of security and speed
-    password_bytes = password.encode('utf-8')
-    hash_bytes = bcrypt.hashpw(password_bytes, salt)
-    return hash_bytes.decode('utf-8')
+    # Initialize Argon2 hasher with secure parameters
+    hasher = PasswordHasher(
+        time_cost=2,  # Number of iterations (moderate for web app)
+        memory_cost=102400,  # Memory usage in KiB (100MB)
+        parallelism=8,  # Number of parallel threads
+        hash_len=32,  # Hash length in bytes
+        salt_len=16,  # Salt length in bytes
+    )
+
+    return hasher.hash(password)
 
 
 def main():
@@ -77,7 +84,7 @@ def main():
     print("RainRAG Password Hash Generator")
     print("=" * 70)
     print()
-    print("This tool generates a secure bcrypt hash for your password.")
+    print("This tool generates a secure Argon2 hash for your password.")
     print("The hash will be used in the RAINRAG_PASSWORD_HASH environment variable.")
     print()
     print("Password Requirements:")

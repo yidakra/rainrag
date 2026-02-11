@@ -1,6 +1,7 @@
 """Streamlit frontend for RainRAG - Multilingual RAG system for video transcripts."""
 
 import contextlib
+import hmac
 import html
 import json
 import os
@@ -9,11 +10,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import bcrypt
 import httpx
+import redis
 import streamlit as st
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
 from dotenv import load_dotenv
 from loguru import logger
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -28,23 +32,83 @@ ASSET_BASE_URL = API_BASE[:-4] if API_BASE.endswith("/api") else API_BASE
 API_VERIFY_SSL = os.getenv("RAINRAG_API_VERIFY", "true").lower() not in ("0", "false", "no", "off")
 
 # Security Configuration
-# REQUIRED: Bcrypt-hashed password (use scripts/generate_password_hash.py to create)
+# REQUIRED: Argon2-hashed password (use scripts/generate_password_hash.py to create)
 AUTH_PASSWORD_HASH = os.getenv("RAINRAG_PASSWORD_HASH", "")
 # Optional: Legacy plain-text token support (DEPRECATED - use hashed password instead)
 AUTH_TOKEN = os.getenv("STREAMLIT_AUTH_TOKEN", "")
 # Session timeout in minutes (default: 8 hours)
-SESSION_TIMEOUT_MINUTES = int(os.getenv("RAINRAG_SESSION_TIMEOUT", "480"))
+try:
+    SESSION_TIMEOUT_MINUTES = int(os.getenv("RAINRAG_SESSION_TIMEOUT", "480"))
+    if SESSION_TIMEOUT_MINUTES <= 0:
+        SESSION_TIMEOUT_MINUTES = 480
+        logger.warning("RAINRAG_SESSION_TIMEOUT must be positive, using default 480")
+except (ValueError, TypeError):
+    SESSION_TIMEOUT_MINUTES = 480
+    logger.warning("Invalid RAINRAG_SESSION_TIMEOUT, using default 480")
+
 # Maximum failed login attempts before temporary lockout
-MAX_LOGIN_ATTEMPTS = int(os.getenv("RAINRAG_MAX_LOGIN_ATTEMPTS", "5"))
+try:
+    MAX_LOGIN_ATTEMPTS = int(os.getenv("RAINRAG_MAX_LOGIN_ATTEMPTS", "5"))
+    if MAX_LOGIN_ATTEMPTS <= 0:
+        MAX_LOGIN_ATTEMPTS = 5
+        logger.warning("RAINRAG_MAX_LOGIN_ATTEMPTS must be positive, using default 5")
+except (ValueError, TypeError):
+    MAX_LOGIN_ATTEMPTS = 5
+    logger.warning("Invalid RAINRAG_MAX_LOGIN_ATTEMPTS, using default 5")
+
 # Lockout duration in seconds after max attempts
-LOCKOUT_DURATION_SECONDS = int(os.getenv("RAINRAG_LOCKOUT_DURATION", "300"))
+try:
+    LOCKOUT_DURATION_SECONDS = int(os.getenv("RAINRAG_LOCKOUT_DURATION", "300"))
+    if LOCKOUT_DURATION_SECONDS <= 0:
+        LOCKOUT_DURATION_SECONDS = 300
+        logger.warning("RAINRAG_LOCKOUT_DURATION must be positive, using default 300")
+except (ValueError, TypeError):
+    LOCKOUT_DURATION_SECONDS = 300
+    logger.warning("Invalid RAINRAG_LOCKOUT_DURATION, using default 300")
 # Enable audit logging for authentication events
-AUDIT_LOG_ENABLED = os.getenv("RAINRAG_AUDIT_LOG", "true").lower() not in ("0", "false", "no", "off")
+AUDIT_LOG_ENABLED = os.getenv("RAINRAG_AUDIT_LOG", "true").lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+# Redis configuration for server-side session storage
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 DEFAULT_LANGUAGE = "ru"
 DEFAULT_TOP_K = 3
 REQUEST_TIMEOUT = 60.0  # 60 seconds timeout for API requests
 DOCS_PATH = os.getenv("RAINRAG_DOCS_PATH", "./data/docs.jsonl")
+
+# Initialize Argon2 password hasher for secure password hashing
+# Using recommended parameters: time_cost=2, memory_cost=102400 (100MB), parallelism=8
+password_hasher = PasswordHasher(
+    time_cost=2,  # Number of iterations
+    memory_cost=102400,  # Memory usage in KiB (100MB)
+    parallelism=8,  # Number of parallel threads
+    hash_len=32,  # Hash length in bytes
+    salt_len=16,  # Salt length in bytes
+)
+
+# Initialize Redis client for server-side storage
+try:
+    redis_client = redis.Redis(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        db=REDIS_DB,
+        password=REDIS_PASSWORD,
+        decode_responses=True,
+    )
+    # Test connection
+    redis_client.ping()
+    logger.info("Connected to Redis for session storage")
+except redis.ConnectionError as e:
+    logger.error(f"Failed to connect to Redis: {e}")
+    redis_client = None
 
 
 # Translations
@@ -170,17 +234,20 @@ def audit_log(event: str, details: str = "", success: bool = True):
 
 def verify_password(password: str, password_hash: str) -> bool:
     """
-    Verify a password against a bcrypt hash.
+    Verify a password against an Argon2 hash.
 
     Args:
         password: Plain text password to verify
-        password_hash: Bcrypt hash to verify against
+        password_hash: Argon2 hash to verify against
 
     Returns:
         True if password matches hash, False otherwise
     """
     try:
-        return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+        password_hasher.verify(password_hash, password)
+        return True
+    except VerifyMismatchError:
+        return False
     except Exception as e:
         logger.error(f"Password verification error: {e}")
         return False
@@ -204,6 +271,104 @@ def update_session_activity():
     st.session_state["last_activity"] = datetime.now()
 
 
+# Redis-based server-side lockout helpers
+def _get_lockout_key(identifier: str) -> str:
+    """Generate a unique Redis key for lockout tracking."""
+    return f"lockout:{identifier}"
+
+
+def redis_get_failed_attempts(identifier: str) -> dict[str, Any]:
+    """
+    Get failed login attempts from Redis.
+
+    Args:
+        identifier: Unique identifier (e.g., IP address or user ID)
+
+    Returns:
+        Dictionary with 'count' and 'lockout_until' keys
+    """
+    if redis_client is None:
+        # Fallback to in-memory dict if Redis unavailable
+        return {"count": 0, "lockout_until": None}
+
+    key = _get_lockout_key(identifier)
+    data = redis_client.hgetall(key)
+
+    if not data:
+        return {"count": 0, "lockout_until": None}
+
+    count = int(data.get("count", 0))
+    lockout_until_str = data.get("lockout_until")
+    lockout_until = None
+    if lockout_until_str:
+        try:
+            lockout_until = datetime.fromisoformat(lockout_until_str)
+        except ValueError:
+            lockout_until = None
+
+    return {"count": count, "lockout_until": lockout_until}
+
+
+def redis_set_failed_attempts(identifier: str, count: int, lockout_until: datetime | None = None):
+    """
+    Set failed login attempts in Redis.
+
+    Args:
+        identifier: Unique identifier
+        count: Number of failed attempts
+        lockout_until: Lockout expiration timestamp
+    """
+    if redis_client is None:
+        return
+
+    key = _get_lockout_key(identifier)
+    data = {"count": str(count)}
+
+    if lockout_until:
+        data["lockout_until"] = lockout_until.isoformat()
+        # Set TTL to lockout duration
+        ttl = int((lockout_until - datetime.now()).total_seconds())
+        if ttl > 0:
+            redis_client.expire(key, ttl)
+    else:
+        # Remove TTL if no lockout
+        redis_client.persist(key)
+
+    redis_client.hset(key, mapping=data)
+
+
+def redis_incr_failed_attempts(identifier: str) -> int:
+    """
+    Increment failed attempts counter in Redis.
+
+    Args:
+        identifier: Unique identifier
+
+    Returns:
+        New count value
+    """
+    if redis_client is None:
+        return 0
+
+    key = _get_lockout_key(identifier)
+    count = redis_client.hincrby(key, "count", 1)
+    return count
+
+
+def redis_reset_failed_attempts(identifier: str):
+    """
+    Reset failed login attempts in Redis.
+
+    Args:
+        identifier: Unique identifier
+    """
+    if redis_client is None:
+        return
+
+    key = _get_lockout_key(identifier)
+    redis_client.delete(key)
+
+
 def get_failed_attempts() -> dict[str, Any]:
     """
     Get failed login attempts tracking data.
@@ -211,12 +376,9 @@ def get_failed_attempts() -> dict[str, Any]:
     Returns:
         Dictionary with 'count' and 'lockout_until' keys
     """
-    if "failed_attempts" not in st.session_state:
-        st.session_state["failed_attempts"] = {
-            "count": 0,
-            "lockout_until": None
-        }
-    return st.session_state["failed_attempts"]
+    # Use client IP as identifier
+    identifier = st.session_state.get("client_ip", "unknown")
+    return redis_get_failed_attempts(identifier)
 
 
 def is_account_locked() -> tuple[bool, int]:
@@ -236,33 +398,29 @@ def is_account_locked() -> tuple[bool, int]:
     if remaining > 0:
         return True, int(remaining)
     else:
-        # Lockout period expired, reset
-        attempts["count"] = 0
-        attempts["lockout_until"] = None
+        # Lockout period expired (shouldn't happen with Redis TTL, but handle anyway)
         return False, 0
 
 
 def record_failed_attempt():
     """Record a failed login attempt and apply lockout if threshold reached."""
-    attempts = get_failed_attempts()
-    attempts["count"] += 1
+    identifier = st.session_state.get("client_ip", "unknown")
+    count = redis_incr_failed_attempts(identifier)
 
-    if attempts["count"] >= MAX_LOGIN_ATTEMPTS:
-        attempts["lockout_until"] = datetime.now() + timedelta(seconds=LOCKOUT_DURATION_SECONDS)
+    if count >= MAX_LOGIN_ATTEMPTS:
+        lockout_until = datetime.now() + timedelta(seconds=LOCKOUT_DURATION_SECONDS)
+        redis_set_failed_attempts(identifier, count, lockout_until)
         audit_log(
             "ACCOUNT_LOCKED",
             f"Account locked after {MAX_LOGIN_ATTEMPTS} failed attempts",
-            success=False
+            success=False,
         )
 
 
 def reset_failed_attempts():
     """Reset failed login attempts counter after successful login."""
-    if "failed_attempts" in st.session_state:
-        st.session_state["failed_attempts"] = {
-            "count": 0,
-            "lockout_until": None
-        }
+    identifier = st.session_state.get("client_ip", "unknown")
+    redis_reset_failed_attempts(identifier)
 
 
 def check_authentication() -> bool:
@@ -271,7 +429,7 @@ def check_authentication() -> bool:
 
     Features:
     - Mandatory authentication (no bypass)
-    - Bcrypt password hashing
+    - Argon2 password hashing
     - Rate limiting with account lockout
     - Session timeout
     - Audit logging
@@ -312,7 +470,7 @@ def check_authentication() -> bool:
         audit_log(
             "LOGIN_BLOCKED",
             f"Login attempt while locked ({seconds_remaining}s remaining)",
-            success=False
+            success=False,
         )
         time.sleep(1)
         st.stop()
@@ -332,7 +490,7 @@ def check_authentication() -> bool:
         password_input = st.text_input(
             get_text("auth_prompt", lang),
             type="password",
-            help="Enter the system password provided by your administrator"
+            help="Enter the system password provided by your administrator",
         )
         submit = st.form_submit_button(get_text("auth_button", lang))
 
@@ -342,19 +500,19 @@ def check_authentication() -> bool:
                 audit_log("LOGIN_FAILED", "Empty password submitted", success=False)
                 return False
 
-            # Verify password (prefer bcrypt hash, fallback to legacy token)
+            # Verify password (use Argon2 hash, fallback to legacy token)
             password_valid = False
 
             if AUTH_PASSWORD_HASH:
-                # Use bcrypt hash (secure method)
+                # Use Argon2 hash (secure method)
                 password_valid = verify_password(password_input, AUTH_PASSWORD_HASH)
             elif AUTH_TOKEN:
                 # Legacy plain-text comparison (DEPRECATED)
-                password_valid = (password_input == AUTH_TOKEN)
+                password_valid = hmac.compare_digest(password_input or "", AUTH_TOKEN or "")
                 if password_valid:
                     logger.warning(
                         "SECURITY WARNING: Using deprecated plain-text AUTH_TOKEN. "
-                        "Please migrate to RAINRAG_PASSWORD_HASH using bcrypt."
+                        "Please migrate to RAINRAG_PASSWORD_HASH using argon2."
                     )
 
             if password_valid:
@@ -374,7 +532,7 @@ def check_authentication() -> bool:
                 audit_log(
                     "LOGIN_FAILED",
                     f"Invalid password attempt ({attempts_left} attempts remaining)",
-                    success=False
+                    success=False,
                 )
                 st.error(get_text("auth_invalid", lang))
 
@@ -400,8 +558,6 @@ def initialize_session_state():
         st.session_state.authenticated = False  # Always require authentication
     if "last_activity" not in st.session_state:
         st.session_state.last_activity = None
-    if "failed_attempts" not in st.session_state:
-        st.session_state.failed_attempts = {"count": 0, "lockout_until": None}
     if "date_from" not in st.session_state:
         st.session_state.date_from = None
     if "date_to" not in st.session_state:
@@ -412,9 +568,15 @@ def initialize_session_state():
         # Try to get client IP from Streamlit context (for audit logging)
         try:
             # Use new st.context API (Streamlit >= 1.31)
-            if hasattr(st, 'context') and hasattr(st.context, 'headers'):
+            if hasattr(st, "context") and hasattr(st.context, "headers"):
                 headers = st.context.headers
-                st.session_state.client_ip = headers.get("X-Forwarded-For", headers.get("Remote-Addr", "unknown"))
+                x_forwarded_for = headers.get("X-Forwarded-For", "").strip()
+                if x_forwarded_for:
+                    # X-Forwarded-For may contain multiple IPs, use the first one
+                    client_ip = x_forwarded_for.split(",")[0].strip()
+                else:
+                    client_ip = headers.get("Remote-Addr", "unknown")
+                st.session_state.client_ip = client_ip
             else:
                 st.session_state.client_ip = "unknown"
         except Exception:
@@ -1007,7 +1169,9 @@ def render_sidebar(lang: str):
                 try:
                     health_info = asyncio.run(check_api_health())
                     if health_info:
-                        status_color = "[OK]" if health_info.get("status") == "healthy" else "[WARN]"
+                        status_color = (
+                            "[OK]" if health_info.get("status") == "healthy" else "[WARN]"
+                        )
                         qdrant_status = "[OK]" if health_info.get("qdrant_connected") else "[ERR]"
                         model_status = "[OK]" if health_info.get("model_loaded") else "[ERR]"
 
@@ -1057,7 +1221,9 @@ def render_sidebar(lang: str):
             last_activity = st.session_state.get("last_activity")
             if last_activity:
                 time_since_activity = datetime.now() - last_activity
-                minutes_remaining = SESSION_TIMEOUT_MINUTES - int(time_since_activity.total_seconds() / 60)
+                minutes_remaining = SESSION_TIMEOUT_MINUTES - int(
+                    time_since_activity.total_seconds() / 60
+                )
                 if minutes_remaining > 60:
                     hours = minutes_remaining // 60
                     mins = minutes_remaining % 60

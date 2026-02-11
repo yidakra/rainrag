@@ -50,7 +50,7 @@ class TestEmbeddingConfig:
         assert config.model_name == "intfloat/multilingual-e5-large"
         assert config.batch_size == 32
         assert config.max_seq_length == 512
-        assert config.device == "cuda"
+        assert config.device == "auto"
         assert config.normalize_embeddings is True
 
     def test_embedding_config_custom(self) -> None:
