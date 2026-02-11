@@ -4,14 +4,19 @@ import contextlib
 import html
 import json
 import os
-from datetime import date
+import time
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import bcrypt
 import httpx
 import streamlit as st
+from dotenv import load_dotenv
 from loguru import logger
 
+# Load environment variables from .env file
+load_dotenv()
 
 # Configuration
 API_BASE_URL = os.getenv("RAINRAG_API_URL", "http://localhost:8001").rstrip("/")
@@ -21,7 +26,21 @@ API_BASE = API_BASE_URL
 ASSET_BASE_URL = API_BASE[:-4] if API_BASE.endswith("/api") else API_BASE
 # Allow disabling SSL verification for self-signed/internal certs
 API_VERIFY_SSL = os.getenv("RAINRAG_API_VERIFY", "true").lower() not in ("0", "false", "no", "off")
+
+# Security Configuration
+# REQUIRED: Bcrypt-hashed password (use scripts/generate_password_hash.py to create)
+AUTH_PASSWORD_HASH = os.getenv("RAINRAG_PASSWORD_HASH", "")
+# Optional: Legacy plain-text token support (DEPRECATED - use hashed password instead)
 AUTH_TOKEN = os.getenv("STREAMLIT_AUTH_TOKEN", "")
+# Session timeout in minutes (default: 8 hours)
+SESSION_TIMEOUT_MINUTES = int(os.getenv("RAINRAG_SESSION_TIMEOUT", "480"))
+# Maximum failed login attempts before temporary lockout
+MAX_LOGIN_ATTEMPTS = int(os.getenv("RAINRAG_MAX_LOGIN_ATTEMPTS", "5"))
+# Lockout duration in seconds after max attempts
+LOCKOUT_DURATION_SECONDS = int(os.getenv("RAINRAG_LOCKOUT_DURATION", "300"))
+# Enable audit logging for authentication events
+AUDIT_LOG_ENABLED = os.getenv("RAINRAG_AUDIT_LOG", "true").lower() not in ("0", "false", "no", "off")
+
 DEFAULT_LANGUAGE = "ru"
 DEFAULT_TOP_K = 3
 REQUEST_TIMEOUT = 60.0  # 60 seconds timeout for API requests
@@ -132,34 +151,238 @@ def get_text(key: str, lang: str = "ru") -> str:
     return TRANSLATIONS.get(lang, TRANSLATIONS["ru"]).get(key, key)
 
 
-def check_authentication() -> bool:
-    """Check if authentication is required and handle login."""
-    # If no auth token is configured, skip authentication
-    if not AUTH_TOKEN:
+def audit_log(event: str, details: str = "", success: bool = True):
+    """Log authentication events for security auditing."""
+    if not AUDIT_LOG_ENABLED:
+        return
+
+    timestamp = datetime.now().isoformat()
+    status = "SUCCESS" if success else "FAILURE"
+    client_ip = st.session_state.get("client_ip", "unknown")
+
+    log_message = f"[AUDIT] {timestamp} | {status} | {event} | IP: {client_ip} | {details}"
+
+    if success:
+        logger.info(log_message)
+    else:
+        logger.warning(log_message)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """
+    Verify a password against a bcrypt hash.
+
+    Args:
+        password: Plain text password to verify
+        password_hash: Bcrypt hash to verify against
+
+    Returns:
+        True if password matches hash, False otherwise
+    """
+    try:
+        return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+    except Exception as e:
+        logger.error(f"Password verification error: {e}")
+        return False
+
+
+def is_session_expired() -> bool:
+    """Check if the current session has expired."""
+    if "last_activity" not in st.session_state:
         return True
 
-    # Check if user is already authenticated
-    if st.session_state.get("authenticated", False):
+    last_activity = st.session_state.get("last_activity")
+    if not last_activity:
         return True
+
+    timeout_delta = timedelta(minutes=SESSION_TIMEOUT_MINUTES)
+    return datetime.now() - last_activity > timeout_delta
+
+
+def update_session_activity():
+    """Update the last activity timestamp for session timeout tracking."""
+    st.session_state["last_activity"] = datetime.now()
+
+
+def get_failed_attempts() -> dict[str, Any]:
+    """
+    Get failed login attempts tracking data.
+
+    Returns:
+        Dictionary with 'count' and 'lockout_until' keys
+    """
+    if "failed_attempts" not in st.session_state:
+        st.session_state["failed_attempts"] = {
+            "count": 0,
+            "lockout_until": None
+        }
+    return st.session_state["failed_attempts"]
+
+
+def is_account_locked() -> tuple[bool, int]:
+    """
+    Check if account is temporarily locked due to failed attempts.
+
+    Returns:
+        Tuple of (is_locked, seconds_remaining)
+    """
+    attempts = get_failed_attempts()
+    lockout_until = attempts.get("lockout_until")
+
+    if lockout_until is None:
+        return False, 0
+
+    remaining = (lockout_until - datetime.now()).total_seconds()
+    if remaining > 0:
+        return True, int(remaining)
+    else:
+        # Lockout period expired, reset
+        attempts["count"] = 0
+        attempts["lockout_until"] = None
+        return False, 0
+
+
+def record_failed_attempt():
+    """Record a failed login attempt and apply lockout if threshold reached."""
+    attempts = get_failed_attempts()
+    attempts["count"] += 1
+
+    if attempts["count"] >= MAX_LOGIN_ATTEMPTS:
+        attempts["lockout_until"] = datetime.now() + timedelta(seconds=LOCKOUT_DURATION_SECONDS)
+        audit_log(
+            "ACCOUNT_LOCKED",
+            f"Account locked after {MAX_LOGIN_ATTEMPTS} failed attempts",
+            success=False
+        )
+
+
+def reset_failed_attempts():
+    """Reset failed login attempts counter after successful login."""
+    if "failed_attempts" in st.session_state:
+        st.session_state["failed_attempts"] = {
+            "count": 0,
+            "lockout_until": None
+        }
+
+
+def check_authentication() -> bool:
+    """
+    Check authentication and handle login with security best practices.
+
+    Features:
+    - Mandatory authentication (no bypass)
+    - Bcrypt password hashing
+    - Rate limiting with account lockout
+    - Session timeout
+    - Audit logging
+
+    Returns:
+        True if authenticated, False otherwise
+    """
+    # SECURITY: Authentication is now MANDATORY
+    if not AUTH_PASSWORD_HASH and not AUTH_TOKEN:
+        st.error("SECURITY ERROR: No authentication configured!")
+        st.error("Please set RAINRAG_PASSWORD_HASH environment variable.")
+        st.error("Use scripts/generate_password_hash.py to generate a secure hash.")
+        st.stop()
+        return False
+
+    # Check if user is already authenticated and session is valid
+    if st.session_state.get("authenticated", False):
+        # Check for session timeout
+        if is_session_expired():
+            st.session_state["authenticated"] = False
+            audit_log("SESSION_EXPIRED", "Session timed out due to inactivity", success=False)
+            st.warning("Session expired due to inactivity. Please login again.")
+            time.sleep(1)
+            st.rerun()
+            return False
+
+        # Update activity timestamp
+        update_session_activity()
+        return True
+
+    # Check if account is locked
+    is_locked, seconds_remaining = is_account_locked()
+    if is_locked:
+        minutes = int(seconds_remaining / 60)
+        seconds = int(seconds_remaining % 60)
+        st.error("Account locked due to too many failed attempts.")
+        st.error(f"Please try again in {minutes}m {seconds}s")
+        audit_log(
+            "LOGIN_BLOCKED",
+            f"Login attempt while locked ({seconds_remaining}s remaining)",
+            success=False
+        )
+        time.sleep(1)
+        st.stop()
+        return False
 
     # Show login form
-    st.title(get_text("auth_title", st.session_state.get("language", "ru")))
+    lang = st.session_state.get("language", "ru")
+    st.title(get_text("auth_title", lang))
+
+    # Display security info
+    attempts = get_failed_attempts()
+    remaining_attempts = MAX_LOGIN_ATTEMPTS - attempts["count"]
+    if attempts["count"] > 0:
+        st.warning(f"{remaining_attempts} attempt(s) remaining before account lockout")
 
     with st.form("login_form"):
-        token_input = st.text_input(
-            get_text("auth_prompt", st.session_state.get("language", "ru")),
+        password_input = st.text_input(
+            get_text("auth_prompt", lang),
             type="password",
+            help="Enter the system password provided by your administrator"
         )
-        submit = st.form_submit_button(
-            get_text("auth_button", st.session_state.get("language", "ru"))
-        )
+        submit = st.form_submit_button(get_text("auth_button", lang))
 
         if submit:
-            if token_input == AUTH_TOKEN:
+            if not password_input:
+                st.error(get_text("auth_invalid", lang))
+                audit_log("LOGIN_FAILED", "Empty password submitted", success=False)
+                return False
+
+            # Verify password (prefer bcrypt hash, fallback to legacy token)
+            password_valid = False
+
+            if AUTH_PASSWORD_HASH:
+                # Use bcrypt hash (secure method)
+                password_valid = verify_password(password_input, AUTH_PASSWORD_HASH)
+            elif AUTH_TOKEN:
+                # Legacy plain-text comparison (DEPRECATED)
+                password_valid = (password_input == AUTH_TOKEN)
+                if password_valid:
+                    logger.warning(
+                        "SECURITY WARNING: Using deprecated plain-text AUTH_TOKEN. "
+                        "Please migrate to RAINRAG_PASSWORD_HASH using bcrypt."
+                    )
+
+            if password_valid:
+                # Successful authentication
                 st.session_state["authenticated"] = True
+                st.session_state["last_activity"] = datetime.now()
+                reset_failed_attempts()
+                audit_log("LOGIN_SUCCESS", "User authenticated successfully", success=True)
+                st.success("Authentication successful!")
+                time.sleep(0.5)
                 st.rerun()
+                return True
             else:
-                st.error(get_text("auth_invalid", st.session_state.get("language", "ru")))
+                # Failed authentication
+                record_failed_attempt()
+                attempts_left = MAX_LOGIN_ATTEMPTS - get_failed_attempts()["count"]
+                audit_log(
+                    "LOGIN_FAILED",
+                    f"Invalid password attempt ({attempts_left} attempts remaining)",
+                    success=False
+                )
+                st.error(get_text("auth_invalid", lang))
+
+                if attempts_left > 0:
+                    st.warning(f"{attempts_left} attempt(s) remaining")
+                else:
+                    st.error("Account locked! Too many failed attempts.")
+
                 return False
 
     return False
@@ -174,13 +397,28 @@ def initialize_session_state():
     if "top_k" not in st.session_state:
         st.session_state.top_k = DEFAULT_TOP_K
     if "authenticated" not in st.session_state:
-        st.session_state.authenticated = not bool(AUTH_TOKEN)
+        st.session_state.authenticated = False  # Always require authentication
+    if "last_activity" not in st.session_state:
+        st.session_state.last_activity = None
+    if "failed_attempts" not in st.session_state:
+        st.session_state.failed_attempts = {"count": 0, "lockout_until": None}
     if "date_from" not in st.session_state:
         st.session_state.date_from = None
     if "date_to" not in st.session_state:
         st.session_state.date_to = None
     if "date_input_reset_counter" not in st.session_state:
         st.session_state.date_input_reset_counter = 0
+    if "client_ip" not in st.session_state:
+        # Try to get client IP from Streamlit context (for audit logging)
+        try:
+            # Use new st.context API (Streamlit >= 1.31)
+            if hasattr(st, 'context') and hasattr(st.context, 'headers'):
+                headers = st.context.headers
+                st.session_state.client_ip = headers.get("X-Forwarded-For", headers.get("Remote-Addr", "unknown"))
+            else:
+                st.session_state.client_ip = "unknown"
+        except Exception:
+            st.session_state.client_ip = "unknown"
 
 
 @st.cache_data(show_spinner=False)
@@ -403,7 +641,7 @@ def sanitize_web_url(url: str) -> str | None:
     return safe_url
 
 
-def format_context_chunk(chunk: dict[str, Any], index: int, lang: str) -> str:
+def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
     """Format a context chunk metadata for display (without text content)."""
     filename = chunk.get("filename", "Unknown")
     score = chunk.get("score", 0.0)
@@ -590,7 +828,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     if vtt_languages:
                         # Language selector for VTT
                         if len(vtt_languages) > 1:
-                            lang_display = {"ru": "Русский 🇷🇺", "en": "English 🇬🇧"}
+                            lang_display = {"ru": "Русский ", "en": "English "}
                             selected_vtt_lang = st.radio(
                                 "Language",
                                 options=list(vtt_languages.keys()),
@@ -632,7 +870,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                 st.markdown("---")
                 for chunk_idx, chunk in enumerate(group):
                     # Display context chunk metadata
-                    st.markdown(format_context_chunk(chunk, chunk_idx + 1, lang))
+                    st.markdown(format_context_chunk(chunk, lang))
 
                     # Add "Find Related" button for each chunk
                     doc_id = chunk.get("doc_id")
@@ -694,7 +932,7 @@ def render_sidebar(lang: str):
     """Render the sidebar with controls and system information."""
     with st.sidebar:
         # Language selection
-        language_options = {"ru": "Русский 🇷🇺", "en": "English 🇬🇧"}
+        language_options = {"ru": "Русский ", "en": "English "}
         selected_lang = st.selectbox(
             get_text("language_label", lang),
             options=list(language_options.keys()),
@@ -769,9 +1007,9 @@ def render_sidebar(lang: str):
                 try:
                     health_info = asyncio.run(check_api_health())
                     if health_info:
-                        status_color = "🟢" if health_info.get("status") == "healthy" else "🟡"
-                        qdrant_status = "🟢" if health_info.get("qdrant_connected") else "🔴"
-                        model_status = "🟢" if health_info.get("model_loaded") else "🔴"
+                        status_color = "[OK]" if health_info.get("status") == "healthy" else "[WARN]"
+                        qdrant_status = "[OK]" if health_info.get("qdrant_connected") else "[ERR]"
+                        model_status = "[OK]" if health_info.get("model_loaded") else "[ERR]"
 
                         st.markdown(
                             f"**{get_text('status_label', lang)}:** {status_color} | **Qdrant:** {qdrant_status} | **Embeddings:** {model_status}"
@@ -814,6 +1052,29 @@ def render_sidebar(lang: str):
 
         st.divider()
 
+        # Session info and logout
+        if st.session_state.get("authenticated", False):
+            last_activity = st.session_state.get("last_activity")
+            if last_activity:
+                time_since_activity = datetime.now() - last_activity
+                minutes_remaining = SESSION_TIMEOUT_MINUTES - int(time_since_activity.total_seconds() / 60)
+                if minutes_remaining > 60:
+                    hours = minutes_remaining // 60
+                    mins = minutes_remaining % 60
+                    timeout_str = f"{hours}h {mins}m"
+                else:
+                    timeout_str = f"{minutes_remaining}m"
+                st.caption(f"Session expires in: {timeout_str}")
+
+            if st.button("Logout", use_container_width=True, type="secondary"):
+                audit_log("LOGOUT", "User logged out", success=True)
+                st.session_state.authenticated = False
+                st.session_state.last_activity = None
+                st.session_state.messages = []
+                st.rerun()
+
+        st.divider()
+
         # Clear history button
         if st.button(get_text("clear_button", lang), use_container_width=True):
             st.session_state.messages = []
@@ -829,6 +1090,15 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded",
     )
+
+    # Apply security headers (Streamlit doesn't provide direct header control,
+    # but these should be set at the reverse proxy level in production)
+    # Recommended nginx/caddy headers:
+    # - X-Frame-Options: DENY
+    # - X-Content-Type-Options: nosniff
+    # - X-XSS-Protection: 1; mode=block
+    # - Strict-Transport-Security: max-age=31536000; includeSubDomains
+    # - Content-Security-Policy: default-src 'self'
 
     # Custom CSS for better styling
     st.markdown(

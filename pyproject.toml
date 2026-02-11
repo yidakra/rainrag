@@ -34,6 +34,8 @@ cohere = "^5.20.0"
 mcp = {extras = ["cli"], version = "^1.22.0"}
 # BM25 for hybrid search
 rank-bm25 = "^0.2.2"
+# Security - password hashing
+bcrypt = "^4.0.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.3"
