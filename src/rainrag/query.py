@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any, cast
 
 import cohere
+import torch
 from anthropic import Anthropic
 from google import genai  # type: ignore[import]
 from google.genai import types  # type: ignore[import]
@@ -14,7 +15,6 @@ from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer  # type: ignore[import]
-import torch
 
 from rainrag.config import Config
 

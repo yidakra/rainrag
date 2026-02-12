@@ -650,14 +650,14 @@ def initialize_session_state():
                 "30 тысяч погибли на протестах в Иране",
                 "«Совет мира» с Путиным и Лукашенко",
                 "ДТП в Грозном: что с Адамом Кадыровым?",
-                "«Госуслуги» зовут в университет спецназа"
+                "«Госуслуги» зовут в университет спецназа",
             ],
             "en": [
                 "30 thousand killed in Iran protests",
                 "Peace Council with Putin and Lukashenko",
                 "Car accident in Grozny: what happened to Adam Kadyrov?",
-                "Gosuslugi invites to special forces university"
-            ]
+                "Gosuslugi invites to special forces university",
+            ],
         }
     # Pending query flag for example buttons
     if "pending_query" not in st.session_state:
@@ -928,7 +928,7 @@ def strip_html_tags(text: str) -> str:
 
 def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
     """Format a context chunk metadata for display (without text content)."""
-    filename = chunk.get("filename", "Unknown")
+    chunk.get("filename", "Unknown")
     score = chunk.get("score", 0.0)
     chunk_lang = chunk.get("language", "unknown")
     chunk_date = chunk.get("date")
@@ -947,7 +947,7 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
 
     # Web metadata fields
     web_title = chunk.get("web_title")
-    web_date = chunk.get("web_date")
+    chunk.get("web_date")
     web_description = chunk.get("web_description")
     web_url = chunk.get("web_url")
 
@@ -962,12 +962,11 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
         timecode_str = f"{start_time}-{end_time}"
 
     # Build chunk info string with time range
-    chunk_info = ""
     if is_chunk and chunk_index is not None and total_chunks is not None:
         if timecode_str:
-            chunk_info = f" **[Chunk {chunk_index + 1}/{total_chunks}: {timecode_str}]**"
+            f" **[Chunk {chunk_index + 1}/{total_chunks}: {timecode_str}]**"
         else:
-            chunk_info = f" **[Chunk {chunk_index + 1}/{total_chunks}]**"
+            f" **[Chunk {chunk_index + 1}/{total_chunks}]**"
 
     # Base metadata
     meta_parts = [f"**Score:** {score:.3f}"]
@@ -1324,7 +1323,7 @@ def render_sidebar(lang: str):
                     if st.button(
                         f"{query[:40]}..." if len(query) > 40 else query,
                         key=f"history_{idx}",
-                        use_container_width=True
+                        use_container_width=True,
                     ):
                         st.session_state.messages.append({"role": "user", "content": query})
                         st.rerun()
@@ -1354,7 +1353,7 @@ def render_sidebar(lang: str):
                         data=markdown_content,
                         file_name=f"chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
                         mime="text/markdown",
-                        use_container_width=True
+                        use_container_width=True,
                     )
                 with col2:
                     st.download_button(
@@ -1362,7 +1361,7 @@ def render_sidebar(lang: str):
                         data=text_content,
                         file_name=f"chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
                         mime="text/plain",
-                        use_container_width=True
+                        use_container_width=True,
                     )
 
         # Clear history button
@@ -1408,16 +1407,18 @@ def render_sidebar(lang: str):
                     health_info = asyncio.run(check_api_health())
                     if health_info:
                         # Get configuration
-                        llm_provider = health_info.get('llm_provider', 'Unknown')
-                        llm_model = health_info.get('llm_model', 'Unknown')
-                        embedding_provider = health_info.get('embedding_provider', 'Unknown')
-                        embedding_model = health_info.get('embedding_model', 'Unknown')
+                        llm_provider = health_info.get("llm_provider", "Unknown")
+                        llm_model = health_info.get("llm_model", "Unknown")
+                        embedding_provider = health_info.get("embedding_provider", "Unknown")
+                        embedding_model = health_info.get("embedding_model", "Unknown")
                         collection = health_info.get("qdrant_collection", "Unknown")
 
                         # Search features
                         features = []
                         if health_info.get("hybrid_search_enabled", False):
-                            features.append(f"Hybrid ({health_info.get('fusion_method', 'rrf').upper()})")
+                            features.append(
+                                f"Hybrid ({health_info.get('fusion_method', 'rrf').upper()})"
+                            )
                         if health_info.get("reranker_enabled", False):
                             features.append("Reranker")
                         if health_info.get("temporal_enabled", False):
@@ -1514,16 +1515,14 @@ def main():
         st.markdown(f"### {get_text('example_queries', lang)}")
         st.markdown("")
 
-        examples = st.session_state.example_queries.get(lang, st.session_state.example_queries["ru"])
+        examples = st.session_state.example_queries.get(
+            lang, st.session_state.example_queries["ru"]
+        )
         cols = st.columns(2)
 
         for idx, example in enumerate(examples):
             with cols[idx % 2]:
-                if st.button(
-                    example,
-                    key=f"example_{idx}",
-                    use_container_width=True
-                ):
+                if st.button(example, key=f"example_{idx}", use_container_width=True):
                     # Set the pending query flag
                     st.session_state.pending_query = example
                     st.rerun()
@@ -1584,7 +1583,7 @@ def main():
                 st.session_state.messages.append(assistant_message)
 
                 # Show completion and clear status
-                clip_count = len(response.get('context', []))
+                clip_count = len(response.get("context", []))
                 status_container.success(get_text("found_clips", lang).format(count=clip_count))
                 time.sleep(0.5)
                 status_container.empty()
