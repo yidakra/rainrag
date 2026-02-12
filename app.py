@@ -1015,18 +1015,22 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
     if video_meta:
         lines.append(" • ".join(video_meta))
 
-    # 4. Description (if available)
+    # 4. Additional metadata (score, boost, fusion, language)
+    if meta_parts:
+        lines.append("\n".join(meta_parts))
+
+    # 5. Description (if available)
     if web_description:
         clean_description = strip_html_tags(web_description)
         lines.append(f"\n{clean_description}")
 
-    # 5. URL (if available)
+    # 6. URL (if available)
     if web_url:
         sanitized_url = sanitize_web_url(web_url)
         if sanitized_url:
             lines.append(f"\n🔗 <{sanitized_url}>")
 
-    # 6. Technical details (collapsed/minimized)
+    # 7. Technical details (collapsed/minimized)
     tech_details = []
     tech_details.append(f"Score: {score:.3f}")
     if rerank_score is not None and original_score is not None:
@@ -1036,7 +1040,9 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
     if fusion_method:
         tech_details.append(f"Fusion: {fusion_method.upper()}")
     tech_details.append(f"Lang: {chunk_lang}")
-    tech_details.append(f"File: {filename}")
+    # Sanitize filename to prevent breaking Markdown inline code formatting
+    sanitized_filename = filename.replace("`", "'").replace("|", "│")
+    tech_details.append(f"File: {sanitized_filename}")
 
     lines.append(f"\n`{' | '.join(tech_details)}`")
 
