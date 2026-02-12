@@ -928,7 +928,7 @@ def strip_html_tags(text: str) -> str:
 
 def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
     """Format a context chunk metadata for display (without text content)."""
-    chunk.get("filename", "Unknown")
+    filename = chunk.get("filename", "Unknown")
     score = chunk.get("score", 0.0)
     chunk_lang = chunk.get("language", "unknown")
     chunk_date = chunk.get("date")
@@ -947,7 +947,6 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
 
     # Web metadata fields
     web_title = chunk.get("web_title")
-    chunk.get("web_date")
     web_description = chunk.get("web_description")
     web_url = chunk.get("web_url")
 
@@ -962,11 +961,12 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
         timecode_str = f"{start_time}-{end_time}"
 
     # Build chunk info string with time range
+    chunk_info = ""
     if is_chunk and chunk_index is not None and total_chunks is not None:
         if timecode_str:
-            f" **[Chunk {chunk_index + 1}/{total_chunks}: {timecode_str}]**"
+            chunk_info = f" **[Chunk {chunk_index + 1}/{total_chunks}: {timecode_str}]**"
         else:
-            f" **[Chunk {chunk_index + 1}/{total_chunks}]**"
+            chunk_info = f" **[Chunk {chunk_index + 1}/{total_chunks}]**"
 
     # Base metadata
     meta_parts = [f"**Score:** {score:.3f}"]
@@ -999,7 +999,11 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
     if web_title:
         lines.append(f"### {web_title}")
 
-    # 2. Video metadata (date, duration, timecode)
+    # 2. Chunk info (if this is a chunk)
+    if chunk_info:
+        lines.append(chunk_info)
+
+    # 3. Video metadata (date, duration, timecode)
     video_meta = []
     if chunk_date:
         video_meta.append(f"📅 {chunk_date}")
@@ -1011,18 +1015,18 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
     if video_meta:
         lines.append(" • ".join(video_meta))
 
-    # 3. Description (if available)
+    # 4. Description (if available)
     if web_description:
         clean_description = strip_html_tags(web_description)
         lines.append(f"\n{clean_description}")
 
-    # 4. URL (if available)
+    # 5. URL (if available)
     if web_url:
         sanitized_url = sanitize_web_url(web_url)
         if sanitized_url:
             lines.append(f"\n🔗 <{sanitized_url}>")
 
-    # 5. Technical details (collapsed/minimized)
+    # 6. Technical details (collapsed/minimized)
     tech_details = []
     tech_details.append(f"Score: {score:.3f}")
     if rerank_score is not None and original_score is not None:
@@ -1032,6 +1036,7 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
     if fusion_method:
         tech_details.append(f"Fusion: {fusion_method.upper()}")
     tech_details.append(f"Lang: {chunk_lang}")
+    tech_details.append(f"File: {filename}")
 
     lines.append(f"\n`{' | '.join(tech_details)}`")
 
