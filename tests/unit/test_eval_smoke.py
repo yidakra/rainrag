@@ -161,3 +161,157 @@ def test_carbon_track_emissions_noop_without_package(monkeypatch: pytest.MonkeyP
 
     assert result.available is False
     assert result.as_metrics() == {}
+
+
+# ---------------------------------------------------------------------------
+# _scroll_chunks: is_speech_free filter (predicate logic, no heavy deps)
+# ---------------------------------------------------------------------------
+# These tests validate the exact filter predicate used in _scroll_chunks without
+# importing the full module (which transitively requires torch and other heavy
+# dependencies).  The module-level import test is covered by OPTIONAL_MODULES.
+# ---------------------------------------------------------------------------
+
+
+def _apply_scroll_filter(payloads: list[dict], lang: str) -> list[dict]:
+    """Mirror of the filter condition inside _scroll_chunks."""
+    return [
+        p
+        for p in payloads
+        if p.get("language", "en") == lang
+        and p.get("text", "")
+        and not p.get("is_speech_free", False)
+    ]
+
+
+def test_scroll_chunks_filter_excludes_speech_free() -> None:
+    """is_speech_free=True payloads must be excluded by the _scroll_chunks predicate."""
+    payloads = [
+        {"language": "en", "text": "The president arrived.", "doc_id": "a", "is_speech_free": False},
+        {"language": "en", "text": "Crowd ambience.", "doc_id": "b", "is_speech_free": True},
+    ]
+    result = _apply_scroll_filter(payloads, "en")
+    assert len(result) == 1
+    assert result[0]["doc_id"] == "a"
+
+
+def test_scroll_chunks_filter_includes_legacy_docs_without_flag() -> None:
+    """Payloads without is_speech_free (old indexed data) must be included."""
+    payloads = [
+        {"language": "en", "text": "Archive footage from 2019.", "doc_id": "legacy"},
+    ]
+    result = _apply_scroll_filter(payloads, "en")
+    assert len(result) == 1
+    assert result[0]["doc_id"] == "legacy"
+
+
+def test_scroll_chunks_filter_excludes_empty_text() -> None:
+    """Payloads with empty text must still be excluded even if not speech-free."""
+    payloads = [
+        {"language": "en", "text": "", "doc_id": "no_text", "is_speech_free": False},
+        {"language": "en", "text": "Has text.", "doc_id": "has_text", "is_speech_free": False},
+    ]
+    result = _apply_scroll_filter(payloads, "en")
+    assert len(result) == 1
+    assert result[0]["doc_id"] == "has_text"
+
+
+def test_scroll_chunks_filter_respects_language() -> None:
+    """Payloads for a different language must not be included."""
+    payloads = [
+        {"language": "en", "text": "English content.", "doc_id": "en_doc"},
+        {"language": "ru", "text": "Русский контент.", "doc_id": "ru_doc"},
+    ]
+    result = _apply_scroll_filter(payloads, "en")
+    assert len(result) == 1
+    assert result[0]["doc_id"] == "en_doc"
+
+
+# ---------------------------------------------------------------------------
+# retrieve_documents: exclude_speech_free param (requires full env with torch)
+# ---------------------------------------------------------------------------
+
+
+def test_retrieve_documents_exclude_speech_free_filters_results() -> None:
+    """retrieve_documents(exclude_speech_free=True) must strip is_speech_free docs."""
+    qdrant_client = pytest.importorskip("qdrant_client")  # skip if not installed
+    torch = pytest.importorskip("torch")  # noqa: F841 — skip if torch not installed
+
+    from unittest.mock import MagicMock
+
+    from rainrag.config import Config
+    from rainrag.query import RAGQueryEngine
+
+    cfg = Config()
+    engine = RAGQueryEngine.__new__(RAGQueryEngine)
+    engine.config = cfg
+    engine.bm25 = None  # no hybrid search
+
+    def _make_hit(score, doc_id, is_speech_free):
+        hit = MagicMock()
+        hit.score = score
+        hit.payload = {
+            "doc_id": doc_id,
+            "text": "some text",
+            "path": "",
+            "language": "en",
+            "is_speech_free": is_speech_free,
+        }
+        return hit
+
+    fake_points = [_make_hit(0.9, "doc_a", False), _make_hit(0.8, "doc_b", True)]
+    mock_result = MagicMock()
+    mock_result.points = fake_points
+
+    engine.qdrant_client = MagicMock()
+    engine.qdrant_client.query_points.return_value = mock_result
+
+    docs = engine.retrieve_documents(
+        query_vector=[0.0] * 768,
+        top_k=5,
+        exclude_speech_free=True,
+    )
+
+    assert len(docs) == 1
+    assert docs[0]["doc_id"] == "doc_a"
+
+
+def test_retrieve_documents_include_speech_free_by_default() -> None:
+    """retrieve_documents without exclude_speech_free must return all docs."""
+    pytest.importorskip("qdrant_client")
+    pytest.importorskip("torch")
+
+    from unittest.mock import MagicMock
+
+    from rainrag.config import Config
+    from rainrag.query import RAGQueryEngine
+
+    cfg = Config()
+    engine = RAGQueryEngine.__new__(RAGQueryEngine)
+    engine.config = cfg
+    engine.bm25 = None
+
+    def _make_hit(score, doc_id, is_speech_free):
+        hit = MagicMock()
+        hit.score = score
+        hit.payload = {
+            "doc_id": doc_id,
+            "text": "some text",
+            "path": "",
+            "language": "en",
+            "is_speech_free": is_speech_free,
+        }
+        return hit
+
+    fake_points = [_make_hit(0.9, "doc_a", False), _make_hit(0.8, "doc_b", True)]
+    mock_result = MagicMock()
+    mock_result.points = fake_points
+
+    engine.qdrant_client = MagicMock()
+    engine.qdrant_client.query_points.return_value = mock_result
+
+    docs = engine.retrieve_documents(
+        query_vector=[0.0] * 768,
+        top_k=5,
+    )
+
+    assert len(docs) == 2

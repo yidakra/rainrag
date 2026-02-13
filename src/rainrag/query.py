@@ -314,6 +314,7 @@ class RAGQueryEngine:
                         "web_date_ts": payload.get("web_date_ts"),
                         "web_description": payload.get("web_description"),
                         "web_url": payload.get("web_url"),
+                        "is_speech_free": payload.get("is_speech_free", False),
                     }
                     self.bm25_corpus.append(doc)
 
@@ -343,13 +344,16 @@ class RAGQueryEngine:
         else:
             logger.warning("No documents found for BM25 indexing")
 
-    def _search_bm25(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    def _search_bm25(
+        self, query: str, top_k: int, exclude_speech_free: bool = False
+    ) -> list[dict[str, Any]]:
         """
         Search using BM25 keyword matching.
 
         Args:
             query: Search query
             top_k: Number of documents to retrieve
+            exclude_speech_free: When True, speech-free documents are skipped.
 
         Returns:
             List of documents with BM25 scores
@@ -363,16 +367,21 @@ class RAGQueryEngine:
         # Get BM25 scores for all documents
         scores = self.bm25.get_scores(query_tokens)
 
-        # Get top-k indices
-        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+        # Sort all indices by descending score; collect top_k non-excluded docs
+        sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
 
-        # Build result list
         results = []
-        for rank, idx in enumerate(top_indices, 1):
+        rank = 1
+        for idx in sorted_indices:
+            if exclude_speech_free and self.bm25_corpus[idx].get("is_speech_free", False):
+                continue
             doc = self.bm25_corpus[idx].copy()
             doc["rank"] = rank
             doc["score"] = float(scores[idx])
             results.append(doc)
+            rank += 1
+            if len(results) >= top_k:
+                break
 
         return results
 
@@ -891,6 +900,7 @@ class RAGQueryEngine:
         date_from: str | None = None,
         date_to: str | None = None,
         query_text: str | None = None,
+        exclude_speech_free: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Retrieve the most relevant documents from Qdrant.
@@ -903,6 +913,8 @@ class RAGQueryEngine:
             date_from: Filter results from this date (YYYY-MM-DD)
             date_to: Filter results up to this date (YYYY-MM-DD)
             query_text: Original query text (needed for BM25 in hybrid search)
+            exclude_speech_free: When True, speech-free (no-transcript) documents
+                are removed from results before ranking and truncation.
 
         Returns:
             List of retrieved documents with metadata
@@ -984,7 +996,7 @@ class RAGQueryEngine:
             # 2. Hybrid search: combine with BM25 if enabled
             if use_hybrid and query_text:
                 logger.info("Performing BM25 search...")
-                bm25_documents = self._search_bm25(query_text, effective_limit)
+                bm25_documents = self._search_bm25(query_text, effective_limit, exclude_speech_free=exclude_speech_free)
                 logger.info(f"Retrieved {len(bm25_documents)} BM25 results")
 
                 # Fuse scores
@@ -1003,6 +1015,14 @@ class RAGQueryEngine:
                 logger.info(f"Hybrid search produced {len(documents)} fused results")
             else:
                 documents = vector_documents
+
+            # Remove speech-free docs if caller does not want them
+            if exclude_speech_free:
+                before = len(documents)
+                documents = [d for d in documents if not d.get("is_speech_free", False)]
+                logger.info(
+                    f"Excluded {before - len(documents)} speech-free documents (exclude_speech_free=True)"
+                )
 
             # Apply date filtering client-side if requested
             if date_from or date_to:
@@ -1390,6 +1410,7 @@ Question: {query}"""
         language: str = "en",
         date_from: str | None = None,
         date_to: str | None = None,
+        exclude_speech_free: bool = False,
     ) -> dict[str, Any]:
         """
         Execute the complete query pipeline.
@@ -1400,6 +1421,8 @@ Question: {query}"""
             language: Language code for response (e.g., "en", "ru")
             date_from: Filter results from this date (YYYY-MM-DD)
             date_to: Filter results up to this date (YYYY-MM-DD)
+            exclude_speech_free: When True, videos with no transcript are excluded
+                from retrieval results entirely.
 
         Returns:
             Dictionary containing the answer and metadata
@@ -1475,6 +1498,7 @@ Question: {query}"""
                     variant_vector, retrieval_k,
                     date_from=date_from, date_to=date_to,
                     query_text=variant,
+                    exclude_speech_free=exclude_speech_free,
                 )
                 for doc in variant_docs:
                     doc_id = doc["doc_id"]
@@ -1490,7 +1514,8 @@ Question: {query}"""
             )
         else:
             documents = self.retrieve_documents(
-                primary_vector, retrieval_k, date_from=date_from, date_to=date_to, query_text=question
+                primary_vector, retrieval_k, date_from=date_from, date_to=date_to,
+                query_text=question, exclude_speech_free=exclude_speech_free,
             )
 
         # Step 4: Apply time-decay boosting if temporal context detected
