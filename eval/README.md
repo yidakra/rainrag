@@ -145,14 +145,86 @@ Stages: `embed`, `retrieve`, `rerank`, `generate`, `total`.
 
 ---
 
+## BEIR integration (retrieval sanity check)
+
+Use BEIR to verify the retrieval pipeline against a public benchmark before
+running expensive experiments on your proprietary archive.
+
+### Recommended datasets
+
+| Dataset | Queries | Corpus | Domain |
+|---|---|---|---|
+| `scifact` | 300 | 5 183 | Scientific fact checking |
+| `nfcorpus` | 323 | 3 633 | Medical IR |
+| `arguana` | 1 406 | 8 674 | Argument retrieval |
+| `fiqa` | 648 | 57 638 | Financial QA |
+
+### Quick sanity check (no Qdrant needed)
+
+```bash
+# In-memory BM25 baseline — just validates corpus + qrels loaded correctly
+python -m eval.run_eval beir --dataset scifact --max-queries 50 --no-ablation
+```
+
+### Full workflow
+
+```bash
+# 1. Load corpus, index into Qdrant, generate eval JSONL
+python -m eval.run_eval beir \
+    --dataset scifact \
+    --max-queries 100 \
+    --output eval/datasets/beir_scifact.jsonl
+
+# 2. Run ablation on the BEIR eval set (reuse existing index)
+python -m eval.run_eval beir \
+    --dataset scifact \
+    --skip-index \
+    --ablation \
+    --conditions 01,02,07,08
+```
+
+### Python API
+
+```python
+from eval.datasets.beir_adapter import BEIRAdapter
+
+adapter = BEIRAdapter("scifact")
+adapter.load(max_corpus_docs=5000, max_queries=100)
+
+# Sanity check with pure in-memory BM25 (no Qdrant required)
+baseline = adapter.eval_bm25_baseline(top_k=10)
+# → {"recall@10": 0.82, "ndcg@10": 0.68, "mrr": 0.71, ...}
+
+# Full eval: index into Qdrant + convert to eval JSONL
+adapter.index_corpus(engine)
+adapter.to_eval_jsonl("eval/datasets/beir_scifact.jsonl")
+```
+
+### BEIR vs. synthetic datasets
+
+| | Synthetic (`create_eval_set`) | BEIR |
+|---|---|---|
+| Retrieval metrics | ✓ (1 relevant doc / query) | ✓ (multi-doc, graded) |
+| Answer quality (RAGAS) | ✓ | ✗ (no reference answers) |
+| Domain fit | ✓ your archive | ✗ general |
+| No LLM needed to create | ✗ | ✓ |
+| Reproducible | Partially | ✓ |
+
+BEIR is a **one-time smoke test** to verify the pipeline is wired correctly.
+The synthetic dataset remains the primary eval set for domain-specific tuning.
+
+---
+
 ## File structure
 
 ```
 eval/
 ├── datasets/
 │   ├── create_eval_set.py       # Synthetic dataset generation
+│   ├── beir_adapter.py          # BEIR public benchmark integration
 │   ├── eval_set_en.jsonl        # English eval set (generated)
-│   └── eval_set_ru.jsonl        # Russian eval set (generated)
+│   ├── eval_set_ru.jsonl        # Russian eval set (generated)
+│   └── beir_scifact.jsonl       # BEIR scifact eval set (example)
 ├── metrics/
 │   ├── retrieval.py             # Recall@k, MRR, NDCG, MAP
 │   └── answer_quality.py        # RAGAS wrapper + ROUGE-L

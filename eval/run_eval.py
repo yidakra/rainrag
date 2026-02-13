@@ -210,6 +210,114 @@ def latency(
     typer.echo(f"\nDone. Open MLflow UI with: mlflow ui --backend-store-uri {mlflow_uri}")
 
 
+# ── beir ─────────────────────────────────────────────────────────────────────
+
+
+@app.command("beir")
+def beir(
+    config: _CONFIG = "config.yaml",
+    dataset_name: Annotated[str, typer.Option("--dataset", "-d", help="BEIR dataset name, e.g. scifact, nfcorpus, fiqa")] = "scifact",
+    qrels_split: Annotated[str, typer.Option("--split", help="QRels split to evaluate on")] = "test",
+    max_corpus_docs: Annotated[Optional[int], typer.Option("--max-corpus", help="Cap corpus size (None = full)")] = None,
+    max_queries: Annotated[Optional[int], typer.Option("--max-queries", help="Cap number of queries")] = None,
+    output: _OUTPUT = "eval/datasets/beir_{dataset}.jsonl",
+    bm25_baseline: Annotated[bool, typer.Option("--bm25-baseline/--no-bm25-baseline", help="Run in-memory BM25 baseline before indexing")] = True,
+    skip_index: Annotated[bool, typer.Option("--skip-index", help="Skip Qdrant indexing (useful if already indexed)")] = False,
+    batch_size: Annotated[int, typer.Option("--batch-size", help="Embedding batch size for local models")] = 64,
+    mlflow_uri: _MLFLOW = "./mlruns",
+    run_ablation: Annotated[bool, typer.Option("--ablation/--no-ablation", help="Run ablation experiment on the generated JSONL")] = False,
+    ablation_conditions: Annotated[Optional[str], typer.Option("--conditions", help="Ablation condition IDs to run, e.g. 01,02,08")] = None,
+) -> None:
+    """Load a BEIR dataset, index it into Qdrant, and generate an eval JSONL.
+
+    Optionally run the BM25 baseline and/or the ablation experiment on the
+    generated dataset.
+
+    Recommended quick sanity check::
+
+        python -m eval.run_eval beir --dataset scifact --max-corpus 5000 --max-queries 50
+    """
+    from eval.datasets.beir_adapter import BEIRAdapter
+    from eval.experiments.ablation import AblationExperiment
+    from eval.experiments.base import apply_overrides
+    from rainrag.config import load_config
+    from rainrag.query import RAGQueryEngine
+
+    # Resolve output path (substitute {dataset} placeholder)
+    resolved_output = output.replace("{dataset}", dataset_name)
+
+    typer.echo(f"Loading BEIR dataset: {dataset_name} (split={qrels_split}) ...")
+    adapter = BEIRAdapter(dataset_name, qrels_split=qrels_split)
+    adapter.load(max_corpus_docs=max_corpus_docs, max_queries=max_queries)
+    typer.echo(adapter.summary())
+
+    # Optional: quick in-memory BM25 baseline
+    if bm25_baseline:
+        typer.echo("\nRunning in-memory BM25 baseline ...")
+        try:
+            baseline = adapter.eval_bm25_baseline(top_k=10)
+            typer.echo(
+                f"  BM25 baseline: recall@10={baseline.get('recall@10', float('nan')):.3f} "
+                f"ndcg@10={baseline.get('ndcg@10', float('nan')):.3f} "
+                f"mrr={baseline.get('mrr', float('nan')):.3f}"
+            )
+        except Exception as exc:
+            typer.echo(f"  [warn] BM25 baseline failed: {exc}")
+
+    # Load config + engine for indexing
+    base_config = load_config(config)
+
+    if not skip_index:
+        typer.echo(f"\nIndexing corpus into Qdrant collection '{adapter.collection_name}' ...")
+        engine = RAGQueryEngine(base_config)
+        engine.initialize()
+        adapter.index_corpus(engine, batch_size=batch_size, recreate=True)
+    else:
+        typer.echo(f"\nSkipping index (assuming '{adapter.collection_name}' already exists).")
+        engine = RAGQueryEngine(base_config)
+        engine.initialize()
+
+    # Generate eval JSONL
+    typer.echo(f"\nGenerating eval JSONL → {resolved_output} ...")
+    records = adapter.to_eval_jsonl(resolved_output)
+    typer.echo(f"  Written {len(records)} records.")
+
+    # Optional: run ablation against the BEIR eval set
+    if run_ablation and records:
+        typer.echo("\nRunning ablation experiment on BEIR eval set ...")
+        cids = [c.strip() for c in ablation_conditions.split(",")] if ablation_conditions else None
+
+        # Override collection name to the BEIR collection
+        overridden_config = apply_overrides(
+            base_config, {"qdrant.collection_name": adapter.collection_name}
+        )
+        _ = overridden_config  # Used inside AblationExperiment via config_path override
+
+        # Write a temp config with the collection name override so AblationExperiment can load it
+        import tempfile, yaml  # type: ignore[import]
+        cfg_dict = base_config.model_dump()
+        cfg_dict["qdrant"]["collection_name"] = adapter.collection_name
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+        ) as tmp:
+            yaml.dump(cfg_dict, tmp, allow_unicode=True)
+            tmp_config_path = tmp.name
+
+        exp = AblationExperiment(
+            config_path=tmp_config_path,
+            dataset_path=resolved_output,
+            mlflow_uri=mlflow_uri,
+            top_ks=(10,),
+            condition_ids=cids,
+        )
+        results = exp.run()
+        csv_path = resolved_output.replace(".jsonl", "_ablation.csv")
+        exp.results_to_csv(results, csv_path)
+        typer.echo(f"Ablation results written to {csv_path}")
+
+    typer.echo(f"\nDone. Open MLflow UI with: mlflow ui --backend-store-uri {mlflow_uri}")
+
+
 # ── ui ────────────────────────────────────────────────────────────────────────
 
 
