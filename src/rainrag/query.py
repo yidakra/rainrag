@@ -1447,10 +1447,12 @@ Question: {query}"""
         assert isinstance(retrieval_k, int)
 
         if two_stage_enabled and len(query_variants) > 1:
-            # Retrieve for each variant and merge by best score (dedup on doc_id)
+            # Retrieve for each variant and merge by best score (dedup on doc_id).
+            # Use index-based check so the primary_vector (possibly HyDE-blended) is reused
+            # for the original query even if a rewritten variant happens to be identical text.
             merged: dict[str, dict[str, Any]] = {}
-            for variant in query_variants:
-                variant_vector = self.embed_query(variant) if variant != question else primary_vector
+            for i, variant in enumerate(query_variants):
+                variant_vector = primary_vector if i == 0 else self.embed_query(variant)
                 variant_docs = self.retrieve_documents(
                     variant_vector, retrieval_k,
                     date_from=date_from, date_to=date_to,

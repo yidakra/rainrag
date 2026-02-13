@@ -19,6 +19,7 @@ from rainrag.config import (
     PathsConfig,
     ProcessingConfig,
     QdrantConfig,
+    TwoStageConfig,
     load_config,
 )
 
@@ -221,6 +222,55 @@ class TestGeminiConfig:
         assert config.max_tokens == 1024
         assert config.temperature == 0.7
         assert config.top_k == 10
+
+
+class TestTwoStageConfig:
+    """Tests for TwoStageConfig model."""
+
+    def test_two_stage_config_defaults(self) -> None:
+        """Test default two-stage configuration."""
+        config = TwoStageConfig()
+
+        assert config.enabled is False
+        assert config.query_rewrite_enabled is True
+        assert config.query_rewrite_variants == 2
+        assert config.hyde_enabled is False
+        assert config.hyde_alpha == 0.5
+
+    def test_two_stage_config_custom(self) -> None:
+        """Test custom two-stage configuration."""
+        config = TwoStageConfig(
+            enabled=True,
+            query_rewrite_enabled=True,
+            query_rewrite_variants=3,
+            hyde_enabled=True,
+            hyde_alpha=0.7,
+        )
+
+        assert config.enabled is True
+        assert config.query_rewrite_variants == 3
+        assert config.hyde_enabled is True
+        assert config.hyde_alpha == 0.7
+
+    def test_two_stage_config_alpha_bounds(self) -> None:
+        """Test that hyde_alpha is clamped to [0, 1]."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            TwoStageConfig(hyde_alpha=1.5)
+        with pytest.raises(ValidationError):
+            TwoStageConfig(hyde_alpha=-0.1)
+
+    def test_two_stage_config_variants_bounds(self) -> None:
+        """Test that query_rewrite_variants is clamped to [1, 5]."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            TwoStageConfig(query_rewrite_variants=0)
+        with pytest.raises(ValidationError):
+            TwoStageConfig(query_rewrite_variants=6)
 
 
 class TestMCPConfig:
