@@ -258,6 +258,39 @@ class RerankerConfig(BaseModel):
     )
 
 
+class TwoStageConfig(BaseModel):
+    """Configuration for two-stage retrieval (Zhai & Lafferty, SIGIR 2002)."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable two-stage retrieval pipeline",
+    )
+
+    # Stage 2a: LLM query rewriting
+    query_rewrite_enabled: bool = Field(
+        default=True,
+        description="Rewrite query into transcript-register variants before retrieval",
+    )
+    query_rewrite_variants: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description="Number of rewritten variants to generate (original is always included)",
+    )
+
+    # Stage 2b: HyDE (Hypothetical Document Embedding)
+    hyde_enabled: bool = Field(
+        default=False,
+        description="Generate a hypothetical transcript passage and blend its embedding with the query embedding",
+    )
+    hyde_alpha: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Interpolation weight for HyDE embedding (0=raw query only, 1=HyDE only)",
+    )
+
+
 class WebMetadataConfig(BaseModel):
     """Configuration for web metadata integration."""
 
@@ -307,6 +340,7 @@ class Config(BaseModel):
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     hybrid_search: HybridSearchConfig = Field(default_factory=HybridSearchConfig)
+    two_stage: TwoStageConfig = Field(default_factory=TwoStageConfig)
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)

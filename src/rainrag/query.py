@@ -709,6 +709,95 @@ class RAGQueryEngine:
             logger.error(f"Error finding related chunks: {e}")
             return []
 
+    def _rewrite_query_for_retrieval(self, query: str, language: str = "en") -> list[str]:
+        """
+        Stage 2a: Rewrite the user query into transcript-register variants.
+
+        Broadcast transcripts use informal spoken language; user queries tend to be
+        formal or terse.  This method uses the already-initialised LLM to generate
+        paraphrases that close that register gap, improving both vector and BM25 recall.
+
+        Args:
+            query: Original user query
+            language: Language code ("en" or "ru") for prompt language
+
+        Returns:
+            List starting with the original query followed by rewritten variants.
+        """
+        n = self.config.two_stage.query_rewrite_variants
+
+        if language == "ru":
+            prompt = (
+                f"Перепиши следующий поисковый запрос {n} разными способами, "
+                "чтобы он лучше совпадал с разговорной речью из видеотранскриптов новостей. "
+                "Используй простые, разговорные формулировки, как в реальных репортажах. "
+                f"Верни ровно {n} варианта — каждый на отдельной строке, без нумерации и пояснений.\n\n"
+                f"Запрос: {query}"
+            )
+        else:
+            prompt = (
+                f"Rewrite the following search query in {n} different ways "
+                "so that it better matches spoken language found in broadcast news transcripts. "
+                "Use informal, conversational phrasing similar to how reporters speak on air. "
+                f"Return exactly {n} variants — one per line, no numbering or explanation.\n\n"
+                f"Query: {query}"
+            )
+
+        logger.info(f"[Two-Stage] Rewriting query into {n} transcript-register variants...")
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            raw = self.generate_answer(messages)
+            variants = [line.strip() for line in raw.splitlines() if line.strip()][:n]
+            logger.debug(f"[Two-Stage] Query variants: {variants}")
+        except Exception as e:
+            logger.warning(f"[Two-Stage] Query rewrite failed, using original only: {e}")
+            variants = []
+
+        return [query] + variants
+
+    def _generate_hyde_embedding(self, query: str, language: str = "en") -> list[float]:
+        """
+        Stage 2b: Hypothetical Document Embedding (HyDE).
+
+        Generates a hypothetical broadcast transcript excerpt that would answer the
+        query, then embeds it.  The caller blends this with the raw query embedding
+        using hyde_alpha as the interpolation weight, analogous to Zhai & Lafferty's
+        Stage 2 query-model interpolation.
+
+        Args:
+            query: Original user query
+            language: Language code ("en" or "ru")
+
+        Returns:
+            Embedding vector for the hypothetical document.
+        """
+        if language == "ru":
+            prompt = (
+                "Напиши короткий отрывок (3–5 предложений) из репортажа или "
+                "новостного видеотранскрипта, который напрямую отвечает на следующий вопрос. "
+                "Используй разговорный стиль, характерный для телевизионных новостей. "
+                "Возвращай только текст отрывка, без заголовков и пояснений.\n\n"
+                f"Вопрос: {query}"
+            )
+        else:
+            prompt = (
+                "Write a short passage (3–5 sentences) from a broadcast news video transcript "
+                "that directly answers the following question. "
+                "Use informal spoken language typical of on-air reporting. "
+                "Return only the passage text, no headings or explanation.\n\n"
+                f"Question: {query}"
+            )
+
+        logger.info("[Two-Stage] Generating HyDE hypothetical document...")
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            hypothetical_doc = self.generate_answer(messages)
+            logger.debug(f"[Two-Stage] HyDE passage: {hypothetical_doc[:120]}...")
+            return self.embed_query(hypothetical_doc)
+        except Exception as e:
+            logger.warning(f"[Two-Stage] HyDE generation failed, falling back to query embedding: {e}")
+            return self.embed_query(query)
+
     def embed_query(self, query: str) -> list[float]:
         """
         Embed the query text using configured provider.
@@ -1330,32 +1419,74 @@ Question: {query}"""
                     f"Detected temporal query ('{temporal_context['time_sensitivity']}'), applying date filter: {date_from} to {date_to}"
                 )
 
-        # Step 1: Embed the query
-        query_vector = self.embed_query(question)
+        # Step 1: Build query variants (Stage 2a: LLM query rewriting)
+        two_stage_enabled = self.config.two_stage.enabled
+        if two_stage_enabled and self.config.two_stage.query_rewrite_enabled:
+            query_variants = self._rewrite_query_for_retrieval(question, language)
+        else:
+            query_variants = [question]
 
-        # Step 2: Retrieve relevant documents with optional date filter
-        # If reranking is enabled, retrieve more candidates
+        # Step 2: Embed primary query, then optionally blend with HyDE (Stage 2b)
+        primary_vector = self.embed_query(question)
+
+        if two_stage_enabled and self.config.two_stage.hyde_enabled:
+            import numpy as np
+
+            hyde_vector = self._generate_hyde_embedding(question, language)
+            alpha = self.config.two_stage.hyde_alpha
+            blended = (1.0 - alpha) * np.array(primary_vector) + alpha * np.array(hyde_vector)
+            norm = float(np.linalg.norm(blended))
+            if norm > 0:
+                blended = blended / norm
+            primary_vector = blended.tolist()
+            logger.info(f"[Two-Stage] HyDE blend applied (alpha={alpha})")
+
+        # Step 3: Retrieve relevant documents with optional date filter.
+        # If reranking is enabled, retrieve more candidates initially.
         retrieval_k = self.config.reranker.initial_k if self.config.reranker.enabled else top_k
         assert isinstance(retrieval_k, int)
 
-        documents = self.retrieve_documents(
-            query_vector, retrieval_k, date_from=date_from, date_to=date_to, query_text=question
-        )
+        if two_stage_enabled and len(query_variants) > 1:
+            # Retrieve for each variant and merge by best score (dedup on doc_id)
+            merged: dict[str, dict[str, Any]] = {}
+            for variant in query_variants:
+                variant_vector = self.embed_query(variant) if variant != question else primary_vector
+                variant_docs = self.retrieve_documents(
+                    variant_vector, retrieval_k,
+                    date_from=date_from, date_to=date_to,
+                    query_text=variant,
+                )
+                for doc in variant_docs:
+                    doc_id = doc["doc_id"]
+                    if doc_id not in merged or doc["score"] > merged[doc_id]["score"]:
+                        merged[doc_id] = doc
 
-        # Step 2.5: Apply time-decay boosting if temporal context detected
+            documents = sorted(merged.values(), key=lambda d: d["score"], reverse=True)[:retrieval_k]
+            # Re-number ranks after merge
+            for idx, doc in enumerate(documents):
+                doc["rank"] = idx + 1
+            logger.info(
+                f"[Two-Stage] Merged {len(documents)} unique docs from {len(query_variants)} query variants"
+            )
+        else:
+            documents = self.retrieve_documents(
+                primary_vector, retrieval_k, date_from=date_from, date_to=date_to, query_text=question
+            )
+
+        # Step 4: Apply time-decay boosting if temporal context detected
         if temporal_context and temporal_context["has_temporal"]:
             documents = self._apply_time_decay_boost(
                 documents, time_sensitivity=temporal_context["time_sensitivity"]
             )
 
-        # Step 3: Rerank if enabled
+        # Step 5: Rerank if enabled
         if self.config.reranker.enabled and documents:
             documents = self.rerank_documents(question, documents, top_n=top_k)
 
-        # Step 4: Build the messages with language specification
+        # Step 6: Build the messages with language specification
         messages = self.build_prompt(question, documents, language=language)
 
-        # Step 5: Generate the answer
+        # Step 7: Generate the answer
         answer = self.generate_answer(messages)
 
         return {
