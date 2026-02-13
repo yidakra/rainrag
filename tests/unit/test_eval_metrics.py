@@ -341,3 +341,132 @@ class TestAnswerQualityFallback:
             {"question": "q", "answer": "a", "contexts": ["c"], "ground_truth": "gt"}
         ])
         assert result == {"ragas.available": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# cost estimation
+# ---------------------------------------------------------------------------
+
+
+from eval.metrics.cost import (
+    aggregate_costs,
+    chars_to_tokens,
+    estimate_query_cost,
+)
+
+
+class TestCharsToTokens:
+    def test_empty_string(self):
+        assert chars_to_tokens("") == 0.0
+
+    def test_four_chars(self):
+        assert chars_to_tokens("abcd") == pytest.approx(1.0)
+
+    def test_scaling(self):
+        assert chars_to_tokens("a" * 400) == pytest.approx(100.0)
+
+
+class TestEstimateQueryCost:
+    def _call(self, llm="openai", embed="openai", query="test", contexts=None, answer="ok"):
+        return estimate_query_cost(
+            query=query,
+            contexts=contexts or ["context text"],
+            answer=answer,
+            llm_provider=llm,
+            embed_provider=embed,
+        )
+
+    def test_returns_all_keys(self):
+        result = self._call()
+        expected = {
+            "cost.input_tokens_est",
+            "cost.output_tokens_est",
+            "cost.embed_tokens_est",
+            "cost.llm_usd_est",
+            "cost.embed_usd_est",
+            "cost.total_usd_est",
+        }
+        assert set(result.keys()) == expected
+
+    def test_all_values_non_negative(self):
+        result = self._call()
+        for k, v in result.items():
+            assert v >= 0.0, f"{k}={v} is negative"
+
+    def test_total_equals_llm_plus_embed(self):
+        result = self._call()
+        assert result["cost.total_usd_est"] == pytest.approx(
+            result["cost.llm_usd_est"] + result["cost.embed_usd_est"]
+        )
+
+    def test_unknown_provider_gives_zero_cost(self):
+        result = estimate_query_cost(
+            query="q", contexts=["c"], answer="a",
+            llm_provider="unknown_llm",
+            embed_provider="unknown_embed",
+        )
+        assert result["cost.llm_usd_est"] == pytest.approx(0.0)
+        assert result["cost.embed_usd_est"] == pytest.approx(0.0)
+
+    def test_local_embed_is_free(self):
+        result = self._call(embed="local")
+        assert result["cost.embed_usd_est"] == pytest.approx(0.0)
+
+    def test_longer_answer_increases_output_tokens(self):
+        short = self._call(answer="ok")
+        long = self._call(answer="ok " * 200)
+        assert long["cost.output_tokens_est"] > short["cost.output_tokens_est"]
+
+    def test_more_context_increases_input_tokens(self):
+        small = self._call(contexts=["a"])
+        large = self._call(contexts=["a" * 1000])
+        assert large["cost.input_tokens_est"] > small["cost.input_tokens_est"]
+
+    def test_token_counts_are_integers(self):
+        result = self._call()
+        for k in ("cost.input_tokens_est", "cost.output_tokens_est", "cost.embed_tokens_est"):
+            assert isinstance(result[k], int), f"{k} should be int"
+
+    def test_empty_contexts(self):
+        result = estimate_query_cost(
+            query="hello", contexts=[], answer="world",
+            llm_provider="claude", embed_provider="local",
+        )
+        assert result["cost.total_usd_est"] >= 0.0
+
+
+class TestAggregateCosts:
+    def test_empty_list_returns_empty(self):
+        assert aggregate_costs([]) == {}
+
+    def test_single_query(self):
+        q = {
+            "cost.llm_usd_est": 0.001,
+            "cost.embed_usd_est": 0.0001,
+            "cost.total_usd_est": 0.0011,
+        }
+        result = aggregate_costs([q])
+        assert result["cost.total_usd_est"] == pytest.approx(0.0011)
+        assert result["cost.total_usd_est_per_query"] == pytest.approx(0.0011)
+
+    def test_averages_two_queries(self):
+        q1 = {"cost.total_usd_est": 0.002}
+        q2 = {"cost.total_usd_est": 0.004}
+        result = aggregate_costs([q1, q2])
+        assert result["cost.total_usd_est"] == pytest.approx(0.006)
+        assert result["cost.total_usd_est_per_query"] == pytest.approx(0.003)
+
+    def test_all_cost_keys_aggregated(self):
+        keys = [
+            "cost.input_tokens_est",
+            "cost.output_tokens_est",
+            "cost.embed_tokens_est",
+            "cost.llm_usd_est",
+            "cost.embed_usd_est",
+            "cost.total_usd_est",
+        ]
+        queries = [{k: 1.0 for k in keys}, {k: 3.0 for k in keys}]
+        result = aggregate_costs(queries)
+        for k in keys:
+            assert result[k] == pytest.approx(4.0), f"total for {k}"
+            assert result[f"{k}_per_query"] == pytest.approx(2.0), f"avg for {k}"

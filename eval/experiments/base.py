@@ -19,6 +19,7 @@ from rainrag.query import RAGQueryEngine
 from eval.datasets.create_eval_set import load_eval_set
 from eval.metrics.retrieval import aggregate_metrics, compute_all_metrics
 from eval.metrics.answer_quality import answer_length, rouge_l
+from eval.metrics.cost import aggregate_costs, estimate_query_cost
 import eval.mlflow_tracking as mlflow_tracking
 
 
@@ -170,6 +171,16 @@ class BaseExperiment(ABC):
                 answer = response.get("answer", "")
                 ref = record.get("reference_answer", "")
 
+                contexts = [
+                    d.get("text", "") for d in response.get("retrieved_documents", [])
+                ]
+                cost_metrics = estimate_query_cost(
+                    query=record["query"],
+                    contexts=contexts,
+                    answer=answer,
+                    llm_provider=engine.config.llm.provider,
+                    embed_provider=engine.config.embedding.provider,
+                )
                 results.append(
                     {
                         "query_id": record.get("query_id", ""),
@@ -180,13 +191,12 @@ class BaseExperiment(ABC):
                         "reference_answer": ref,
                         "retrieved_ids": retrieved_ids,
                         "relevant_ids": relevant_ids,
-                        "contexts": [
-                            d.get("text", "") for d in response.get("retrieved_documents", [])
-                        ],
+                        "contexts": contexts,
                         "elapsed_ms": elapsed_ms,
                         "answer_length": answer_length(answer),
                         "rouge_l": rouge_l(answer, ref) if ref else None,
                         **retrieval_metrics,
+                        **cost_metrics,
                     }
                 )
             except Exception as exc:
@@ -230,7 +240,14 @@ class BaseExperiment(ABC):
         rouge_scores = [r["rouge_l"] for r in valid if r.get("rouge_l") is not None]
         rouge_mean = sum(rouge_scores) / len(rouge_scores) if rouge_scores else None
 
-        metrics: dict[str, float] = {**agg_retrieval, **latency_metrics}
+        per_query_costs = [
+            {k: v for k, v in r.items() if k.startswith("cost.")}
+            for r in valid
+            if any(k.startswith("cost.") for k in r)
+        ]
+        agg_cost = aggregate_costs(per_query_costs)
+
+        metrics: dict[str, float] = {**agg_retrieval, **latency_metrics, **agg_cost}
         if rouge_mean is not None:
             metrics["rouge_l"] = rouge_mean
         metrics["num_queries"] = float(len(valid))
@@ -267,13 +284,16 @@ class BaseExperiment(ABC):
     @staticmethod
     def _print_result(result: dict) -> None:
         m = result["metrics"]
+        cost = m.get("cost.total_usd_est_per_query", float("nan"))
+        cost_str = f"${cost:.4f}/q" if not __import__("math").isnan(cost) else "cost=n/a"
         print(
             f"[{result['condition_id']}] {result['condition_label']} k={result['top_k']} | "
             f"recall@5={m.get('recall@5', float('nan')):.3f} "
             f"ndcg@5={m.get('ndcg@5', float('nan')):.3f} "
             f"mrr={m.get('mrr', float('nan')):.3f} "
             f"rouge_l={m.get('rouge_l', float('nan')):.3f} "
-            f"p50={m.get('latency_p50_ms', float('nan')):.0f}ms"
+            f"p50={m.get('latency_p50_ms', float('nan')):.0f}ms "
+            f"{cost_str}"
         )
 
     def results_to_csv(self, results: list[dict], output: str) -> None:
