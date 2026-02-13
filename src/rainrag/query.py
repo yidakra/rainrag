@@ -504,6 +504,117 @@ class RAGQueryEngine:
 
         return results
 
+    def _merge_variants_coverage(
+        self,
+        all_variant_docs: list[list[dict[str, Any]]],
+        retrieval_k: int,
+    ) -> list[dict[str, Any]]:
+        """Greedy coverage-maximising merge inspired by VRisker (Takehi et al., WSDM 2026).
+
+        Selects documents one at a time, each time preferring the candidate that
+        covers the most *new* query variants (i.e. variants not yet represented in
+        the selected set), breaking ties by raw retrieval score.  This prevents the
+        majority-intent documents from crowding out candidates that uniquely satisfy
+        a minority reading of the query.
+
+        Args:
+            all_variant_docs: Per-variant retrieval results (one list per variant).
+            retrieval_k: Maximum number of documents to return.
+
+        Returns:
+            Ordered list of selected documents (best-coverage first).
+        """
+        # Map each doc_id to the set of variant indices it appears in, and
+        # track the highest score seen across all variants for tiebreaking.
+        coverage: dict[str, set[int]] = {}
+        best_doc: dict[str, dict[str, Any]] = {}
+
+        for i, variant_docs in enumerate(all_variant_docs):
+            for doc in variant_docs:
+                doc_id = doc["doc_id"]
+                coverage.setdefault(doc_id, set()).add(i)
+                if doc_id not in best_doc or doc["score"] > best_doc[doc_id]["score"]:
+                    best_doc[doc_id] = doc
+
+        selected: list[dict[str, Any]] = []
+        covered_variants: set[int] = set()
+        remaining = set(best_doc.keys())
+
+        while remaining and len(selected) < retrieval_k:
+            # Primary key: new variants this doc would cover.
+            # Secondary key: raw score (higher is better).
+            best_id = max(
+                remaining,
+                key=lambda did: (
+                    len(coverage.get(did, set()) - covered_variants),
+                    best_doc[did]["score"],
+                ),
+            )
+            selected.append(best_doc[best_id])
+            covered_variants |= coverage.get(best_id, set())
+            remaining.remove(best_id)
+
+        return selected
+
+    def _merge_variants_diverse_rrf(
+        self,
+        all_variant_docs: list[list[dict[str, Any]]],
+        retrieval_k: int,
+        rrf_k: int = 60,
+    ) -> list[dict[str, Any]]:
+        """Multi-source RRF with concave diversity weighting across query variants.
+
+        Each query variant is treated as a separate ranker in RRF.  A document that
+        appears in many variants receives a *lower* per-appearance weight
+        (diversity_weight = 1 / sqrt(variant_count)), giving diminishing returns to
+        consensus documents and upweighting candidates that are unique to an
+        under-served variant.  This implements the concave utility function from the
+        VRisk framework (Takehi et al., WSDM 2026).
+
+        Args:
+            all_variant_docs: Per-variant retrieval results (one list per variant).
+            retrieval_k: Maximum number of documents to return.
+            rrf_k: RRF constant (default 60, standard from literature).
+
+        Returns:
+            Ordered list of documents scored by diversity-weighted RRF.
+        """
+        import math as _math
+
+        # Count how many variants each doc appears in (for diversity weighting).
+        variant_count: dict[str, int] = {}
+        best_doc: dict[str, dict[str, Any]] = {}
+
+        for variant_docs in all_variant_docs:
+            for doc in variant_docs:
+                doc_id = doc["doc_id"]
+                variant_count[doc_id] = variant_count.get(doc_id, 0) + 1
+                if doc_id not in best_doc or doc["score"] > best_doc[doc_id]["score"]:
+                    best_doc[doc_id] = doc
+
+        # Compute diversity-weighted RRF score.
+        # diversity_weight = 1/sqrt(variant_count) → consensus docs penalised,
+        # minority-variant docs relatively upweighted.
+        rrf_scores: dict[str, float] = {}
+        for variant_docs in all_variant_docs:
+            for doc in variant_docs:
+                doc_id = doc["doc_id"]
+                rank = doc["rank"]
+                dw = 1.0 / _math.sqrt(variant_count[doc_id])
+                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + dw / (rrf_k + rank)
+
+        sorted_ids = sorted(rrf_scores, key=lambda d: rrf_scores[d], reverse=True)
+
+        results: list[dict[str, Any]] = []
+        for rank, doc_id in enumerate(sorted_ids[:retrieval_k], 1):
+            doc = best_doc[doc_id].copy()
+            doc["rank"] = rank
+            doc["score"] = rrf_scores[doc_id]
+            doc["fusion_method"] = "diverse_rrf"
+            results.append(doc)
+
+        return results
+
     def _detect_temporal_keywords(self, query: str) -> dict[str, Any]:
         """
         Detect temporal keywords in query and extract time context.
@@ -1487,11 +1598,13 @@ Question: {query}"""
         retrieval_k = self.config.reranker.initial_k if self.config.reranker.enabled else top_k
         assert isinstance(retrieval_k, int)
 
+        # Per-variant retrieval result ID lists for downstream intent-coverage eval.
+        variant_retrieved_ids: list[list[str]] = []
+
         if two_stage_enabled and len(query_variants) > 1:
-            # Retrieve for each variant and merge by best score (dedup on doc_id).
-            # Use index-based check so the primary_vector (possibly HyDE-blended) is reused
-            # for the original query even if a rewritten variant happens to be identical text.
-            merged: dict[str, dict[str, Any]] = {}
+            # Retrieve for each variant.  The primary_vector (possibly HyDE-blended)
+            # is reused for the original query via index-based check.
+            all_variant_docs: list[list[dict[str, Any]]] = []
             for i, variant in enumerate(query_variants):
                 variant_vector = primary_vector if i == 0 else self.embed_query(variant)
                 variant_docs = self.retrieve_documents(
@@ -1500,23 +1613,30 @@ Question: {query}"""
                     query_text=variant,
                     exclude_speech_free=exclude_speech_free,
                 )
-                for doc in variant_docs:
-                    doc_id = doc["doc_id"]
-                    if doc_id not in merged or doc["score"] > merged[doc_id]["score"]:
-                        merged[doc_id] = doc
+                all_variant_docs.append(variant_docs)
+                variant_retrieved_ids.append([d["doc_id"] for d in variant_docs])
 
-            documents = sorted(merged.values(), key=lambda d: d["score"], reverse=True)[:retrieval_k]
+            # Merge using the configured strategy.
+            merge_strategy = self.config.two_stage.merge_strategy
+            if merge_strategy == "diverse_rrf":
+                documents = self._merge_variants_diverse_rrf(all_variant_docs, retrieval_k)
+            else:
+                # Default: greedy coverage-maximising merge (VRisker-style)
+                documents = self._merge_variants_coverage(all_variant_docs, retrieval_k)
+
             # Re-number ranks after merge
             for idx, doc in enumerate(documents):
                 doc["rank"] = idx + 1
             logger.info(
-                f"[Two-Stage] Merged {len(documents)} unique docs from {len(query_variants)} query variants"
+                f"[Two-Stage] Merged {len(documents)} unique docs from {len(query_variants)} "
+                f"query variants (strategy={merge_strategy})"
             )
         else:
             documents = self.retrieve_documents(
                 primary_vector, retrieval_k, date_from=date_from, date_to=date_to,
                 query_text=question, exclude_speech_free=exclude_speech_free,
             )
+            variant_retrieved_ids = [[d["doc_id"] for d in documents]]
 
         # Step 4: Apply time-decay boosting if temporal context detected
         if temporal_context and temporal_context["has_temporal"]:
@@ -1539,6 +1659,8 @@ Question: {query}"""
             "answer": answer,
             "retrieved_documents": documents,
             "num_documents": len(documents),
+            "query_variants": query_variants,
+            "variant_retrieved_ids": variant_retrieved_ids,
         }
 
 

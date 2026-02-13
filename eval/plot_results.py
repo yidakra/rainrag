@@ -1,10 +1,12 @@
 """Results dashboard — reads MLflow runs and produces comparison charts.
 
-Generates three publication-ready plots from completed MLflow experiment runs:
+Generates four publication-ready plots from completed MLflow experiment runs:
 
   1. **Recall & NDCG bar chart** – recall@5 and ndcg@5 grouped by condition/label
-  2. **Latency breakdown stacked bar** – p50 latency per pipeline stage
-  3. **Cost vs quality scatter** – total USD/query on x-axis, recall@5 on y-axis
+  2. **Robustness bar chart** – mean vs worst-decile (p10) for recall@5 and ndcg@5,
+     revealing conditions that improve the average while hurting hard queries
+  3. **Latency breakdown stacked bar** – p50 latency per pipeline stage
+  4. **Cost vs quality scatter** – total USD/query on x-axis, recall@5 on y-axis
 
 Charts are saved as PNG files (and optionally displayed interactively).
 
@@ -248,7 +250,83 @@ def plot_latency_breakdown(runs, output_dir: Path, show: bool, dpi: int) -> None
 
 
 # ---------------------------------------------------------------------------
-# Chart 3: Cost vs quality scatter
+# Chart 3: Robustness bar chart (mean vs p10 percentile)
+# ---------------------------------------------------------------------------
+
+
+def plot_robustness_bars(runs, output_dir: Path, show: bool, dpi: int) -> None:
+    """Side-by-side bars: mean vs worst-decile (p10) for recall@5 and ndcg@5.
+
+    Exposes whether a condition improves average performance while leaving hard
+    queries behind — the pattern that VRisk-style analysis targets.  A condition
+    is strictly better only if *both* the mean and the p10 improve.
+    """
+    try:
+        import matplotlib.pyplot as plt  # type: ignore[import]
+        import numpy as np  # type: ignore[import]
+    except ImportError as exc:
+        typer.echo(f"[warn] Skipping robustness chart: {exc}", err=True)
+        return
+
+    metrics = [
+        ("recall@5", "recall@5_p10", "Recall@5"),
+        ("ndcg@5", "ndcg@5_p10", "NDCG@5"),
+    ]
+
+    labels: list[str] = []
+    data: dict[str, list[float]] = {key: [] for pair in metrics for key in (pair[0], pair[1])}
+
+    for _, row in runs.iterrows():
+        lbl = _condition_label(row)
+        mean_r5 = _safe_float(row.get("metrics.recall@5"))
+        if mean_r5 is None:
+            continue
+        labels.append(lbl)
+        for mean_col, p10_col, _ in metrics:
+            data[mean_col].append(_safe_float(row.get(f"metrics.{mean_col}")) or 0.0)
+            data[p10_col].append(_safe_float(row.get(f"metrics.{p10_col}")) or 0.0)
+
+    if not labels:
+        typer.echo("[warn] No recall@5 metrics found — skipping robustness chart.", err=True)
+        return
+
+    n = len(labels)
+    x = np.arange(n)
+    # 4 bars per condition: recall mean, recall p10, ndcg mean, ndcg p10
+    slot_w = 0.20
+    offsets = [-1.5 * slot_w, -0.5 * slot_w, 0.5 * slot_w, 1.5 * slot_w]
+    colors = ["#4C72B0", "#9DB8D2", "#DD8452", "#F0C89A"]
+    bar_labels = ["recall@5 (mean)", "recall@5 (p10)", "ndcg@5 (mean)", "ndcg@5 (p10)"]
+    bar_data = [
+        data["recall@5"],
+        data["recall@5_p10"],
+        data["ndcg@5"],
+        data["ndcg@5_p10"],
+    ]
+
+    fig, ax = plt.subplots(figsize=(max(9, n * 1.2), 5))
+    for offset, vals, color, blabel in zip(offsets, bar_data, colors, bar_labels):
+        ax.bar(x + offset, vals, slot_w, label=blabel, color=color)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=9)
+    ax.set_ylabel("Score")
+    ax.set_ylim(0, 1.05)
+    ax.set_title("Retrieval Robustness: Mean vs Worst-Decile (p10) by Condition")
+    ax.legend(fontsize=8)
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+
+    out = output_dir / "robustness_bars.png"
+    fig.savefig(out, dpi=dpi)
+    typer.echo(f"Saved: {out}")
+    if show:
+        plt.show()
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Chart 4: Cost vs quality scatter
 # ---------------------------------------------------------------------------
 
 
@@ -356,6 +434,7 @@ def main(
     typer.echo(f"Loaded {len(runs)} run(s) across {list(experiment)}")
 
     plot_retrieval_bars(runs, output_dir, show=show, dpi=dpi)
+    plot_robustness_bars(runs, output_dir, show=show, dpi=dpi)
     plot_latency_breakdown(runs, output_dir, show=show, dpi=dpi)
     plot_cost_vs_quality(runs, output_dir, show=show, dpi=dpi)
 

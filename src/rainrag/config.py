@@ -312,6 +312,20 @@ class TwoStageConfig(BaseModel):
         ),
     )
 
+    # Multi-variant merge strategy (applied when query_rewrite_enabled and >1 variant)
+    merge_strategy: str = Field(
+        default="coverage",
+        description=(
+            "Strategy for merging results from multiple query variants. "
+            "'coverage' uses a greedy set-cover selection (VRisker-style) that "
+            "maximises the number of variants with at least one selected document, "
+            "preventing majority-intent documents from drowning out minority readings. "
+            "'diverse_rrf' uses multi-source RRF with a concave diversity weight "
+            "(1/sqrt(variant_count)) that gives diminishing returns to consensus "
+            "documents and upweights candidates unique to under-served variants."
+        ),
+    )
+
 
 class WebMetadataConfig(BaseModel):
     """Configuration for web metadata integration."""

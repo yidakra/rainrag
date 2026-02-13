@@ -63,6 +63,46 @@ def average_precision(retrieved: Sequence[str], relevant: set[str]) -> float:
     return precision_sum / len(relevant)
 
 
+def percentile_at(values: list[float], p: float) -> float:
+    """p-th percentile of *values* using linear interpolation, 0 < p <= 100."""
+    if not values:
+        return 0.0
+    sorted_vals = sorted(values)
+    idx = (p / 100.0) * (len(sorted_vals) - 1)
+    lo = int(idx)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = idx - lo
+    return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
+
+
+def intent_coverage_at_k(
+    variant_retrieved_ids: list[Sequence[str]],
+    relevant: set[str],
+    k: int,
+) -> float:
+    """Fraction of query variants with ≥1 relevant doc in their top-k.
+
+    Operationalises the VRisk intuition (Takehi et al., WSDM 2026): a result
+    set is robust only when *every interpretation* of an ambiguous query (each
+    rewrite variant) is adequately served — not just the majority reading.
+
+    Args:
+        variant_retrieved_ids: One ordered list of retrieved doc IDs per query variant.
+        relevant: Ground-truth relevant doc IDs for this query.
+        k: Cut-off for the coverage check.
+
+    Returns:
+        Score in [0, 1]; 1.0 means every variant has a relevant doc in its top-k.
+    """
+    if not variant_retrieved_ids or not relevant:
+        return 0.0
+    covered = sum(
+        1 for ids in variant_retrieved_ids
+        if set(ids[:k]) & relevant
+    )
+    return covered / len(variant_retrieved_ids)
+
+
 def compute_all_metrics(
     retrieved_ids: Sequence[str],
     relevant_ids: Sequence[str],
@@ -90,8 +130,27 @@ def compute_all_metrics(
 
 
 def aggregate_metrics(per_query: list[dict[str, float]]) -> dict[str, float]:
-    """Macro-average all per-query metric dicts into a single summary dict."""
+    """Macro-average all per-query metric dicts; also add p10 and p25 percentiles.
+
+    In addition to the standard mean, two robustness quantiles are computed for
+    every metric key:
+
+        <metric>_p10  — 10th-percentile (worst-decile) performance
+        <metric>_p25  — 25th-percentile performance
+
+    These expose whether a condition improves average performance while leaving
+    hard queries behind — a pattern that the mean alone would hide, and that
+    VRisk-style analysis (Takehi et al., WSDM 2026) specifically targets.
+    """
     if not per_query:
         return {}
-    keys = per_query[0].keys()
-    return {k: sum(d[k] for d in per_query) / len(per_query) for k in keys}
+    keys = list(per_query[0].keys())
+    agg: dict[str, float] = {}
+    for k in keys:
+        vals = [d[k] for d in per_query if k in d]
+        if not vals:
+            continue
+        agg[k] = sum(vals) / len(vals)
+        agg[f"{k}_p10"] = percentile_at(vals, 10)
+        agg[f"{k}_p25"] = percentile_at(vals, 25)
+    return agg

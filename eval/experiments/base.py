@@ -17,7 +17,7 @@ from rainrag.config import Config, load_config
 from rainrag.query import RAGQueryEngine
 
 from eval.datasets.create_eval_set import load_eval_set
-from eval.metrics.retrieval import aggregate_metrics, compute_all_metrics
+from eval.metrics.retrieval import aggregate_metrics, compute_all_metrics, intent_coverage_at_k
 from eval.metrics.answer_quality import answer_length, rouge_l
 from eval.metrics.carbon import track_emissions
 from eval.metrics.cost import aggregate_costs, estimate_query_cost
@@ -163,12 +163,26 @@ class BaseExperiment(ABC):
                     d.get("doc_id", "") for d in response.get("retrieved_documents", [])
                 ]
                 relevant_ids = record.get("relevant_doc_ids", [])
+                relevant_set = set(relevant_ids)
+
+                # Per-variant retrieval IDs (populated when two-stage rewriting is active)
+                variant_retrieved_ids: list[list[str]] = response.get(
+                    "variant_retrieved_ids", [retrieved_ids]
+                )
 
                 retrieval_metrics = (
                     compute_all_metrics(retrieved_ids, relevant_ids)
                     if relevant_ids
                     else {}
                 )
+
+                # Intent coverage: fraction of query variants that have ≥1 relevant
+                # doc in their top-k.  Only meaningful when >1 variant was used.
+                if relevant_set and len(variant_retrieved_ids) > 1:
+                    for cov_k in (3, 5, 10):
+                        retrieval_metrics[f"intent_coverage@{cov_k}"] = intent_coverage_at_k(
+                            variant_retrieved_ids, relevant_set, cov_k
+                        )
 
                 answer = response.get("answer", "")
                 ref = record.get("reference_answer", "")
@@ -193,6 +207,8 @@ class BaseExperiment(ABC):
                         "reference_answer": ref,
                         "retrieved_ids": retrieved_ids,
                         "relevant_ids": relevant_ids,
+                        "query_variants": response.get("query_variants", [record["query"]]),
+                        "variant_retrieved_ids": variant_retrieved_ids,
                         "contexts": contexts,
                         "elapsed_ms": elapsed_ms,
                         "answer_length": answer_length(answer),
@@ -224,11 +240,15 @@ class BaseExperiment(ABC):
     ) -> dict[str, Any]:
         """Aggregate per-query results into a summary with params + metrics."""
         valid = [r for r in all_results if "error" not in r]
-        retrieval_keys = ["recall@3", "recall@5", "recall@10", "precision@3",
-                          "precision@5", "ndcg@5", "ndcg@10", "mrr", "map"]
 
+        # Collect all per-query retrieval + intent-coverage metrics dynamically so
+        # new keys (e.g. intent_coverage@k added by _run_dataset) flow through
+        # without manual maintenance of a hard-coded key list.
+        _retrieval_prefixes = ("recall@", "precision@", "ndcg@", "mrr", "map", "intent_coverage@")
         per_query_retrieval = [
-            {k: r[k] for k in retrieval_keys if k in r} for r in valid if "recall@3" in r
+            {k: v for k, v in r.items() if any(k.startswith(p) for p in _retrieval_prefixes)}
+            for r in valid
+            if any(k.startswith("recall@") for k in r)
         ]
         agg_retrieval = aggregate_metrics(per_query_retrieval) if per_query_retrieval else {}
 
