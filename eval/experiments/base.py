@@ -19,6 +19,7 @@ from rainrag.query import RAGQueryEngine
 from eval.datasets.create_eval_set import load_eval_set
 from eval.metrics.retrieval import aggregate_metrics, compute_all_metrics
 from eval.metrics.answer_quality import answer_length, rouge_l
+from eval.metrics.carbon import track_emissions
 from eval.metrics.cost import aggregate_costs, estimate_query_cost
 import eval.mlflow_tracking as mlflow_tracking
 
@@ -119,12 +120,13 @@ class BaseExperiment(ABC):
         langs = sorted({r.get("language", "en") for r in self.dataset})
 
         all_results: list[dict] = []
-        for lang in langs:
-            lang_records = [r for r in self.dataset if r.get("language", "en") == lang]
-            lang_results = self._run_dataset(engine, lang_records, top_k, lang)
-            all_results.extend(lang_results)
+        with track_emissions(project_name=self.experiment_name) as carbon:
+            for lang in langs:
+                lang_records = [r for r in self.dataset if r.get("language", "en") == lang]
+                lang_results = self._run_dataset(engine, lang_records, top_k, lang)
+                all_results.extend(lang_results)
 
-        summary = self._build_summary(condition, cfg, top_k, all_results)
+        summary = self._build_summary(condition, cfg, top_k, all_results, carbon)
 
         run_name = f"{condition['label']}_k{top_k}"
         tags = {"condition_id": condition["id"], "top_k": str(top_k)}
@@ -218,6 +220,7 @@ class BaseExperiment(ABC):
         cfg: Config,
         top_k: int,
         all_results: list[dict],
+        carbon=None,
     ) -> dict[str, Any]:
         """Aggregate per-query results into a summary with params + metrics."""
         valid = [r for r in all_results if "error" not in r]
@@ -247,7 +250,9 @@ class BaseExperiment(ABC):
         ]
         agg_cost = aggregate_costs(per_query_costs)
 
-        metrics: dict[str, float] = {**agg_retrieval, **latency_metrics, **agg_cost}
+        carbon_metrics = carbon.as_metrics() if carbon is not None else {}
+
+        metrics: dict[str, float] = {**agg_retrieval, **latency_metrics, **agg_cost, **carbon_metrics}
         if rouge_mean is not None:
             metrics["rouge_l"] = rouge_mean
         metrics["num_queries"] = float(len(valid))

@@ -366,6 +366,145 @@ def beir(
     typer.echo(f"\nDone. Open MLflow UI with: mlflow ui --backend-store-uri {mlflow_uri}")
 
 
+# ── two-stage ─────────────────────────────────────────────────────────────────
+
+
+@app.command("two-stage")
+def two_stage(
+    config: _CONFIG = "config.yaml",
+    dataset: _DATASET = None,
+    mlflow_uri: _MLFLOW = "./mlruns",
+    top_ks: Annotated[str, typer.Option("--top-ks", help="Comma-separated retrieval depths")] = "5,10",
+    axes: Annotated[
+        Optional[str],
+        typer.Option("--axes", help="Comma-separated axes: hyde_alpha,rewrite_variants,pool_size"),
+    ] = None,
+    hyde_alphas: Annotated[
+        Optional[str],
+        typer.Option("--hyde-alphas", help="Comma-separated HyDE alpha values, e.g. 0.1,0.5,0.9"),
+    ] = None,
+    rewrite_variants: Annotated[
+        Optional[str],
+        typer.Option("--rewrite-variants", help="Comma-separated variant counts, e.g. 1,2,3,5"),
+    ] = None,
+    pool_sizes: Annotated[
+        Optional[str],
+        typer.Option("--pool-sizes", help="Comma-separated top_k_multiplier values, e.g. 2,3,5"),
+    ] = None,
+    csv_output: Annotated[Optional[str], typer.Option("--csv", help="Write CSV summary to this path")] = None,
+) -> None:
+    """Sweep two-stage retrieval hyper-parameters (HyDE alpha, rewrite variants, pool size).
+
+    Each axis is swept independently while the others are held at their defaults.
+    Results are logged to MLflow under the ``two_stage_sweep`` experiment.
+
+    Examples::
+
+        # Full sweep (all three axes)
+        python -m eval.run_eval two-stage --dataset eval/datasets/eval_set_en.jsonl
+
+        # HyDE alpha axis only with custom values
+        python -m eval.run_eval two-stage --dataset ... --axes hyde_alpha --hyde-alphas 0.1,0.3,0.7
+    """
+    from eval.experiments.two_stage_sweep import TwoStageSweepExperiment
+
+    if dataset is None:
+        typer.echo("ERROR: --dataset is required for the two-stage sweep.", err=True)
+        raise typer.Exit(1)
+
+    ks = tuple(int(k.strip()) for k in top_ks.split(","))
+    axes_list = [a.strip() for a in axes.split(",")] if axes else None
+    alphas = [float(v.strip()) for v in hyde_alphas.split(",")] if hyde_alphas else None
+    variants = [int(v.strip()) for v in rewrite_variants.split(",")] if rewrite_variants else None
+    pools = [int(v.strip()) for v in pool_sizes.split(",")] if pool_sizes else None
+
+    exp = TwoStageSweepExperiment(
+        config_path=config,
+        dataset_path=dataset,
+        mlflow_uri=mlflow_uri,
+        top_ks=ks,
+        axes=axes_list,
+        hyde_alphas=alphas,
+        rewrite_variants=variants,
+        pool_sizes=pools,
+    )
+
+    typer.echo(f"Running two-stage sweep ({len(exp.conditions())} conditions × {ks} top_k) ...")
+    results = exp.run()
+
+    if csv_output:
+        exp.results_to_csv(results, csv_output)
+
+    typer.echo(f"\nDone. Open MLflow UI with: mlflow ui --backend-store-uri {mlflow_uri}")
+
+
+# ── plot ───────────────────────────────────────────────────────────────────────
+
+
+@app.command("plot")
+def plot(
+    mlflow_uri: _MLFLOW = "./mlruns",
+    experiment: Annotated[
+        Optional[str],
+        typer.Option("--experiment", "-e", help="Comma-separated experiment names"),
+    ] = "ablation",
+    filter_axis: Annotated[
+        Optional[str],
+        typer.Option("--filter-axis", help="Only include runs with this sweep_axis tag"),
+    ] = None,
+    top_k: Annotated[int, typer.Option("--top-k", help="Retrieval depth filter; 0 = all")] = 5,
+    output: _OUTPUT = "plots",
+    show: Annotated[bool, typer.Option("--show/--no-show", help="Display charts interactively")] = False,
+    dpi: Annotated[int, typer.Option("--dpi", help="Output PNG resolution")] = 150,
+) -> None:
+    """Generate comparison charts (retrieval bars, latency breakdown, cost scatter).
+
+    Charts are saved as PNG files in the output directory and optionally
+    displayed interactively.  Requires matplotlib and mlflow.
+
+    Examples::
+
+        # Ablation overview
+        python -m eval.run_eval plot -e ablation --output plots/
+
+        # Two-stage sweep, only HyDE-alpha axis
+        python -m eval.run_eval plot -e two_stage_sweep --filter-axis hyde_alpha
+
+        # Combine experiments
+        python -m eval.run_eval plot -e ablation,two_stage_sweep
+    """
+    from eval.plot_results import main as plot_main
+
+    exp_list = [e.strip() for e in (experiment or "ablation").split(",")]
+    # Invoke the plot CLI function directly to avoid sys.argv manipulation
+    try:
+        import matplotlib  # type: ignore[import]  # noqa: F401
+        import mlflow  # type: ignore[import]  # noqa: F401
+    except ImportError as exc:
+        typer.echo(f"ERROR: {exc}. Install with: pip install matplotlib mlflow", err=True)
+        raise typer.Exit(1)
+
+    from eval.plot_results import _load_runs, plot_cost_vs_quality, plot_latency_breakdown, plot_retrieval_bars
+    from pathlib import Path as _Path
+
+    output_dir = _Path(output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    typer.echo(f"Loading runs from: {mlflow_uri}")
+    runs = _load_runs(
+        mlflow_uri=mlflow_uri,
+        experiment_names=exp_list,
+        top_k_filter=top_k,
+        sweep_axis_filter=filter_axis,
+    )
+    typer.echo(f"Loaded {len(runs)} run(s)")
+
+    plot_retrieval_bars(runs, output_dir, show=show, dpi=dpi)
+    plot_latency_breakdown(runs, output_dir, show=show, dpi=dpi)
+    plot_cost_vs_quality(runs, output_dir, show=show, dpi=dpi)
+    typer.echo(f"\nAll charts written to: {output_dir}/")
+
+
 # ── ui ────────────────────────────────────────────────────────────────────────
 
 

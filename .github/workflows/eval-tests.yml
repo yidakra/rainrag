@@ -7,11 +7,13 @@ on:
       - "eval/**"
       - "tests/unit/test_eval_*.py"
       - ".github/workflows/eval-tests.yml"
+      - "pyproject.toml"
   pull_request:
     branches: [main, develop]
     paths:
       - "eval/**"
       - "tests/unit/test_eval_*.py"
+      - "pyproject.toml"
 
 jobs:
   eval-unit-tests:
@@ -55,11 +57,18 @@ jobs:
       - name: Install project
         run: poetry install --no-interaction --with eval
 
+      - name: Smoke test (import check)
+        run: |
+          poetry run pytest \
+            tests/unit/test_eval_smoke.py \
+            --collect-only -q
+
       - name: Run eval unit tests
         run: |
           poetry run pytest \
             tests/unit/test_eval_metrics.py \
             tests/unit/test_eval_helpers.py \
+            tests/unit/test_eval_smoke.py \
             -v --tb=short \
             --cov=eval \
             --cov-report=xml:coverage-eval.xml \

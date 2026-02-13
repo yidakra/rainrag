@@ -264,3 +264,193 @@ class TestBEIRAdapter:
         # d1 should be ranked first because it matches "cat mat"
         assert metrics["recall@2"] == 1.0
         assert metrics["mrr"] == 1.0
+
+    def test_eval_bm25_baseline_returns_standard_keys(self, tmp_path):
+        """eval_bm25_baseline must return the standard retrieval metric keys."""
+        from eval.datasets.beir_adapter import BEIRAdapter, BEIRCorpus, BEIRQRels, BEIRQueries
+
+        try:
+            from rank_bm25 import BM25Okapi  # noqa: F401
+        except ImportError:
+            pytest.skip("rank-bm25 not installed")
+
+        adapter = BEIRAdapter("test")
+        adapter._corpus = BEIRCorpus(
+            docs={"d1": {"title": "", "text": "alpha beta gamma"}}
+        )
+        adapter._queries = BEIRQueries(queries={"q1": "alpha"})
+        adapter._qrels = BEIRQRels(qrels={"q1": {"d1": 1}})
+
+        metrics = adapter.eval_bm25_baseline(top_k=1)
+        for key in ("recall@1", "mrr"):
+            assert key in metrics, f"Missing key: {key}"
+        assert 0.0 <= metrics["mrr"] <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# _build_summary cost and carbon coverage
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSummary:
+    """Unit-tests for BaseExperiment._build_summary aggregation logic.
+
+    _build_summary is a pure function of its arguments, so we can drive it
+    directly without touching any I/O or external services.
+    """
+
+    @pytest.fixture
+    def minimal_condition(self):
+        return {"id": "01", "label": "vector_only"}
+
+    @pytest.fixture
+    def minimal_config(self, test_config):
+        return test_config
+
+    @staticmethod
+    def _make_valid_result(
+        query_id: str = "q1",
+        elapsed_ms: float = 100.0,
+        recall5: float = 0.8,
+        ndcg5: float = 0.75,
+        mrr: float = 0.9,
+        cost_total_usd: float = 0.001,
+        rouge_l: float | None = 0.5,
+    ) -> dict:
+        """Build a synthetic per-query result dict."""
+        r: dict = {
+            "query_id": query_id,
+            "query": "test query",
+            "language": "en",
+            "elapsed_ms": elapsed_ms,
+            "recall@3": recall5,
+            "recall@5": recall5,
+            "recall@10": recall5,
+            "precision@3": recall5,
+            "precision@5": recall5,
+            "ndcg@5": ndcg5,
+            "ndcg@10": ndcg5,
+            "mrr": mrr,
+            "map": mrr,
+            "cost.input_tokens_est": 250.0,
+            "cost.output_tokens_est": 50.0,
+            "cost.embed_tokens_est": 10.0,
+            "cost.llm_usd_est": cost_total_usd * 0.9,
+            "cost.embed_usd_est": cost_total_usd * 0.1,
+            "cost.total_usd_est": cost_total_usd,
+        }
+        if rouge_l is not None:
+            r["rouge_l"] = rouge_l
+        return r
+
+    def test_cost_metrics_in_summary(self, minimal_condition, minimal_config):
+        from eval.experiments.base import BaseExperiment
+
+        # Patch abstract method so we can instantiate
+        class _Exp(BaseExperiment):
+            def conditions(self):
+                return []
+
+        exp = _Exp(dataset_path=None)
+        results = [self._make_valid_result("q1", cost_total_usd=0.002)]
+        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+
+        assert "cost.total_usd_est" in summary["metrics"]
+        assert summary["metrics"]["cost.total_usd_est"] == pytest.approx(0.002)
+        assert "cost.total_usd_est_per_query" in summary["metrics"]
+
+    def test_latency_percentiles(self, minimal_condition, minimal_config):
+        from eval.experiments.base import BaseExperiment
+
+        class _Exp(BaseExperiment):
+            def conditions(self):
+                return []
+
+        exp = _Exp(dataset_path=None)
+        # Two results with known latencies so we can predict p50
+        results = [
+            self._make_valid_result("q1", elapsed_ms=100.0),
+            self._make_valid_result("q2", elapsed_ms=200.0),
+        ]
+        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+
+        assert "latency_p50_ms" in summary["metrics"]
+        assert "latency_p95_ms" in summary["metrics"]
+        assert "latency_mean_ms" in summary["metrics"]
+        assert summary["metrics"]["latency_mean_ms"] == pytest.approx(150.0)
+
+    def test_num_queries_and_errors(self, minimal_condition, minimal_config):
+        from eval.experiments.base import BaseExperiment
+
+        class _Exp(BaseExperiment):
+            def conditions(self):
+                return []
+
+        exp = _Exp(dataset_path=None)
+        results = [
+            self._make_valid_result("q1"),
+            self._make_valid_result("q2"),
+            {"query_id": "q3", "query": "bad", "language": "en", "error": "timeout"},
+        ]
+        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+
+        assert summary["metrics"]["num_queries"] == 2.0
+        assert summary["metrics"]["num_errors"] == 1.0
+
+    def test_carbon_metrics_included_when_available(self, minimal_condition, minimal_config):
+        from eval.experiments.base import BaseExperiment
+        from eval.metrics.carbon import CarbonResult
+
+        class _Exp(BaseExperiment):
+            def conditions(self):
+                return []
+
+        exp = _Exp(dataset_path=None)
+        results = [self._make_valid_result("q1")]
+
+        carbon = CarbonResult(
+            available=True,
+            emissions_kg=0.0042,
+            energy_kwh=0.01,
+            duration_s=12.5,
+        )
+        summary = exp._build_summary(
+            minimal_condition, minimal_config, top_k=5, all_results=results, carbon=carbon
+        )
+
+        assert "carbon.emissions_kg" in summary["metrics"]
+        assert summary["metrics"]["carbon.emissions_kg"] == pytest.approx(0.0042)
+        assert "carbon.emissions_g" in summary["metrics"]
+        assert summary["metrics"]["carbon.energy_kwh"] == pytest.approx(0.01)
+        assert summary["metrics"]["carbon.duration_s"] == pytest.approx(12.5)
+
+    def test_carbon_none_does_not_crash(self, minimal_condition, minimal_config):
+        from eval.experiments.base import BaseExperiment
+
+        class _Exp(BaseExperiment):
+            def conditions(self):
+                return []
+
+        exp = _Exp(dataset_path=None)
+        results = [self._make_valid_result("q1")]
+        # carbon=None is the default — must not raise
+        summary = exp._build_summary(
+            minimal_condition, minimal_config, top_k=5, all_results=results, carbon=None
+        )
+        assert "num_queries" in summary["metrics"]
+
+    def test_rouge_l_mean_in_summary(self, minimal_condition, minimal_config):
+        from eval.experiments.base import BaseExperiment
+
+        class _Exp(BaseExperiment):
+            def conditions(self):
+                return []
+
+        exp = _Exp(dataset_path=None)
+        results = [
+            self._make_valid_result("q1", rouge_l=0.4),
+            self._make_valid_result("q2", rouge_l=0.6),
+        ]
+        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+        assert "rouge_l" in summary["metrics"]
+        assert summary["metrics"]["rouge_l"] == pytest.approx(0.5)
