@@ -377,7 +377,13 @@ def two_stage(
     top_ks: Annotated[str, typer.Option("--top-ks", help="Comma-separated retrieval depths")] = "5,10",
     axes: Annotated[
         Optional[str],
-        typer.Option("--axes", help="Comma-separated axes: hyde_alpha,rewrite_variants,pool_size"),
+        typer.Option(
+            "--axes",
+            help=(
+                "Comma-separated axes to sweep. "
+                "Valid: hyde_alpha,rewrite_variants,pool_size,merge_strategy,merge_rrf_k"
+            ),
+        ),
     ] = None,
     hyde_alphas: Annotated[
         Optional[str],
@@ -391,17 +397,44 @@ def two_stage(
         Optional[str],
         typer.Option("--pool-sizes", help="Comma-separated top_k_multiplier values, e.g. 2,3,5"),
     ] = None,
+    merge_strategies: Annotated[
+        Optional[str],
+        typer.Option(
+            "--merge-strategies",
+            help="Comma-separated merge strategy names, e.g. coverage,diverse_rrf",
+        ),
+    ] = None,
+    merge_rrf_ks: Annotated[
+        Optional[str],
+        typer.Option(
+            "--merge-rrf-ks",
+            help="Comma-separated RRF k values for diverse_rrf strategy, e.g. 20,40,60",
+        ),
+    ] = None,
     csv_output: Annotated[Optional[str], typer.Option("--csv", help="Write CSV summary to this path")] = None,
 ) -> None:
-    """Sweep two-stage retrieval hyper-parameters (HyDE alpha, rewrite variants, pool size).
+    """Sweep two-stage retrieval hyper-parameters across five independent axes.
 
-    Each axis is swept independently while the others are held at their defaults.
-    Results are logged to MLflow under the ``two_stage_sweep`` experiment.
+    Each axis is swept while the others are held at their defaults, keeping
+    wall-clock time proportional to the sum of axis lengths rather than
+    their cross-product.  Results are logged to MLflow under the
+    ``two_stage_sweep`` experiment.
+
+    Axes
+    ----
+    A – hyde_alpha      : HyDE blend weight [0.1, 0.3, 0.5, 0.7, 0.9]
+    B – rewrite_variants: query-rewrite alternatives [1, 2, 3, 5]
+    C – pool_size       : top_k_multiplier before reranking [2, 3, 5]
+    D – merge_strategy  : variant-merge algorithm [coverage, diverse_rrf]
+    E – merge_rrf_k     : RRF k for diverse_rrf strategy [20, 40, 60]
 
     Examples::
 
-        # Full sweep (all three axes)
+        # Full sweep (all five axes)
         python -m eval.run_eval two-stage --dataset eval/datasets/eval_set_en.jsonl
+
+        # Axes D+E only — compare merge strategies and tune RRF k
+        python -m eval.run_eval two-stage --dataset ... --axes merge_strategy,merge_rrf_k
 
         # HyDE alpha axis only with custom values
         python -m eval.run_eval two-stage --dataset ... --axes hyde_alpha --hyde-alphas 0.1,0.3,0.7
@@ -417,6 +450,8 @@ def two_stage(
     alphas = [float(v.strip()) for v in hyde_alphas.split(",")] if hyde_alphas else None
     variants = [int(v.strip()) for v in rewrite_variants.split(",")] if rewrite_variants else None
     pools = [int(v.strip()) for v in pool_sizes.split(",")] if pool_sizes else None
+    strategies = [s.strip() for s in merge_strategies.split(",")] if merge_strategies else None
+    rrf_ks = [int(v.strip()) for v in merge_rrf_ks.split(",")] if merge_rrf_ks else None
 
     exp = TwoStageSweepExperiment(
         config_path=config,
@@ -427,6 +462,8 @@ def two_stage(
         hyde_alphas=alphas,
         rewrite_variants=variants,
         pool_sizes=pools,
+        merge_strategies=strategies,
+        merge_rrf_ks=rrf_ks,
     )
 
     typer.echo(f"Running two-stage sweep ({len(exp.conditions())} conditions × {ks} top_k) ...")
