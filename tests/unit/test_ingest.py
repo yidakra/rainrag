@@ -519,6 +519,164 @@ Hi
 
         assert len(docs) == 0
 
+    # ------------------------------------------------------------------
+    # Speech-free (empty VTT) handling
+    # ------------------------------------------------------------------
+
+    _EMPTY_VTT = "WEBVTT\n\n"  # Valid header, zero cues
+
+    def test_empty_vtt_parse_returns_empty_list(self) -> None:
+        """_parse_vtt_lines_to_cues must return [] (not None) for a header-only VTT."""
+        from rainrag.ingest import VTTParser
+
+        lines = self._EMPTY_VTT.splitlines(keepends=True)
+        result = VTTParser._parse_vtt_lines_to_cues(lines)
+        assert result == []
+
+    def test_empty_vtt_parse_with_timecodes_returns_empty_string(self, temp_dir: Path) -> None:
+        """parse_vtt_with_timecodes must return ('', None, None) for a header-only VTT."""
+        from rainrag.ingest import VTTParser
+
+        vtt_file = temp_dir / "silent.vtt"
+        vtt_file.write_text(self._EMPTY_VTT)
+        result = VTTParser.parse_vtt_with_timecodes(vtt_file)
+        assert result == ("", None, None)
+
+    def test_empty_vtt_without_web_metadata_skipped(
+        self, test_config: Config, temp_dir: Path
+    ) -> None:
+        """Speech-free video with no web metadata must be skipped (no documents)."""
+        vtt_file = temp_dir / "silent.vtt"
+        vtt_file.write_text(self._EMPTY_VTT)
+
+        test_config.chunking.enabled = False
+        test_config.web_metadata.enabled = False
+        ingester = Ingester(test_config)
+        docs = ingester.process_file(vtt_file)
+
+        assert docs == []
+        assert ingester.speech_free_count == 1
+        assert ingester.speech_free_with_metadata_count == 0
+
+    def test_empty_vtt_chunking_without_web_metadata_skipped(
+        self, test_config: Config, temp_dir: Path
+    ) -> None:
+        """Speech-free video skipped in chunking mode when no metadata available."""
+        vtt_file = temp_dir / "silent.vtt"
+        vtt_file.write_text(self._EMPTY_VTT)
+
+        test_config.chunking.enabled = True
+        test_config.web_metadata.enabled = False
+        ingester = Ingester(test_config)
+        docs = ingester.process_file(vtt_file)
+
+        assert docs == []
+        assert ingester.speech_free_count == 1
+
+    def test_empty_vtt_with_web_metadata_creates_doc(
+        self, test_config: Config, temp_dir: Path
+    ) -> None:
+        """Speech-free video with web metadata must produce a metadata-only document."""
+        import json as _json
+
+        vtt_file = temp_dir / "silent.vtt"
+        vtt_file.write_text(self._EMPTY_VTT)
+
+        # Set up web metadata directory with a file matching the vtt filename hash
+        web_dir = temp_dir / "web_metadata"
+        web_dir.mkdir()
+        # Use a fake hash matching what extract_video_hash would extract from the path.
+        # We write directly to the Ingester's web_metadata_loader to bypass hash extraction.
+        test_config.chunking.enabled = False
+        test_config.web_metadata.enabled = True
+        test_config.web_metadata.path = str(web_dir)
+        test_config.web_metadata.ingest_speech_free = True
+
+        ingester = Ingester(test_config)
+
+        # Patch the loader to return canned metadata for any hash
+        class _FakeLoader:
+            def load_metadata(self, _hash):
+                return {
+                    "name": "Silent Video Title",
+                    "preview_text": "",
+                    "detail_text": "<p>Some description of the silent video.</p>",
+                    "date_active_start": "2025-01-15T10:00:00Z",
+                    "url": "https://example.com/video/1",
+                    "video_hash": "fakehash",
+                }
+
+            def extract_clean_metadata(self, raw):
+                from rainrag.ingest import WebMetadataLoader
+                loader = WebMetadataLoader(web_dir)
+                return loader.extract_clean_metadata(raw)
+
+        ingester.web_metadata_loader = _FakeLoader()
+
+        docs = ingester.process_file(vtt_file)
+
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.is_speech_free is True
+        assert "Silent Video Title" in doc.text
+        assert doc.start_time is None
+        assert doc.end_time is None
+        assert doc.web_title == "Silent Video Title"
+        assert doc.is_chunk is False
+        assert ingester.speech_free_count == 1
+        assert ingester.speech_free_with_metadata_count == 1
+
+    def test_empty_vtt_ingest_speech_free_false_skips_even_with_metadata(
+        self, test_config: Config, temp_dir: Path
+    ) -> None:
+        """When ingest_speech_free=False, speech-free videos must be skipped."""
+        vtt_file = temp_dir / "silent.vtt"
+        vtt_file.write_text(self._EMPTY_VTT)
+
+        test_config.chunking.enabled = False
+        test_config.web_metadata.enabled = True
+        test_config.web_metadata.ingest_speech_free = False
+
+        ingester = Ingester(test_config)
+
+        class _FakeLoader:
+            def load_metadata(self, _hash):
+                return {
+                    "name": "Title",
+                    "preview_text": "",
+                    "detail_text": "<p>Description text here.</p>",
+                    "date_active_start": None,
+                    "url": "",
+                    "video_hash": "fakehash",
+                }
+
+            def extract_clean_metadata(self, raw):
+                from rainrag.ingest import WebMetadataLoader
+                from pathlib import Path as _P
+                loader = WebMetadataLoader(_P(test_config.web_metadata.path))
+                return loader.extract_clean_metadata(raw)
+
+        ingester.web_metadata_loader = _FakeLoader()
+        docs = ingester.process_file(vtt_file)
+
+        assert docs == []
+        assert ingester.speech_free_with_metadata_count == 0
+
+    def test_invalid_vtt_counter_not_incremented_for_empty_vtt(
+        self, test_config: Config, temp_dir: Path
+    ) -> None:
+        """A speech-free VTT must increment speech_free_count, not invalid_vtt_count."""
+        vtt_file = temp_dir / "silent.vtt"
+        vtt_file.write_text(self._EMPTY_VTT)
+
+        test_config.chunking.enabled = False
+        test_config.web_metadata.enabled = False
+        ingester = Ingester(test_config)
+        ingester.process_file(vtt_file)
+
+        assert ingester.invalid_vtt_count == 0
+        assert ingester.speech_free_count == 1
+
     def test_ingest_pipeline(self, test_config: Config, archive_with_vtt_files: Path) -> None:
         """Test full ingestion pipeline without chunking."""
         test_config.paths.archive_root = str(archive_with_vtt_files)

@@ -345,6 +345,10 @@ class WebMetadataConfig(BaseModel):
         default=False,
         description="If True, only ingest videos that have corresponding web metadata; if False, ingest all videos with empty web fields when metadata is missing",
     )
+    ingest_speech_free: bool = Field(
+        default=True,
+        description="If True, create a metadata-only document for speech-free videos (empty VTT, no subtitle cues) when web metadata is available; if False, skip them entirely",
+    )
 
 
 class Config(BaseModel):
