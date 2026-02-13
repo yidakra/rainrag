@@ -18,8 +18,10 @@ from eval.metrics.retrieval import (
     aggregate_metrics,
     average_precision,
     compute_all_metrics,
+    intent_coverage_at_k,
     mrr,
     ndcg_at_k,
+    percentile_at,
     precision_at_k,
     recall_at_k,
 )
@@ -242,9 +244,21 @@ class TestAggregateMetrics:
     def test_empty_list(self):
         assert aggregate_metrics([]) == {}
 
-    def test_single_entry(self):
+    def test_single_entry_mean_values(self):
         m = {"recall@5": 0.8, "mrr": 0.6}
-        assert aggregate_metrics([m]) == pytest.approx(m)
+        result = aggregate_metrics([m])
+        # Mean equals the single value
+        assert result["recall@5"] == pytest.approx(0.8)
+        assert result["mrr"] == pytest.approx(0.6)
+
+    def test_single_entry_percentiles_equal_value(self):
+        """Percentiles of a single-element list all equal that element."""
+        m = {"recall@5": 0.8, "mrr": 0.6}
+        result = aggregate_metrics([m])
+        assert result["recall@5_p10"] == pytest.approx(0.8)
+        assert result["recall@5_p25"] == pytest.approx(0.8)
+        assert result["mrr_p10"] == pytest.approx(0.6)
+        assert result["mrr_p25"] == pytest.approx(0.6)
 
     def test_averages_correctly(self):
         m1 = {"recall@5": 0.8, "mrr": 1.0}
@@ -257,6 +271,109 @@ class TestAggregateMetrics:
         entries = [{"ndcg@5": v} for v in [0.3, 0.6, 0.9]]
         result = aggregate_metrics(entries)
         assert result["ndcg@5"] == pytest.approx(0.6)
+
+    def test_percentile_keys_present_for_every_metric(self):
+        entries = [{"recall@5": v, "mrr": v} for v in [0.2, 0.5, 0.8]]
+        result = aggregate_metrics(entries)
+        for base in ("recall@5", "mrr"):
+            assert f"{base}_p10" in result, f"missing {base}_p10"
+            assert f"{base}_p25" in result, f"missing {base}_p25"
+
+    def test_p10_le_mean(self):
+        """p10 must be ≤ mean for any distribution."""
+        # 9 zeros + 1 one → mean = 0.1, p10 = 0.0
+        vals = [0.0] * 9 + [1.0]
+        entries = [{"m": v} for v in vals]
+        result = aggregate_metrics(entries)
+        assert result["m_p10"] <= result["m"]
+        assert result["m_p25"] <= result["m"]
+
+
+# ---------------------------------------------------------------------------
+# percentile_at
+# ---------------------------------------------------------------------------
+
+
+class TestPercentileAt:
+    def test_empty_list(self):
+        assert percentile_at([], 50) == 0.0
+
+    def test_single_value_all_percentiles_equal(self):
+        for p in (0, 10, 50, 90, 100):
+            assert percentile_at([0.7], p) == pytest.approx(0.7)
+
+    def test_p0_equals_minimum(self):
+        assert percentile_at([0.1, 0.5, 0.9], 0) == pytest.approx(0.1)
+
+    def test_p100_equals_maximum(self):
+        assert percentile_at([0.1, 0.5, 0.9], 100) == pytest.approx(0.9)
+
+    def test_p50_median_odd(self):
+        assert percentile_at([0.0, 0.5, 1.0], 50) == pytest.approx(0.5)
+
+    def test_p50_median_even(self):
+        # [0.0, 1.0] → p50 is midpoint = 0.5
+        assert percentile_at([0.0, 1.0], 50) == pytest.approx(0.5)
+
+    def test_linear_interpolation(self):
+        # [0.0, 0.5, 1.0], p25: idx = 0.25 * 2 = 0.5 → lo=0, hi=1, frac=0.5
+        # → 0.0 * 0.5 + 0.5 * 0.5 = 0.25
+        assert percentile_at([0.0, 0.5, 1.0], 25) == pytest.approx(0.25)
+
+    def test_unsorted_input_same_as_sorted(self):
+        vals = [0.9, 0.1, 0.5, 0.3, 0.7]
+        assert percentile_at(vals, 50) == pytest.approx(percentile_at(sorted(vals), 50))
+
+    def test_all_same_values(self):
+        assert percentile_at([0.4, 0.4, 0.4], 10) == pytest.approx(0.4)
+        assert percentile_at([0.4, 0.4, 0.4], 90) == pytest.approx(0.4)
+
+
+# ---------------------------------------------------------------------------
+# intent_coverage_at_k
+# ---------------------------------------------------------------------------
+
+
+class TestIntentCoverageAtK:
+    def test_all_variants_covered(self):
+        """Every variant has a relevant doc in top-k → 1.0."""
+        assert intent_coverage_at_k(
+            [["a", "b"], ["a", "c"], ["b", "d"]], {"a", "b"}, k=2
+        ) == pytest.approx(1.0)
+
+    def test_no_variants_covered(self):
+        """No variant has any relevant doc → 0.0."""
+        assert intent_coverage_at_k(
+            [["x", "y"], ["z", "w"]], {"a", "b"}, k=5
+        ) == pytest.approx(0.0)
+
+    def test_half_covered(self):
+        """One of two variants has a relevant doc → 0.5."""
+        assert intent_coverage_at_k(
+            [["a", "x"], ["x", "y"]], {"a"}, k=2
+        ) == pytest.approx(0.5)
+
+    def test_cutoff_excludes_relevant(self):
+        """Relevant doc at rank 3 is not counted when k=2."""
+        assert intent_coverage_at_k([["x", "y", "a"]], {"a"}, k=2) == pytest.approx(0.0)
+
+    def test_cutoff_includes_relevant(self):
+        """Relevant doc at rank 2 is counted when k≥2."""
+        assert intent_coverage_at_k([["x", "a", "y"]], {"a"}, k=2) == pytest.approx(1.0)
+
+    def test_empty_relevant_returns_zero(self):
+        assert intent_coverage_at_k([["a", "b"]], set(), k=5) == pytest.approx(0.0)
+
+    def test_empty_variants_returns_zero(self):
+        assert intent_coverage_at_k([], {"a"}, k=5) == pytest.approx(0.0)
+
+    def test_single_variant_fully_covered(self):
+        assert intent_coverage_at_k([["a", "b"]], {"a"}, k=1) == pytest.approx(1.0)
+
+    def test_three_variants_two_covered(self):
+        assert intent_coverage_at_k(
+            [["a"], ["b"], ["x"]], {"a", "b"}, k=1
+        ) == pytest.approx(2 / 3)
 
 
 # ---------------------------------------------------------------------------

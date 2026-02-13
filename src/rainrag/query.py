@@ -1619,7 +1619,10 @@ Question: {query}"""
             # Merge using the configured strategy.
             merge_strategy = self.config.two_stage.merge_strategy
             if merge_strategy == "diverse_rrf":
-                documents = self._merge_variants_diverse_rrf(all_variant_docs, retrieval_k)
+                documents = self._merge_variants_diverse_rrf(
+                    all_variant_docs, retrieval_k,
+                    rrf_k=self.config.two_stage.merge_rrf_k,
+                )
             else:
                 # Default: greedy coverage-maximising merge (VRisker-style)
                 documents = self._merge_variants_coverage(all_variant_docs, retrieval_k)

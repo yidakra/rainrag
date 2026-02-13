@@ -290,6 +290,8 @@ class BaseExperiment(ABC):
             "two_stage.query_rewrite_variants": cfg.two_stage.query_rewrite_variants,
             "two_stage.hyde_enabled": cfg.two_stage.hyde_enabled,
             "two_stage.hyde_alpha": cfg.two_stage.hyde_alpha,
+            "two_stage.merge_strategy": cfg.two_stage.merge_strategy,
+            "two_stage.merge_rrf_k": cfg.two_stage.merge_rrf_k,
             "reranker.enabled": cfg.reranker.enabled,
             "reranker.top_n": cfg.reranker.top_n,
             "embedding.provider": cfg.embedding.provider,
@@ -308,14 +310,28 @@ class BaseExperiment(ABC):
 
     @staticmethod
     def _print_result(result: dict) -> None:
+        import math as _math
         m = result["metrics"]
         cost = m.get("cost.total_usd_est_per_query", float("nan"))
-        cost_str = f"${cost:.4f}/q" if not __import__("math").isnan(cost) else "cost=n/a"
+        cost_str = f"${cost:.4f}/q" if not _math.isnan(cost) else "cost=n/a"
+
+        ndcg5 = m.get("ndcg@5", float("nan"))
+        ndcg5_p10 = m.get("ndcg@5_p10", float("nan"))
+        ndcg5_str = (
+            f"ndcg@5={ndcg5:.3f}(p10={ndcg5_p10:.3f})"
+            if not _math.isnan(ndcg5_p10)
+            else f"ndcg@5={ndcg5:.3f}"
+        )
+
+        intent_cov = m.get("intent_coverage@5", float("nan"))
+        intent_str = f" ic@5={intent_cov:.3f}" if not _math.isnan(intent_cov) else ""
+
         print(
             f"[{result['condition_id']}] {result['condition_label']} k={result['top_k']} | "
             f"recall@5={m.get('recall@5', float('nan')):.3f} "
-            f"ndcg@5={m.get('ndcg@5', float('nan')):.3f} "
-            f"mrr={m.get('mrr', float('nan')):.3f} "
+            f"{ndcg5_str} "
+            f"mrr={m.get('mrr', float('nan')):.3f}"
+            f"{intent_str} "
             f"rouge_l={m.get('rouge_l', float('nan')):.3f} "
             f"p50={m.get('latency_p50_ms', float('nan')):.0f}ms "
             f"{cost_str}"

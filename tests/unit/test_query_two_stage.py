@@ -175,6 +175,19 @@ class TestTwoStageConfigDefaults:
         assert cfg.hyde_enabled is False
         assert cfg.hyde_alpha == 0.5
 
+    def test_merge_strategy_defaults_to_coverage(self):
+        cfg = TwoStageConfig()
+        assert cfg.merge_strategy == "coverage"
+
+    def test_merge_rrf_k_defaults_to_60(self):
+        cfg = TwoStageConfig()
+        assert cfg.merge_rrf_k == 60
+
+    def test_merge_strategy_accepts_diverse_rrf(self):
+        cfg = TwoStageConfig(merge_strategy="diverse_rrf", merge_rrf_k=20)
+        assert cfg.merge_strategy == "diverse_rrf"
+        assert cfg.merge_rrf_k == 20
+
 
 # ---------------------------------------------------------------------------
 # _rewrite_query_for_retrieval tests
@@ -454,7 +467,10 @@ class TestTwoStagePipeline:
 
             result = engine.query("test", top_k=1, language="en")
 
-        assert set(result.keys()) == {"question", "answer", "retrieved_documents", "num_documents"}
+        assert set(result.keys()) == {
+            "question", "answer", "retrieved_documents", "num_documents",
+            "query_variants", "variant_retrieved_ids",
+        }
 
     def test_answer_generation_uses_zero_temperature(
         self, two_stage_config, mock_openai_client, mock_qdrant_client
@@ -480,3 +496,178 @@ class TestTwoStagePipeline:
         answer_call_temp = calls[1][1]["temperature"]
         assert rewrite_call_temp == 0.7   # diverse paraphrases
         assert answer_call_temp == 0.0    # deterministic answer
+
+
+# ---------------------------------------------------------------------------
+# Merge strategy unit tests (no live services needed)
+# ---------------------------------------------------------------------------
+
+
+class TestMergeStrategies:
+    """Unit tests for _merge_variants_coverage and _merge_variants_diverse_rrf.
+
+    Uses RAGQueryEngine.__new__ to bypass __init__ so no real config/clients
+    are required.
+    """
+
+    @pytest.fixture
+    def engine(self):
+        return RAGQueryEngine.__new__(RAGQueryEngine)
+
+    def _doc(self, doc_id: str, score: float, rank: int = 1) -> dict:
+        return {"doc_id": doc_id, "score": score, "rank": rank}
+
+    # --- _merge_variants_coverage ---
+
+    def test_coverage_selects_unique_variant_doc_first(self, engine):
+        """Doc unique to variant 1 should be selected before a lower-ranked doc
+        that is already covered by the first selection."""
+        # variant 0: [a(0.9), b(0.5)]
+        # variant 1: [c(0.8), b(0.4)]
+        # 'a' covers {0} only, 'c' covers {1} only, 'b' covers {0,1}
+        # Greedy step 1: 'b' covers 2 variants (best), but 'a' and 'c' also tie
+        # at new_coverage=1.  Tie goes to 'b' (score 0.5 — wait, 'a' is 0.9 > 'b' 0.5).
+        # Actually: 'b' covers {0,1} → new_coverage=2; 'a' covers {0} → 1; 'c' covers {1} → 1
+        # 'b' wins step 1.
+        vdocs_a = [self._doc("a", 0.9, 1), self._doc("b", 0.5, 2)]
+        vdocs_b = [self._doc("c", 0.8, 1), self._doc("b", 0.4, 2)]
+        result = engine._merge_variants_coverage([vdocs_a, vdocs_b], retrieval_k=3)
+        ids = [d["doc_id"] for d in result]
+        assert ids[0] == "b"  # covers both variants first
+
+    def test_coverage_tiebreak_by_score(self, engine):
+        """When two docs cover the same number of new variants, higher score wins."""
+        # variant 0: [a(0.9)], variant 1: [b(0.7)]  — each unique to one variant
+        vdocs_a = [self._doc("a", 0.9, 1)]
+        vdocs_b = [self._doc("b", 0.7, 1)]
+        result = engine._merge_variants_coverage([vdocs_a, vdocs_b], retrieval_k=2)
+        ids = [d["doc_id"] for d in result]
+        assert ids[0] == "a"   # higher score
+        assert ids[1] == "b"
+
+    def test_coverage_uses_best_score_for_duplicate_doc(self, engine):
+        """When same doc appears in multiple variants with different scores,
+        the highest score should be used in the merged result."""
+        vdocs_a = [self._doc("a", 0.4, 1)]
+        vdocs_b = [self._doc("a", 0.9, 1)]
+        result = engine._merge_variants_coverage([vdocs_a, vdocs_b], retrieval_k=1)
+        assert result[0]["doc_id"] == "a"
+        assert result[0]["score"] == pytest.approx(0.9)
+
+    def test_coverage_respects_retrieval_k(self, engine):
+        vdocs = [[self._doc(f"d{i}", 1.0 - i * 0.1, i + 1) for i in range(5)]]
+        result = engine._merge_variants_coverage(vdocs, retrieval_k=3)
+        assert len(result) == 3
+
+    def test_coverage_ranks_renumbered_by_caller(self, engine):
+        """After the greedy selection, ranks are re-assigned by query() — the
+        merge method itself doesn't re-rank; that's done in the calling code."""
+        vdocs_a = [self._doc("a", 0.9, 1), self._doc("b", 0.7, 2)]
+        vdocs_b = [self._doc("c", 0.8, 1)]
+        result = engine._merge_variants_coverage([vdocs_a, vdocs_b], retrieval_k=3)
+        # All three docs should be present
+        assert {d["doc_id"] for d in result} == {"a", "b", "c"}
+
+    # --- _merge_variants_diverse_rrf ---
+
+    def test_diverse_rrf_returns_correct_count(self, engine):
+        vdocs_a = [self._doc("a", 0.9, 1), self._doc("b", 0.7, 2)]
+        vdocs_b = [self._doc("c", 0.8, 1), self._doc("a", 0.6, 2)]
+        result = engine._merge_variants_diverse_rrf([vdocs_a, vdocs_b], retrieval_k=3)
+        assert len(result) == 3
+
+    def test_diverse_rrf_sets_fusion_method(self, engine):
+        vdocs = [[self._doc("a", 0.9, 1)], [self._doc("b", 0.8, 1)]]
+        result = engine._merge_variants_diverse_rrf(vdocs, retrieval_k=2)
+        assert all(d["fusion_method"] == "diverse_rrf" for d in result)
+
+    def test_diverse_rrf_upweights_minority_doc(self, engine):
+        """A doc appearing in only 1 variant (minority) should score higher
+        relative to a doc appearing in 2 variants (consensus), per diversity weight."""
+        # variant 0: [x(rank=1), y(rank=2)]
+        # variant 1: [x(rank=1), z(rank=2)]
+        # 'x' appears in both → variant_count=2 → dw=1/sqrt(2)≈0.707
+        # 'y' appears in variant 0 only → variant_count=1 → dw=1.0
+        # 'z' appears in variant 1 only → variant_count=1 → dw=1.0
+        # x score = 2 * (0.707 / 61) ≈ 0.02319
+        # y score = 1 * (1.0 / 62)  ≈ 0.01613
+        # z score = 1 * (1.0 / 62)  ≈ 0.01613
+        # So x > y = z (x appears twice so still wins overall)
+        vdocs_a = [self._doc("x", 0.9, 1), self._doc("y", 0.7, 2)]
+        vdocs_b = [self._doc("x", 0.8, 1), self._doc("z", 0.6, 2)]
+        result = engine._merge_variants_diverse_rrf([vdocs_a, vdocs_b], retrieval_k=3)
+        ids = [d["doc_id"] for d in result]
+        assert ids[0] == "x"
+        # y and z have equal scores; both must be present
+        assert set(ids[1:]) == {"y", "z"}
+
+    def test_diverse_rrf_smaller_rrf_k_amplifies_differences(self, engine):
+        """With rrf_k=1 (extreme) the rank difference between rank-1 and rank-2
+        docs should be larger than with rrf_k=60."""
+        vdocs = [[self._doc("a", 0.9, 1), self._doc("b", 0.5, 2)]]
+        result_60 = engine._merge_variants_diverse_rrf(vdocs, retrieval_k=2, rrf_k=60)
+        result_1  = engine._merge_variants_diverse_rrf(vdocs, retrieval_k=2, rrf_k=1)
+        gap_60 = result_60[0]["score"] - result_60[1]["score"]
+        gap_1  = result_1[0]["score"]  - result_1[1]["score"]
+        assert gap_1 > gap_60
+
+    # --- query() integration: variant_retrieved_ids exposed ---
+
+    def test_query_exposes_variant_retrieved_ids(
+        self, two_stage_config, mock_openai_client, mock_qdrant_client
+    ):
+        """query() must return 'variant_retrieved_ids' listing per-variant doc IDs."""
+        with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
+            engine = RAGQueryEngine(two_stage_config)
+            _setup(engine, mock_qdrant_client)
+
+            mock_openai_client.chat.completions.create.side_effect = [
+                MagicMock(choices=[MagicMock(message=MagicMock(content="v1\nv2"))]),
+                MagicMock(choices=[MagicMock(message=MagicMock(content="answer"))]),
+            ]
+
+            result = engine.query("test", top_k=1, language="en")
+
+        assert "variant_retrieved_ids" in result
+        assert isinstance(result["variant_retrieved_ids"], list)
+        assert len(result["variant_retrieved_ids"]) > 0
+        assert all(isinstance(ids, list) for ids in result["variant_retrieved_ids"])
+
+    def test_query_exposes_query_variants(
+        self, two_stage_config, mock_openai_client, mock_qdrant_client
+    ):
+        """query() must return 'query_variants' with the original + rewrites."""
+        with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
+            engine = RAGQueryEngine(two_stage_config)
+            _setup(engine, mock_qdrant_client)
+
+            mock_openai_client.chat.completions.create.side_effect = [
+                MagicMock(choices=[MagicMock(message=MagicMock(content="rewrite one\nrewrite two"))]),
+                MagicMock(choices=[MagicMock(message=MagicMock(content="answer"))]),
+            ]
+
+            result = engine.query("original query", top_k=1, language="en")
+
+        variants = result["query_variants"]
+        assert variants[0] == "original query"
+        assert len(variants) == 3  # original + 2 rewrites
+
+    def test_diverse_rrf_strategy_used_when_configured(
+        self, two_stage_config, mock_openai_client, mock_qdrant_client
+    ):
+        """When merge_strategy='diverse_rrf', merged docs should carry fusion_method tag."""
+        two_stage_config.two_stage.merge_strategy = "diverse_rrf"
+
+        with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
+            engine = RAGQueryEngine(two_stage_config)
+            _setup(engine, mock_qdrant_client)
+
+            mock_openai_client.chat.completions.create.side_effect = [
+                MagicMock(choices=[MagicMock(message=MagicMock(content="v1\nv2"))]),
+                MagicMock(choices=[MagicMock(message=MagicMock(content="answer"))]),
+            ]
+
+            result = engine.query("test", top_k=1, language="en")
+
+        docs = result["retrieved_documents"]
+        assert all(d.get("fusion_method") == "diverse_rrf" for d in docs)

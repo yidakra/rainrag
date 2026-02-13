@@ -325,6 +325,16 @@ class TwoStageConfig(BaseModel):
             "documents and upweights candidates unique to under-served variants."
         ),
     )
+    merge_rrf_k: int = Field(
+        default=60,
+        ge=1,
+        description=(
+            "RRF constant k used by the 'diverse_rrf' merge strategy. "
+            "Standard literature default is 60 (tuned for two-source fusion). "
+            "Smaller values (e.g. 20–40) amplify rank differences more aggressively "
+            "and may help when variant result lists are short (top_k ≤ 5)."
+        ),
+    )
 
 
 class WebMetadataConfig(BaseModel):
