@@ -19,7 +19,13 @@ Usage
         --dataset eval/datasets/eval_set_en.jsonl \\
         --conditions 01,06,08
 
-    # 5. Open the MLflow UI
+    # 5. Human-review the generated dataset
+    python -m eval.run_eval review eval/datasets/eval_set_en.jsonl
+
+    # 6. Export only accepted records
+    python -m eval.run_eval review eval/datasets/eval_set_en.jsonl --filter-output eval/datasets/eval_set_en_clean.jsonl
+
+    # 7. Open the MLflow UI
     python -m eval.run_eval ui
 """
 from __future__ import annotations
@@ -208,6 +214,48 @@ def latency(
     typer.echo(f"Profiling latency for conditions {cids} ({n_queries} queries × {n_repeats} repeats) ...")
     exp.run()
     typer.echo(f"\nDone. Open MLflow UI with: mlflow ui --backend-store-uri {mlflow_uri}")
+
+
+# ── review ────────────────────────────────────────────────────────────────────
+
+
+@app.command("review")
+def review(
+    input_path: Annotated[str, typer.Argument(help="Eval JSONL file to review")],
+    output: Annotated[Optional[str], typer.Option("--output", "-o", help="Save reviewed file here (defaults to overwriting input)")] = None,
+    filter_output: Annotated[Optional[str], typer.Option("--filter-output", "-f", help="Also write a clean file with only valid=True records")] = None,
+    all_records: Annotated[bool, typer.Option("--all", help="Re-review already reviewed records")] = False,
+    stats_only: Annotated[bool, typer.Option("--stats", help="Just show review progress stats, don't start a session")] = False,
+) -> None:
+    """Interactively review a generated eval JSONL dataset.
+
+    For each unreviewed record, you can:
+
+    \b
+      [a] Accept  – mark valid
+      [e] Edit    – correct the reference_answer
+      [s] Skip    – leave for later
+      [d] Delete  – mark invalid
+      [q] Quit    – save and exit
+
+    Progress is persisted after every decision; the session can be safely interrupted.
+    """
+    from eval.datasets.review_eval_set import filter_valid, review_eval_set, review_stats
+
+    if stats_only:
+        review_stats(input_path)
+        return
+
+    review_eval_set(
+        input_path,
+        output_path=output,
+        only_unreviewed=not all_records,
+    )
+
+    if filter_output:
+        src = output or input_path
+        n = filter_valid(src, filter_output)
+        typer.echo(f"Exported {n} valid records → {filter_output}")
 
 
 # ── beir ─────────────────────────────────────────────────────────────────────

@@ -43,7 +43,33 @@ python -m eval.run_eval create-dataset \
 }
 ```
 
-### 3. Run the feature ablation experiment
+### 3. Review the generated dataset (human quality gate)
+
+```bash
+# Start an interactive terminal review session
+python -m eval.run_eval review eval/datasets/eval_set_en.jsonl
+
+# Check progress without starting a session
+python -m eval.run_eval review eval/datasets/eval_set_en.jsonl --stats
+
+# Review and simultaneously export a clean file with only accepted records
+python -m eval.run_eval review eval/datasets/eval_set_en.jsonl \
+    --filter-output eval/datasets/eval_set_en_clean.jsonl
+```
+
+During review, for each record:
+
+| Key | Action |
+|-----|--------|
+| `a` | Accept — mark `valid=true` |
+| `e` | Edit — correct `reference_answer` inline, then accept |
+| `s` | Skip — come back later (not marked reviewed) |
+| `d` | Delete — mark `valid=false` |
+| `q` | Quit — save progress and exit |
+
+Progress is saved after every decision; safe to interrupt and resume.
+
+### 4. Run the feature ablation experiment
 
 ```bash
 python -m eval.run_eval ablation \
@@ -62,7 +88,7 @@ python -m eval.run_eval ablation \
     --ragas
 ```
 
-### 4. Run the provider comparison
+### 5. Run the provider comparison
 
 ```bash
 python -m eval.run_eval providers \
@@ -72,7 +98,7 @@ python -m eval.run_eval providers \
 
 Sweep all LLM × embedding provider combos with the full retrieval pipeline.
 
-### 5. Profile per-stage latency
+### 6. Profile per-stage latency
 
 ```bash
 python -m eval.run_eval latency \
@@ -82,7 +108,7 @@ python -m eval.run_eval latency \
     --n-repeats 3
 ```
 
-### 6. Open the MLflow UI
+### 7. Open the MLflow UI
 
 ```bash
 python -m eval.run_eval ui
@@ -221,6 +247,7 @@ The synthetic dataset remains the primary eval set for domain-specific tuning.
 eval/
 ├── datasets/
 │   ├── create_eval_set.py       # Synthetic dataset generation
+│   ├── review_eval_set.py       # Interactive human review tool
 │   ├── beir_adapter.py          # BEIR public benchmark integration
 │   ├── eval_set_en.jsonl        # English eval set (generated)
 │   ├── eval_set_ru.jsonl        # Russian eval set (generated)
