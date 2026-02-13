@@ -227,6 +227,35 @@ gemini:
 
 **See [docs/PROVIDER_COMPARISON.md](docs/PROVIDER_COMPARISON.md) for help choosing the right provider for your needs.**
 
+### Two-Stage Retrieval
+
+RainRAG implements two-stage retrieval (Zhai & Lafferty, SIGIR 2002) to improve recall on broadcast-transcript corpora, where user queries are typically formal or terse but the source material is informal spoken language.
+
+**Stage 1 – Corpus smoothing**: handled by `hybrid_search` (BM25 + vector).
+
+**Stage 2 – Query-side smoothing**: configured under `two_stage` in `config.yaml`.
+
+```yaml
+two_stage:
+  enabled: true          # Master switch
+
+  # 2a – LLM query rewriting
+  # Rewrites the user query into transcript-register variants before retrieval.
+  # Addresses vocabulary mismatch between formal queries and spoken transcripts.
+  query_rewrite_enabled: true
+  query_rewrite_variants: 2        # Rewrites generated; original is always included (3 total)
+  query_rewrite_temperature: 0.7   # Higher → more diverse paraphrases
+
+  # 2b – HyDE (Hypothetical Document Embedding)
+  # Generates a hypothetical transcript passage and blends its embedding with the query.
+  # More expensive (1 extra LLM call + 1 embed). Enable for highest recall.
+  hyde_enabled: false
+  hyde_alpha: 0.5        # 0.0 = raw query only, 1.0 = HyDE only
+  hyde_temperature: 0.7  # Higher → more varied hypothetical passages
+```
+
+**Temperature design note:** `query_rewrite_temperature` and `hyde_temperature` are intentionally separate from the provider `temperature` setting used for final answer generation. Answer generation uses `temperature: 0` (or whatever is set per provider) for deterministic, source-grounded journalist output. The rewrite and HyDE calls use a higher temperature (default 0.7) to produce meaningfully diverse paraphrases and hypothetical passages — which is the whole point of these techniques.
+
 ### Choosing an Embedding Provider
 
 RainRAG supports four embedding providers:

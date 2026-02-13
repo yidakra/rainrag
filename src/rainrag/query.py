@@ -794,7 +794,10 @@ class RAGQueryEngine:
         logger.info("[Two-Stage] Generating HyDE hypothetical document...")
         try:
             messages = [{"role": "user", "content": prompt}]
-            hypothetical_doc = self.generate_answer(messages)
+            hypothetical_doc = self.generate_answer(
+                messages,
+                temperature=self.config.two_stage.hyde_temperature,
+            )
             logger.debug(f"[Two-Stage] HyDE passage: {hypothetical_doc[:120]}...")
             return self.embed_query(hypothetical_doc)
         except Exception as e:

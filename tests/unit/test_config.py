@@ -237,6 +237,7 @@ class TestTwoStageConfig:
         assert config.query_rewrite_temperature == 0.7
         assert config.hyde_enabled is False
         assert config.hyde_alpha == 0.5
+        assert config.hyde_temperature == 0.7
 
     def test_two_stage_config_custom(self) -> None:
         """Test custom two-stage configuration."""
@@ -285,6 +286,19 @@ class TestTwoStageConfig:
         # Boundary values should be valid
         TwoStageConfig(query_rewrite_temperature=0.0)
         TwoStageConfig(query_rewrite_temperature=2.0)
+
+    def test_two_stage_config_hyde_temperature_bounds(self) -> None:
+        """Test that hyde_temperature is clamped to [0, 2]."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            TwoStageConfig(hyde_temperature=-0.1)
+        with pytest.raises(ValidationError):
+            TwoStageConfig(hyde_temperature=2.1)
+        # Boundary values should be valid
+        TwoStageConfig(hyde_temperature=0.0)
+        TwoStageConfig(hyde_temperature=2.0)
 
 
 class TestMCPConfig:

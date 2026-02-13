@@ -300,6 +300,17 @@ class TwoStageConfig(BaseModel):
         le=1.0,
         description="Interpolation weight for HyDE embedding (0=raw query only, 1=HyDE only)",
     )
+    hyde_temperature: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "Temperature for the HyDE hypothetical-document generation call. "
+            "Higher values produce more varied hypothetical passages, improving embedding coverage. "
+            "Kept separate from answer-generation temperature, which should stay at 0 "
+            "for deterministic, source-grounded journalist output."
+        ),
+    )
 
 
 class WebMetadataConfig(BaseModel):

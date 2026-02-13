@@ -130,7 +130,10 @@ two_stage:
   # Generates a hypothetical transcript passage and blends its embedding with the query.
   # More expensive (1 extra LLM call + 1 embed). Enable for highest recall.
   hyde_enabled: false
-  hyde_alpha: 0.5  # Blend weight: 0.0 = raw query only, 1.0 = HyDE only
+  hyde_alpha: 0.5      # Blend weight: 0.0 = raw query only, 1.0 = HyDE only
+  # Higher temperature → more varied hypothetical passages, improving embedding coverage.
+  # Keep separate from answer temperature (0) for deterministic journalist output.
+  hyde_temperature: 0.7
 
 # Processing configuration
 processing:

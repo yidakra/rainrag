@@ -301,6 +301,20 @@ class TestHydeEmbedding:
         assert isinstance(vec, list)
         assert len(vec) == 1536
 
+    def test_hyde_uses_configured_temperature(self, hyde_config, mock_openai_client):
+        """HyDE LLM call should use hyde_temperature, not the answer temperature."""
+        hyde_config.two_stage.hyde_temperature = 0.9
+        hyde_config.openai.temperature = 0.0  # answer temperature stays zero
+
+        with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
+            engine = RAGQueryEngine(hyde_config)
+            _setup(engine, MagicMock())
+
+            engine._generate_hyde_embedding("flood damage", language="en")
+
+        call_kwargs = mock_openai_client.chat.completions.create.call_args
+        assert call_kwargs[1]["temperature"] == 0.9
+
 
 # ---------------------------------------------------------------------------
 # Full query() pipeline tests
