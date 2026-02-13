@@ -145,6 +145,7 @@ class QdrantIndexer:
                             "web_date_ts": doc.web_date_ts,
                             "web_description": doc.web_description,
                             "web_url": doc.web_url,
+                            "is_speech_free": doc.is_speech_free,
                         },
                     )
                 )

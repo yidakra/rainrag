@@ -710,6 +710,83 @@ Hi
         assert "en" in languages
         assert "ru" in languages
 
+    def test_ingest_pipeline_with_empty_vtt_no_metadata(
+        self, test_config: Config, archive_with_vtt_files: Path
+    ) -> None:
+        """Empty VTT files without web metadata must be excluded from the JSONL output."""
+        # Add an empty VTT into the archive
+        silent_dir = archive_with_vtt_files / "silent"
+        silent_dir.mkdir()
+        (silent_dir / "silent_en.vtt").write_text("WEBVTT\n\n")
+
+        test_config.paths.archive_root = str(archive_with_vtt_files)
+        test_config.chunking.enabled = False
+        test_config.web_metadata.enabled = False
+        ingester = Ingester(test_config)
+
+        doc_count = ingester.ingest()
+
+        # Still 4 — the empty VTT is not counted
+        assert doc_count == 4
+        assert ingester.speech_free_count == 1
+        assert ingester.speech_free_with_metadata_count == 0
+        assert ingester.invalid_vtt_count == 0
+
+        # Verify no speech-free docs in JSONL
+        with open(test_config.paths.docs_output) as f:
+            docs = [json.loads(line) for line in f]
+        assert all(not doc.get("is_speech_free", False) for doc in docs)
+
+    def test_ingest_pipeline_empty_vtt_with_metadata_creates_doc(
+        self, test_config: Config, archive_with_vtt_files: Path, temp_dir: Path
+    ) -> None:
+        """Empty VTT + web metadata must produce one metadata-only doc in the JSONL."""
+        # Add an empty VTT whose filename encodes a fake hash
+        silent_dir = archive_with_vtt_files / "silent"
+        silent_dir.mkdir()
+        (silent_dir / "silent_en.vtt").write_text("WEBVTT\n\n")
+
+        test_config.paths.archive_root = str(archive_with_vtt_files)
+        test_config.chunking.enabled = False
+        test_config.web_metadata.enabled = True
+        test_config.web_metadata.ingest_speech_free = True
+
+        ingester = Ingester(test_config)
+
+        # Inject a loader that returns metadata for every hash
+        class _FakeLoader:
+            def load_metadata(self, _hash):
+                return {
+                    "name": "Silent Video",
+                    "preview_text": "",
+                    "detail_text": "<p>Silent footage of the archive.</p>",
+                    "date_active_start": "2024-06-01T00:00:00Z",
+                    "url": "https://example.com/silent",
+                    "video_hash": _hash,
+                }
+
+            def extract_clean_metadata(self, raw):
+                from rainrag.ingest import WebMetadataLoader
+                loader = WebMetadataLoader(temp_dir)
+                return loader.extract_clean_metadata(raw)
+
+        ingester.web_metadata_loader = _FakeLoader()
+
+        doc_count = ingester.ingest()
+
+        # 4 normal docs + 1 speech-free metadata doc
+        assert doc_count == 5
+        assert ingester.speech_free_with_metadata_count == 1
+
+        with open(test_config.paths.docs_output) as f:
+            docs = [json.loads(line) for line in f]
+
+        speech_free_docs = [d for d in docs if d.get("is_speech_free")]
+        assert len(speech_free_docs) == 1
+        assert speech_free_docs[0]["start_time"] is None
+        assert speech_free_docs[0]["end_time"] is None
+        assert "Silent Video" in speech_free_docs[0]["text"]
+
     def test_ingest_nonexistent_archive(self, test_config: Config, temp_dir: Path) -> None:
         """Test ingestion with non-existent archive directory."""
         test_config.paths.archive_root = str(temp_dir / "nonexistent")

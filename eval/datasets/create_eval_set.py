@@ -95,7 +95,11 @@ def _scroll_chunks(engine: RAGQueryEngine, lang: str, limit: int) -> list[dict]:
         )
         for point in results:
             payload = point.payload or {}
-            if payload.get("language", "en") == lang and payload.get("text", ""):
+            if (
+                payload.get("language", "en") == lang
+                and payload.get("text", "")
+                and not payload.get("is_speech_free", False)  # skip metadata-only docs
+            ):
                 all_chunks.append({"doc_id": payload.get("doc_id", str(point.id)), **payload})
 
         if next_offset is None or len(results) == 0:

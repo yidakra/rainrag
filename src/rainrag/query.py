@@ -976,6 +976,7 @@ class RAGQueryEngine:
                     "web_date_ts": hit_payload.get("web_date_ts"),
                     "web_description": hit_payload.get("web_description"),
                     "web_url": hit_payload.get("web_url"),
+                    "is_speech_free": hit_payload.get("is_speech_free", False),
                 }
                 vector_documents.append(doc)
                 logger.debug(f"[Vector] Rank {idx + 1}: Score={hit.score:.4f}, Path={doc['path']}")
@@ -1131,8 +1132,11 @@ class RAGQueryEngine:
                 text = text[:max_chars_per_doc].rstrip() + "..."
 
             # Document header
+            is_speech_free = doc.get("is_speech_free", False)
             doc_header = f"[Document {doc['rank']}]"
-            if doc.get("is_chunk"):
+            if is_speech_free:
+                doc_header += " [No transcript — description only]"
+            elif doc.get("is_chunk"):
                 doc_header += (
                     f" [Chunk {doc.get('chunk_index', 0) + 1}/{doc.get('total_chunks', 1)}]"
                 )
@@ -1149,11 +1153,13 @@ class RAGQueryEngine:
                 secs = int(doc["duration_seconds"] % 60)
                 context_parts.append(f"Duration: {mins}:{secs:02d}")
 
-            # Include timecodes if available
-            if doc.get("start_time") and doc.get("end_time"):
+            # Include timecodes only for transcript documents
+            if not is_speech_free and doc.get("start_time") and doc.get("end_time"):
                 context_parts.append(f"Timecodes: {doc['start_time']} - {doc['end_time']}")
 
-            context_parts.append(f"Text: {text}")
+            # Label the text block so the LLM knows what it is reading
+            text_label = "Description" if is_speech_free else "Text"
+            context_parts.append(f"{text_label}: {text}")
             context_parts.append("")  # Empty line between documents
 
         context = "\n".join(context_parts)
@@ -1169,6 +1175,7 @@ class RAGQueryEngine:
 - Если несколько видео релевантны, перечислите каждое с датой и описанием
 - Делайте хорошее, развернутое "Описание" для каждого релевантного видео
 - Объясните, почему материал может быть полезен для текущего сюжета
+- Некоторые видео могут быть помечены как "[No transcript — description only]" — это означает, что в видео нет речи (музыка, тишина). Для таких видео используйте только поле "Description", не ссылайтесь на тайм-коды
 
 Если дата отсутствует, укажите это. Если материал не найден — скажите прямо, не выдумывайте.""",
             "en": """You are an assistant for journalists and editors, helping them find video footage from a news archive. CRITICAL: You MUST answer ONLY in English.
@@ -1180,6 +1187,7 @@ ALL VIDEOS ARE ARCHIVAL RECORDINGS, not current news. Response rules:
 - If multiple videos are relevant, list each with date and description
 - Provide rich, detailed descriptions explaining the content of each video
 - Explain why the footage might be useful for the current story
+- Some videos may be marked "[No transcript — description only]" — these contain no speech (music, silence, etc.). For these, rely only on the "Description" field and do not reference timecodes
 
 If date is missing, note this. If no relevant footage is found, say so clearly — do not fabricate.""",
         }

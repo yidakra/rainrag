@@ -894,12 +894,9 @@ class WebMetadataLoader:
         preview_text = self._clean_html_text(raw_metadata.get("preview_text", ""))
         detail_text = self._clean_html_text(raw_metadata.get("detail_text", ""))
 
-        # Skip if detail_text is empty after cleaning
-        if not detail_text:
-            logger.debug(f"Skipping video with empty detail_text: {title}")
-            return {}
-
-        # Combine preview and detail text for description
+        # Combine preview and detail text for description.
+        # detail_text may be empty for speech-free videos that only carry a title;
+        # that is still useful metadata so we do not skip here.
         description_parts = []
         if preview_text:
             description_parts.append(preview_text)
@@ -907,6 +904,11 @@ class WebMetadataLoader:
             description_parts.append(detail_text)
 
         description = " ".join(description_parts) if description_parts else None
+
+        # Skip only when there is genuinely nothing to index
+        if not title and not description:
+            logger.debug(f"Skipping video with no usable metadata content: {title!r}")
+            return {}
 
         # Parse date
         web_date = None
