@@ -234,6 +234,7 @@ class TestTwoStageConfig:
         assert config.enabled is False
         assert config.query_rewrite_enabled is True
         assert config.query_rewrite_variants == 2
+        assert config.query_rewrite_temperature == 0.7
         assert config.hyde_enabled is False
         assert config.hyde_alpha == 0.5
 
@@ -271,6 +272,19 @@ class TestTwoStageConfig:
             TwoStageConfig(query_rewrite_variants=0)
         with pytest.raises(ValidationError):
             TwoStageConfig(query_rewrite_variants=6)
+
+    def test_two_stage_config_rewrite_temperature_bounds(self) -> None:
+        """Test that query_rewrite_temperature is clamped to [0, 2]."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            TwoStageConfig(query_rewrite_temperature=-0.1)
+        with pytest.raises(ValidationError):
+            TwoStageConfig(query_rewrite_temperature=2.1)
+        # Boundary values should be valid
+        TwoStageConfig(query_rewrite_temperature=0.0)
+        TwoStageConfig(query_rewrite_temperature=2.0)
 
 
 class TestMCPConfig:

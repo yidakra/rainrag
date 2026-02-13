@@ -746,7 +746,10 @@ class RAGQueryEngine:
         logger.info(f"[Two-Stage] Rewriting query into {n} transcript-register variants...")
         try:
             messages = [{"role": "user", "content": prompt}]
-            raw = self.generate_answer(messages)
+            raw = self.generate_answer(
+                messages,
+                temperature=self.config.two_stage.query_rewrite_temperature,
+            )
             variants = [line.strip() for line in raw.splitlines() if line.strip()][:n]
             logger.debug(f"[Two-Stage] Query variants: {variants}")
         except Exception as e:
@@ -1193,12 +1196,16 @@ Question: {query}"""
             {"role": "user", "content": user_message},
         ]
 
-    def generate_answer(self, messages: list[dict[str, str]]) -> str:
+    def generate_answer(self, messages: list[dict[str, str]], temperature: float | None = None) -> str:
         """
         Generate an answer using configured LLM provider.
 
         Args:
             messages: List of message dictionaries for the chat
+            temperature: Override the provider's configured temperature. Pass a value
+                here when you need a different temperature for an intermediate step
+                (e.g. query rewriting) while keeping the main answer at the configured
+                temperature (typically 0 for deterministic journalist output).
 
         Returns:
             The generated answer text
@@ -1214,7 +1221,7 @@ Question: {query}"""
                     model=self.config.mistral.model_name,
                     messages=messages,  # type: ignore[arg-type]
                     max_tokens=self.config.mistral.max_tokens,
-                    temperature=self.config.mistral.temperature,
+                    temperature=temperature if temperature is not None else self.config.mistral.temperature,
                 )
                 if (
                     response
@@ -1246,7 +1253,7 @@ Question: {query}"""
                     model=self.config.openai.model_name,
                     messages=messages,  # type: ignore[arg-type]
                     max_tokens=self.config.openai.max_tokens,
-                    temperature=self.config.openai.temperature,
+                    temperature=temperature if temperature is not None else self.config.openai.temperature,
                 )
                 if (
                     response
@@ -1286,7 +1293,7 @@ Question: {query}"""
                 response = self.claude_client.messages.create(  # type: ignore[assignment]
                     model=self.config.claude.model_name,
                     max_tokens=self.config.claude.max_tokens,
-                    temperature=self.config.claude.temperature,
+                    temperature=temperature if temperature is not None else self.config.claude.temperature,
                     system=system_message,
                     messages=claude_messages,  # type: ignore[arg-type]
                 )
@@ -1349,7 +1356,7 @@ Question: {query}"""
                     contents=contents,
                     config=types.GenerateContentConfig(
                         max_output_tokens=self.config.gemini.max_tokens,
-                        temperature=self.config.gemini.temperature,
+                        temperature=temperature if temperature is not None else self.config.gemini.temperature,
                     ),
                 )
                 if response and response.text:

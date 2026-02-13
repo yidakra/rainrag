@@ -277,6 +277,17 @@ class TwoStageConfig(BaseModel):
         le=5,
         description="Number of rewritten variants to generate (original is always included)",
     )
+    query_rewrite_temperature: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "Temperature for the query-rewriting LLM call. "
+            "Higher values produce more diverse paraphrases. "
+            "Kept separate from answer-generation temperature, which should stay at 0 "
+            "for deterministic, source-grounded journalist output."
+        ),
+    )
 
     # Stage 2b: HyDE (Hypothetical Document Embedding)
     hyde_enabled: bool = Field(

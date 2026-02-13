@@ -247,6 +247,24 @@ class TestRewriteQuery:
         prompt_text = call_kwargs[1]["messages"][0]["content"]
         assert "Перепиши" in prompt_text
 
+    def test_rewrite_uses_configured_temperature(self, two_stage_config, mock_openai_client):
+        """Rewrite LLM call should use query_rewrite_temperature, not the answer temperature."""
+        two_stage_config.two_stage.query_rewrite_temperature = 0.9
+        two_stage_config.openai.temperature = 0.0  # answer temperature stays zero
+
+        with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
+            engine = RAGQueryEngine(two_stage_config)
+            _setup(engine, MagicMock())
+
+            mock_openai_client.chat.completions.create.return_value.choices[0].message.content = (
+                "variant one"
+            )
+
+            engine._rewrite_query_for_retrieval("query", language="en")
+
+        call_kwargs = mock_openai_client.chat.completions.create.call_args
+        assert call_kwargs[1]["temperature"] == 0.9
+
 
 # ---------------------------------------------------------------------------
 # _generate_hyde_embedding tests
@@ -423,3 +441,28 @@ class TestTwoStagePipeline:
             result = engine.query("test", top_k=1, language="en")
 
         assert set(result.keys()) == {"question", "answer", "retrieved_documents", "num_documents"}
+
+    def test_answer_generation_uses_zero_temperature(
+        self, two_stage_config, mock_openai_client, mock_qdrant_client
+    ):
+        """Final answer generation must use the provider's configured temperature (0),
+        not the rewrite temperature (0.7), ensuring deterministic journalist output."""
+        two_stage_config.openai.temperature = 0.0
+        two_stage_config.two_stage.query_rewrite_temperature = 0.7
+
+        with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
+            engine = RAGQueryEngine(two_stage_config)
+            _setup(engine, mock_qdrant_client)
+
+            rewrite_resp = MagicMock(choices=[MagicMock(message=MagicMock(content="v1\nv2"))])
+            answer_resp = MagicMock(choices=[MagicMock(message=MagicMock(content="Final answer."))])
+            mock_openai_client.chat.completions.create.side_effect = [rewrite_resp, answer_resp]
+
+            engine.query("test query", top_k=1, language="en")
+
+        calls = mock_openai_client.chat.completions.create.call_args_list
+        assert len(calls) == 2
+        rewrite_call_temp = calls[0][1]["temperature"]
+        answer_call_temp = calls[1][1]["temperature"]
+        assert rewrite_call_temp == 0.7   # diverse paraphrases
+        assert answer_call_temp == 0.0    # deterministic answer
