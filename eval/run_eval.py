@@ -27,6 +27,18 @@ Usage
 
     # 7. Open the MLflow UI
     python -m eval.run_eval ui
+
+    # 8. Sweep two-stage retrieval hyper-parameters (all five axes)
+    python -m eval.run_eval two-stage \\
+        --dataset eval/datasets/eval_set_en.jsonl
+
+    # 9. Two-stage sweep — axes D+E only, save CSV
+    python -m eval.run_eval two-stage \\
+        --dataset eval/datasets/eval_set_en.jsonl \\
+        --axes merge_strategy,merge_rrf_k \\
+        --merge-strategies coverage,diverse_rrf \\
+        --merge-rrf-ks 20,40,60 \\
+        --csv two_stage_merge.csv
 """
 from __future__ import annotations
 
