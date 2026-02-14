@@ -454,3 +454,218 @@ class TestBuildSummary:
         summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
         assert "rouge_l" in summary["metrics"]
         assert summary["metrics"]["rouge_l"] == pytest.approx(0.5)
+
+    def test_percentile_keys_in_summary(self, minimal_condition, minimal_config):
+        """aggregate_metrics emits _p10/_p25 siblings; they must flow through _build_summary."""
+        from eval.experiments.base import BaseExperiment
+
+        class _Exp(BaseExperiment):
+            def conditions(self):
+                return []
+
+        exp = _Exp(dataset_path=None)
+        # Three queries so the percentile is non-trivial
+        results = [
+            self._make_valid_result("q1", ndcg5=0.2),
+            self._make_valid_result("q2", ndcg5=0.5),
+            self._make_valid_result("q3", ndcg5=0.8),
+        ]
+        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+
+        assert "ndcg@5_p10" in summary["metrics"], "ndcg@5_p10 must be present"
+        assert "ndcg@5_p25" in summary["metrics"], "ndcg@5_p25 must be present"
+        # p10 ≤ mean ≤ p90 for any real distribution
+        assert summary["metrics"]["ndcg@5_p10"] <= summary["metrics"]["ndcg@5"]
+        assert summary["metrics"]["ndcg@5_p25"] <= summary["metrics"]["ndcg@5"]
+
+    def test_intent_coverage_flows_through_summary(self, minimal_condition, minimal_config):
+        """intent_coverage@k added by _run_dataset must flow through _build_summary."""
+        from eval.experiments.base import BaseExperiment
+
+        class _Exp(BaseExperiment):
+            def conditions(self):
+                return []
+
+        exp = _Exp(dataset_path=None)
+        # Inject intent_coverage keys directly (as _run_dataset would)
+        results = [
+            {**self._make_valid_result("q1"), "intent_coverage@3": 1.0, "intent_coverage@5": 1.0},
+            {**self._make_valid_result("q2"), "intent_coverage@3": 0.5, "intent_coverage@5": 0.5},
+        ]
+        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+
+        assert "intent_coverage@5" in summary["metrics"], "intent_coverage@5 must be aggregated"
+        assert summary["metrics"]["intent_coverage@5"] == pytest.approx(0.75)
+        assert "intent_coverage@3" in summary["metrics"]
+
+    def test_apply_overrides_merge_strategy(self, minimal_config):
+        """The new merge_strategy field must be settable via apply_overrides."""
+        from eval.experiments.base import apply_overrides
+
+        result = apply_overrides(minimal_config, {"two_stage.merge_strategy": "diverse_rrf"})
+        assert result.two_stage.merge_strategy == "diverse_rrf"
+        # Original unchanged
+        assert minimal_config.two_stage.merge_strategy == "coverage"
+
+    def test_apply_overrides_merge_rrf_k(self, minimal_config):
+        """The new merge_rrf_k field must be settable via apply_overrides."""
+        from eval.experiments.base import apply_overrides
+
+        result = apply_overrides(minimal_config, {"two_stage.merge_rrf_k": 20})
+        assert result.two_stage.merge_rrf_k == 20
+        # Original unchanged
+        assert minimal_config.two_stage.merge_rrf_k == 60
+
+
+# ---------------------------------------------------------------------------
+# _print_result
+# ---------------------------------------------------------------------------
+
+
+class TestPrintResult:
+    """Unit tests for BaseExperiment._print_result console output."""
+
+    def _result(self, metrics: dict) -> dict:
+        return {
+            "condition_id": "test-01",
+            "condition_label": "test_label",
+            "top_k": 5,
+            "metrics": metrics,
+        }
+
+    def _capture(self, metrics: dict, capsys) -> str:
+        from eval.experiments.base import BaseExperiment
+        BaseExperiment._print_result(self._result(metrics))
+        return capsys.readouterr().out
+
+    def test_contains_condition_id(self, capsys):
+        out = self._capture({"recall@5": 0.5, "ndcg@5": 0.4, "mrr": 0.6, "rouge_l": 0.3}, capsys)
+        assert "test-01" in out
+
+    def test_contains_condition_label(self, capsys):
+        out = self._capture({"recall@5": 0.5, "ndcg@5": 0.4, "mrr": 0.6, "rouge_l": 0.3}, capsys)
+        assert "test_label" in out
+
+    def test_contains_recall(self, capsys):
+        out = self._capture({"recall@5": 0.750, "ndcg@5": 0.4, "mrr": 0.6, "rouge_l": 0.3}, capsys)
+        assert "recall@5=0.750" in out
+
+    def test_ndcg_shows_p10_when_present(self, capsys):
+        out = self._capture(
+            {"recall@5": 0.5, "ndcg@5": 0.6, "ndcg@5_p10": 0.3, "mrr": 0.5, "rouge_l": 0.4},
+            capsys,
+        )
+        assert "p10=0.300" in out
+
+    def test_ndcg_hides_p10_when_absent(self, capsys):
+        out = self._capture({"recall@5": 0.5, "ndcg@5": 0.6, "mrr": 0.5, "rouge_l": 0.4}, capsys)
+        assert "p10=" not in out
+
+    def test_intent_coverage_shown_when_present(self, capsys):
+        out = self._capture(
+            {"recall@5": 0.5, "ndcg@5": 0.6, "mrr": 0.5, "rouge_l": 0.4, "intent_coverage@5": 0.875},
+            capsys,
+        )
+        assert "ic@5=0.875" in out
+
+    def test_intent_coverage_hidden_when_absent(self, capsys):
+        out = self._capture({"recall@5": 0.5, "ndcg@5": 0.6, "mrr": 0.5, "rouge_l": 0.4}, capsys)
+        assert "ic@5" not in out
+
+    def test_cost_shown_when_present(self, capsys):
+        out = self._capture(
+            {"recall@5": 0.5, "ndcg@5": 0.4, "mrr": 0.6, "rouge_l": 0.3,
+             "cost.total_usd_est_per_query": 0.0012},
+            capsys,
+        )
+        assert "$0.0012/q" in out
+
+    def test_cost_na_when_absent(self, capsys):
+        out = self._capture({"recall@5": 0.5, "ndcg@5": 0.4, "mrr": 0.6, "rouge_l": 0.3}, capsys)
+        assert "cost=n/a" in out
+
+    def test_latency_shown_when_present(self, capsys):
+        out = self._capture(
+            {"recall@5": 0.5, "ndcg@5": 0.4, "mrr": 0.6, "rouge_l": 0.3, "latency_p50_ms": 123.4},
+            capsys,
+        )
+        assert "123ms" in out
+
+    def test_single_line_output(self, capsys):
+        out = self._capture({"recall@5": 0.5, "ndcg@5": 0.4, "mrr": 0.6, "rouge_l": 0.3}, capsys)
+        assert out.count("\n") == 1
+
+
+# ---------------------------------------------------------------------------
+# results_to_csv (fallback plain-CSV path)
+# ---------------------------------------------------------------------------
+
+
+class TestResultsToCsv:
+    """Tests for BaseExperiment.results_to_csv using the pandas-free fallback."""
+
+    @staticmethod
+    def _make_results(n: int = 2) -> list[dict]:
+        return [
+            {
+                "condition_id": f"cond-{i}",
+                "condition_label": f"label-{i}",
+                "top_k": 5,
+                "metrics": {
+                    "recall@5": 0.5 + i * 0.1,
+                    "ndcg@5": 0.4 + i * 0.1,
+                    "mrr": 0.6,
+                },
+            }
+            for i in range(n)
+        ]
+
+    @staticmethod
+    def _exp():
+        from eval.experiments.base import BaseExperiment
+
+        class _Exp(BaseExperiment):
+            def conditions(self):
+                return []
+
+        return _Exp(dataset_path=None)
+
+    def test_csv_created(self, tmp_path):
+        path = str(tmp_path / "out.csv")
+        self._exp().results_to_csv(self._make_results(), path)
+        assert Path(path).exists()
+
+    def test_csv_has_header(self, tmp_path):
+        path = str(tmp_path / "out.csv")
+        self._exp().results_to_csv(self._make_results(), path)
+        header = Path(path).read_text().splitlines()[0]
+        assert "condition_id" in header
+        assert "label" in header
+        assert "top_k" in header
+
+    def test_csv_metric_columns_present(self, tmp_path):
+        path = str(tmp_path / "out.csv")
+        self._exp().results_to_csv(self._make_results(), path)
+        header = Path(path).read_text().splitlines()[0]
+        assert "recall@5" in header
+        assert "ndcg@5" in header
+
+    def test_csv_row_count(self, tmp_path):
+        path = str(tmp_path / "out.csv")
+        self._exp().results_to_csv(self._make_results(n=3), path)
+        lines = [l for l in Path(path).read_text().splitlines() if l.strip()]
+        # 1 header + 3 data rows
+        assert len(lines) == 4
+
+    def test_csv_values_correct(self, tmp_path):
+        path = str(tmp_path / "out.csv")
+        self._exp().results_to_csv(self._make_results(n=1), path)
+        content = Path(path).read_text()
+        assert "cond-0" in content
+        assert "label-0" in content
+
+    def test_empty_results_no_crash(self, tmp_path):
+        path = str(tmp_path / "out.csv")
+        # Should return without creating a file or raising
+        self._exp().results_to_csv([], path)
+        assert not Path(path).exists()
