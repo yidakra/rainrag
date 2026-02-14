@@ -1187,6 +1187,62 @@ class RAGQueryEngine:
             logger.error(f"Failed to retrieve documents: {e}")
             raise
 
+    def _apply_score_threshold(
+        self, documents: list[dict[str, Any]], threshold: float
+    ) -> list[dict[str, Any]]:
+        """Drop documents whose score falls below *threshold*.
+
+        Motivated by Cuconasu et al. (SIGIR 2024): near-miss documents that
+        score highly from retrieval but are not truly relevant hurt LLM answer
+        quality more than simply having fewer documents.  A threshold of 0.0
+        (the default) is a no-op.
+        """
+        if threshold <= 0.0:
+            return documents
+        return [d for d in documents if d.get("score", 0.0) >= threshold]
+
+    def _order_documents_for_prompt(
+        self, documents: list[dict[str, Any]], order: str
+    ) -> list[dict[str, Any]]:
+        """Re-order *documents* for prompt assembly according to *order*.
+
+        Args:
+            documents: Documents in current rank order (best first).
+            order: One of ``"rank"`` (no change), ``"reversed"`` (worst first,
+                best last — exploits LLM recency bias), or ``"book_end"``
+                (best document first, second-best last, remainder in the
+                middle — combats 'lost in the middle' attention drop).
+
+        Returns:
+            Re-ordered list.  The ``rank`` field is updated so that
+            ``[Document N]`` labels in the prompt reflect the new positions.
+        """
+        if order == "rank" or len(documents) <= 1:
+            return documents
+
+        if order == "reversed":
+            ordered = list(reversed(documents))
+        elif order == "book_end":
+            if len(documents) == 2:
+                ordered = documents  # already book-ended
+            else:
+                first = documents[0]
+                second_best = documents[1]
+                middle = documents[2:-1]
+                last = documents[-1]
+                # Swap second-best to the end position
+                ordered = [first] + middle + [last, second_best]
+        else:
+            logger.warning("Unknown prompt_doc_order %r; falling back to 'rank'", order)
+            return documents
+
+        # Re-number so [Document N] labels match the new positions
+        for i, doc in enumerate(ordered, start=1):
+            doc = dict(doc)
+            doc["rank"] = i
+            ordered[i - 1] = doc
+        return ordered
+
     def rerank_documents(
         self, query: str, documents: list[dict[str, Any]], top_n: int
     ) -> list[dict[str, Any]]:
@@ -1650,6 +1706,23 @@ Question: {query}"""
         # Step 5: Rerank if enabled
         if self.config.reranker.enabled and documents:
             documents = self.rerank_documents(question, documents, top_n=top_k)
+
+        # Step 5b: Drop documents below the minimum score threshold
+        min_score = self.config.reranker.min_retrieval_score
+        if min_score > 0.0:
+            before = len(documents)
+            documents = self._apply_score_threshold(documents, min_score)
+            if len(documents) < before:
+                logger.info(
+                    "Score threshold %.3f dropped %d/%d documents",
+                    min_score,
+                    before - len(documents),
+                    before,
+                )
+
+        # Step 5c: Re-order documents for prompt assembly
+        doc_order = self.config.two_stage.prompt_doc_order
+        documents = self._order_documents_for_prompt(documents, doc_order)
 
         # Step 6: Build the messages with language specification
         messages = self.build_prompt(question, documents, language=language)

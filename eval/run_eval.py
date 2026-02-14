@@ -39,6 +39,12 @@ Usage
         --merge-strategies coverage,diverse_rrf \\
         --merge-rrf-ks 20,40,60 \\
         --csv two_stage_merge.csv
+
+    # 10. Two-stage sweep — Axis F: prompt document ordering
+    python -m eval.run_eval two-stage \\
+        --dataset eval/datasets/eval_set_en.jsonl \\
+        --axes doc_order \\
+        --doc-orders rank,reversed,book_end
 """
 from __future__ import annotations
 
@@ -393,7 +399,7 @@ def two_stage(
             "--axes",
             help=(
                 "Comma-separated axes to sweep. "
-                "Valid: hyde_alpha,rewrite_variants,pool_size,merge_strategy,merge_rrf_k"
+                "Valid: hyde_alpha,rewrite_variants,pool_size,merge_strategy,merge_rrf_k,doc_order"
             ),
         ),
     ] = None,
@@ -423,9 +429,16 @@ def two_stage(
             help="Comma-separated RRF k values for diverse_rrf strategy, e.g. 20,40,60",
         ),
     ] = None,
+    doc_orders: Annotated[
+        Optional[str],
+        typer.Option(
+            "--doc-orders",
+            help="Comma-separated prompt document ordering strategies, e.g. rank,reversed,book_end",
+        ),
+    ] = None,
     csv_output: Annotated[Optional[str], typer.Option("--csv", help="Write CSV summary to this path")] = None,
 ) -> None:
-    """Sweep two-stage retrieval hyper-parameters across five independent axes.
+    """Sweep two-stage retrieval hyper-parameters across six independent axes.
 
     Each axis is swept while the others are held at their defaults, keeping
     wall-clock time proportional to the sum of axis lengths rather than
@@ -439,11 +452,15 @@ def two_stage(
     C – pool_size       : top_k_multiplier before reranking [2, 3, 5]
     D – merge_strategy  : variant-merge algorithm [coverage, diverse_rrf]
     E – merge_rrf_k     : RRF k for diverse_rrf strategy [20, 40, 60]
+    F – doc_order       : prompt document ordering [rank, reversed, book_end]
 
     Examples::
 
-        # Full sweep (all five axes)
+        # Full sweep (all six axes)
         python -m eval.run_eval two-stage --dataset eval/datasets/eval_set_en.jsonl
+
+        # Axis F only — test positional effects
+        python -m eval.run_eval two-stage --dataset ... --axes doc_order
 
         # Axes D+E only — compare merge strategies and tune RRF k
         python -m eval.run_eval two-stage --dataset ... --axes merge_strategy,merge_rrf_k
@@ -464,6 +481,7 @@ def two_stage(
     pools = [int(v.strip()) for v in pool_sizes.split(",")] if pool_sizes else None
     strategies = [s.strip() for s in merge_strategies.split(",")] if merge_strategies else None
     rrf_ks = [int(v.strip()) for v in merge_rrf_ks.split(",")] if merge_rrf_ks else None
+    orders = [o.strip() for o in doc_orders.split(",")] if doc_orders else None
 
     exp = TwoStageSweepExperiment(
         config_path=config,
@@ -476,6 +494,7 @@ def two_stage(
         pool_sizes=pools,
         merge_strategies=strategies,
         merge_rrf_ks=rrf_ks,
+        doc_orders=orders,
     )
 
     typer.echo(f"Running two-stage sweep ({len(exp.conditions())} conditions × {ks} top_k) ...")

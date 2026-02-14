@@ -10,6 +10,7 @@ Covers:
 - --axes subset parsed and forwarded
 - --hyde-alphas, --rewrite-variants, --pool-sizes custom values parsed
 - --merge-strategies and --merge-rrf-ks parsed and forwarded (Axes D+E)
+- --doc-orders parsed and forwarded (Axis F)
 - --csv path forwarded to results_to_csv
 - --top-ks comma list parsed into a tuple
 - Unknown axis propagated to TwoStageSweepExperiment (constructor raises)
@@ -311,3 +312,62 @@ class TestAxesDECombined:
         assert set(kwargs["axes"]) == {"merge_strategy", "merge_rrf_k"}
         assert kwargs["merge_strategies"] == ["coverage", "diverse_rrf"]
         assert kwargs["merge_rrf_ks"] == [20, 60]
+
+
+# ---------------------------------------------------------------------------
+# --doc-orders flag (Axis F)
+# ---------------------------------------------------------------------------
+
+
+class TestDocOrdersFlag:
+    def _kwargs(self, flag_value: str) -> dict:
+        mock_exp = _mock_experiment()
+        with patch(_PATCH, return_value=mock_exp) as mock_cls:
+            runner.invoke(
+                app,
+                ["two-stage", "--dataset", _DATASET, "--doc-orders", flag_value],
+            )
+        _, kwargs = mock_cls.call_args
+        return kwargs
+
+    def test_single_order_parsed(self):
+        assert self._kwargs("rank")["doc_orders"] == ["rank"]
+
+    def test_multiple_orders_parsed(self):
+        assert self._kwargs("rank,reversed,book_end")["doc_orders"] == [
+            "rank", "reversed", "book_end"
+        ]
+
+    def test_whitespace_stripped(self):
+        assert self._kwargs("rank, book_end")["doc_orders"] == ["rank", "book_end"]
+
+    def test_omitting_flag_gives_none(self):
+        mock_exp = _mock_experiment()
+        with patch(_PATCH, return_value=mock_exp) as mock_cls:
+            runner.invoke(app, ["two-stage", "--dataset", _DATASET])
+        _, kwargs = mock_cls.call_args
+        assert kwargs["doc_orders"] is None
+
+
+# ---------------------------------------------------------------------------
+# Axis F standalone
+# ---------------------------------------------------------------------------
+
+
+class TestAxisFalone:
+    def test_axis_f_only(self):
+        """--axes doc_order with --doc-orders forwarded correctly."""
+        mock_exp = _mock_experiment()
+        with patch(_PATCH, return_value=mock_exp) as mock_cls:
+            runner.invoke(
+                app,
+                [
+                    "two-stage",
+                    "--dataset", _DATASET,
+                    "--axes", "doc_order",
+                    "--doc-orders", "rank,book_end",
+                ],
+            )
+        _, kwargs = mock_cls.call_args
+        assert kwargs["axes"] == ["doc_order"]
+        assert kwargs["doc_orders"] == ["rank", "book_end"]

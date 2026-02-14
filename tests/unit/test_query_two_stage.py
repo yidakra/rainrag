@@ -671,3 +671,140 @@ class TestMergeStrategies:
 
         docs = result["retrieved_documents"]
         assert all(d.get("fusion_method") == "diverse_rrf" for d in docs)
+
+
+# ---------------------------------------------------------------------------
+# _apply_score_threshold tests
+# ---------------------------------------------------------------------------
+
+
+def _make_docs(scores):
+    """Build a minimal document list with the given scores and sequential ranks."""
+    return [{"score": s, "rank": i + 1, "text": f"doc{i}"} for i, s in enumerate(scores)]
+
+
+class TestScoreThreshold:
+    """Tests for RAGQueryEngine._apply_score_threshold."""
+
+    @pytest.fixture
+    def engine(self, base_config):
+        with patch("rainrag.query.OpenAI"):
+            eng = RAGQueryEngine.__new__(RAGQueryEngine)
+            eng.config = base_config
+            return eng
+
+    def test_zero_threshold_is_noop(self, engine):
+        docs = _make_docs([0.9, 0.5, 0.1])
+        assert engine._apply_score_threshold(docs, 0.0) == docs
+
+    def test_negative_threshold_is_noop(self, engine):
+        docs = _make_docs([0.9, 0.1])
+        assert engine._apply_score_threshold(docs, -1.0) == docs
+
+    def test_drops_docs_below_threshold(self, engine):
+        docs = _make_docs([0.9, 0.5, 0.3, 0.1])
+        result = engine._apply_score_threshold(docs, 0.4)
+        assert [d["score"] for d in result] == [0.9, 0.5]
+
+    def test_keeps_docs_at_threshold(self, engine):
+        docs = _make_docs([0.9, 0.5, 0.3])
+        result = engine._apply_score_threshold(docs, 0.5)
+        assert [d["score"] for d in result] == [0.9, 0.5]
+
+    def test_empty_input(self, engine):
+        assert engine._apply_score_threshold([], 0.5) == []
+
+    def test_all_below_threshold_returns_empty(self, engine):
+        docs = _make_docs([0.1, 0.2, 0.3])
+        result = engine._apply_score_threshold(docs, 0.9)
+        assert result == []
+
+    def test_does_not_mutate_input(self, engine):
+        docs = _make_docs([0.9, 0.1])
+        original = list(docs)
+        engine._apply_score_threshold(docs, 0.5)
+        assert docs == original
+
+
+# ---------------------------------------------------------------------------
+# _order_documents_for_prompt tests
+# ---------------------------------------------------------------------------
+
+
+class TestOrderDocumentsForPrompt:
+    """Tests for RAGQueryEngine._order_documents_for_prompt."""
+
+    @pytest.fixture
+    def engine(self, base_config):
+        with patch("rainrag.query.OpenAI"):
+            eng = RAGQueryEngine.__new__(RAGQueryEngine)
+            eng.config = base_config
+            return eng
+
+    def test_rank_order_is_unchanged(self, engine):
+        docs = _make_docs([0.9, 0.7, 0.5, 0.3])
+        result = engine._order_documents_for_prompt(docs, "rank")
+        assert [d["score"] for d in result] == [0.9, 0.7, 0.5, 0.3]
+
+    def test_reversed_order(self, engine):
+        docs = _make_docs([0.9, 0.7, 0.5, 0.3])
+        result = engine._order_documents_for_prompt(docs, "reversed")
+        assert [d["score"] for d in result] == [0.3, 0.5, 0.7, 0.9]
+
+    def test_reversed_renumbers_ranks(self, engine):
+        docs = _make_docs([0.9, 0.7, 0.5])
+        result = engine._order_documents_for_prompt(docs, "reversed")
+        assert [d["rank"] for d in result] == [1, 2, 3]
+
+    def test_book_end_four_docs(self, engine):
+        """Best first, second-best last, remaining in middle."""
+        docs = _make_docs([0.9, 0.8, 0.6, 0.4])
+        result = engine._order_documents_for_prompt(docs, "book_end")
+        scores = [d["score"] for d in result]
+        assert scores[0] == 0.9   # best first
+        assert scores[-1] == 0.8  # second-best last
+        # remaining in middle
+        assert set(scores[1:-1]) == {0.6, 0.4}
+
+    def test_book_end_renumbers_ranks(self, engine):
+        docs = _make_docs([0.9, 0.8, 0.6, 0.4])
+        result = engine._order_documents_for_prompt(docs, "book_end")
+        assert [d["rank"] for d in result] == [1, 2, 3, 4]
+
+    def test_book_end_three_docs(self, engine):
+        """With 3 docs: best first, middle doc in middle, second-best last."""
+        docs = _make_docs([0.9, 0.7, 0.5])
+        result = engine._order_documents_for_prompt(docs, "book_end")
+        scores = [d["score"] for d in result]
+        assert scores[0] == 0.9
+        assert scores[-1] == 0.7
+        assert scores[1] == 0.5
+
+    def test_book_end_two_docs_unchanged(self, engine):
+        docs = _make_docs([0.9, 0.7])
+        result = engine._order_documents_for_prompt(docs, "book_end")
+        assert [d["score"] for d in result] == [0.9, 0.7]
+
+    def test_single_doc_unchanged_for_any_order(self, engine):
+        for order in ("rank", "reversed", "book_end"):
+            docs = _make_docs([0.9])
+            result = engine._order_documents_for_prompt(docs, order)
+            assert len(result) == 1
+            assert result[0]["score"] == 0.9
+
+    def test_unknown_order_falls_back_to_rank(self, engine):
+        docs = _make_docs([0.9, 0.7, 0.5])
+        result = engine._order_documents_for_prompt(docs, "unknown_strategy")
+        assert [d["score"] for d in result] == [0.9, 0.7, 0.5]
+
+    def test_rank_order_returns_same_references(self, engine):
+        """'rank' should not copy or mutate documents."""
+        docs = _make_docs([0.9, 0.5])
+        result = engine._order_documents_for_prompt(docs, "rank")
+        assert result is docs
+
+    def test_does_not_mutate_original_docs_list(self, engine):
+        docs = _make_docs([0.9, 0.7, 0.5, 0.3])
+        original_scores = [d["score"] for d in docs]
+        engine._order_documents_for_prompt(docs, "book_end")
+        assert [d["score"] for d in docs] == original_scores

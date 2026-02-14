@@ -256,6 +256,19 @@ class RerankerConfig(BaseModel):
     initial_k: int = Field(
         default=20, description="Number of candidates to retrieve before reranking"
     )
+    min_retrieval_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum score threshold for documents passed to the LLM. "
+            "Documents scoring below this value are dropped before prompt assembly, "
+            "even if they rank within top_k. "
+            "Motivated by Cuconasu et al. (SIGIR 2024): high-scoring-but-irrelevant "
+            "documents harm LLM accuracy more than no documents at all. "
+            "Set to 0.0 (default) to disable filtering."
+        ),
+    )
 
 
 class TwoStageConfig(BaseModel):
@@ -333,6 +346,21 @@ class TwoStageConfig(BaseModel):
             "Standard literature default is 60 (tuned for two-source fusion). "
             "Smaller values (e.g. 20–40) amplify rank differences more aggressively "
             "and may help when variant result lists are short (top_k ≤ 5)."
+        ),
+    )
+
+    # Prompt document ordering (Axis F)
+    prompt_doc_order: str = Field(
+        default="rank",
+        description=(
+            "Order in which retrieved documents are presented in the LLM prompt. "
+            "'rank' (default) places the highest-scoring document first and lowest last. "
+            "'reversed' places the lowest-scoring document first and highest last, "
+            "exploiting recency bias in LLMs (primary position effect). "
+            "'book_end' places the two highest-scoring documents at the start and end "
+            "of the context window with lower-scoring documents in the middle, "
+            "combating the 'lost in the middle' attention deficit identified by "
+            "Liu et al. (2023) and further motivated by Cuconasu et al. (SIGIR 2024)."
         ),
     )
 

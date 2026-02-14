@@ -93,7 +93,7 @@ def test_two_stage_sweep_default_conditions() -> None:
     assert len(conds) > 0
 
     axes = {c["tags"]["sweep_axis"] for c in conds}
-    assert axes == {"hyde_alpha", "rewrite_variants", "pool_size", "merge_strategy", "merge_rrf_k"}
+    assert axes == {"hyde_alpha", "rewrite_variants", "pool_size", "merge_strategy", "merge_rrf_k", "doc_order"}
 
 
 def test_two_stage_sweep_axis_filter() -> None:

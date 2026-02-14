@@ -516,6 +516,22 @@ class TestBuildSummary:
         # Original unchanged
         assert minimal_config.two_stage.merge_rrf_k == 60
 
+    def test_apply_overrides_prompt_doc_order(self, minimal_config):
+        """prompt_doc_order must be settable via apply_overrides (Axis F)."""
+        from eval.experiments.base import apply_overrides
+
+        result = apply_overrides(minimal_config, {"two_stage.prompt_doc_order": "book_end"})
+        assert result.two_stage.prompt_doc_order == "book_end"
+        assert minimal_config.two_stage.prompt_doc_order == "rank"
+
+    def test_apply_overrides_min_retrieval_score(self, minimal_config):
+        """min_retrieval_score must be settable via apply_overrides."""
+        from eval.experiments.base import apply_overrides
+
+        result = apply_overrides(minimal_config, {"reranker.min_retrieval_score": 0.4})
+        assert result.reranker.min_retrieval_score == pytest.approx(0.4)
+        assert minimal_config.reranker.min_retrieval_score == pytest.approx(0.0)
+
 
 # ---------------------------------------------------------------------------
 # _print_result

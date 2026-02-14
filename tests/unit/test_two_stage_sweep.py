@@ -19,12 +19,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from eval.experiments.two_stage_sweep import (
+    DOC_ORDERS,
     HYDE_ALPHAS,
     MERGE_RRF_KS,
     MERGE_STRATEGIES,
     POOL_SIZES,
     REWRITE_VARIANTS,
     TwoStageSweepExperiment,
+    _DEFAULT_DOC_ORDER,
     _DEFAULT_HYDE_ALPHA,
     _DEFAULT_MERGE_RRF_K,
     _DEFAULT_MERGE_STRATEGY,
@@ -53,7 +55,12 @@ def _make_exp(**kwargs) -> TwoStageSweepExperiment:
     # Replicate just the attribute assignments made by TwoStageSweepExperiment.__init__
     # without calling super().__init__ (which requires a real config file).
     from eval.experiments.two_stage_sweep import (
-        HYDE_ALPHAS, REWRITE_VARIANTS, POOL_SIZES, MERGE_STRATEGIES, MERGE_RRF_KS,
+        DOC_ORDERS,
+        HYDE_ALPHAS,
+        MERGE_RRF_KS,
+        MERGE_STRATEGIES,
+        POOL_SIZES,
+        REWRITE_VARIANTS,
         TwoStageSweepExperiment as _Cls,
     )
     axes = kwargs.get("axes")
@@ -63,6 +70,7 @@ def _make_exp(**kwargs) -> TwoStageSweepExperiment:
     exp._pool_sizes = kwargs.get("pool_sizes", POOL_SIZES)
     exp._merge_strategies = kwargs.get("merge_strategies", MERGE_STRATEGIES)
     exp._merge_rrf_ks = kwargs.get("merge_rrf_ks", MERGE_RRF_KS)
+    exp._doc_orders = kwargs.get("doc_orders", DOC_ORDERS)
     return exp
 
 
@@ -73,7 +81,7 @@ def _make_exp(**kwargs) -> TwoStageSweepExperiment:
 
 class TestConditionCounts:
     def test_full_sweep_count(self):
-        """Total conditions = sum of all five axis lengths."""
+        """Total conditions = sum of all six axis lengths."""
         exp = _make_exp()
         expected = (
             len(HYDE_ALPHAS)
@@ -81,6 +89,7 @@ class TestConditionCounts:
             + len(POOL_SIZES)
             + len(MERGE_STRATEGIES)
             + len(MERGE_RRF_KS)
+            + len(DOC_ORDERS)
         )
         assert len(exp.conditions()) == expected
 
@@ -104,6 +113,10 @@ class TestConditionCounts:
         exp = _make_exp(axes=["merge_rrf_k"])
         assert len(exp.conditions()) == len(MERGE_RRF_KS)
 
+    def test_doc_order_axis_count(self):
+        exp = _make_exp(axes=["doc_order"])
+        assert len(exp.conditions()) == len(DOC_ORDERS)
+
     def test_two_axis_subset_count(self):
         exp = _make_exp(axes=["hyde_alpha", "merge_strategy"])
         assert len(exp.conditions()) == len(HYDE_ALPHAS) + len(MERGE_STRATEGIES)
@@ -124,7 +137,7 @@ class TestConditionCounts:
 
 class TestConditionStructure:
     @pytest.fixture(params=["hyde_alpha", "rewrite_variants", "pool_size",
-                            "merge_strategy", "merge_rrf_k"])
+                            "merge_strategy", "merge_rrf_k", "doc_order"])
     def single_axis_conditions(self, request):
         exp = _make_exp(axes=[request.param])
         return exp.conditions()
@@ -343,6 +356,54 @@ class TestMergeRrfKAxis:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Axis F: doc_order
+# ---------------------------------------------------------------------------
+
+
+class TestDocOrderAxis:
+    def _conditions(self, **kwargs):
+        exp = _make_exp(axes=["doc_order"], **kwargs)
+        return exp.conditions()
+
+    def test_default_doc_orders_count(self):
+        assert len(self._conditions()) == len(DOC_ORDERS)
+
+    def test_override_key_is_prompt_doc_order(self):
+        for cond in self._conditions():
+            assert "two_stage.prompt_doc_order" in cond["overrides"]
+
+    def test_override_values_match_doc_orders(self):
+        for cond, expected in zip(self._conditions(), DOC_ORDERS):
+            assert cond["overrides"]["two_stage.prompt_doc_order"] == expected
+
+    def test_other_axes_held_at_defaults(self):
+        for cond in self._conditions():
+            assert cond["overrides"]["two_stage.hyde_alpha"] == pytest.approx(_DEFAULT_HYDE_ALPHA)
+            assert cond["overrides"]["two_stage.query_rewrite_variants"] == _DEFAULT_REWRITE_VARIANTS
+            assert cond["overrides"]["hybrid_search.top_k_multiplier"] == _DEFAULT_POOL_SIZE
+            assert cond["overrides"]["two_stage.merge_strategy"] == _DEFAULT_MERGE_STRATEGY
+            assert cond["overrides"]["two_stage.merge_rrf_k"] == _DEFAULT_MERGE_RRF_K
+
+    def test_tag_records_doc_order(self):
+        for cond, expected in zip(self._conditions(), DOC_ORDERS):
+            assert cond["tags"]["prompt_doc_order"] == expected
+
+    def test_tag_sweep_axis_value(self):
+        for cond in self._conditions():
+            assert cond["tags"]["sweep_axis"] == "doc_order"
+
+    def test_custom_doc_orders(self):
+        conds = self._conditions(doc_orders=["rank", "book_end"])
+        vals = [c["overrides"]["two_stage.prompt_doc_order"] for c in conds]
+        assert vals == ["rank", "book_end"]
+
+
+# ---------------------------------------------------------------------------
+# Unknown axis / validation
+# ---------------------------------------------------------------------------
+
+
 class TestValidation:
     def test_unknown_axis_raises(self):
         with pytest.raises(ValueError, match="Unknown sweep axes"):
@@ -366,7 +427,7 @@ class TestValidation:
         assert len(ids) == len(set(ids)), f"Duplicate IDs found: {[x for x in ids if ids.count(x) > 1]}"
 
     def test_no_duplicate_condition_ids_per_axis(self):
-        for axis in ("hyde_alpha", "rewrite_variants", "pool_size", "merge_strategy", "merge_rrf_k"):
+        for axis in ("hyde_alpha", "rewrite_variants", "pool_size", "merge_strategy", "merge_rrf_k", "doc_order"):
             exp = _make_exp(axes=[axis])
             ids = [c["id"] for c in exp.conditions()]
             assert len(ids) == len(set(ids)), f"Duplicate IDs in axis={axis}: {ids}"
