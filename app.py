@@ -10,6 +10,7 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 import redis
@@ -25,10 +26,11 @@ load_dotenv()
 
 # Configuration
 API_BASE_URL = os.getenv("RAINRAG_API_URL", "http://localhost:8001").rstrip("/")
-# API base for server-side calls (health/query). If API_BASE_URL ends with /api, keep it.
+# API base for server-side calls (health/query)
 API_BASE = API_BASE_URL
-# Asset base for browser-facing URLs (video/vtt/docs). If API_BASE_URL ends with /api, strip it.
-ASSET_BASE_URL = API_BASE[:-4] if API_BASE.endswith("/api") else API_BASE
+# Asset base for browser-facing URLs (video/vtt/docs).
+# Defaults to API base. Override with RAINRAG_ASSET_URL when assets are served elsewhere.
+ASSET_BASE_URL = os.getenv("RAINRAG_ASSET_URL", API_BASE_URL).rstrip("/")
 # Allow disabling SSL verification for self-signed/internal certs
 API_VERIFY_SSL = os.getenv("RAINRAG_API_VERIFY", "true").lower() not in ("0", "false", "no", "off")
 
@@ -591,8 +593,7 @@ def check_authentication() -> bool:
                 password_valid = hmac.compare_digest(password_input or "", AUTH_TOKEN or "")
                 if password_valid:
                     logger.warning(
-                        "SECURITY WARNING: Using deprecated plain-text AUTH_TOKEN. "
-                        "Please migrate to RAINRAG_PASSWORD_HASH using argon2."
+                        "SECURITY WARNING: Using deprecated plain-text AUTH_TOKEN. Please migrate to RAINRAG_PASSWORD_HASH using argon2."
                     )
 
             if password_valid:
@@ -747,6 +748,31 @@ def get_api_headers() -> dict[str, str]:
     return headers
 
 
+def build_asset_url(path_or_url: str) -> str:
+    """Build an absolute URL for browser-facing media assets.
+
+    Accepts either relative API paths (e.g. /video/foo.mp4) or already-absolute URLs.
+    """
+    if path_or_url.startswith(("http://", "https://")):
+        return path_or_url
+    if path_or_url.startswith("/"):
+        return f"{ASSET_BASE_URL}{path_or_url}"
+    return f"{ASSET_BASE_URL}/{path_or_url}"
+
+
+def append_auth_query(url: str) -> str:
+    """Append auth token query param for browser media requests when configured."""
+    if not AUTH_TOKEN:
+        return url
+
+    parts = urlsplit(url)
+    query_params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query_params.setdefault("auth", AUTH_TOKEN)
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query_params), parts.fragment)
+    )
+
+
 async def check_api_health() -> dict[str, Any] | None:
     """Check API health status."""
     try:
@@ -845,7 +871,7 @@ def fetch_vtt_content(vtt_url: str) -> str | None:
     try:
         import requests
 
-        vtt_full_url = f"{ASSET_BASE_URL}{vtt_url}"
+        vtt_full_url = build_asset_url(vtt_url)
         headers = get_api_headers()
         response = requests.get(vtt_full_url, headers=headers, timeout=10, verify=API_VERIFY_SSL)
         response.raise_for_status()
@@ -1109,7 +1135,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         st.markdown(f"**{get_text('video_label', lang)}:**")
                         # Strip any existing fragment
                         base_video_url = video_url.split("#", 1)[0]
-                        video_full_url = f"{ASSET_BASE_URL}{base_video_url}"
+                        video_full_url = append_auth_query(build_asset_url(base_video_url))
 
                         # Add timestamp fragment for chunks to seek to start time
                         start_time_seconds = group[0].get("start_time_seconds")
@@ -1171,7 +1197,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         # Get selected VTT info
                         vtt_info = vtt_languages[selected_vtt_lang]
                         vtt_url = vtt_info["url"]
-                        vtt_full_url = f"{ASSET_BASE_URL}{vtt_url}"
+                        vtt_full_url = append_auth_query(build_asset_url(vtt_url))
                         vtt_filename = vtt_info["filename"].split("/")[-1]
 
                         # Download button
