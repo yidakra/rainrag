@@ -2,7 +2,7 @@
     "pythonVersion": "3.12",
     "venvPath": "/home/ubuntu/.cache/pypoetry/virtualenvs",
     "venv": "rainrag-Gf6KsqoE-py3.12",
-    "include": ["src", "tests"],
+    "include": ["src", "tests", "app.py"],
     "exclude": [],
     "extraPaths": ["src"],
     "reportMissingImports": "warning",

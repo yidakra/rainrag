@@ -97,6 +97,25 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 
 ## Quick Start
 
+*Note: backup and restore instructions have been moved later in this document under the **Troubleshooting** section.*
+
+Create a `.env` file by copying the template: `cp .env.example .env` (you can then edit it).
+
+Required R2 variables are configured via `.env` (see `.env.example`):
+
+- `R2_ACCOUNT_ID`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `R2_BUCKET`
+
+Optional:
+
+- `R2_PREFIX` (defaults to `embeddings`)
+- `R2_QDRANT_PREFIX` (defaults to `qdrant`)
+- `QDRANT_URL` (defaults to `http://localhost:6333`)
+- `QDRANT_COLLECTION` (defaults to `broadcast_transcripts`)
+- `QDRANT_SNAPSHOT_NAME` (restore a specific snapshot)
+
 ### Prerequisites
 
 - Python 3.10+
@@ -1689,6 +1708,49 @@ docker ps | grep qdrant
 # If not running, start it
 docker run -p 6333:6333 qdrant/qdrant:v1.16.3
 ```
+
+### Back Up / Restore Indexed Database (Qdrant) Across Servers
+
+You can reuse the indexed DB on another server by backing up **Qdrant collection snapshots** and restoring them.  When migrating, don’t forget to also copy the embeddings cache (`embeddings/` path configured in `config.yaml` or via the `EMBEDDINGS_CACHE` env) so your vectors remain in sync with the database.
+
+RainRAG includes helper scripts for the Qdrant portion (the corresponding Makefile targets will first verify that Qdrant is reachable):
+
+```bash
+# Backup current Qdrant collection snapshot to Cloudflare R2
+# (equivalent to the Makefile target `make backup-qdrant-r2` which checks Qdrant availability)
+./scripts/backup_qdrant_r2.sh
+
+# Restore latest snapshot from R2 into local Qdrant
+# (equivalent to the Makefile target `make restore-qdrant-r2` which checks Qdrant availability)
+./scripts/restore_qdrant_r2.sh
+```
+
+
+### Embeddings Cache Backup/Restore
+
+RainRAG also provides simple commands to back up or restore the embeddings cache directory. These are independent of the Qdrant snapshot tools but often used together when migrating data.
+
+```bash
+make backup-embeddings-r2   # push `embeddings/` to Cloudflare R2
+make restore-embeddings-r2  # pull `embeddings/` from Cloudflare R2
+```
+
+You can control the R2 location with the same environment variables shown earlier (e.g. `R2_BUCKET`, `R2_PREFIX`).
+
+
+Optional variables (in `.env`):
+
+- `QDRANT_URL` (default: `http://localhost:6333`)
+- `QDRANT_COLLECTION` (default: `broadcast_transcripts`)
+- `R2_QDRANT_PREFIX` (default: `qdrant`)
+- `QDRANT_SNAPSHOT_NAME` (optional explicit snapshot file for restore)
+
+Notes:
+
+- Snapshot/restore preserves vectors + payload metadata, so indexing does not need to be rerun.
+- You must also preserve the embeddings cache (default `embeddings/` or configured via `config.yaml`) when moving servers; the cache should match the points in Qdrant.
+- Keep `config.yaml` collection name aligned with `QDRANT_COLLECTION`.
+- For best consistency, avoid writes during backup.
 
 ### Queries Return No Results (Empty Collection)
 

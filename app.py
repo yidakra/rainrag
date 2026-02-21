@@ -9,7 +9,8 @@ import re
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 import redis
@@ -25,10 +26,11 @@ load_dotenv()
 
 # Configuration
 API_BASE_URL = os.getenv("RAINRAG_API_URL", "http://localhost:8001").rstrip("/")
-# API base for server-side calls (health/query). If API_BASE_URL ends with /api, keep it.
+# API base for server-side calls (health/query)
 API_BASE = API_BASE_URL
-# Asset base for browser-facing URLs (video/vtt/docs). If API_BASE_URL ends with /api, strip it.
-ASSET_BASE_URL = API_BASE[:-4] if API_BASE.endswith("/api") else API_BASE
+# Asset base for browser-facing URLs (video/vtt/docs).
+# Defaults to API base. Override with RAINRAG_ASSET_URL when assets are served elsewhere.
+ASSET_BASE_URL = os.getenv("RAINRAG_ASSET_URL", API_BASE_URL).rstrip("/")
 # Allow disabling SSL verification for self-signed/internal certs
 API_VERIFY_SSL = os.getenv("RAINRAG_API_VERIFY", "true").lower() not in ("0", "false", "no", "off")
 
@@ -39,33 +41,37 @@ AUTH_PASSWORD_HASH = os.getenv("RAINRAG_PASSWORD_HASH", "")
 AUTH_TOKEN = os.getenv("STREAMLIT_AUTH_TOKEN", "")
 # Session timeout in minutes (default: 8 hours)
 try:
-    SESSION_TIMEOUT_MINUTES = int(os.getenv("RAINRAG_SESSION_TIMEOUT", "480"))
-    if SESSION_TIMEOUT_MINUTES <= 0:
-        SESSION_TIMEOUT_MINUTES = 480
+    _timeout = int(os.getenv("RAINRAG_SESSION_TIMEOUT", "480"))
+    if _timeout <= 0:
+        _timeout = 480
         logger.warning("RAINRAG_SESSION_TIMEOUT must be positive, using default 480")
+    session_timeout_minutes = _timeout
 except (ValueError, TypeError):
-    SESSION_TIMEOUT_MINUTES = 480
+    session_timeout_minutes = 480
     logger.warning("Invalid RAINRAG_SESSION_TIMEOUT, using default 480")
 
 # Maximum failed login attempts before temporary lockout
+_max_attempts = 5
 try:
-    MAX_LOGIN_ATTEMPTS = int(os.getenv("RAINRAG_MAX_LOGIN_ATTEMPTS", "5"))
-    if MAX_LOGIN_ATTEMPTS <= 0:
-        MAX_LOGIN_ATTEMPTS = 5
+    temp = int(os.getenv("RAINRAG_MAX_LOGIN_ATTEMPTS", "5"))
+    if temp > 0:
+        _max_attempts = temp
+    else:
         logger.warning("RAINRAG_MAX_LOGIN_ATTEMPTS must be positive, using default 5")
 except (ValueError, TypeError):
-    MAX_LOGIN_ATTEMPTS = 5
     logger.warning("Invalid RAINRAG_MAX_LOGIN_ATTEMPTS, using default 5")
+MAX_LOGIN_ATTEMPTS = _max_attempts
 
 # Lockout duration in seconds after max attempts
 try:
-    LOCKOUT_DURATION_SECONDS = int(os.getenv("RAINRAG_LOCKOUT_DURATION", "300"))
-    if LOCKOUT_DURATION_SECONDS <= 0:
-        LOCKOUT_DURATION_SECONDS = 300
+    _lockout_duration = int(os.getenv("RAINRAG_LOCKOUT_DURATION", "300"))
+    if _lockout_duration <= 0:
+        _lockout_duration = 300
         logger.warning("RAINRAG_LOCKOUT_DURATION must be positive, using default 300")
 except (ValueError, TypeError):
-    LOCKOUT_DURATION_SECONDS = 300
+    _lockout_duration = 300
     logger.warning("Invalid RAINRAG_LOCKOUT_DURATION, using default 300")
+LOCKOUT_DURATION_SECONDS = _lockout_duration
 # Enable audit logging for authentication events
 AUDIT_LOG_ENABLED = os.getenv("RAINRAG_AUDIT_LOG", "true").lower() not in (
     "0",
@@ -105,7 +111,7 @@ try:
         decode_responses=True,
     )
     # Test connection
-    redis_client.ping()
+    redis_client.ping()  # type: ignore
     logger.info("Connected to Redis for session storage")
 except redis.ConnectionError as e:
     logger.error(f"Failed to connect to Redis: {e}")
@@ -337,7 +343,7 @@ def is_session_expired() -> bool:
     if not last_activity:
         return True
 
-    timeout_delta = timedelta(minutes=SESSION_TIMEOUT_MINUTES)
+    timeout_delta = timedelta(minutes=session_timeout_minutes)
     return datetime.now() - last_activity > timeout_delta
 
 
@@ -367,12 +373,12 @@ def redis_get_failed_attempts(identifier: str) -> dict[str, Any]:
         return {"count": 0, "lockout_until": None}
 
     key = _get_lockout_key(identifier)
-    data = redis_client.hgetall(key)
+    data = cast(dict[str, Any], redis_client.hgetall(key))  # type: ignore
 
     if not data:
         return {"count": 0, "lockout_until": None}
 
-    count = int(data.get("count", 0))
+    count = int(data.get("count", "0"))
     lockout_until_str = data.get("lockout_until")
     lockout_until = None
     if lockout_until_str:
@@ -409,7 +415,7 @@ def redis_set_failed_attempts(identifier: str, count: int, lockout_until: dateti
         # Remove TTL if no lockout
         redis_client.persist(key)
 
-    redis_client.hset(key, mapping=data)
+    redis_client.hset(key, mapping=data)  # type: ignore
 
 
 def redis_incr_failed_attempts(identifier: str) -> int:
@@ -426,7 +432,7 @@ def redis_incr_failed_attempts(identifier: str) -> int:
         return 0
 
     key = _get_lockout_key(identifier)
-    count = redis_client.hincrby(key, "count", 1)
+    count = cast(int, redis_client.hincrby(key, "count", 1))  # type: ignore
     return count
 
 
@@ -587,8 +593,7 @@ def check_authentication() -> bool:
                 password_valid = hmac.compare_digest(password_input or "", AUTH_TOKEN or "")
                 if password_valid:
                     logger.warning(
-                        "SECURITY WARNING: Using deprecated plain-text AUTH_TOKEN. "
-                        "Please migrate to RAINRAG_PASSWORD_HASH using argon2."
+                        "SECURITY WARNING: Using deprecated plain-text AUTH_TOKEN. Please migrate to RAINRAG_PASSWORD_HASH using argon2."
                     )
 
             if password_valid:
@@ -743,6 +748,31 @@ def get_api_headers() -> dict[str, str]:
     return headers
 
 
+def build_asset_url(path_or_url: str) -> str:
+    """Build an absolute URL for browser-facing media assets.
+
+    Accepts either relative API paths (e.g. /video/foo.mp4) or already-absolute URLs.
+    """
+    if path_or_url.startswith(("http://", "https://")):
+        return path_or_url
+    if path_or_url.startswith("/"):
+        return f"{ASSET_BASE_URL}{path_or_url}"
+    return f"{ASSET_BASE_URL}/{path_or_url}"
+
+
+def append_auth_query(url: str) -> str:
+    """Append auth token query param for browser media requests when configured."""
+    if not AUTH_TOKEN:
+        return url
+
+    parts = urlsplit(url)
+    query_params = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query_params.setdefault("auth", AUTH_TOKEN)
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query_params), parts.fragment)
+    )
+
+
 async def check_api_health() -> dict[str, Any] | None:
     """Check API health status."""
     try:
@@ -811,7 +841,7 @@ async def get_related_chunks(
     Raises:
         httpx.HTTPStatusError: If API returns error status
     """
-    payload = {
+    payload: dict[str, Any] = {
         "chunk_id": chunk_id,
         "top_k": top_k,
         "same_video_only": same_video_only,
@@ -841,7 +871,7 @@ def fetch_vtt_content(vtt_url: str) -> str | None:
     try:
         import requests
 
-        vtt_full_url = f"{ASSET_BASE_URL}{vtt_url}"
+        vtt_full_url = build_asset_url(vtt_url)
         headers = get_api_headers()
         response = requests.get(vtt_full_url, headers=headers, timeout=10, verify=API_VERIFY_SSL)
         response.raise_for_status()
@@ -993,7 +1023,7 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
     meta_parts.append(f"**{get_text('language_field', lang)}:** {chunk_lang}")
 
     # Build metadata display - prioritize user-facing information
-    lines = []
+    lines: list[str] = []
 
     # 1. Title (most important - show prominently if available)
     if web_title:
@@ -1004,7 +1034,7 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
         lines.append(chunk_info)
 
     # 3. Video metadata (date, duration, timecode)
-    video_meta = []
+    video_meta: list[str] = []
     if chunk_date:
         video_meta.append(f"📅 {chunk_date}")
     if duration_str:
@@ -1031,7 +1061,7 @@ def format_context_chunk(chunk: dict[str, Any], lang: str) -> str:
             lines.append(f"\n🔗 <{sanitized_url}>")
 
     # 7. Technical details (collapsed/minimized)
-    tech_details = []
+    tech_details: list[str] = []
     tech_details.append(f"Score: {score:.3f}")
     if rerank_score is not None and original_score is not None:
         tech_details[-1] = f"Score: {score:.3f} (reranked from {original_score:.3f})"
@@ -1105,7 +1135,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         st.markdown(f"**{get_text('video_label', lang)}:**")
                         # Strip any existing fragment
                         base_video_url = video_url.split("#", 1)[0]
-                        video_full_url = f"{ASSET_BASE_URL}{base_video_url}"
+                        video_full_url = append_auth_query(build_asset_url(base_video_url))
 
                         # Add timestamp fragment for chunks to seek to start time
                         start_time_seconds = group[0].get("start_time_seconds")
@@ -1138,7 +1168,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     st.markdown(f"**{get_text('vtt_label', lang)}:**")
 
                     # Create language selector if multiple VTT files exist for this group
-                    vtt_languages = {}
+                    vtt_languages: dict[str, dict[str, Any]] = {}
                     for chunk in group:
                         vtt_url = chunk.get("vtt_url")
                         if vtt_url:
@@ -1167,7 +1197,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         # Get selected VTT info
                         vtt_info = vtt_languages[selected_vtt_lang]
                         vtt_url = vtt_info["url"]
-                        vtt_full_url = f"{ASSET_BASE_URL}{vtt_url}"
+                        vtt_full_url = append_auth_query(build_asset_url(vtt_url))
                         vtt_filename = vtt_info["filename"].split("/")[-1]
 
                         # Download button
@@ -1391,7 +1421,7 @@ def render_sidebar(lang: str):
             last_activity = st.session_state.get("last_activity")
             if last_activity:
                 time_since_activity = datetime.now() - last_activity
-                minutes_remaining = SESSION_TIMEOUT_MINUTES - int(
+                minutes_remaining = session_timeout_minutes - int(
                     time_since_activity.total_seconds() / 60
                 )
                 if minutes_remaining > 60:
@@ -1425,7 +1455,7 @@ def render_sidebar(lang: str):
                         collection = health_info.get("qdrant_collection", "Unknown")
 
                         # Search features
-                        features = []
+                        features: list[str] = []
                         if health_info.get("hybrid_search_enabled", False):
                             features.append(
                                 f"Hybrid ({health_info.get('fusion_method', 'rrf').upper()})"
@@ -1586,7 +1616,7 @@ def main():
                 )
 
                 # Add assistant response to chat
-                assistant_message = {
+                assistant_message: dict[str, Any] = {
                     "role": "assistant",
                     "content": response["answer"],
                     "context": response.get("context", []),

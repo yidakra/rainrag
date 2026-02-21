@@ -1,4 +1,4 @@
-.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop api streamlit up down api-bg streamlit-bg mcp mcp-http mcp-inspector
+.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop api streamlit up down api-bg streamlit-bg mcp mcp-http mcp-inspector backup-embeddings-r2 restore-embeddings-r2 backup-qdrant-r2 restore-qdrant-r2
 
 # Enable BuildKit for all Docker operations
 export DOCKER_BUILDKIT=1
@@ -7,7 +7,7 @@ help: ## Show this help message
 	@echo 'Usage: make [target]'
 	@echo ''
 	@echo 'Available targets:'
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 install: ## Install dependencies with Poetry
 	poetry install
@@ -220,6 +220,19 @@ pipeline: ## Run full pipeline
 
 info: ## Show system info
 	poetry run rainrag info
+
+# Backup/restore helpers
+backup-embeddings-r2: ## Backup embeddings directory to Cloudflare R2
+	./scripts/backup_embeddings_r2.sh
+
+restore-embeddings-r2: ## Restore embeddings directory from Cloudflare R2
+	./scripts/restore_embeddings_r2.sh
+
+backup-qdrant-r2: check-qdrant-start ## Backup Qdrant collection snapshot to Cloudflare R2 (ensures Qdrant is running first)
+	./scripts/backup_qdrant_r2.sh
+
+restore-qdrant-r2: check-qdrant-start ## Restore Qdrant collection snapshot from Cloudflare R2 (ensures Qdrant is running first)
+	./scripts/restore_qdrant_r2.sh
 
 # MCP Server commands
 mcp: ## Run MCP server (default stdio transport for Claude Desktop/Cursor)

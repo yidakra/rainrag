@@ -1,10 +1,14 @@
 """FastAPI backend for RainRAG query interface."""
 
+import contextlib
+import hmac
 import os
+import string
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from loguru import logger
@@ -136,6 +140,8 @@ def find_video_file(vtt_path: str) -> str | None:
 
     vtt_file = Path(vtt_path)
 
+    # If indexed path is stale/foreign, rely on suffix-based relative reconstruction later.
+
     # Determine the directory to search
 
     # Get base name without VTT extension
@@ -183,6 +189,58 @@ def find_video_file(vtt_path: str) -> str | None:
     return None
 
 
+def _resolve_media_relative(path_str: str, root: Path) -> Path | None:
+    """Resolve a media file path to a root-relative path with migration-safe fallbacks."""
+    candidate = Path(path_str)
+
+    def _infer_hashed_relative(file_name_path: Path) -> Path | None:
+        """Infer hash-sharded relative path (<hh>/<hh>/.../<filename>) from filename."""
+        name = file_name_path.name
+        stem = file_name_path.stem
+
+        # Normalize VTT stem: remove language suffix from <hash>.ru.vtt / <hash>.en.vtt
+        for lang_suffix in (".ru", ".en"):
+            if stem.endswith(lang_suffix):
+                stem = stem[: -len(lang_suffix)]
+                break
+
+        # For videos, basename is typically <hash>_1080p.mp4, <hash>.mp4, etc.
+        hash_part = stem.split("_", 1)[0]
+        if len(hash_part) == 40 and all(ch in string.hexdigits for ch in hash_part):
+            shard_dirs = [hash_part[i : i + 2].lower() for i in range(0, 40, 2)]
+            return Path(*shard_dirs) / name
+
+        return None
+
+    # 1) Standard case: path already under root
+    with contextlib.suppress(Exception):
+        return candidate.resolve().relative_to(root)
+
+    # 2) Heuristic: recover relative suffix after root basename (e.g. /transcoded/...)
+    root_marker = f"/{root.name}/"
+    normalized = path_str.replace("\\", "/")
+    marker_pos = normalized.rfind(root_marker)
+    if marker_pos != -1:
+        suffix = normalized[marker_pos + len(root_marker) :].lstrip("/")
+        guessed = Path(suffix)
+        if (root / guessed).exists():
+            return guessed
+
+    # 3) Heuristic: derive hash-sharded path from filename and verify existence
+    inferred = _infer_hashed_relative(candidate)
+    if inferred is not None and (root / inferred).exists():
+        return inferred
+
+    # 4) Generic fallback: try matching trailing suffix of the original path
+    parts = list(candidate.parts)
+    for n in range(min(len(parts), 30), 3, -1):
+        tail = Path(*parts[-n:])
+        if (root / tail).exists():
+            return tail
+
+    return None
+
+
 def generate_media_urls(
     vtt_path: str, start_time: str | None = None
 ) -> tuple[str | None, str | None]:
@@ -200,31 +258,37 @@ def generate_media_urls(
     vtt_url = None
 
     if config and config.video.enabled:
+        archive_root = Path(config.paths.archive_root).resolve()
+        vtt_rel = _resolve_media_relative(vtt_path, archive_root)
+
+        # Canonical VTT path under current archive root (if resolvable)
+        canonical_vtt_path = (
+            str((archive_root / vtt_rel).resolve()) if vtt_rel is not None else vtt_path
+        )
+
         # Find corresponding video file
-        video_file = find_video_file(vtt_path)
+        video_file = find_video_file(canonical_vtt_path)
         if video_file:
             # Create relative path from video_root
             video_root = Path(
                 config.paths.video_root if config.paths.video_root else config.paths.archive_root
             ).resolve()
-            try:
-                video_rel = Path(video_file).resolve().relative_to(video_root)
+            video_rel = _resolve_media_relative(video_file, video_root)
+            if video_rel is not None:
                 video_url = f"/video/{video_rel}"
                 # Add timecode fragment for video player to start at
                 if start_time:
                     start_seconds = timecode_to_seconds(start_time)
                     if start_seconds is not None:
                         video_url = f"{video_url}#t={start_seconds}"
-            except ValueError as e:
-                logger.warning(f"Video file {video_file} is not under video_root {video_root}: {e}")
+            else:
+                logger.warning(f"Could not resolve video path under video_root: {video_file}")
 
         # VTT file URL
-        try:
-            archive_root = Path(config.paths.archive_root).resolve()
-            vtt_rel = Path(vtt_path).resolve().relative_to(archive_root)
+        if vtt_rel is not None:
             vtt_url = f"/vtt/{vtt_rel}"
-        except ValueError as e:
-            logger.warning(f"VTT file {vtt_path} is not under archive_root {archive_root}: {e}")
+        else:
+            logger.warning(f"Could not resolve VTT path under archive_root: {vtt_path}")
 
     return video_url, vtt_url
 
@@ -296,12 +360,17 @@ app.add_middleware(
 )
 
 
-def verify_auth_token(authorization: str | None = Header()) -> bool:  # type: ignore
+def verify_auth_token(authorization: str | None = None, access_token: str | None = None) -> bool:
     """Verify authentication token if configured."""
     required_token = os.getenv("RAINRAG_AUTH_TOKEN")
 
     # If no token is configured, allow all requests
     if not required_token:
+        return True
+
+    # Allow explicit query token for browser media requests where custom headers
+    # are not available on <video>/<a> elements.
+    if access_token and hmac.compare_digest(access_token, required_token):
         return True
 
     # Check if authorization header is provided
@@ -587,7 +656,11 @@ async def root():
 
 
 @app.api_route("/video/{file_path:path}", methods=["GET", "HEAD"])
-async def serve_video(file_path: str):
+async def serve_video(
+    file_path: str,
+    authorization: Annotated[str | None, Header()] = None,
+    auth: Annotated[str | None, Query()] = None,
+):
     """
     Serve video files.
 
@@ -597,7 +670,7 @@ async def serve_video(file_path: str):
     Returns:
         Video file as streaming response
     """
-    verify_auth_token()
+    verify_auth_token(authorization=authorization, access_token=auth)
 
     if config is None or not config.video.enabled:
         raise HTTPException(status_code=404, detail="Video serving is disabled")
@@ -642,7 +715,11 @@ async def serve_video(file_path: str):
 
 
 @app.api_route("/vtt/{file_path:path}", methods=["GET", "HEAD"])
-async def serve_vtt(file_path: str):
+async def serve_vtt(
+    file_path: str,
+    authorization: Annotated[str | None, Header()] = None,
+    auth: Annotated[str | None, Query()] = None,
+):
     """
     Serve VTT subtitle files.
 
@@ -652,7 +729,7 @@ async def serve_vtt(file_path: str):
     Returns:
         VTT file as text response
     """
-    verify_auth_token()
+    verify_auth_token(authorization=authorization, access_token=auth)
 
     if config is None:
         raise HTTPException(status_code=503, detail="Server not initialized")
