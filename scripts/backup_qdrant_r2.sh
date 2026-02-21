@@ -21,7 +21,13 @@ export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-auto}"
 export AWS_EC2_METADATA_DISABLED=true
 
 echo "Creating Qdrant snapshot for collection: $QDRANT_COLLECTION"
-response="$(curl -fsS -X POST "${QDRANT_URL}/collections/${QDRANT_COLLECTION}/snapshots")"
+# fail fast if Qdrant is unresponsive; allow overrides via CURL_CONNECT_TIMEOUT/CURL_MAX_TIME
+connect_timeout="${CURL_CONNECT_TIMEOUT:-5}"
+max_time="${CURL_MAX_TIME:-30}"
+response="$(curl -fsS \
+  --connect-timeout "$connect_timeout" \
+  -m "$max_time" \
+  -X POST "${QDRANT_URL}/collections/${QDRANT_COLLECTION}/snapshots")"
 
 snapshot_name="$(printf '%s' "$response" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["result"]["name"])')"
 if [[ -z "$snapshot_name" ]]; then
@@ -30,9 +36,24 @@ if [[ -z "$snapshot_name" ]]; then
 fi
 
 snapshot_file="${SNAPSHOT_DIR}/${TIMESTAMP}-${snapshot_name}"
+# ensure temporary snapshot file is removed on exit (success or failure)
+trap 'rm -f "$snapshot_file" >/dev/null 2>&1 || true' EXIT
 
 echo "Downloading snapshot to: $snapshot_file"
-curl -fsS "${QDRANT_URL}/collections/${QDRANT_COLLECTION}/snapshots/${snapshot_name}" -o "$snapshot_file"
+# download with connection and overall timeouts to prevent hanging indefinitely
+# allow customization via env vars CURL_CONNECT_TIMEOUT and CURL_MAX_TIME
+connect_timeout="${CURL_CONNECT_TIMEOUT:-10}"
+max_time="${CURL_MAX_TIME:-300}"
+curl -fsS \
+  --connect-timeout "$connect_timeout" \
+  -m "$max_time" \
+  "${QDRANT_URL}/collections/${QDRANT_COLLECTION}/snapshots/${snapshot_name}" \
+  -o "$snapshot_file"
+rc=$?
+if [ $rc -ne 0 ]; then
+  echo "Error: failed to download snapshot from Qdrant (exit code $rc)" >&2
+  exit $rc
+fi
 
 r2_target="s3://${R2_BUCKET}/${QDRANT_PREFIX}/${QDRANT_COLLECTION}/"
 echo "Uploading snapshot to: ${r2_target}"
@@ -44,3 +65,5 @@ aws s3 cp \
   --only-show-errors
 
 echo "Qdrant snapshot backup completed: $(basename "$snapshot_file")"
+# remove local snapshot now that it's stored safely
+rm -f "$snapshot_file" >/dev/null 2>&1 || true

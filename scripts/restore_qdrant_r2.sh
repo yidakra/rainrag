@@ -8,7 +8,8 @@ set -euo pipefail
 
 QDRANT_URL="${QDRANT_URL:-http://localhost:6333}"
 QDRANT_COLLECTION="${QDRANT_COLLECTION:-broadcast_transcripts}"
-QDRANT_PREFIX="${R2_QDRANT_PREFIX:-qdrant}"
+# allow callers to override prefix directly; default to a simple "qdrant"
+QDRANT_PREFIX="${QDRANT_PREFIX:-qdrant}"
 SNAPSHOT_DIR="${QDRANT_SNAPSHOT_DIR:-/tmp/rainrag_qdrant_snapshots}"
 ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 SNAPSHOT_NAME="${QDRANT_SNAPSHOT_NAME:-}"
@@ -42,8 +43,18 @@ aws s3 cp \
   --only-show-errors
 
 echo "Uploading snapshot to Qdrant collection: ${QDRANT_COLLECTION}"
+# perform upload with connection and overall timeouts to avoid hanging indefinitely
+# curl will exit non-zero on failure and set -e at top will cause script to abort
+# we still explicitly check the exit code for clarity
 curl -fsS -X POST \
+  --connect-timeout 10 \
+  -m 60 \
   -F "snapshot=@${local_snapshot}" \
   "${QDRANT_URL}/collections/${QDRANT_COLLECTION}/snapshots/upload" >/dev/null
+rc=$?
+if [ $rc -ne 0 ]; then
+  echo "Error: failed to upload snapshot to Qdrant (exit code $rc)" >&2
+  exit $rc
+fi
 
 echo "Qdrant snapshot restore completed: ${SNAPSHOT_NAME}"

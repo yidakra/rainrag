@@ -228,10 +228,10 @@ backup-embeddings-r2: ## Backup embeddings directory to Cloudflare R2
 restore-embeddings-r2: ## Restore embeddings directory from Cloudflare R2
 	./scripts/restore_embeddings_r2.sh
 
-backup-qdrant-r2: ## Backup Qdrant collection snapshot to Cloudflare R2
+backup-qdrant-r2: check-qdrant-start ## Backup Qdrant collection snapshot to Cloudflare R2 (ensures Qdrant is running first)
 	./scripts/backup_qdrant_r2.sh
 
-restore-qdrant-r2: ## Restore Qdrant collection snapshot from Cloudflare R2
+restore-qdrant-r2: check-qdrant-start ## Restore Qdrant collection snapshot from Cloudflare R2 (ensures Qdrant is running first)
 	./scripts/restore_qdrant_r2.sh
 
 # MCP Server commands

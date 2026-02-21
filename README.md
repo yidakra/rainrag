@@ -97,24 +97,9 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 
 ## Quick Start
 
-### Backup & Restore (Indexed DB + Embeddings)
+*Note: backup and restore instructions have been moved later in this document under the **Troubleshooting** section.*
 
-To move or reuse your RainRAG data on another server, back up both:
-
-- **Embeddings cache** (`embeddings/`)
-- **Qdrant indexed database** (collection snapshot)
-
-Use the built-in shortcuts:
-
-```bash
-# Backup to Cloudflare R2
-make backup-embeddings-r2
-make backup-qdrant-r2
-
-# Restore from Cloudflare R2
-make restore-embeddings-r2
-make restore-qdrant-r2
-```
+Create a `.env` file by copying the template: `cp .env.example .env` (you can then edit it).
 
 Required R2 variables are configured via `.env` (see `.env.example`):
 
@@ -1697,17 +1682,21 @@ docker run -p 6333:6333 qdrant/qdrant:v1.16.3
 
 ### Back Up / Restore Indexed Database (Qdrant) Across Servers
 
-Yes — you can reuse the indexed DB on another server by backing up **Qdrant collection snapshots** and restoring them.
+You can reuse the indexed DB on another server by backing up **Qdrant collection snapshots** and restoring them.  When migrating, don’t forget to also copy the embeddings cache (`embeddings/` path configured in `config.yaml` or via the `EMBEDDINGS_CACHE` env) so your vectors remain in sync with the database.
 
-RainRAG includes helper scripts:
+RainRAG includes helper scripts for the Qdrant portion (the corresponding Makefile targets will first verify that Qdrant is reachable):
 
 ```bash
 # Backup current Qdrant collection snapshot to Cloudflare R2
+# (equivalent to the Makefile target `make backup-qdrant-r2` which checks Qdrant availability)
 ./scripts/backup_qdrant_r2.sh
 
 # Restore latest snapshot from R2 into local Qdrant
+# (equivalent to the Makefile target `make restore-qdrant-r2` which checks Qdrant availability)
 ./scripts/restore_qdrant_r2.sh
 ```
+
+(See the **Quick Start** section above for instructions on backing up/restoring the embeddings cache.)
 
 Optional variables (in `.env`):
 
@@ -1719,6 +1708,7 @@ Optional variables (in `.env`):
 Notes:
 
 - Snapshot/restore preserves vectors + payload metadata, so indexing does not need to be rerun.
+- You must also preserve the embeddings cache (default `embeddings/` or configured via `config.yaml`) when moving servers; the cache should match the points in Qdrant.
 - Keep `config.yaml` collection name aligned with `QDRANT_COLLECTION`.
 - For best consistency, avoid writes during backup.
 
