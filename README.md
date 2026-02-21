@@ -97,6 +97,40 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 
 ## Quick Start
 
+### Backup & Restore (Indexed DB + Embeddings)
+
+To move or reuse your RainRAG data on another server, back up both:
+
+- **Embeddings cache** (`embeddings/`)
+- **Qdrant indexed database** (collection snapshot)
+
+Use the built-in shortcuts:
+
+```bash
+# Backup to Cloudflare R2
+make backup-embeddings-r2
+make backup-qdrant-r2
+
+# Restore from Cloudflare R2
+make restore-embeddings-r2
+make restore-qdrant-r2
+```
+
+Required R2 variables are configured via `.env` (see `.env.example`):
+
+- `R2_ACCOUNT_ID`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `R2_BUCKET`
+
+Optional:
+
+- `R2_PREFIX` (defaults to `embeddings`)
+- `R2_QDRANT_PREFIX` (defaults to `qdrant`)
+- `QDRANT_URL` (defaults to `http://localhost:6333`)
+- `QDRANT_COLLECTION` (defaults to `broadcast_transcripts`)
+- `QDRANT_SNAPSHOT_NAME` (restore a specific snapshot)
+
 ### Prerequisites
 
 - Python 3.10+
@@ -1660,6 +1694,33 @@ docker ps | grep qdrant
 # If not running, start it
 docker run -p 6333:6333 qdrant/qdrant:v1.16.3
 ```
+
+### Back Up / Restore Indexed Database (Qdrant) Across Servers
+
+Yes — you can reuse the indexed DB on another server by backing up **Qdrant collection snapshots** and restoring them.
+
+RainRAG includes helper scripts:
+
+```bash
+# Backup current Qdrant collection snapshot to Cloudflare R2
+./scripts/backup_qdrant_r2.sh
+
+# Restore latest snapshot from R2 into local Qdrant
+./scripts/restore_qdrant_r2.sh
+```
+
+Optional variables (in `.env`):
+
+- `QDRANT_URL` (default: `http://localhost:6333`)
+- `QDRANT_COLLECTION` (default: `broadcast_transcripts`)
+- `R2_QDRANT_PREFIX` (default: `qdrant`)
+- `QDRANT_SNAPSHOT_NAME` (optional explicit snapshot file for restore)
+
+Notes:
+
+- Snapshot/restore preserves vectors + payload metadata, so indexing does not need to be rerun.
+- Keep `config.yaml` collection name aligned with `QDRANT_COLLECTION`.
+- For best consistency, avoid writes during backup.
 
 ### Queries Return No Results (Empty Collection)
 
