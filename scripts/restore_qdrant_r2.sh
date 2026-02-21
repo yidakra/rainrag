@@ -44,15 +44,13 @@ aws s3 cp \
 
 echo "Uploading snapshot to Qdrant collection: ${QDRANT_COLLECTION}"
 # perform upload with connection and overall timeouts to avoid hanging indefinitely
-# curl will exit non-zero on failure and set -e at top will cause script to abort
-# we still explicitly check the exit code for clarity
-curl -fsS -X POST \
+# capture exit code manually since `set -e` would otherwise terminate on failure
+if ! curl -fsS -X POST \
   --connect-timeout 10 \
   -m 60 \
   -F "snapshot=@${local_snapshot}" \
-  "${QDRANT_URL}/collections/${QDRANT_COLLECTION}/snapshots/upload" >/dev/null
-rc=$?
-if [ $rc -ne 0 ]; then
+  "${QDRANT_URL}/collections/${QDRANT_COLLECTION}/snapshots/upload" >/dev/null; then
+  rc=$?
   echo "Error: failed to upload snapshot to Qdrant (exit code $rc)" >&2
   exit $rc
 fi

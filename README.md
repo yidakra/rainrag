@@ -1696,7 +1696,18 @@ RainRAG includes helper scripts for the Qdrant portion (the corresponding Makefi
 ./scripts/restore_qdrant_r2.sh
 ```
 
-(See the **Quick Start** section above for instructions on backing up/restoring the embeddings cache.)
+
+### Embeddings Cache Backup/Restore
+
+RainRAG also provides simple commands to back up or restore the embeddings cache directory. These are independent of the Qdrant snapshot tools but often used together when migrating data.
+
+```bash
+make backup-embeddings-r2   # push `embeddings/` to Cloudflare R2
+make restore-embeddings-r2  # pull `embeddings/` from Cloudflare R2
+```
+
+You can control the R2 location with the same environment variables shown earlier (e.g. `R2_BUCKET`, `R2_PREFIX`).
+
 
 Optional variables (in `.env`):
 
