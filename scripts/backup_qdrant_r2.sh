@@ -44,12 +44,14 @@ echo "Downloading snapshot to: $snapshot_file"
 # allow customization via env vars CURL_CONNECT_TIMEOUT and CURL_MAX_TIME
 connect_timeout="${CURL_CONNECT_TIMEOUT:-10}"
 max_time="${CURL_MAX_TIME:-300}"
-if ! curl -fsS \
+# run curl and capture its exit code explicitly
+curl -fsS \
   --connect-timeout "$connect_timeout" \
   -m "$max_time" \
   "${QDRANT_URL}/collections/${QDRANT_COLLECTION}/snapshots/${snapshot_name}" \
-  -o "$snapshot_file"; then
-  rc=$?
+  -o "$snapshot_file"
+rc=$?
+if [ "$rc" -ne 0 ]; then
   echo "Error: failed to download snapshot from Qdrant (exit code $rc)" >&2
   exit $rc
 fi
