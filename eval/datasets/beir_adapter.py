@@ -40,6 +40,7 @@ CLI (via run_eval.py)::
         --max-queries 100 \\
         --output eval/datasets/beir_scifact.jsonl
 """
+
 from __future__ import annotations
 
 import json
@@ -86,9 +87,7 @@ class BEIRQRels:
     def relevant_doc_ids(self, query_id: str, min_score: int = 1) -> list[str]:
         """Return doc IDs with relevance >= min_score."""
         return [
-            doc_id
-            for doc_id, score in self.qrels.get(query_id, {}).items()
-            if score >= min_score
+            doc_id for doc_id, score in self.qrels.get(query_id, {}).items() if score >= min_score
         ]
 
 
@@ -179,7 +178,6 @@ def _embed_documents_local(
 
     Uses the "passage: " prefix which E5 models expect for indexed documents.
     """
-    import numpy as np  # type: ignore[import]
 
     model = engine.embedding_model
     normalize = engine.config.embedding.normalize_embeddings
@@ -230,7 +228,7 @@ def _embed_corpus(
         logger.info(f"Embedding {len(texts)} documents via API (this may be slow) ...")
         vectors = _embed_documents_api(engine, texts)
 
-    return dict(zip(doc_ids, vectors))
+    return dict(zip(doc_ids, vectors, strict=False))
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +351,7 @@ class BEIRAdapter:
         self,
         max_corpus_docs: int | None = None,
         max_queries: int | None = None,
-    ) -> "BEIRAdapter":
+    ) -> BEIRAdapter:
         """Download and cache the dataset from HuggingFace.
 
         Args:
@@ -377,7 +375,7 @@ class BEIRAdapter:
         engine: Any,
         batch_size: int = 64,
         recreate: bool = True,
-    ) -> "BEIRAdapter":
+    ) -> BEIRAdapter:
         """Index the BEIR corpus into a dedicated Qdrant collection.
 
         The collection name is ``beir_{name}`` (or the custom suffix).
@@ -484,11 +482,17 @@ class BEIRAdapter:
         from eval.metrics.retrieval import aggregate_metrics, compute_all_metrics
 
         doc_ids = list(self._corpus.docs.keys())
-        texts = [self._corpus.docs[did]["title"] + " " + self._corpus.docs[did]["text"] for did in doc_ids]
+        texts = [
+            self._corpus.docs[did]["title"] + " " + self._corpus.docs[did]["text"]
+            for did in doc_ids
+        ]
         tokenized = [re.findall(r"\w+", t.lower()) for t in texts]
         bm25 = BM25Okapi(tokenized)
 
         per_query = []
+        # Always include the caller-requested cut-off while preserving the
+        # standard dashboard cut-offs.
+        ks = tuple(sorted({top_k, 3, 5, 10}))
         for qid, qtext in self._queries.queries.items():
             qtokens = re.findall(r"\w+", qtext.lower())
             scores = bm25.get_scores(qtokens)
@@ -496,7 +500,7 @@ class BEIRAdapter:
             retrieved = [doc_ids[i] for i in top_indices]
             relevant = self._qrels.relevant_doc_ids(qid)
             if relevant:
-                per_query.append(compute_all_metrics(retrieved, relevant))
+                per_query.append(compute_all_metrics(retrieved, relevant, ks=ks))
 
         agg = aggregate_metrics(per_query)
         logger.info(f"BM25 baseline on BEIR/{self.name}: {agg}")

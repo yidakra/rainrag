@@ -577,7 +577,6 @@ Hi
         self, test_config: Config, temp_dir: Path
     ) -> None:
         """Speech-free video with web metadata must produce a metadata-only document."""
-        import json as _json
 
         vtt_file = temp_dir / "silent.vtt"
         vtt_file.write_text(self._EMPTY_VTT)
@@ -608,6 +607,7 @@ Hi
 
             def extract_clean_metadata(self, raw):
                 from rainrag.ingest import WebMetadataLoader
+
                 loader = WebMetadataLoader(web_dir)
                 return loader.extract_clean_metadata(raw)
 
@@ -651,8 +651,10 @@ Hi
                 }
 
             def extract_clean_metadata(self, raw):
-                from rainrag.ingest import WebMetadataLoader
                 from pathlib import Path as _P
+
+                from rainrag.ingest import WebMetadataLoader
+
                 loader = WebMetadataLoader(_P(test_config.web_metadata.path))
                 return loader.extract_clean_metadata(raw)
 
@@ -767,6 +769,7 @@ Hi
 
             def extract_clean_metadata(self, raw):
                 from rainrag.ingest import WebMetadataLoader
+
                 loader = WebMetadataLoader(temp_dir)
                 return loader.extract_clean_metadata(raw)
 

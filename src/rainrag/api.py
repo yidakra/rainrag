@@ -1,6 +1,5 @@
 """FastAPI backend for RainRAG query interface."""
 
-import contextlib
 import hmac
 import os
 import string
@@ -213,8 +212,10 @@ def _resolve_media_relative(path_str: str, root: Path) -> Path | None:
         return None
 
     # 1) Standard case: path already under root
-    with contextlib.suppress(Exception):
+    try:
         return candidate.resolve().relative_to(root)
+    except Exception:
+        pass
 
     # 2) Heuristic: recover relative suffix after root basename (e.g. /transcoded/...)
     root_marker = f"/{root.name}/"
@@ -325,6 +326,14 @@ async def lifespan(app: FastAPI):
     global query_engine, config
 
     logger.info("Initializing RainRAG API...")
+
+    # Test-mode escape hatch: avoid expensive model/client startup when endpoint
+    # tests patch query_engine/config directly.
+    if os.getenv("RAINRAG_SKIP_API_STARTUP_INIT", "").lower() in {"1", "true", "yes"}:
+        logger.info("Skipping RainRAG API startup initialization (RAINRAG_SKIP_API_STARTUP_INIT)")
+        yield
+        logger.info("Shutting down RainRAG API...")
+        return
 
     # Load configuration
     config_path = os.getenv("RAINRAG_CONFIG", "config.yaml")
@@ -455,7 +464,7 @@ async def health_check():
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest, authorized: bool = Header(True)):  # type: ignore
+async def query(request: QueryRequest, authorized: bool = Header(True)):
     """
     Query the RAG system.
 
@@ -561,7 +570,7 @@ class RelatedChunksResponse(BaseModel):
 @app.post("/related-chunks", response_model=RelatedChunksResponse)
 async def get_related_chunks(
     request: RelatedChunksRequest,
-    authorized: bool = Header(True),  # type: ignore
+    authorized: bool = Header(True),
 ):
     """
     Find chunks related to a given chunk based on vector similarity.

@@ -8,12 +8,13 @@ This module tests:
 - Error handling for API endpoints
 """
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 
 # Add parent directory to path
@@ -39,10 +40,33 @@ from src.rainrag.config import (
 # ============================================================================
 
 
+class _ASGIClient:
+    """Small sync wrapper around httpx.AsyncClient for ASGI app testing."""
+
+    def __init__(self, asgi_app):
+        self._app = asgi_app
+
+    def request(self, method: str, url: str, **kwargs):
+        async def _do_request():
+            transport = httpx.ASGITransport(app=self._app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                return await client.request(method, url, **kwargs)
+
+        return asyncio.run(_do_request())
+
+    def get(self, url: str, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs):
+        return self.request("POST", url, **kwargs)
+
+
 @pytest.fixture
 def test_client():
     """Create a test client for the FastAPI app."""
-    return TestClient(app)
+    return _ASGIClient(app)
 
 
 @pytest.fixture

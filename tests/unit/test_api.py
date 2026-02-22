@@ -1,12 +1,36 @@
 """Tests for the FastAPI backend."""
 
+import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from rainrag.api import app, find_video_file, get_video_base_name
 from rainrag.config import Config
+
+
+class _ASGIClient:
+    """Small sync wrapper around httpx.AsyncClient for ASGI app testing."""
+
+    def __init__(self, asgi_app):
+        self._app = asgi_app
+
+    def request(self, method: str, url: str, **kwargs):
+        async def _do_request():
+            transport = httpx.ASGITransport(app=self._app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                return await client.request(method, url, **kwargs)
+
+        return asyncio.run(_do_request())
+
+    def get(self, url: str, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs):
+        return self.request("POST", url, **kwargs)
 
 
 @pytest.fixture
@@ -330,7 +354,7 @@ def test_find_video_file_not_found(temp_dir: Path, archive_with_videos: Path):
 
 def test_api_root_endpoint():
     """Test the root endpoint returns API information."""
-    client = TestClient(app)
+    client = _ASGIClient(app)
     response = client.get("/")
 
     assert response.status_code == 200
@@ -398,7 +422,7 @@ def test_video_endpoint_security(temp_dir: Path, archive_with_videos: Path):
     api_module.config = test_cfg
 
     try:
-        client = TestClient(app)
+        client = _ASGIClient(app)
 
         # Try path traversal attack
         response = client.get("/video/../../../etc/passwd")
@@ -468,7 +492,7 @@ def test_vtt_endpoint_security(temp_dir: Path, archive_with_videos: Path):
     api_module.config = test_cfg
 
     try:
-        client = TestClient(app)
+        client = _ASGIClient(app)
 
         # Try path traversal attack
         response = client.get("/vtt/../../../etc/passwd")
@@ -530,7 +554,7 @@ def test_video_disabled(temp_dir: Path):
     api_module.config = test_cfg
 
     try:
-        client = TestClient(app)
+        client = _ASGIClient(app)
         response = client.get("/video/test.mp4")
         assert response.status_code == 404
         assert "disabled" in response.json()["detail"].lower()

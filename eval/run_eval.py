@@ -46,14 +46,14 @@ Usage
         --axes doc_order \\
         --doc-orders rank,reversed,book_end
 """
+
 from __future__ import annotations
 
 import subprocess
-import sys
-from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
+
 
 app = typer.Typer(
     name="eval",
@@ -65,7 +65,9 @@ app = typer.Typer(
 
 _CONFIG = Annotated[str, typer.Option("--config", "-c", help="Path to config.yaml")]
 _MLFLOW = Annotated[str, typer.Option("--mlflow-uri", help="MLflow tracking URI")]
-_DATASET = Annotated[Optional[str], typer.Option("--dataset", "-d", help="Path to eval JSONL dataset")]
+_DATASET = Annotated[
+    str | None, typer.Option("--dataset", "-d", help="Path to eval JSONL dataset")
+]
 _OUTPUT = Annotated[str, typer.Option("--output", "-o", help="Output file path")]
 
 
@@ -79,7 +81,9 @@ def create_dataset(
     n: Annotated[int, typer.Option("--n", help="Number of eval pairs to generate")] = 50,
     output: _OUTPUT = "eval/datasets/eval_set.jsonl",
     seed: Annotated[int, typer.Option("--seed")] = 42,
-    skip_filter: Annotated[bool, typer.Option("--skip-filter", help="Skip LLM quality-filter pass")] = False,
+    skip_filter: Annotated[
+        bool, typer.Option("--skip-filter", help="Skip LLM quality-filter pass")
+    ] = False,
 ) -> None:
     """Generate a synthetic eval dataset from the live Qdrant collection."""
     from eval.datasets.create_eval_set import create_eval_set
@@ -103,15 +107,24 @@ def ablation(
     config: _CONFIG = "config.yaml",
     dataset: _DATASET = None,
     mlflow_uri: _MLFLOW = "./mlruns",
-    top_ks: Annotated[str, typer.Option("--top-ks", help="Comma-separated retrieval depths, e.g. 5,10")] = "5,10",
-    conditions: Annotated[Optional[str], typer.Option("--conditions", help="Comma-separated condition IDs, e.g. 01,08")] = None,
-    csv_output: Annotated[Optional[str], typer.Option("--csv", help="Write CSV summary to this path")] = None,
-    with_ragas: Annotated[bool, typer.Option("--ragas/--no-ragas", help="Run RAGAS answer-quality metrics")] = False,
+    top_ks: Annotated[
+        str, typer.Option("--top-ks", help="Comma-separated retrieval depths, e.g. 5,10")
+    ] = "5,10",
+    conditions: Annotated[
+        str | None,
+        typer.Option("--conditions", help="Comma-separated condition IDs, e.g. 01,08"),
+    ] = None,
+    csv_output: Annotated[
+        str | None, typer.Option("--csv", help="Write CSV summary to this path")
+    ] = None,
+    with_ragas: Annotated[
+        bool, typer.Option("--ragas/--no-ragas", help="Run RAGAS answer-quality metrics")
+    ] = False,
 ) -> None:
     """Run the 8-condition feature ablation experiment."""
+    import eval.mlflow_tracking as mlflow_tracking
     from eval.experiments.ablation import AblationExperiment
     from eval.metrics.answer_quality import compute_ragas_metrics
-    import eval.mlflow_tracking as mlflow_tracking
 
     if dataset is None:
         typer.echo("ERROR: --dataset is required for the ablation experiment.", err=True)
@@ -166,9 +179,15 @@ def providers(
     config: _CONFIG = "config.yaml",
     dataset: _DATASET = None,
     mlflow_uri: _MLFLOW = "./mlruns",
-    llm_providers: Annotated[Optional[str], typer.Option("--llm", help="Comma-separated LLM providers")] = None,
-    embed_providers: Annotated[Optional[str], typer.Option("--embed", help="Comma-separated embedding providers")] = None,
-    csv_output: Annotated[Optional[str], typer.Option("--csv", help="Write CSV summary to this path")] = None,
+    llm_providers: Annotated[
+        str | None, typer.Option("--llm", help="Comma-separated LLM providers")
+    ] = None,
+    embed_providers: Annotated[
+        str | None, typer.Option("--embed", help="Comma-separated embedding providers")
+    ] = None,
+    csv_output: Annotated[
+        str | None, typer.Option("--csv", help="Write CSV summary to this path")
+    ] = None,
 ) -> None:
     """Run the LLM × embedding provider comparison experiment."""
     from eval.experiments.provider_comparison import ProviderComparisonExperiment
@@ -205,7 +224,9 @@ def latency(
     config: _CONFIG = "config.yaml",
     dataset: _DATASET = None,
     mlflow_uri: _MLFLOW = "./mlruns",
-    conditions: Annotated[str, typer.Option("--conditions", help="Comma-separated ablation condition IDs")] = "01,06,08",
+    conditions: Annotated[
+        str, typer.Option("--conditions", help="Comma-separated ablation condition IDs")
+    ] = "01,06,08",
     n_queries: Annotated[int, typer.Option("--n-queries")] = 10,
     n_repeats: Annotated[int, typer.Option("--n-repeats")] = 3,
     top_k: Annotated[int, typer.Option("--top-k")] = 5,
@@ -229,7 +250,9 @@ def latency(
         top_k=top_k,
     )
 
-    typer.echo(f"Profiling latency for conditions {cids} ({n_queries} queries × {n_repeats} repeats) ...")
+    typer.echo(
+        f"Profiling latency for conditions {cids} ({n_queries} queries × {n_repeats} repeats) ..."
+    )
     exp.run()
     typer.echo(f"\nDone. Open MLflow UI with: mlflow ui --backend-store-uri {mlflow_uri}")
 
@@ -240,10 +263,24 @@ def latency(
 @app.command("review")
 def review(
     input_path: Annotated[str, typer.Argument(help="Eval JSONL file to review")],
-    output: Annotated[Optional[str], typer.Option("--output", "-o", help="Save reviewed file here (defaults to overwriting input)")] = None,
-    filter_output: Annotated[Optional[str], typer.Option("--filter-output", "-f", help="Also write a clean file with only valid=True records")] = None,
-    all_records: Annotated[bool, typer.Option("--all", help="Re-review already reviewed records")] = False,
-    stats_only: Annotated[bool, typer.Option("--stats", help="Just show review progress stats, don't start a session")] = False,
+    output: Annotated[
+        str | None,
+        typer.Option(
+            "--output", "-o", help="Save reviewed file here (defaults to overwriting input)"
+        ),
+    ] = None,
+    filter_output: Annotated[
+        str | None,
+        typer.Option(
+            "--filter-output", "-f", help="Also write a clean file with only valid=True records"
+        ),
+    ] = None,
+    all_records: Annotated[
+        bool, typer.Option("--all", help="Re-review already reviewed records")
+    ] = False,
+    stats_only: Annotated[
+        bool, typer.Option("--stats", help="Just show review progress stats, don't start a session")
+    ] = False,
 ) -> None:
     """Interactively review a generated eval JSONL dataset.
 
@@ -282,17 +319,42 @@ def review(
 @app.command("beir")
 def beir(
     config: _CONFIG = "config.yaml",
-    dataset_name: Annotated[str, typer.Option("--dataset", "-d", help="BEIR dataset name, e.g. scifact, nfcorpus, fiqa")] = "scifact",
-    qrels_split: Annotated[str, typer.Option("--split", help="QRels split to evaluate on")] = "test",
-    max_corpus_docs: Annotated[Optional[int], typer.Option("--max-corpus", help="Cap corpus size (None = full)")] = None,
-    max_queries: Annotated[Optional[int], typer.Option("--max-queries", help="Cap number of queries")] = None,
+    dataset_name: Annotated[
+        str, typer.Option("--dataset", "-d", help="BEIR dataset name, e.g. scifact, nfcorpus, fiqa")
+    ] = "scifact",
+    qrels_split: Annotated[
+        str, typer.Option("--split", help="QRels split to evaluate on")
+    ] = "test",
+    max_corpus_docs: Annotated[
+        int | None, typer.Option("--max-corpus", help="Cap corpus size (None = full)")
+    ] = None,
+    max_queries: Annotated[
+        int | None, typer.Option("--max-queries", help="Cap number of queries")
+    ] = None,
     output: _OUTPUT = "eval/datasets/beir_{dataset}.jsonl",
-    bm25_baseline: Annotated[bool, typer.Option("--bm25-baseline/--no-bm25-baseline", help="Run in-memory BM25 baseline before indexing")] = True,
-    skip_index: Annotated[bool, typer.Option("--skip-index", help="Skip Qdrant indexing (useful if already indexed)")] = False,
-    batch_size: Annotated[int, typer.Option("--batch-size", help="Embedding batch size for local models")] = 64,
+    bm25_baseline: Annotated[
+        bool,
+        typer.Option(
+            "--bm25-baseline/--no-bm25-baseline", help="Run in-memory BM25 baseline before indexing"
+        ),
+    ] = True,
+    skip_index: Annotated[
+        bool, typer.Option("--skip-index", help="Skip Qdrant indexing (useful if already indexed)")
+    ] = False,
+    batch_size: Annotated[
+        int, typer.Option("--batch-size", help="Embedding batch size for local models")
+    ] = 64,
     mlflow_uri: _MLFLOW = "./mlruns",
-    run_ablation: Annotated[bool, typer.Option("--ablation/--no-ablation", help="Run ablation experiment on the generated JSONL")] = False,
-    ablation_conditions: Annotated[Optional[str], typer.Option("--conditions", help="Ablation condition IDs to run, e.g. 01,02,08")] = None,
+    run_ablation: Annotated[
+        bool,
+        typer.Option(
+            "--ablation/--no-ablation", help="Run ablation experiment on the generated JSONL"
+        ),
+    ] = False,
+    ablation_conditions: Annotated[
+        str | None,
+        typer.Option("--conditions", help="Ablation condition IDs to run, e.g. 01,02,08"),
+    ] = None,
 ) -> None:
     """Load a BEIR dataset, index it into Qdrant, and generate an eval JSONL.
 
@@ -360,7 +422,10 @@ def beir(
         _ = overridden_config  # Used inside AblationExperiment via config_path override
 
         # Write a temp config with the collection name override so AblationExperiment can load it
-        import tempfile, yaml  # type: ignore[import]
+        import tempfile
+
+        import yaml  # type: ignore[import]
+
         cfg_dict = base_config.model_dump()
         cfg_dict["qdrant"]["collection_name"] = adapter.collection_name
         with tempfile.NamedTemporaryFile(
@@ -392,9 +457,11 @@ def two_stage(
     config: _CONFIG = "config.yaml",
     dataset: _DATASET = None,
     mlflow_uri: _MLFLOW = "./mlruns",
-    top_ks: Annotated[str, typer.Option("--top-ks", help="Comma-separated retrieval depths")] = "5,10",
+    top_ks: Annotated[
+        str, typer.Option("--top-ks", help="Comma-separated retrieval depths")
+    ] = "5,10",
     axes: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--axes",
             help=(
@@ -404,39 +471,41 @@ def two_stage(
         ),
     ] = None,
     hyde_alphas: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--hyde-alphas", help="Comma-separated HyDE alpha values, e.g. 0.1,0.5,0.9"),
     ] = None,
     rewrite_variants: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--rewrite-variants", help="Comma-separated variant counts, e.g. 1,2,3,5"),
     ] = None,
     pool_sizes: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--pool-sizes", help="Comma-separated top_k_multiplier values, e.g. 2,3,5"),
     ] = None,
     merge_strategies: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--merge-strategies",
             help="Comma-separated merge strategy names, e.g. coverage,diverse_rrf",
         ),
     ] = None,
     merge_rrf_ks: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--merge-rrf-ks",
             help="Comma-separated RRF k values for diverse_rrf strategy, e.g. 20,40,60",
         ),
     ] = None,
     doc_orders: Annotated[
-        Optional[str],
+        str | None,
         typer.Option(
             "--doc-orders",
             help="Comma-separated prompt document ordering strategies, e.g. rank,reversed,book_end",
         ),
     ] = None,
-    csv_output: Annotated[Optional[str], typer.Option("--csv", help="Write CSV summary to this path")] = None,
+    csv_output: Annotated[
+        str | None, typer.Option("--csv", help="Write CSV summary to this path")
+    ] = None,
 ) -> None:
     """Sweep two-stage retrieval hyper-parameters across six independent axes.
 
@@ -513,16 +582,18 @@ def two_stage(
 def plot(
     mlflow_uri: _MLFLOW = "./mlruns",
     experiment: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--experiment", "-e", help="Comma-separated experiment names"),
     ] = "ablation",
     filter_axis: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--filter-axis", help="Only include runs with this sweep_axis tag"),
     ] = None,
     top_k: Annotated[int, typer.Option("--top-k", help="Retrieval depth filter; 0 = all")] = 5,
     output: _OUTPUT = "plots",
-    show: Annotated[bool, typer.Option("--show/--no-show", help="Display charts interactively")] = False,
+    show: Annotated[
+        bool, typer.Option("--show/--no-show", help="Display charts interactively")
+    ] = False,
     dpi: Annotated[int, typer.Option("--dpi", help="Output PNG resolution")] = 150,
 ) -> None:
     """Generate comparison charts (retrieval bars, latency breakdown, cost scatter).
@@ -541,7 +612,6 @@ def plot(
         # Combine experiments
         python -m eval.run_eval plot -e ablation,two_stage_sweep
     """
-    from eval.plot_results import main as plot_main
 
     exp_list = [e.strip() for e in (experiment or "ablation").split(",")]
     # Invoke the plot CLI function directly to avoid sys.argv manipulation
@@ -552,8 +622,14 @@ def plot(
         typer.echo(f"ERROR: {exc}. Install with: pip install matplotlib mlflow", err=True)
         raise typer.Exit(1)
 
-    from eval.plot_results import _load_runs, plot_cost_vs_quality, plot_latency_breakdown, plot_retrieval_bars
     from pathlib import Path as _Path
+
+    from eval.plot_results import (
+        _load_runs,
+        plot_cost_vs_quality,
+        plot_latency_breakdown,
+        plot_retrieval_bars,
+    )
 
     output_dir = _Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)

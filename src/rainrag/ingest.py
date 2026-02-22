@@ -1004,7 +1004,7 @@ class Ingester:
         self.config = config
         self.parser = VTTParser()
         self.invalid_vtt_count = 0
-        self.speech_free_count = 0          # valid VTT with no cues (silent video)
+        self.speech_free_count = 0  # valid VTT with no cues (silent video)
         self.speech_free_with_metadata_count = 0  # subset that had web metadata → indexed
 
         # Initialize web metadata loader with validation
@@ -1232,7 +1232,9 @@ class Ingester:
                 )
                 if doc:
                     self.speech_free_with_metadata_count += 1
-                    logger.debug(f"Created metadata-only document for speech-free video: {file_path}")
+                    logger.debug(
+                        f"Created metadata-only document for speech-free video: {file_path}"
+                    )
                     return [doc]
                 logger.debug(f"Skipping speech-free video (no usable web metadata): {file_path}")
                 return []
@@ -1360,7 +1362,9 @@ class Ingester:
                 )
                 if doc:
                     self.speech_free_with_metadata_count += 1
-                    logger.debug(f"Created metadata-only document for speech-free video: {file_path}")
+                    logger.debug(
+                        f"Created metadata-only document for speech-free video: {file_path}"
+                    )
                     return [doc]
                 logger.debug(f"Skipping speech-free video (no usable web metadata): {file_path}")
                 return []

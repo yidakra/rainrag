@@ -3,10 +3,12 @@
 RAGAS and rouge-score are optional dependencies. If missing the relevant
 functions return NaN values so the rest of the eval pipeline keeps working.
 """
+
 from __future__ import annotations
 
 import math
 from typing import Any
+
 
 try:
     from rouge_score import rouge_scorer as _rouge_scorer
@@ -20,8 +22,14 @@ try:
     from ragas import evaluate as _ragas_evaluate
     from ragas.metrics import (
         answer_relevancy as _answer_relevancy,
+    )
+    from ragas.metrics import (
         context_precision as _context_precision,
+    )
+    from ragas.metrics import (
         context_recall as _context_recall,
+    )
+    from ragas.metrics import (
         faithfulness as _faithfulness,
     )
 

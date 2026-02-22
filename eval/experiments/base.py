@@ -4,24 +4,22 @@ Subclasses define the list of *conditions* (config override dicts) and call
 ``self.run_condition()`` for each one.  All common logic — loading the dataset,
 running queries, computing metrics, logging to MLflow — lives here.
 """
+
 from __future__ import annotations
 
 import copy
-import json
 import time
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any
 
-from rainrag.config import Config, load_config
-from rainrag.query import RAGQueryEngine
-
+import eval.mlflow_tracking as mlflow_tracking
 from eval.datasets.create_eval_set import load_eval_set
-from eval.metrics.retrieval import aggregate_metrics, compute_all_metrics, intent_coverage_at_k
 from eval.metrics.answer_quality import answer_length, rouge_l
 from eval.metrics.carbon import track_emissions
 from eval.metrics.cost import aggregate_costs, estimate_query_cost
-import eval.mlflow_tracking as mlflow_tracking
+from eval.metrics.retrieval import aggregate_metrics, compute_all_metrics, intent_coverage_at_k
+from rainrag.config import Config, load_config
+from rainrag.query import RAGQueryEngine
 
 
 def apply_overrides(config: Config, overrides: dict[str, Any]) -> Config:
@@ -86,10 +84,10 @@ class BaseExperiment(ABC):
     @abstractmethod
     def conditions(self) -> list[dict[str, Any]]:
         """Return a list of condition dicts, each with keys:
-            - ``id`` (str): short identifier logged to MLflow
-            - ``label`` (str): human-readable name
-            - ``overrides`` (dict): dot-notation config overrides
-            - ``tags`` (dict, optional): extra MLflow tags
+        - ``id`` (str): short identifier logged to MLflow
+        - ``label`` (str): human-readable name
+        - ``overrides`` (dict): dot-notation config overrides
+        - ``tags`` (dict, optional): extra MLflow tags
         """
 
     def run(self) -> list[dict[str, Any]]:
@@ -171,9 +169,7 @@ class BaseExperiment(ABC):
                 )
 
                 retrieval_metrics = (
-                    compute_all_metrics(retrieved_ids, relevant_ids)
-                    if relevant_ids
-                    else {}
+                    compute_all_metrics(retrieved_ids, relevant_ids) if relevant_ids else {}
                 )
 
                 # Intent coverage: fraction of query variants that have ≥1 relevant
@@ -187,9 +183,7 @@ class BaseExperiment(ABC):
                 answer = response.get("answer", "")
                 ref = record.get("reference_answer", "")
 
-                contexts = [
-                    d.get("text", "") for d in response.get("retrieved_documents", [])
-                ]
+                contexts = [d.get("text", "") for d in response.get("retrieved_documents", [])]
                 cost_metrics = estimate_query_cost(
                     query=record["query"],
                     contexts=contexts,
@@ -272,7 +266,12 @@ class BaseExperiment(ABC):
 
         carbon_metrics = carbon.as_metrics() if carbon is not None else {}
 
-        metrics: dict[str, float] = {**agg_retrieval, **latency_metrics, **agg_cost, **carbon_metrics}
+        metrics: dict[str, float] = {
+            **agg_retrieval,
+            **latency_metrics,
+            **agg_cost,
+            **carbon_metrics,
+        }
         if rouge_mean is not None:
             metrics["rouge_l"] = rouge_mean
         metrics["num_queries"] = float(len(valid))
@@ -313,6 +312,7 @@ class BaseExperiment(ABC):
     @staticmethod
     def _print_result(result: dict) -> None:
         import math as _math
+
         m = result["metrics"]
         cost = m.get("cost.total_usd_est_per_query", float("nan"))
         cost_str = f"${cost:.4f}/q" if not _math.isnan(cost) else "cost=n/a"
@@ -341,21 +341,25 @@ class BaseExperiment(ABC):
 
     def results_to_csv(self, results: list[dict], output: str) -> None:
         """Write a CSV summary of all conditions to *output*."""
+        if not results:
+            return
+
         try:
             import pandas as pd
 
             rows = []
             for r in results:
-                row = {"condition_id": r["condition_id"], "label": r["condition_label"],
-                       "top_k": r["top_k"]}
+                row = {
+                    "condition_id": r["condition_id"],
+                    "label": r["condition_label"],
+                    "top_k": r["top_k"],
+                }
                 row.update(r["metrics"])
                 rows.append(row)
             pd.DataFrame(rows).to_csv(output, index=False)
             print(f"Results written to {output}")
         except ImportError:
             # Fallback: plain CSV
-            if not results:
-                return
             all_keys = list(results[0]["metrics"].keys())
             header = ["condition_id", "label", "top_k"] + all_keys
             with open(output, "w", encoding="utf-8") as f:

@@ -8,13 +8,13 @@ from typing import Any, cast
 import cohere
 import torch
 from anthropic import Anthropic
-from google import genai  # type: ignore[import]
-from google.genai import types  # type: ignore[import]
+from google import genai
+from google.genai import types
 from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
-from sentence_transformers import SentenceTransformer  # type: ignore[import]
+from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
 
@@ -921,7 +921,9 @@ class RAGQueryEngine:
             logger.debug(f"[Two-Stage] HyDE passage: {hypothetical_doc[:120]}...")
             return self.embed_query(hypothetical_doc)
         except Exception as e:
-            logger.warning(f"[Two-Stage] HyDE generation failed, falling back to query embedding: {e}")
+            logger.warning(
+                f"[Two-Stage] HyDE generation failed, falling back to query embedding: {e}"
+            )
             return self.embed_query(query)
 
     def embed_query(self, query: str) -> list[float]:
@@ -972,10 +974,10 @@ class RAGQueryEngine:
             logger.debug(f"Embedding query using OpenAI API: {query[:100]}...")
             try:
                 assert self.openai_client is not None, "OpenAI client not initialized"
-                response = self.openai_client.embeddings.create(
+                openai_response = self.openai_client.embeddings.create(
                     model=self.config.openai.embedding_model, input=query
                 )
-                return response.data[0].embedding
+                return openai_response.data[0].embedding
             except Exception as e:
                 logger.error(f"Failed to generate embeddings with OpenAI API: {e}")
                 raise RuntimeError(f"OpenAI embeddings API error: {e}") from e
@@ -1107,7 +1109,9 @@ class RAGQueryEngine:
             # 2. Hybrid search: combine with BM25 if enabled
             if use_hybrid and query_text:
                 logger.info("Performing BM25 search...")
-                bm25_documents = self._search_bm25(query_text, effective_limit, exclude_speech_free=exclude_speech_free)
+                bm25_documents = self._search_bm25(
+                    query_text, effective_limit, exclude_speech_free=exclude_speech_free
+                )
                 logger.info(f"Retrieved {len(bm25_documents)} BM25 results")
 
                 # Fuse scores
@@ -1394,7 +1398,9 @@ Question: {query}"""
             {"role": "user", "content": user_message},
         ]
 
-    def generate_answer(self, messages: list[dict[str, str]], temperature: float | None = None) -> str:
+    def generate_answer(
+        self, messages: list[dict[str, str]], temperature: float | None = None
+    ) -> str:
         """
         Generate an answer using configured LLM provider.
 
@@ -1415,19 +1421,21 @@ Question: {query}"""
             logger.info("Generating answer using Mistral API...")
             try:
                 assert self.mistral_client is not None, "Mistral client not initialized"
-                response = self.mistral_client.chat.complete(  # type: ignore[assignment]
+                mistral_response: Any = self.mistral_client.chat.complete(
                     model=self.config.mistral.model_name,
-                    messages=messages,  # type: ignore[arg-type]
+                    messages=cast(Any, messages),
                     max_tokens=self.config.mistral.max_tokens,
-                    temperature=temperature if temperature is not None else self.config.mistral.temperature,
+                    temperature=temperature
+                    if temperature is not None
+                    else self.config.mistral.temperature,
                 )
                 if (
-                    response
-                    and response.choices
-                    and len(response.choices) > 0
-                    and response.choices[0].message
+                    mistral_response
+                    and mistral_response.choices
+                    and len(mistral_response.choices) > 0
+                    and mistral_response.choices[0].message
                 ):
-                    content = response.choices[0].message.content
+                    content = mistral_response.choices[0].message.content
                     if isinstance(content, str):
                         answer = content.strip()
                     elif isinstance(content, list) and content:
@@ -1447,24 +1455,26 @@ Question: {query}"""
             logger.info("Generating answer using OpenAI API...")
             try:
                 assert self.openai_client is not None, "OpenAI client not initialized"
-                response = self.openai_client.chat.completions.create(  # type: ignore[assignment]
+                openai_response: Any = self.openai_client.chat.completions.create(
                     model=self.config.openai.model_name,
-                    messages=messages,  # type: ignore[arg-type]
+                    messages=cast(Any, messages),
                     max_tokens=self.config.openai.max_tokens,
-                    temperature=temperature if temperature is not None else self.config.openai.temperature,
+                    temperature=temperature
+                    if temperature is not None
+                    else self.config.openai.temperature,
                 )
                 if (
-                    response
-                    and response.choices
-                    and len(response.choices) > 0
-                    and response.choices[0].message
+                    openai_response
+                    and openai_response.choices
+                    and len(openai_response.choices) > 0
+                    and openai_response.choices[0].message
                 ):
-                    content = response.choices[0].message.content
+                    content = openai_response.choices[0].message.content
                     if isinstance(content, str):
                         answer = content.strip()
-                    elif isinstance(content, list) and content:  # type: ignore[unreachable]
+                    elif isinstance(content, list) and content:
                         # Handle list of content chunks (if OpenAI API returns list)
-                        answer = "".join(str(chunk) for chunk in content).strip()  # type: ignore[union-attr]
+                        answer = "".join(str(chunk) for chunk in content).strip()
                     else:
                         raise RuntimeError("OpenAI API returned invalid content format")
                 else:
@@ -1488,15 +1498,17 @@ Question: {query}"""
                     else:
                         claude_messages.append(msg)
 
-                response = self.claude_client.messages.create(  # type: ignore[assignment]
+                claude_response: Any = self.claude_client.messages.create(
                     model=self.config.claude.model_name,
                     max_tokens=self.config.claude.max_tokens,
-                    temperature=temperature if temperature is not None else self.config.claude.temperature,
+                    temperature=temperature
+                    if temperature is not None
+                    else self.config.claude.temperature,
                     system=system_message,
-                    messages=claude_messages,  # type: ignore[arg-type]
+                    messages=cast(Any, claude_messages),
                 )
-                if response and response.content and len(response.content) > 0:
-                    content_block = response.content[0]
+                if claude_response and claude_response.content and len(claude_response.content) > 0:
+                    content_block = claude_response.content[0]
                     # Check if it's a text block with text attribute
                     try:
                         text_content = getattr(content_block, "text", None)
@@ -1554,7 +1566,9 @@ Question: {query}"""
                     contents=contents,
                     config=types.GenerateContentConfig(
                         max_output_tokens=self.config.gemini.max_tokens,
-                        temperature=temperature if temperature is not None else self.config.gemini.temperature,
+                        temperature=temperature
+                        if temperature is not None
+                        else self.config.gemini.temperature,
                     ),
                 )
                 if response and response.text:
@@ -1664,8 +1678,10 @@ Question: {query}"""
             for i, variant in enumerate(query_variants):
                 variant_vector = primary_vector if i == 0 else self.embed_query(variant)
                 variant_docs = self.retrieve_documents(
-                    variant_vector, retrieval_k,
-                    date_from=date_from, date_to=date_to,
+                    variant_vector,
+                    retrieval_k,
+                    date_from=date_from,
+                    date_to=date_to,
                     query_text=variant,
                     exclude_speech_free=exclude_speech_free,
                 )
@@ -1676,7 +1692,8 @@ Question: {query}"""
             merge_strategy = self.config.two_stage.merge_strategy
             if merge_strategy == "diverse_rrf":
                 documents = self._merge_variants_diverse_rrf(
-                    all_variant_docs, retrieval_k,
+                    all_variant_docs,
+                    retrieval_k,
                     rrf_k=self.config.two_stage.merge_rrf_k,
                 )
             else:
@@ -1692,8 +1709,12 @@ Question: {query}"""
             )
         else:
             documents = self.retrieve_documents(
-                primary_vector, retrieval_k, date_from=date_from, date_to=date_to,
-                query_text=question, exclude_speech_free=exclude_speech_free,
+                primary_vector,
+                retrieval_k,
+                date_from=date_from,
+                date_to=date_to,
+                query_text=question,
+                exclude_speech_free=exclude_speech_free,
             )
             variant_retrieved_ids = [[d["doc_id"] for d in documents]]
 

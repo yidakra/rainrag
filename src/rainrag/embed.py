@@ -8,9 +8,9 @@ from typing import Any, cast
 
 import numpy as np
 import torch
-from google.genai import types  # type: ignore[import]
+from google.genai import types
 from loguru import logger
-from sentence_transformers import SentenceTransformer  # type: ignore
+from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
 from rainrag.ingest import Document
@@ -114,9 +114,9 @@ class Embedder:
         self.config = config
         self.cache = EmbeddingCache(config.paths.embeddings_cache)
         self.model: SentenceTransformer | None = None
-        self.openai_client: Any = None  # type: ignore[assignment]
-        self.mistral_client: Any = None  # type: ignore[assignment]
-        self.genai_client: Any = None  # type: ignore[assignment]
+        self.openai_client: Any = None
+        self.mistral_client: Any = None
+        self.genai_client: Any = None
 
     def load_model(self) -> None:
         """Load the embedding model based on provider."""
@@ -372,7 +372,7 @@ class Embedder:
         elif provider == "gemini":
             if self.genai_client is None:
                 try:
-                    from google import genai  # type: ignore[import]
+                    from google import genai
                 except ImportError as e:
                     raise ImportError(
                         "google-genai package is required for Gemini embeddings. Install it with: pip install google-genai"

@@ -18,7 +18,9 @@ Embedding (USD / 1 M tokens)
   openai   $0.02   text-embedding-3-large
   gemini   $0.00   free tier
 """
+
 from __future__ import annotations
+
 
 # ---------------------------------------------------------------------------
 # Pricing tables (USD / 1 M tokens)
@@ -26,16 +28,16 @@ from __future__ import annotations
 
 LLM_INPUT_COST_PER_1M: dict[str, float] = {
     "mistral": 2.00,
-    "openai": 0.15,    # gpt-4o-mini input price
-    "claude": 0.80,    # claude-haiku-4-5-20251001 input
-    "gemini": 0.075,   # gemini-2.5-flash input
+    "openai": 0.15,  # gpt-4o-mini input price
+    "claude": 0.80,  # claude-haiku-4-5-20251001 input
+    "gemini": 0.075,  # gemini-2.5-flash input
 }
 
 LLM_OUTPUT_COST_PER_1M: dict[str, float] = {
-    "mistral": 6.00,   # mistral-large-latest output
-    "openai": 0.60,    # gpt-4o-mini output
-    "claude": 4.00,    # claude-haiku-4-5-20251001 output
-    "gemini": 0.30,    # gemini-2.5-flash output
+    "mistral": 6.00,  # mistral-large-latest output
+    "openai": 0.60,  # gpt-4o-mini output
+    "claude": 4.00,  # claude-haiku-4-5-20251001 output
+    "gemini": 0.30,  # gemini-2.5-flash output
 }
 
 EMBED_COST_PER_1M: dict[str, float] = {

@@ -13,11 +13,12 @@ Typical usage inside an experiment::
 
     metrics = carbon.as_metrics()   # dict[str, float], empty if unavailable
 """
+
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass, field
-from typing import Generator
+from collections.abc import Generator
+from dataclasses import dataclass
 
 
 # ---------------------------------------------------------------------------

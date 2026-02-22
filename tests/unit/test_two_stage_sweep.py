@@ -9,6 +9,7 @@ Tests cover:
 - Unknown axis raises ValueError
 - No duplicate condition IDs across a full sweep
 """
+
 from __future__ import annotations
 
 import sys
@@ -16,9 +17,15 @@ from pathlib import Path
 
 import pytest
 
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from eval.experiments.two_stage_sweep import (
+    _DEFAULT_HYDE_ALPHA,
+    _DEFAULT_MERGE_RRF_K,
+    _DEFAULT_MERGE_STRATEGY,
+    _DEFAULT_POOL_SIZE,
+    _DEFAULT_REWRITE_VARIANTS,
     DOC_ORDERS,
     HYDE_ALPHAS,
     MERGE_RRF_KS,
@@ -26,13 +33,8 @@ from eval.experiments.two_stage_sweep import (
     POOL_SIZES,
     REWRITE_VARIANTS,
     TwoStageSweepExperiment,
-    _DEFAULT_DOC_ORDER,
-    _DEFAULT_HYDE_ALPHA,
-    _DEFAULT_MERGE_RRF_K,
-    _DEFAULT_MERGE_STRATEGY,
-    _DEFAULT_POOL_SIZE,
-    _DEFAULT_REWRITE_VARIANTS,
 )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -61,8 +63,11 @@ def _make_exp(**kwargs) -> TwoStageSweepExperiment:
         MERGE_STRATEGIES,
         POOL_SIZES,
         REWRITE_VARIANTS,
+    )
+    from eval.experiments.two_stage_sweep import (
         TwoStageSweepExperiment as _Cls,
     )
+
     axes = kwargs.get("axes")
     exp._axes = set(axes) if axes is not None else _Cls._ALL_AXES
     exp._hyde_alphas = kwargs.get("hyde_alphas", HYDE_ALPHAS)
@@ -136,17 +141,25 @@ class TestConditionCounts:
 
 
 class TestConditionStructure:
-    @pytest.fixture(params=["hyde_alpha", "rewrite_variants", "pool_size",
-                            "merge_strategy", "merge_rrf_k", "doc_order"])
+    @pytest.fixture(
+        params=[
+            "hyde_alpha",
+            "rewrite_variants",
+            "pool_size",
+            "merge_strategy",
+            "merge_rrf_k",
+            "doc_order",
+        ]
+    )
     def single_axis_conditions(self, request):
         exp = _make_exp(axes=[request.param])
         return exp.conditions()
 
     def test_required_keys_present(self, single_axis_conditions):
         for cond in single_axis_conditions:
-            assert _REQUIRED_CONDITION_KEYS <= set(cond.keys()), (
-                f"Missing keys in condition {cond.get('id')}"
-            )
+            assert set(
+                cond.keys()
+            ) >= _REQUIRED_CONDITION_KEYS, f"Missing keys in condition {cond.get('id')}"
 
     def test_id_is_non_empty_string(self, single_axis_conditions):
         for cond in single_axis_conditions:
@@ -158,9 +171,9 @@ class TestConditionStructure:
 
     def test_base_overrides_present_in_every_condition(self, single_axis_conditions):
         for cond in single_axis_conditions:
-            assert _BASE_OVERRIDE_KEYS <= set(cond["overrides"].keys()), (
-                f"Missing base override keys in {cond['id']}"
-            )
+            assert set(
+                cond["overrides"].keys()
+            ) >= _BASE_OVERRIDE_KEYS, f"Missing base override keys in {cond['id']}"
 
     def test_sweep_axis_tag_present(self, single_axis_conditions):
         for cond in single_axis_conditions:
@@ -184,16 +197,18 @@ class TestHydeAlphaAxis:
             assert "two_stage.hyde_alpha" in cond["overrides"]
 
     def test_override_values_match_defaults(self):
-        for cond, expected in zip(self._conditions(), HYDE_ALPHAS):
+        for cond, expected in zip(self._conditions(), HYDE_ALPHAS, strict=False):
             assert cond["overrides"]["two_stage.hyde_alpha"] == pytest.approx(expected)
 
     def test_other_axes_held_at_defaults(self):
         for cond in self._conditions():
-            assert cond["overrides"]["two_stage.query_rewrite_variants"] == _DEFAULT_REWRITE_VARIANTS
+            assert (
+                cond["overrides"]["two_stage.query_rewrite_variants"] == _DEFAULT_REWRITE_VARIANTS
+            )
             assert cond["overrides"]["hybrid_search.top_k_multiplier"] == _DEFAULT_POOL_SIZE
 
     def test_tag_records_alpha(self):
-        for cond, expected in zip(self._conditions(), HYDE_ALPHAS):
+        for cond, expected in zip(self._conditions(), HYDE_ALPHAS, strict=False):
             assert cond["tags"]["hyde_alpha"] == str(expected)
 
     def test_custom_alphas(self):
@@ -219,7 +234,7 @@ class TestRewriteVariantsAxis:
             assert "two_stage.query_rewrite_variants" in cond["overrides"]
 
     def test_override_values_match_defaults(self):
-        for cond, expected in zip(self._conditions(), REWRITE_VARIANTS):
+        for cond, expected in zip(self._conditions(), REWRITE_VARIANTS, strict=False):
             assert cond["overrides"]["two_stage.query_rewrite_variants"] == expected
 
     def test_other_axes_held_at_defaults(self):
@@ -228,7 +243,7 @@ class TestRewriteVariantsAxis:
             assert cond["overrides"]["hybrid_search.top_k_multiplier"] == _DEFAULT_POOL_SIZE
 
     def test_tag_records_variant_count(self):
-        for cond, expected in zip(self._conditions(), REWRITE_VARIANTS):
+        for cond, expected in zip(self._conditions(), REWRITE_VARIANTS, strict=False):
             assert cond["tags"]["rewrite_variants"] == str(expected)
 
 
@@ -249,16 +264,18 @@ class TestPoolSizeAxis:
             assert "hybrid_search.top_k_multiplier" in cond["overrides"]
 
     def test_override_values_match_defaults(self):
-        for cond, expected in zip(self._conditions(), POOL_SIZES):
+        for cond, expected in zip(self._conditions(), POOL_SIZES, strict=False):
             assert cond["overrides"]["hybrid_search.top_k_multiplier"] == expected
 
     def test_other_axes_held_at_defaults(self):
         for cond in self._conditions():
             assert cond["overrides"]["two_stage.hyde_alpha"] == pytest.approx(_DEFAULT_HYDE_ALPHA)
-            assert cond["overrides"]["two_stage.query_rewrite_variants"] == _DEFAULT_REWRITE_VARIANTS
+            assert (
+                cond["overrides"]["two_stage.query_rewrite_variants"] == _DEFAULT_REWRITE_VARIANTS
+            )
 
     def test_tag_records_multiplier(self):
-        for cond, expected in zip(self._conditions(), POOL_SIZES):
+        for cond, expected in zip(self._conditions(), POOL_SIZES, strict=False):
             assert cond["tags"]["top_k_multiplier"] == str(expected)
 
 
@@ -279,7 +296,7 @@ class TestMergeStrategyAxis:
             assert "two_stage.merge_strategy" in cond["overrides"]
 
     def test_override_values_match_defaults(self):
-        for cond, expected in zip(self._conditions(), MERGE_STRATEGIES):
+        for cond, expected in zip(self._conditions(), MERGE_STRATEGIES, strict=False):
             assert cond["overrides"]["two_stage.merge_strategy"] == expected
 
     def test_rrf_k_held_at_default(self):
@@ -289,11 +306,13 @@ class TestMergeStrategyAxis:
     def test_other_axes_held_at_defaults(self):
         for cond in self._conditions():
             assert cond["overrides"]["two_stage.hyde_alpha"] == pytest.approx(_DEFAULT_HYDE_ALPHA)
-            assert cond["overrides"]["two_stage.query_rewrite_variants"] == _DEFAULT_REWRITE_VARIANTS
+            assert (
+                cond["overrides"]["two_stage.query_rewrite_variants"] == _DEFAULT_REWRITE_VARIANTS
+            )
             assert cond["overrides"]["hybrid_search.top_k_multiplier"] == _DEFAULT_POOL_SIZE
 
     def test_tag_records_strategy(self):
-        for cond, expected in zip(self._conditions(), MERGE_STRATEGIES):
+        for cond, expected in zip(self._conditions(), MERGE_STRATEGIES, strict=False):
             assert cond["tags"]["merge_strategy"] == expected
 
     def test_tag_sweep_axis_value(self):
@@ -323,7 +342,7 @@ class TestMergeRrfKAxis:
             assert "two_stage.merge_rrf_k" in cond["overrides"]
 
     def test_override_values_match_defaults(self):
-        for cond, expected in zip(self._conditions(), MERGE_RRF_KS):
+        for cond, expected in zip(self._conditions(), MERGE_RRF_KS, strict=False):
             assert cond["overrides"]["two_stage.merge_rrf_k"] == expected
 
     def test_merge_strategy_fixed_to_diverse_rrf(self):
@@ -334,11 +353,13 @@ class TestMergeRrfKAxis:
     def test_other_axes_held_at_defaults(self):
         for cond in self._conditions():
             assert cond["overrides"]["two_stage.hyde_alpha"] == pytest.approx(_DEFAULT_HYDE_ALPHA)
-            assert cond["overrides"]["two_stage.query_rewrite_variants"] == _DEFAULT_REWRITE_VARIANTS
+            assert (
+                cond["overrides"]["two_stage.query_rewrite_variants"] == _DEFAULT_REWRITE_VARIANTS
+            )
             assert cond["overrides"]["hybrid_search.top_k_multiplier"] == _DEFAULT_POOL_SIZE
 
     def test_tag_records_rrf_k(self):
-        for cond, expected in zip(self._conditions(), MERGE_RRF_KS):
+        for cond, expected in zip(self._conditions(), MERGE_RRF_KS, strict=False):
             assert cond["tags"]["merge_rrf_k"] == str(expected)
 
     def test_tag_sweep_axis_value(self):
@@ -374,19 +395,21 @@ class TestDocOrderAxis:
             assert "two_stage.prompt_doc_order" in cond["overrides"]
 
     def test_override_values_match_doc_orders(self):
-        for cond, expected in zip(self._conditions(), DOC_ORDERS):
+        for cond, expected in zip(self._conditions(), DOC_ORDERS, strict=False):
             assert cond["overrides"]["two_stage.prompt_doc_order"] == expected
 
     def test_other_axes_held_at_defaults(self):
         for cond in self._conditions():
             assert cond["overrides"]["two_stage.hyde_alpha"] == pytest.approx(_DEFAULT_HYDE_ALPHA)
-            assert cond["overrides"]["two_stage.query_rewrite_variants"] == _DEFAULT_REWRITE_VARIANTS
+            assert (
+                cond["overrides"]["two_stage.query_rewrite_variants"] == _DEFAULT_REWRITE_VARIANTS
+            )
             assert cond["overrides"]["hybrid_search.top_k_multiplier"] == _DEFAULT_POOL_SIZE
             assert cond["overrides"]["two_stage.merge_strategy"] == _DEFAULT_MERGE_STRATEGY
             assert cond["overrides"]["two_stage.merge_rrf_k"] == _DEFAULT_MERGE_RRF_K
 
     def test_tag_records_doc_order(self):
-        for cond, expected in zip(self._conditions(), DOC_ORDERS):
+        for cond, expected in zip(self._conditions(), DOC_ORDERS, strict=False):
             assert cond["tags"]["prompt_doc_order"] == expected
 
     def test_tag_sweep_axis_value(self):
@@ -408,7 +431,14 @@ class TestValidation:
     def test_unknown_axis_raises(self):
         with pytest.raises(ValueError, match="Unknown sweep axes"):
             exp = TwoStageSweepExperiment.__new__(TwoStageSweepExperiment)
-            from eval.experiments.two_stage_sweep import HYDE_ALPHAS, REWRITE_VARIANTS, POOL_SIZES, MERGE_STRATEGIES, MERGE_RRF_KS
+            from eval.experiments.two_stage_sweep import (
+                HYDE_ALPHAS,
+                MERGE_RRF_KS,
+                MERGE_STRATEGIES,
+                POOL_SIZES,
+                REWRITE_VARIANTS,
+            )
+
             exp._axes = {"not_a_real_axis"}
             exp._hyde_alphas = HYDE_ALPHAS
             exp._rewrite_variants = REWRITE_VARIANTS
@@ -424,10 +454,19 @@ class TestValidation:
     def test_no_duplicate_condition_ids_full_sweep(self):
         exp = _make_exp()
         ids = [c["id"] for c in exp.conditions()]
-        assert len(ids) == len(set(ids)), f"Duplicate IDs found: {[x for x in ids if ids.count(x) > 1]}"
+        assert len(ids) == len(
+            set(ids)
+        ), f"Duplicate IDs found: {[x for x in ids if ids.count(x) > 1]}"
 
     def test_no_duplicate_condition_ids_per_axis(self):
-        for axis in ("hyde_alpha", "rewrite_variants", "pool_size", "merge_strategy", "merge_rrf_k", "doc_order"):
+        for axis in (
+            "hyde_alpha",
+            "rewrite_variants",
+            "pool_size",
+            "merge_strategy",
+            "merge_rrf_k",
+            "doc_order",
+        ):
             exp = _make_exp(axes=[axis])
             ids = [c["id"] for c in exp.conditions()]
             assert len(ids) == len(set(ids)), f"Duplicate IDs in axis={axis}: {ids}"

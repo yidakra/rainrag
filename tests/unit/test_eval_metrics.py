@@ -3,6 +3,7 @@
 These tests require no external services (no Qdrant, no LLM APIs) and run
 entirely in-process with deterministic inputs and expected outputs.
 """
+
 from __future__ import annotations
 
 import math
@@ -11,9 +12,11 @@ from pathlib import Path
 
 import pytest
 
+
 # Allow imports from the repo root (eval/ lives alongside src/)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from eval.metrics.answer_quality import answer_length, rouge_l
 from eval.metrics.retrieval import (
     aggregate_metrics,
     average_precision,
@@ -25,7 +28,6 @@ from eval.metrics.retrieval import (
     precision_at_k,
     recall_at_k,
 )
-from eval.metrics.answer_quality import answer_length, rouge_l
 
 
 # ---------------------------------------------------------------------------
@@ -203,10 +205,14 @@ class TestComputeAllMetrics:
     def test_returns_all_keys(self):
         result = compute_all_metrics(["a", "b", "c"], ["a"], ks=(3, 5))
         expected_keys = {
-            "recall@3", "recall@5",
-            "precision@3", "precision@5",
-            "ndcg@3", "ndcg@5",
-            "mrr", "map",
+            "recall@3",
+            "recall@5",
+            "precision@3",
+            "precision@5",
+            "ndcg@3",
+            "ndcg@5",
+            "mrr",
+            "map",
         }
         assert set(result.keys()) == expected_keys
 
@@ -343,15 +349,11 @@ class TestIntentCoverageAtK:
 
     def test_no_variants_covered(self):
         """No variant has any relevant doc → 0.0."""
-        assert intent_coverage_at_k(
-            [["x", "y"], ["z", "w"]], {"a", "b"}, k=5
-        ) == pytest.approx(0.0)
+        assert intent_coverage_at_k([["x", "y"], ["z", "w"]], {"a", "b"}, k=5) == pytest.approx(0.0)
 
     def test_half_covered(self):
         """One of two variants has a relevant doc → 0.5."""
-        assert intent_coverage_at_k(
-            [["a", "x"], ["x", "y"]], {"a"}, k=2
-        ) == pytest.approx(0.5)
+        assert intent_coverage_at_k([["a", "x"], ["x", "y"]], {"a"}, k=2) == pytest.approx(0.5)
 
     def test_cutoff_excludes_relevant(self):
         """Relevant doc at rank 3 is not counted when k=2."""
@@ -371,9 +373,7 @@ class TestIntentCoverageAtK:
         assert intent_coverage_at_k([["a", "b"]], {"a"}, k=1) == pytest.approx(1.0)
 
     def test_three_variants_two_covered(self):
-        assert intent_coverage_at_k(
-            [["a"], ["b"], ["x"]], {"a", "b"}, k=1
-        ) == pytest.approx(2 / 3)
+        assert intent_coverage_at_k([["a"], ["b"], ["x"]], {"a", "b"}, k=1) == pytest.approx(2 / 3)
 
 
 # ---------------------------------------------------------------------------
@@ -454,9 +454,9 @@ class TestAnswerQualityFallback:
         import eval.metrics.answer_quality as aq
 
         monkeypatch.setattr(aq, "_RAGAS_AVAILABLE", False)
-        result = aq.compute_ragas_metrics([
-            {"question": "q", "answer": "a", "contexts": ["c"], "ground_truth": "gt"}
-        ])
+        result = aq.compute_ragas_metrics(
+            [{"question": "q", "answer": "a", "contexts": ["c"], "ground_truth": "gt"}]
+        )
         assert result == {"ragas.available": 0.0}
 
 
@@ -518,7 +518,9 @@ class TestEstimateQueryCost:
 
     def test_unknown_provider_gives_zero_cost(self):
         result = estimate_query_cost(
-            query="q", contexts=["c"], answer="a",
+            query="q",
+            contexts=["c"],
+            answer="a",
             llm_provider="unknown_llm",
             embed_provider="unknown_embed",
         )
@@ -546,8 +548,11 @@ class TestEstimateQueryCost:
 
     def test_empty_contexts(self):
         result = estimate_query_cost(
-            query="hello", contexts=[], answer="world",
-            llm_provider="claude", embed_provider="local",
+            query="hello",
+            contexts=[],
+            answer="world",
+            llm_provider="claude",
+            embed_provider="local",
         )
         assert result["cost.total_usd_est"] >= 0.0
 

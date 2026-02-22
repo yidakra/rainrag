@@ -30,20 +30,19 @@ Usage
     )
     results = exp.run()
 """
+
 from __future__ import annotations
 
-import copy
 import statistics
 import time
 from typing import Any
 
-from rainrag.config import Config, load_config
-from rainrag.query import RAGQueryEngine
-
+import eval.mlflow_tracking as mlflow_tracking
 from eval.datasets.create_eval_set import load_eval_set
 from eval.experiments.ablation import ABLATION_CONDITIONS
 from eval.experiments.base import apply_overrides
-import eval.mlflow_tracking as mlflow_tracking
+from rainrag.config import load_config
+from rainrag.query import RAGQueryEngine
 
 
 def _percentile(data: list[float], p: float) -> float:
@@ -171,7 +170,9 @@ class LatencyExperiment:
                 "t_total_ms": [],
             }
 
-            print(f"[{condition['id']}] {condition['label']} — profiling {len(records)} queries × {self.n_repeats} repeats ...")
+            print(
+                f"[{condition['id']}] {condition['label']} — profiling {len(records)} queries × {self.n_repeats} repeats ..."
+            )
             for record in records:
                 for _ in range(self.n_repeats):
                     try:

@@ -9,6 +9,12 @@ import pytest
 from rainrag.config import Config
 
 
+@pytest.fixture(autouse=True)
+def disable_api_startup_init(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable heavy API lifespan initialization during unit/integration tests."""
+    monkeypatch.setenv("RAINRAG_SKIP_API_STARTUP_INIT", "1")
+
+
 @pytest.fixture
 def temp_dir() -> Generator[Path, None, None]:
     """Create a temporary directory for testing."""

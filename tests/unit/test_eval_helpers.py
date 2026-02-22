@@ -6,6 +6,7 @@ Covers:
 
 No external services required.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -105,7 +107,9 @@ class TestBEIRCorpus:
     def test_len(self):
         from eval.datasets.beir_adapter import BEIRCorpus
 
-        corpus = BEIRCorpus(docs={"d1": {"title": "T", "text": "foo"}, "d2": {"title": "U", "text": "bar"}})
+        corpus = BEIRCorpus(
+            docs={"d1": {"title": "T", "text": "foo"}, "d2": {"title": "U", "text": "bar"}}
+        )
         assert len(corpus) == 2
 
     def test_empty(self):
@@ -182,7 +186,9 @@ class TestBEIRAdapter:
     def test_collection_name_custom_suffix(self):
         from eval.datasets.beir_adapter import BEIRAdapter
 
-        assert BEIRAdapter("scifact", collection_suffix="test_run").collection_name == "beir_test_run"
+        assert (
+            BEIRAdapter("scifact", collection_suffix="test_run").collection_name == "beir_test_run"
+        )
 
     def test_to_eval_jsonl_skips_queries_without_relevant(self, tmp_path):
         """Queries that have no relevant docs in qrels should be skipped."""
@@ -219,9 +225,16 @@ class TestBEIRAdapter:
         rec = records[0]
 
         required_keys = {
-            "query_id", "query", "language", "relevant_doc_ids",
-            "reference_answer", "category", "temporal",
-            "beir_dataset", "beir_query_id", "beir_collection",
+            "query_id",
+            "query",
+            "language",
+            "relevant_doc_ids",
+            "reference_answer",
+            "category",
+            "temporal",
+            "beir_dataset",
+            "beir_query_id",
+            "beir_collection",
         }
         assert required_keys.issubset(rec.keys())
         assert rec["language"] == "en"
@@ -233,7 +246,9 @@ class TestBEIRAdapter:
         from eval.datasets.beir_adapter import BEIRAdapter, BEIRCorpus, BEIRQRels, BEIRQueries
 
         adapter = BEIRAdapter("test")
-        adapter._corpus = BEIRCorpus(docs={"d1": {"title": "", "text": "a"}, "d2": {"title": "", "text": "b"}})
+        adapter._corpus = BEIRCorpus(
+            docs={"d1": {"title": "", "text": "a"}, "d2": {"title": "", "text": "b"}}
+        )
         adapter._queries = BEIRQueries(queries={"q1": "question"})
         adapter._qrels = BEIRQRels(qrels={"q1": {"d1": 2, "d2": 1}})
 
@@ -275,9 +290,7 @@ class TestBEIRAdapter:
             pytest.skip("rank-bm25 not installed")
 
         adapter = BEIRAdapter("test")
-        adapter._corpus = BEIRCorpus(
-            docs={"d1": {"title": "", "text": "alpha beta gamma"}}
-        )
+        adapter._corpus = BEIRCorpus(docs={"d1": {"title": "", "text": "alpha beta gamma"}})
         adapter._queries = BEIRQueries(queries={"q1": "alpha"})
         adapter._qrels = BEIRQRels(qrels={"q1": {"d1": 1}})
 
@@ -353,7 +366,9 @@ class TestBuildSummary:
 
         exp = _Exp(dataset_path=None)
         results = [self._make_valid_result("q1", cost_total_usd=0.002)]
-        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+        summary = exp._build_summary(
+            minimal_condition, minimal_config, top_k=5, all_results=results
+        )
 
         assert "cost.total_usd_est" in summary["metrics"]
         assert summary["metrics"]["cost.total_usd_est"] == pytest.approx(0.002)
@@ -372,7 +387,9 @@ class TestBuildSummary:
             self._make_valid_result("q1", elapsed_ms=100.0),
             self._make_valid_result("q2", elapsed_ms=200.0),
         ]
-        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+        summary = exp._build_summary(
+            minimal_condition, minimal_config, top_k=5, all_results=results
+        )
 
         assert "latency_p50_ms" in summary["metrics"]
         assert "latency_p95_ms" in summary["metrics"]
@@ -392,7 +409,9 @@ class TestBuildSummary:
             self._make_valid_result("q2"),
             {"query_id": "q3", "query": "bad", "language": "en", "error": "timeout"},
         ]
-        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+        summary = exp._build_summary(
+            minimal_condition, minimal_config, top_k=5, all_results=results
+        )
 
         assert summary["metrics"]["num_queries"] == 2.0
         assert summary["metrics"]["num_errors"] == 1.0
@@ -451,7 +470,9 @@ class TestBuildSummary:
             self._make_valid_result("q1", rouge_l=0.4),
             self._make_valid_result("q2", rouge_l=0.6),
         ]
-        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+        summary = exp._build_summary(
+            minimal_condition, minimal_config, top_k=5, all_results=results
+        )
         assert "rouge_l" in summary["metrics"]
         assert summary["metrics"]["rouge_l"] == pytest.approx(0.5)
 
@@ -470,7 +491,9 @@ class TestBuildSummary:
             self._make_valid_result("q2", ndcg5=0.5),
             self._make_valid_result("q3", ndcg5=0.8),
         ]
-        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+        summary = exp._build_summary(
+            minimal_condition, minimal_config, top_k=5, all_results=results
+        )
 
         assert "ndcg@5_p10" in summary["metrics"], "ndcg@5_p10 must be present"
         assert "ndcg@5_p25" in summary["metrics"], "ndcg@5_p25 must be present"
@@ -492,7 +515,9 @@ class TestBuildSummary:
             {**self._make_valid_result("q1"), "intent_coverage@3": 1.0, "intent_coverage@5": 1.0},
             {**self._make_valid_result("q2"), "intent_coverage@3": 0.5, "intent_coverage@5": 0.5},
         ]
-        summary = exp._build_summary(minimal_condition, minimal_config, top_k=5, all_results=results)
+        summary = exp._build_summary(
+            minimal_condition, minimal_config, top_k=5, all_results=results
+        )
 
         assert "intent_coverage@5" in summary["metrics"], "intent_coverage@5 must be aggregated"
         assert summary["metrics"]["intent_coverage@5"] == pytest.approx(0.75)
@@ -551,6 +576,7 @@ class TestPrintResult:
 
     def _capture(self, metrics: dict, capsys) -> str:
         from eval.experiments.base import BaseExperiment
+
         BaseExperiment._print_result(self._result(metrics))
         return capsys.readouterr().out
 
@@ -579,7 +605,13 @@ class TestPrintResult:
 
     def test_intent_coverage_shown_when_present(self, capsys):
         out = self._capture(
-            {"recall@5": 0.5, "ndcg@5": 0.6, "mrr": 0.5, "rouge_l": 0.4, "intent_coverage@5": 0.875},
+            {
+                "recall@5": 0.5,
+                "ndcg@5": 0.6,
+                "mrr": 0.5,
+                "rouge_l": 0.4,
+                "intent_coverage@5": 0.875,
+            },
             capsys,
         )
         assert "ic@5=0.875" in out
@@ -590,8 +622,13 @@ class TestPrintResult:
 
     def test_cost_shown_when_present(self, capsys):
         out = self._capture(
-            {"recall@5": 0.5, "ndcg@5": 0.4, "mrr": 0.6, "rouge_l": 0.3,
-             "cost.total_usd_est_per_query": 0.0012},
+            {
+                "recall@5": 0.5,
+                "ndcg@5": 0.4,
+                "mrr": 0.6,
+                "rouge_l": 0.3,
+                "cost.total_usd_est_per_query": 0.0012,
+            },
             capsys,
         )
         assert "$0.0012/q" in out

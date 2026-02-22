@@ -52,6 +52,7 @@ To override the default sweep values::
 
     exp = TwoStageSweepExperiment(..., hyde_alphas=[0.2, 0.5, 0.8])
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -254,10 +255,16 @@ class TwoStageSweepExperiment(BaseExperiment):
         doc_orders: Prompt document ordering strategies to sweep (Axis F).
     """
 
-    _ALL_AXES = frozenset({
-        "hyde_alpha", "rewrite_variants", "pool_size",
-        "merge_strategy", "merge_rrf_k", "doc_order",
-    })
+    _ALL_AXES = frozenset(
+        {
+            "hyde_alpha",
+            "rewrite_variants",
+            "pool_size",
+            "merge_strategy",
+            "merge_rrf_k",
+            "doc_order",
+        }
+    )
 
     def __init__(
         self,
@@ -286,9 +293,13 @@ class TwoStageSweepExperiment(BaseExperiment):
             raise ValueError(f"Unknown sweep axes: {unknown!r}. Valid: {self._ALL_AXES}")
 
         self._hyde_alphas = hyde_alphas if hyde_alphas is not None else HYDE_ALPHAS
-        self._rewrite_variants = rewrite_variants if rewrite_variants is not None else REWRITE_VARIANTS
+        self._rewrite_variants = (
+            rewrite_variants if rewrite_variants is not None else REWRITE_VARIANTS
+        )
         self._pool_sizes = pool_sizes if pool_sizes is not None else POOL_SIZES
-        self._merge_strategies = merge_strategies if merge_strategies is not None else MERGE_STRATEGIES
+        self._merge_strategies = (
+            merge_strategies if merge_strategies is not None else MERGE_STRATEGIES
+        )
         self._merge_rrf_ks = merge_rrf_ks if merge_rrf_ks is not None else MERGE_RRF_KS
         self._doc_orders = doc_orders if doc_orders is not None else DOC_ORDERS
 

@@ -23,10 +23,10 @@ After review, run experiments only on accepted records:
     python -m eval.run_eval ablation \\
         --dataset eval/datasets/eval_set_en_reviewed.jsonl
 """
+
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -67,7 +67,9 @@ def _print_record(record: dict, index: int, total: int, accepted: int, deleted: 
         if record.get("source_path"):
             body += f"[bold]Source:[/] {record['source_path']}\n"
         if record.get("beir_dataset"):
-            body += f"[bold]BEIR:[/] {record['beir_dataset']}  query_id={record.get('beir_query_id')}\n"
+            body += (
+                f"[bold]BEIR:[/] {record['beir_dataset']}  query_id={record.get('beir_query_id')}\n"
+            )
         _console.print()
         _console.rule(header)
         _console.print(Panel(body.strip(), expand=False))
@@ -138,10 +140,7 @@ def review_eval_set(
         return {"total": 0, "accepted": 0, "deleted": 0, "skipped": 0}
 
     # Build list of indices to review
-    pending = [
-        i for i, r in enumerate(records)
-        if not (only_unreviewed and r.get("reviewed"))
-    ]
+    pending = [i for i, r in enumerate(records) if not (only_unreviewed and r.get("reviewed"))]
 
     n_pending = len(pending)
     accepted = sum(1 for r in records if r.get("valid") is True)
@@ -169,8 +168,15 @@ def review_eval_set(
 
             if key == "q":
                 _save(records, out)
-                print(f"\nSaved. Session ended: {accepted} accepted, {deleted} deleted, {seq - 1} reviewed this session.")
-                return {"total": total, "accepted": accepted, "deleted": deleted, "skipped": n_pending - seq + 1}
+                print(
+                    f"\nSaved. Session ended: {accepted} accepted, {deleted} deleted, {seq - 1} reviewed this session."
+                )
+                return {
+                    "total": total,
+                    "accepted": accepted,
+                    "deleted": deleted,
+                    "skipped": n_pending - seq + 1,
+                }
 
             if key == "a":
                 record["valid"] = True
@@ -273,7 +279,13 @@ def review_stats(input_path: str) -> dict[str, int]:
     deleted = sum(1 for r in records if r.get("valid") is False)
     pending = total - reviewed
 
-    stats = {"total": total, "reviewed": reviewed, "accepted": accepted, "deleted": deleted, "pending": pending}
+    stats = {
+        "total": total,
+        "reviewed": reviewed,
+        "accepted": accepted,
+        "deleted": deleted,
+        "pending": pending,
+    }
 
     if _RICH:
         _console.print(
@@ -282,7 +294,9 @@ def review_stats(input_path: str) -> dict[str, int]:
             f"[green]accepted={accepted}[/]  [red]deleted={deleted}[/]  pending={pending}"
         )
     else:
-        print(f"{input_path}: total={total} reviewed={reviewed} accepted={accepted} deleted={deleted} pending={pending}")
+        print(
+            f"{input_path}: total={total} reviewed={reviewed} accepted={accepted} deleted={deleted} pending={pending}"
+        )
 
     return stats
 
@@ -296,7 +310,9 @@ if __name__ == "__main__":
     review_p = sub.add_parser("review", help="Start interactive review session.")
     review_p.add_argument("input")
     review_p.add_argument("--output", "-o")
-    review_p.add_argument("--all", action="store_true", dest="all_records", help="Re-review already reviewed records")
+    review_p.add_argument(
+        "--all", action="store_true", dest="all_records", help="Re-review already reviewed records"
+    )
 
     filter_p = sub.add_parser("filter", help="Export only valid=True records.")
     filter_p.add_argument("input")

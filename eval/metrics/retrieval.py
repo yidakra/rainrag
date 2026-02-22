@@ -3,10 +3,11 @@
 All functions operate on pre-computed doc-ID lists and require no LLM calls,
 so they are fast and cheap to run on every experiment condition.
 """
+
 from __future__ import annotations
 
 import math
-from typing import Sequence
+from collections.abc import Sequence
 
 
 def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
@@ -39,8 +40,7 @@ def ndcg_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
 
     def dcg(items: list[str]) -> float:
         return sum(
-            (1.0 / math.log2(i + 2)) if item in relevant else 0.0
-            for i, item in enumerate(items)
+            (1.0 / math.log2(i + 2)) if item in relevant else 0.0 for i, item in enumerate(items)
         )
 
     actual_dcg = dcg(retrieved_k)
@@ -96,10 +96,7 @@ def intent_coverage_at_k(
     """
     if not variant_retrieved_ids or not relevant:
         return 0.0
-    covered = sum(
-        1 for ids in variant_retrieved_ids
-        if set(ids[:k]) & relevant
-    )
+    covered = sum(1 for ids in variant_retrieved_ids if set(ids[:k]) & relevant)
     return covered / len(variant_retrieved_ids)
 
 

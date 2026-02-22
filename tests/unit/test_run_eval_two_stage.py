@@ -15,18 +15,21 @@ Covers:
 - --top-ks comma list parsed into a tuple
 - Unknown axis propagated to TwoStageSweepExperiment (constructor raises)
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
 
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from eval.run_eval import app
+
 
 runner = CliRunner()
 
@@ -84,9 +87,7 @@ class TestDatasetRequired:
 class TestSuccessfulInvocation:
     def _run(self, extra_args: list[str] | None = None, n_conditions: int = 3):
         mock_exp = _mock_experiment(n_conditions)
-        with patch(
-            _PATCH, return_value=mock_exp
-        ) as mock_cls:
+        with patch(_PATCH, return_value=mock_exp) as mock_cls:
             result = runner.invoke(
                 app,
                 ["two-stage", "--dataset", _DATASET] + (extra_args or []),
@@ -151,11 +152,13 @@ class TestAxesFlag:
         assert set(result) == {"merge_strategy", "merge_rrf_k"}
 
     def test_all_five_axes(self):
-        result = self._run_axes(
-            "hyde_alpha,rewrite_variants,pool_size,merge_strategy,merge_rrf_k"
-        )
+        result = self._run_axes("hyde_alpha,rewrite_variants,pool_size,merge_strategy,merge_rrf_k")
         assert set(result) == {
-            "hyde_alpha", "rewrite_variants", "pool_size", "merge_strategy", "merge_rrf_k"
+            "hyde_alpha",
+            "rewrite_variants",
+            "pool_size",
+            "merge_strategy",
+            "merge_rrf_k",
         }
 
     def test_axes_with_spaces_trimmed(self):
@@ -302,10 +305,14 @@ class TestAxesDECombined:
                 app,
                 [
                     "two-stage",
-                    "--dataset", _DATASET,
-                    "--axes", "merge_strategy,merge_rrf_k",
-                    "--merge-strategies", "coverage,diverse_rrf",
-                    "--merge-rrf-ks", "20,60",
+                    "--dataset",
+                    _DATASET,
+                    "--axes",
+                    "merge_strategy,merge_rrf_k",
+                    "--merge-strategies",
+                    "coverage,diverse_rrf",
+                    "--merge-rrf-ks",
+                    "20,60",
                 ],
             )
         _, kwargs = mock_cls.call_args
@@ -335,7 +342,9 @@ class TestDocOrdersFlag:
 
     def test_multiple_orders_parsed(self):
         assert self._kwargs("rank,reversed,book_end")["doc_orders"] == [
-            "rank", "reversed", "book_end"
+            "rank",
+            "reversed",
+            "book_end",
         ]
 
     def test_whitespace_stripped(self):
@@ -363,9 +372,12 @@ class TestAxisFalone:
                 app,
                 [
                     "two-stage",
-                    "--dataset", _DATASET,
-                    "--axes", "doc_order",
-                    "--doc-orders", "rank,book_end",
+                    "--dataset",
+                    _DATASET,
+                    "--axes",
+                    "doc_order",
+                    "--doc-orders",
+                    "rank,book_end",
                 ],
             )
         _, kwargs = mock_cls.call_args

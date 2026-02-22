@@ -10,7 +10,7 @@ Covers:
 - query() pipeline with two_stage disabled (no behaviour change)
 """
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -99,7 +99,9 @@ def mock_openai_client():
     client.embeddings.create.return_value = embed_resp
 
     chat_resp = MagicMock()
-    chat_resp.choices = [MagicMock(message=MagicMock(content="rewritten query A\nrewritten query B"))]
+    chat_resp.choices = [
+        MagicMock(message=MagicMock(content="rewritten query A\nrewritten query B"))
+    ]
     client.chat.completions.create.return_value = chat_resp
 
     return client
@@ -202,9 +204,9 @@ class TestRewriteQuery:
             _setup(engine, MagicMock())
 
             # LLM returns two lines
-            mock_openai_client.chat.completions.create.return_value.choices[0].message.content = (
-                "infrastructure work in 2022\nbridge building project"
-            )
+            mock_openai_client.chat.completions.create.return_value.choices[
+                0
+            ].message.content = "infrastructure work in 2022\nbridge building project"
 
             variants = engine._rewrite_query_for_retrieval(
                 "infrastructure projects 2022", language="en"
@@ -223,9 +225,9 @@ class TestRewriteQuery:
             engine = RAGQueryEngine(two_stage_config)
             _setup(engine, MagicMock())
 
-            mock_openai_client.chat.completions.create.return_value.choices[0].message.content = (
-                "line one\nline two\nline three"
-            )
+            mock_openai_client.chat.completions.create.return_value.choices[
+                0
+            ].message.content = "line one\nline two\nline three"
 
             variants = engine._rewrite_query_for_retrieval("original", language="en")
 
@@ -250,9 +252,9 @@ class TestRewriteQuery:
             engine = RAGQueryEngine(two_stage_config)
             _setup(engine, MagicMock())
 
-            mock_openai_client.chat.completions.create.return_value.choices[0].message.content = (
-                "вариант один"
-            )
+            mock_openai_client.chat.completions.create.return_value.choices[
+                0
+            ].message.content = "вариант один"
 
             engine._rewrite_query_for_retrieval("запрос", language="ru")
 
@@ -269,9 +271,9 @@ class TestRewriteQuery:
             engine = RAGQueryEngine(two_stage_config)
             _setup(engine, MagicMock())
 
-            mock_openai_client.chat.completions.create.return_value.choices[0].message.content = (
-                "variant one"
-            )
+            mock_openai_client.chat.completions.create.return_value.choices[
+                0
+            ].message.content = "variant one"
 
             engine._rewrite_query_for_retrieval("query", language="en")
 
@@ -291,7 +293,9 @@ class TestHydeEmbedding:
             engine = RAGQueryEngine(hyde_config)
             _setup(engine, MagicMock())
 
-            mock_openai_client.chat.completions.create.return_value.choices[0].message.content = (
+            mock_openai_client.chat.completions.create.return_value.choices[
+                0
+            ].message.content = (
                 "Crews were seen building a new overpass along the highway corridor."
             )
 
@@ -395,7 +399,9 @@ class TestTwoStagePipeline:
             high_score_point = MagicMock()
             high_score_point.id = "doc1"
             high_score_point.score = 0.9
-            high_score_point.payload = mock_qdrant_client.query_points.return_value.points[0].payload
+            high_score_point.payload = mock_qdrant_client.query_points.return_value.points[
+                0
+            ].payload
 
             low_result = MagicMock()
             low_result.points = [low_score_point]
@@ -418,9 +424,7 @@ class TestTwoStagePipeline:
         # The higher score wins
         assert docs[0]["score"] == 0.9
 
-    def test_hyde_blends_embedding(
-        self, hyde_config, mock_openai_client, mock_qdrant_client
-    ):
+    def test_hyde_blends_embedding(self, hyde_config, mock_openai_client, mock_qdrant_client):
         """With HyDE enabled, embed_query should be called twice (query + HyDE passage)
         and the Qdrant call should use a blended vector (not identical to raw query)."""
         with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
@@ -436,7 +440,9 @@ class TestTwoStagePipeline:
 
             mock_openai_client.embeddings.create.side_effect = [raw_embed, hyde_embed]
             mock_openai_client.chat.completions.create.side_effect = [
-                MagicMock(choices=[MagicMock(message=MagicMock(content="Hypothetical passage text."))]),
+                MagicMock(
+                    choices=[MagicMock(message=MagicMock(content="Hypothetical passage text."))]
+                ),
                 MagicMock(choices=[MagicMock(message=MagicMock(content="Final answer."))]),
             ]
 
@@ -468,8 +474,12 @@ class TestTwoStagePipeline:
             result = engine.query("test", top_k=1, language="en")
 
         assert set(result.keys()) == {
-            "question", "answer", "retrieved_documents", "num_documents",
-            "query_variants", "variant_retrieved_ids",
+            "question",
+            "answer",
+            "retrieved_documents",
+            "num_documents",
+            "query_variants",
+            "variant_retrieved_ids",
         }
 
     def test_answer_generation_uses_zero_temperature(
@@ -494,8 +504,8 @@ class TestTwoStagePipeline:
         assert len(calls) == 2
         rewrite_call_temp = calls[0][1]["temperature"]
         answer_call_temp = calls[1][1]["temperature"]
-        assert rewrite_call_temp == 0.7   # diverse paraphrases
-        assert answer_call_temp == 0.0    # deterministic answer
+        assert rewrite_call_temp == 0.7  # diverse paraphrases
+        assert answer_call_temp == 0.0  # deterministic answer
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +552,7 @@ class TestMergeStrategies:
         vdocs_b = [self._doc("b", 0.7, 1)]
         result = engine._merge_variants_coverage([vdocs_a, vdocs_b], retrieval_k=2)
         ids = [d["doc_id"] for d in result]
-        assert ids[0] == "a"   # higher score
+        assert ids[0] == "a"  # higher score
         assert ids[1] == "b"
 
     def test_coverage_uses_best_score_for_duplicate_doc(self, engine):
@@ -606,9 +616,9 @@ class TestMergeStrategies:
         docs should be larger than with rrf_k=60."""
         vdocs = [[self._doc("a", 0.9, 1), self._doc("b", 0.5, 2)]]
         result_60 = engine._merge_variants_diverse_rrf(vdocs, retrieval_k=2, rrf_k=60)
-        result_1  = engine._merge_variants_diverse_rrf(vdocs, retrieval_k=2, rrf_k=1)
+        result_1 = engine._merge_variants_diverse_rrf(vdocs, retrieval_k=2, rrf_k=1)
         gap_60 = result_60[0]["score"] - result_60[1]["score"]
-        gap_1  = result_1[0]["score"]  - result_1[1]["score"]
+        gap_1 = result_1[0]["score"] - result_1[1]["score"]
         assert gap_1 > gap_60
 
     # --- query() integration: variant_retrieved_ids exposed ---
@@ -642,7 +652,9 @@ class TestMergeStrategies:
             _setup(engine, mock_qdrant_client)
 
             mock_openai_client.chat.completions.create.side_effect = [
-                MagicMock(choices=[MagicMock(message=MagicMock(content="rewrite one\nrewrite two"))]),
+                MagicMock(
+                    choices=[MagicMock(message=MagicMock(content="rewrite one\nrewrite two"))]
+                ),
                 MagicMock(choices=[MagicMock(message=MagicMock(content="answer"))]),
             ]
 
@@ -761,7 +773,7 @@ class TestOrderDocumentsForPrompt:
         docs = _make_docs([0.9, 0.8, 0.6, 0.4])
         result = engine._order_documents_for_prompt(docs, "book_end")
         scores = [d["score"] for d in result]
-        assert scores[0] == 0.9   # best first
+        assert scores[0] == 0.9  # best first
         assert scores[-1] == 0.8  # second-best last
         # remaining in middle
         assert set(scores[1:-1]) == {0.6, 0.4}

@@ -8,6 +8,7 @@ is caught and the test is skipped rather than failed.
 The tests are intentionally lightweight (import-only) so they run in < 1 s
 on any Python version supported by the project.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -15,6 +16,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 
 # Make sure the repo root is on sys.path when running from the tests/ directory
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -93,7 +95,14 @@ def test_two_stage_sweep_default_conditions() -> None:
     assert len(conds) > 0
 
     axes = {c["tags"]["sweep_axis"] for c in conds}
-    assert axes == {"hyde_alpha", "rewrite_variants", "pool_size", "merge_strategy", "merge_rrf_k", "doc_order"}
+    assert axes == {
+        "hyde_alpha",
+        "rewrite_variants",
+        "pool_size",
+        "merge_strategy",
+        "merge_rrf_k",
+        "doc_order",
+    }
 
 
 def test_two_stage_sweep_axis_filter() -> None:
@@ -186,7 +195,12 @@ def _apply_scroll_filter(payloads: list[dict], lang: str) -> list[dict]:
 def test_scroll_chunks_filter_excludes_speech_free() -> None:
     """is_speech_free=True payloads must be excluded by the _scroll_chunks predicate."""
     payloads = [
-        {"language": "en", "text": "The president arrived.", "doc_id": "a", "is_speech_free": False},
+        {
+            "language": "en",
+            "text": "The president arrived.",
+            "doc_id": "a",
+            "is_speech_free": False,
+        },
         {"language": "en", "text": "Crowd ambience.", "doc_id": "b", "is_speech_free": True},
     ]
     result = _apply_scroll_filter(payloads, "en")
@@ -231,17 +245,16 @@ def test_scroll_chunks_filter_respects_language() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_retrieve_documents_exclude_speech_free_filters_results() -> None:
+def test_retrieve_documents_exclude_speech_free_filters_results(test_config) -> None:
     """retrieve_documents(exclude_speech_free=True) must strip is_speech_free docs."""
-    qdrant_client = pytest.importorskip("qdrant_client")  # skip if not installed
+    pytest.importorskip("qdrant_client")  # skip if not installed
     torch = pytest.importorskip("torch")  # noqa: F841 — skip if torch not installed
 
     from unittest.mock import MagicMock
 
-    from rainrag.config import Config
     from rainrag.query import RAGQueryEngine
 
-    cfg = Config()
+    cfg = test_config
     engine = RAGQueryEngine.__new__(RAGQueryEngine)
     engine.config = cfg
     engine.bm25 = None  # no hybrid search
@@ -275,17 +288,16 @@ def test_retrieve_documents_exclude_speech_free_filters_results() -> None:
     assert docs[0]["doc_id"] == "doc_a"
 
 
-def test_retrieve_documents_include_speech_free_by_default() -> None:
+def test_retrieve_documents_include_speech_free_by_default(test_config) -> None:
     """retrieve_documents without exclude_speech_free must return all docs."""
     pytest.importorskip("qdrant_client")
     pytest.importorskip("torch")
 
     from unittest.mock import MagicMock
 
-    from rainrag.config import Config
     from rainrag.query import RAGQueryEngine
 
-    cfg = Config()
+    cfg = test_config
     engine = RAGQueryEngine.__new__(RAGQueryEngine)
     engine.config = cfg
     engine.bm25 = None

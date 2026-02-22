@@ -38,12 +38,12 @@ CLI reference
     --show         Display charts interactively with matplotlib
     --dpi          Output PNG resolution (default: 150)
 """
+
 from __future__ import annotations
 
 import math
-import sys
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -204,10 +204,7 @@ def plot_latency_breakdown(runs, output_dir: Path, show: bool, dpi: int) -> None
 
     for _, row in runs.iterrows():
         lbl = _condition_label(row)
-        row_stages = {
-            s: _safe_float(row.get(f"metrics.{s}_p50_ms")) or 0.0
-            for s in stages
-        }
+        row_stages = {s: _safe_float(row.get(f"metrics.{s}_p50_ms")) or 0.0 for s in stages}
         row_total = sum(row_stages.values())
         if row_total == 0.0:
             # Fallback: use total p50 as a single block
@@ -228,7 +225,7 @@ def plot_latency_breakdown(runs, output_dir: Path, show: bool, dpi: int) -> None
     colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52"]
     fig, ax = plt.subplots(figsize=(max(8, len(labels) * 0.9), 5))
     bottom = np.zeros(len(labels))
-    for s, color in zip(stages, colors):
+    for s, color in zip(stages, colors, strict=False):
         vals = np.array(stage_values[s])
         ax.bar(x, vals, bottom=bottom, label=s, color=color)
         bottom += vals
@@ -305,7 +302,7 @@ def plot_robustness_bars(runs, output_dir: Path, show: bool, dpi: int) -> None:
     ]
 
     fig, ax = plt.subplots(figsize=(max(9, n * 1.2), 5))
-    for offset, vals, color, blabel in zip(offsets, bar_data, colors, bar_labels):
+    for offset, vals, color, blabel in zip(offsets, bar_data, colors, bar_labels, strict=False):
         ax.bar(x + offset, vals, slot_w, label=blabel, color=color)
 
     ax.set_xticks(x)
@@ -395,17 +392,23 @@ def plot_cost_vs_quality(runs, output_dir: Path, show: bool, dpi: int) -> None:
 
 @app.command()
 def main(
-    mlflow_uri: Annotated[str, typer.Option("--mlflow-uri", help="MLflow tracking URI")] = "./mlruns",
+    mlflow_uri: Annotated[
+        str, typer.Option("--mlflow-uri", help="MLflow tracking URI")
+    ] = "./mlruns",
     experiment: Annotated[
         list[str], typer.Option("--experiment", "-e", help="Experiment name (repeatable)")
-    ] = ["ablation"],
+    ] = None,
     filter_axis: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--filter-axis", help="Only include runs with this sweep_axis tag"),
     ] = None,
     top_k: Annotated[int, typer.Option("--top-k", help="Retrieval depth filter; 0 = all")] = 5,
-    output: Annotated[str, typer.Option("--output", "-o", help="Output directory for PNGs")] = "plots",
-    show: Annotated[bool, typer.Option("--show/--no-show", help="Display charts interactively")] = False,
+    output: Annotated[
+        str, typer.Option("--output", "-o", help="Output directory for PNGs")
+    ] = "plots",
+    show: Annotated[
+        bool, typer.Option("--show/--no-show", help="Display charts interactively")
+    ] = False,
     dpi: Annotated[int, typer.Option("--dpi", help="PNG resolution")] = 150,
 ) -> None:
     """Generate comparison charts from MLflow eval runs.
@@ -421,6 +424,8 @@ def main(
         # Combine ablation + sweep on one scatter
         python -m eval.plot_results -e ablation -e two_stage_sweep --top-k 5
     """
+    if experiment is None:
+        experiment = ["ablation"]
     output_dir = Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)
 

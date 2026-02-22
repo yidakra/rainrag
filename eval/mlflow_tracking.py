@@ -3,6 +3,7 @@
 MLflow is an optional dependency. All functions degrade gracefully to no-ops
 when it is not installed, so experiments still run and print results locally.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -10,8 +11,9 @@ import json
 import math
 import os
 import tempfile
-from pathlib import Path
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
+
 
 try:
     import mlflow
@@ -62,11 +64,7 @@ def log_metrics(metrics: dict[str, float], step: int | None = None) -> None:
     """Log a flat dict of metrics. Skips NaN values."""
     if not _MLFLOW_AVAILABLE:
         return
-    clean = {
-        k: v
-        for k, v in metrics.items()
-        if not (isinstance(v, float) and math.isnan(v))
-    }
+    clean = {k: v for k, v in metrics.items() if not (isinstance(v, float) and math.isnan(v))}
     mlflow.log_metrics(clean, step=step)
 
 

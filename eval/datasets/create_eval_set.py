@@ -18,6 +18,7 @@ The chunk's own ``doc_id`` is written as the single ``relevant_doc_ids``
 entry.  You can extend the JSONL manually to add additional relevant docs
 or merge duplicates before running experiments.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,6 +27,7 @@ import random
 import sys
 import textwrap
 from pathlib import Path
+
 
 # Allow running as a script from repo root
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
@@ -173,7 +175,9 @@ def _generate_pair(engine: RAGQueryEngine, chunk: dict, lang: str) -> dict | Non
         "language": lang,
         "relevant_doc_ids": [chunk["doc_id"]],
         "reference_answer": reference_answer,
-        "category": category if category in {"factual", "temporal", "entity", "multilingual"} else "factual",
+        "category": category
+        if category in {"factual", "temporal", "entity", "multilingual"}
+        else "factual",
         "temporal": temporal,
         "source_doc_id": chunk["doc_id"],
         "source_path": chunk.get("path", ""),
@@ -235,7 +239,10 @@ def create_eval_set(
     for i, chunk in enumerate(candidates):
         if len(pairs) >= n:
             break
-        print(f"  [{i+1}/{len(candidates)}] Generating pair for doc_id={chunk.get('doc_id', '?')} ...", end=" ")
+        print(
+            f"  [{i+1}/{len(candidates)}] Generating pair for doc_id={chunk.get('doc_id', '?')} ...",
+            end=" ",
+        )
         pair = _generate_pair(engine, chunk, lang)
         if pair is None:
             print("skipped (generation failed)")
@@ -259,6 +266,7 @@ def create_eval_set(
 
     # Category breakdown
     from collections import Counter
+
     cats = Counter(p["category"] for p in pairs)
     print("Category distribution:", dict(cats))
 
