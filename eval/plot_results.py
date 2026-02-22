@@ -396,7 +396,7 @@ def main(
         str, typer.Option("--mlflow-uri", help="MLflow tracking URI")
     ] = "./mlruns",
     experiment: Annotated[
-        list[str], typer.Option("--experiment", "-e", help="Experiment name (repeatable)")
+        list[str] | None, typer.Option("--experiment", "-e", help="Experiment name (repeatable)")
     ] = None,
     filter_axis: Annotated[
         str | None,

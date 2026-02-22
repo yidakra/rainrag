@@ -327,10 +327,11 @@ async def lifespan(app: FastAPI):
 
     logger.info("Initializing RainRAG API...")
 
-    # Test-mode escape hatch: avoid expensive model/client startup when endpoint
-    # tests patch query_engine/config directly.
-    if os.getenv("RAINRAG_SKIP_API_STARTUP_INIT", "").lower() in {"1", "true", "yes"}:
-        logger.info("Skipping RainRAG API startup initialization (RAINRAG_SKIP_API_STARTUP_INIT)")
+    # Escape hatch: avoid expensive model/client startup in tests.
+    skip_flag = os.getenv("RAINRAG_SKIP_API_STARTUP_INIT", "").lower() in {"1", "true", "yes"}
+
+    if skip_flag:
+        logger.info("Skipping RainRAG API startup initialization")
         yield
         logger.info("Shutting down RainRAG API...")
         return

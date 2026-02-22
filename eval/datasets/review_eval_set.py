@@ -27,8 +27,16 @@ After review, run experiments only on accepted records:
 from __future__ import annotations
 
 import json
+import os
 import sys
+from contextlib import suppress
 from pathlib import Path
+from typing import Any
+
+# simple alias for the JSONL records so we can give them a proper type
+Record = dict[str, Any]
+
+# (typing import added above)
 
 
 # ---------------------------------------------------------------------------
@@ -38,18 +46,24 @@ from pathlib import Path
 try:
     from rich.console import Console
     from rich.panel import Panel
-    from rich.text import Text
+    # from rich.text import Text  # not used
 
     _console = Console()
-    _RICH = True
+    _rich = True
 except ImportError:
     _console = None  # type: ignore[assignment]
-    _RICH = False
+    _rich = False
+    Panel = None  # type: ignore[name-defined]  # ensure Panel is always defined
 
 
-def _print_record(record: dict, index: int, total: int, accepted: int, deleted: int) -> None:
+def _print_record(record: Record, index: int, total: int, accepted: int, deleted: int) -> None:
     """Render one record to the terminal."""
-    if _RICH:
+    if _rich:
+        # _console is only None when rich wasn't imported; the _rich flag
+        # guards all usage, but help static checkers understand that.
+        assert _console is not None
+        assert Panel is not None  # ensure Panel is callable when rich is available
+
         header = (
             f"[bold cyan]{index}/{total}[/]  "
             f"[green]{accepted} accepted[/]  [red]{deleted} deleted[/]  "
@@ -77,7 +91,9 @@ def _print_record(record: dict, index: int, total: int, accepted: int, deleted: 
         print(f"\n{'─' * 60}")
         print(f"{index}/{total}  accepted={accepted}  deleted={deleted}")
         print(f"ID:       {record.get('query_id', '—')}")
-        print(f"Lang:     {record.get('language', '—')}  Category: {record.get('category', '—')}")
+        print(
+            f"Lang:     {record.get('language', '—')}  Category: {record.get('category', '—')}  Temporal: {record.get('temporal', '—')}"
+        )
         print(f"\nQuery:\n{record.get('query', '')}")
         print(f"\nReference answer:\n{record.get('reference_answer', '') or '(empty)'}")
         print(f"\nRelevant doc IDs: {', '.join(record.get('relevant_doc_ids', []))}")
@@ -93,10 +109,33 @@ def _prompt(msg: str = "") -> str:
         return "q"
 
 
-def _save(records: list[dict], path: Path) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        for rec in records:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+def _save(records: list[Record], path: Path) -> None:
+    """Write records atomically to *path*.
+
+    A temporary file is created in the same directory, each record is written
+    (flushed and fsync'd to ensure durability), and then the temp file is
+    atomically moved into place via ``os.replace``/``Path.replace``.  On any
+    exception we attempt to remove the temporary file so we don't leave
+    cruft behind.
+    """
+
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            for rec in records:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            # ensure all data is on disk before renaming
+            f.flush()
+            os.fsync(f.fileno())
+        # atomic replace
+        tmp_path.replace(path)
+    except Exception:
+        # clean up temp file if something went wrong
+        with suppress(OSError):
+            tmp_path.unlink()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -121,13 +160,14 @@ def review_eval_set(
     """
     inp = Path(input_path)
     if not inp.exists():
-        print(f"ERROR: file not found: {inp}")
-        sys.exit(1)
+        # allow callers to handle the error programmatically instead of
+        # terminating the process directly
+        raise FileNotFoundError(f"file not found: {inp}")
 
     out = Path(output_path) if output_path else inp
 
     # Load all records
-    records: list[dict] = []
+    records: list[Record] = []
     with open(inp, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -146,10 +186,11 @@ def review_eval_set(
     accepted = sum(1 for r in records if r.get("valid") is True)
     deleted = sum(1 for r in records if r.get("valid") is False)
 
-    if _RICH:
+    if _rich:
+        # rich is available, so _console must not be None – help the type checker.
+        assert _console is not None
         _console.print(
-            f"\n[bold]Reviewing [cyan]{inp.name}[/] — "
-            f"{n_pending} records pending, {total - n_pending} already reviewed[/]\n"
+            f"\n[bold]Reviewing [cyan]{inp.name}[/] — {n_pending} records pending, {total - n_pending} already reviewed[/]\n"
         )
         _console.print("[bold]Keys:[/]  [a] Accept  [e] Edit  [s] Skip  [d] Delete  [q] Quit\n")
     else:
@@ -179,16 +220,24 @@ def review_eval_set(
                 }
 
             if key == "a":
+                if record.get("valid") is not True:
+                    accepted += 1
+                elif record.get("valid") is False:
+                    deleted -= 1
+                    accepted += 1
                 record["valid"] = True
                 record["reviewed"] = True
-                accepted += 1
                 reviewed_count += 1
                 break
 
             if key == "d":
+                if record.get("valid") is not False:
+                    deleted += 1
+                elif record.get("valid") is True:
+                    accepted -= 1
+                    deleted += 1
                 record["valid"] = False
                 record["reviewed"] = True
-                deleted += 1
                 reviewed_count += 1
                 break
 
@@ -203,14 +252,18 @@ def review_eval_set(
                     ln = _prompt("  > ")
                     if ln == "":
                         break
+                    if ln.lower() == "q":
+                        print("  Edit cancelled")
+                        lines = []
+                        break
                     lines.append(ln)
                 if lines:
                     record["reference_answer"] = " ".join(lines)
                     print(f"  Updated: {record['reference_answer'][:80]}")
-                record["valid"] = True
-                record["reviewed"] = True
-                accepted += 1
-                reviewed_count += 1
+                    record["valid"] = True
+                    record["reviewed"] = True
+                    accepted += 1
+                    reviewed_count += 1
                 break
 
             print("  Unknown key. Use a, e, s, d, or q.")
@@ -223,11 +276,11 @@ def review_eval_set(
     _save(records, out)
     summary = {"total": total, "accepted": accepted, "deleted": deleted, "skipped": 0}
 
-    if _RICH:
+    if _rich:
+        assert _console is not None
         _console.print(
-            f"\n[bold green]Review complete![/]  "
-            f"{accepted} accepted · {deleted} deleted · {reviewed_count} reviewed this session\n"
-            f"Saved to [cyan]{out}[/]\n"
+            f"\n[bold green]Review complete![/]  {accepted} accepted · {deleted} deleted · {reviewed_count} reviewed this session\n"
+            + f"Saved to [cyan]{out}[/]\n"
         )
     else:
         print(f"\nReview complete: {accepted} accepted, {deleted} deleted.")
@@ -248,7 +301,7 @@ def filter_valid(input_path: str, output_path: str) -> int:
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    records = []
+    records: list[Record] = []
     with open(inp, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -287,11 +340,13 @@ def review_stats(input_path: str) -> dict[str, int]:
         "pending": pending,
     }
 
-    if _RICH:
+    if _rich:
+        assert _console is not None
         _console.print(
+            # avoid implicit literal concatenation by joining strings explicitly
             f"[bold]{Path(input_path).name}[/]\n"
-            f"  total={total}  reviewed={reviewed}  "
-            f"[green]accepted={accepted}[/]  [red]deleted={deleted}[/]  pending={pending}"
+            + f"  total={total}  reviewed={reviewed}  "
+            + f"[green]accepted={accepted}[/]  [red]deleted={deleted}[/]  pending={pending}"
         )
     else:
         print(
@@ -328,11 +383,16 @@ if __name__ == "__main__":
         if not inp:
             parser.print_help()
             sys.exit(1)
-        review_eval_set(
-            inp,
-            output_path=getattr(args, "output", None),
-            only_unreviewed=not getattr(args, "all_records", False),
-        )
+        try:
+            review_eval_set(
+                inp,
+                output_path=getattr(args, "output", None),
+                only_unreviewed=not getattr(args, "all_records", False),
+            )
+        except FileNotFoundError as e:
+            # mirror previous behavior by printing an error message
+            print(f"ERROR: {e}")
+            sys.exit(1)
     elif args.cmd == "filter":
         filter_valid(args.input, args.output)
     elif args.cmd == "stats":

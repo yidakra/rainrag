@@ -101,6 +101,7 @@ def _load_from_hf(
     qrels_split: str = "test",
     max_corpus_docs: int | None = None,
     max_queries: int | None = None,
+    trust_remote_code: bool = False,
 ) -> tuple[BEIRCorpus, BEIRQueries, BEIRQRels]:
     """Load a BEIR dataset from HuggingFace.
 
@@ -109,6 +110,10 @@ def _load_from_hf(
         qrels_split: Which qrels split to load (usually "test").
         max_corpus_docs: Limit corpus size (useful for quick tests).
         max_queries: Limit number of queries.
+        trust_remote_code: If True, pass ``trust_remote_code`` to
+            ``datasets.load_dataset``. This allows execution of code
+            shipped with the dataset and can be a security risk when
+            loading untrusted HF repositories. Defaults to False.
 
     Returns:
         (corpus, queries, qrels) triple.
@@ -118,32 +123,48 @@ def _load_from_hf(
     except ImportError as exc:
         raise ImportError(
             "The `datasets` package is required for BEIR loading. "
-            "Install with: pip install datasets"
+            + "Install with: pip install datasets"
         ) from exc
 
     hf_name = f"BeIR/{name}"
     hf_qrels_name = f"BeIR/{name}-qrels"
 
     logger.info(f"Loading BEIR corpus from {hf_name} ...")
-    corpus_ds = load_dataset(hf_name, "corpus", split="corpus", trust_remote_code=True)
+    if trust_remote_code:
+        logger.warning(
+            "trust_remote_code=True will execute remote dataset code; use only with datasets you trust"
+        )
+    corpus_ds = load_dataset(hf_name, "corpus", split="corpus", trust_remote_code=trust_remote_code)
     logger.info(f"Loading BEIR queries from {hf_name} ...")
-    queries_ds = load_dataset(hf_name, "queries", split="queries", trust_remote_code=True)
+    queries_ds = load_dataset(
+        hf_name, "queries", split="queries", trust_remote_code=trust_remote_code
+    )
     logger.info(f"Loading BEIR qrels from {hf_qrels_name} (split={qrels_split}) ...")
-    qrels_ds = load_dataset(hf_qrels_name, split=qrels_split, trust_remote_code=True)
+    qrels_ds = load_dataset(hf_qrels_name, split=qrels_split, trust_remote_code=trust_remote_code)
 
     # --- Corpus
     corpus = BEIRCorpus()
-    for i, row in enumerate(corpus_ds):
+    for i, raw in enumerate(corpus_ds):
         if max_corpus_docs and i >= max_corpus_docs:
             break
+        # HF Dataset rows may be returned as not-typed sequences; convert to a
+        # plain dict so the type checker knows `.get` and `__getitem__` work.
+        row = dict(raw)  # type: ignore[assignment]
         corpus.docs[row["_id"]] = {"title": row.get("title", ""), "text": row.get("text", "")}
     logger.info(f"Loaded {len(corpus)} corpus documents.")
 
     # --- QRels first (so we can filter queries to only those with qrels)
     qrels = BEIRQRels()
+    corpus_doc_ids = set(corpus.docs.keys())
     for row in qrels_ds:
-        qid = str(row["query-id"])
-        did = str(row["corpus-id"])
+        # HF Dataset rows may be returned as not-typed sequences; convert to a
+        # plain dict (and annotate) so the type checker knows `.get` exists.
+        row = dict(row)  # type: ignore[assignment]
+        qid = str(row.get("query-id") or row.get("query_id"))
+        did = str(row.get("corpus-id") or row.get("corpus_id"))
+        # Skip qrels for docs not in the (possibly limited) corpus
+        if did not in corpus_doc_ids:
+            continue
         score = int(row["score"])
         qrels.qrels.setdefault(qid, {})[did] = score
 
@@ -151,13 +172,16 @@ def _load_from_hf(
     queries = BEIRQueries()
     qids_with_qrels = set(qrels.qrels.keys())
     count = 0
-    for row in queries_ds:
-        qid = str(row["_id"])
+    for raw in queries_ds:
+        # HF Dataset rows may be returned as not-typed sequences; convert to a
+        # plain dict so the type checker knows `.get` and `__getitem__` work.
+        row = dict(raw)  # type: ignore[assignment]
+        qid = str(row.get("_id"))
         if qid not in qids_with_qrels:
             continue
         if max_queries and count >= max_queries:
             break
-        queries.queries[qid] = row["text"]
+        queries.queries[qid] = row.get("text", "")
         count += 1
     logger.info(f"Loaded {len(queries)} queries (with qrels).")
 
@@ -182,14 +206,27 @@ def _embed_documents_local(
     model = engine.embedding_model
     normalize = engine.config.embedding.normalize_embeddings
 
-    prefixed = [f"passage: {t}" for t in texts]
+    # determine prefix: user-configured or auto-detect for E5-like models
+    prefix = engine.config.embedding.prefix or ""
+    if not prefix:
+        # try to infer from model name if available
+        name = ""
+        if model is not None and hasattr(model, "name"):
+            name = model.name or ""
+        else:
+            name = engine.config.embedding.model_name or ""
+        if "e5" in name.lower():
+            prefix = "passage: "
+
+    prefixed = [f"{prefix}{t}" for t in texts] if prefix else texts
+
     embeddings = model.encode(
         prefixed,
         batch_size=batch_size,
         normalize_embeddings=normalize,
         show_progress_bar=True,
     )
-    return [e.tolist() for e in embeddings]
+    return [e.tolist() if hasattr(e, "tolist") else e for e in embeddings]
 
 
 def _embed_documents_api(
@@ -228,7 +265,8 @@ def _embed_corpus(
         logger.info(f"Embedding {len(texts)} documents via API (this may be slow) ...")
         vectors = _embed_documents_api(engine, texts)
 
-    return dict(zip(doc_ids, vectors, strict=False))
+    # zip with strict=True to raise if lengths differ (mismatch indicates bug)
+    return dict(zip(doc_ids, vectors, strict=True))
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +280,7 @@ def _index_corpus_into_qdrant(
     collection_name: str,
     batch_size: int = 64,
     recreate: bool = True,
+    upsert_batch: int | None = None,
 ) -> None:
     """Create a Qdrant collection and upsert all corpus documents.
 
@@ -270,7 +309,7 @@ def _index_corpus_into_qdrant(
     logger.info(f"Creating Qdrant collection '{collection_name}' (vector_size={vector_size}) ...")
     client.create_collection(
         collection_name=collection_name,
-        vectors_config=VectorParams(size=vector_size, distance=Distance.Cosine),
+        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
     )
 
     # Embed corpus
@@ -281,7 +320,9 @@ def _index_corpus_into_qdrant(
     total = len(doc_ids)
     logger.info(f"Upserting {total} documents into Qdrant ...")
 
-    upsert_batch = 128
+    # default to embedding batch size if not explicitly provided
+    if upsert_batch is None:
+        upsert_batch = batch_size
     for start in range(0, total, upsert_batch):
         batch_doc_ids = doc_ids[start : start + upsert_batch]
         points = []
@@ -335,6 +376,7 @@ class BEIRAdapter:
         qrels_split: str = "test",
         collection_suffix: str | None = None,
     ) -> None:
+        super().__init__()  # ensure parent __init__ is called
         self.name = name
         self.qrels_split = qrels_split
         self.collection_name = f"beir_{collection_suffix or name}"
@@ -351,18 +393,21 @@ class BEIRAdapter:
         self,
         max_corpus_docs: int | None = None,
         max_queries: int | None = None,
+        trust_remote_code: bool = False,
     ) -> BEIRAdapter:
         """Download and cache the dataset from HuggingFace.
 
         Args:
             max_corpus_docs: Cap on corpus size for quick experiments.
             max_queries: Cap on number of queries.
+            trust_remote_code: See :func:`_load_from_hf` for security implications.
         """
         self._corpus, self._queries, self._qrels = _load_from_hf(
             self.name,
             qrels_split=self.qrels_split,
             max_corpus_docs=max_corpus_docs,
             max_queries=max_queries,
+            trust_remote_code=trust_remote_code,
         )
         return self
 
@@ -394,6 +439,7 @@ class BEIRAdapter:
             collection_name=self.collection_name,
             batch_size=batch_size,
             recreate=recreate,
+            upsert_batch=None,
         )
         return self
 
@@ -452,7 +498,7 @@ class BEIRAdapter:
 
         logger.info(
             f"Wrote {len(records)} BEIR eval records to {output_path} "
-            f"(dataset={self.name}, split={self.qrels_split})"
+            + f"(dataset={self.name}, split={self.qrels_split})"
         )
         return records
 
@@ -530,8 +576,9 @@ class BEIRAdapter:
         return self._qrels  # type: ignore[return-value]
 
     def summary(self) -> str:
-        if self._corpus is None:
+        # only report counts when both corpus and queries are available
+        if self._corpus is None or self._queries is None:
             return f"BEIRAdapter({self.name}) [not loaded]"
-        q = len(self._queries.queries) if self._queries else 0
-        c = len(self._corpus) if self._corpus else 0
+        q = len(self._queries.queries)
+        c = len(self._corpus)
         return f"BEIRAdapter({self.name}): {c} corpus docs, {q} queries"

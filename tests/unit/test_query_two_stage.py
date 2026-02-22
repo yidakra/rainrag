@@ -700,10 +700,9 @@ class TestScoreThreshold:
 
     @pytest.fixture
     def engine(self, base_config):
-        with patch("rainrag.query.OpenAI"):
-            eng = RAGQueryEngine.__new__(RAGQueryEngine)
-            eng.config = base_config
-            return eng
+        eng = RAGQueryEngine.__new__(RAGQueryEngine)
+        eng.config = base_config
+        return eng
 
     def test_zero_threshold_is_noop(self, engine):
         docs = _make_docs([0.9, 0.5, 0.1])
@@ -748,10 +747,9 @@ class TestOrderDocumentsForPrompt:
 
     @pytest.fixture
     def engine(self, base_config):
-        with patch("rainrag.query.OpenAI"):
-            eng = RAGQueryEngine.__new__(RAGQueryEngine)
-            eng.config = base_config
-            return eng
+        eng = RAGQueryEngine.__new__(RAGQueryEngine)
+        eng.config = base_config
+        return eng
 
     def test_rank_order_is_unchanged(self, engine):
         docs = _make_docs([0.9, 0.7, 0.5, 0.3])
@@ -818,5 +816,7 @@ class TestOrderDocumentsForPrompt:
     def test_does_not_mutate_original_docs_list(self, engine):
         docs = _make_docs([0.9, 0.7, 0.5, 0.3])
         original_scores = [d["score"] for d in docs]
+        original_ranks = [d["rank"] for d in docs]
         engine._order_documents_for_prompt(docs, "book_end")
         assert [d["score"] for d in docs] == original_scores
+        assert [d["rank"] for d in docs] == original_ranks

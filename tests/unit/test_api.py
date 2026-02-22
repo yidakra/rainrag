@@ -1,36 +1,47 @@
 """Tests for the FastAPI backend."""
 
-import asyncio
+# asyncio not needed in these tests
 from pathlib import Path
+from typing import cast
 
+import anyio
 import httpx
 import pytest
 
-from rainrag.api import app, find_video_file, get_video_base_name
-from rainrag.config import Config
+from rainrag.api import app, find_video_file  # get_video_base_name imported in individual tests
+from rainrag.config import Config, EmbeddingConfig, PathsConfig, QdrantConfig, LLMConfig, MistralConfig, OpenAIConfig
 
 
-class _ASGIClient:
-    """Small sync wrapper around httpx.AsyncClient for ASGI app testing."""
+class _SyncASGIClient:
+    """Synchronous facade over httpx.AsyncClient for ASGI app tests."""
 
     def __init__(self, asgi_app):
-        self._app = asgi_app
+        # call superclass init to satisfy linters
+        super().__init__()
+        self._transport = httpx.ASGITransport(app=asgi_app)
+        self._base_url = "http://testserver"
 
     def request(self, method: str, url: str, **kwargs):
-        async def _do_request():
-            transport = httpx.ASGITransport(app=self._app)
+        async def _request():
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=self._transport,
+                base_url=self._base_url,
             ) as client:
                 return await client.request(method, url, **kwargs)
 
-        return asyncio.run(_do_request())
+        return anyio.run(_request)
 
     def get(self, url: str, **kwargs):
         return self.request("GET", url, **kwargs)
 
     def post(self, url: str, **kwargs):
         return self.request("POST", url, **kwargs)
+
+
+@pytest.fixture
+def test_client():
+    """Create a FastAPI TestClient for the app."""
+    return _SyncASGIClient(app)
 
 
 @pytest.fixture
@@ -46,46 +57,64 @@ def test_config_with_video(temp_dir: Path) -> Config:
     embeddings_dir.mkdir()
 
     return Config(
-        paths={
-            "archive_root": str(archive_dir),
-            "docs_output": str(data_dir / "docs.jsonl"),
-            "embeddings_cache": str(embeddings_dir),
-            "video_root": str(archive_dir),
-        },
-        embedding={
-            "provider": "local",
-            "model_name": "sentence-transformers/all-MiniLM-L6-v2",
-            "batch_size": 8,
-            "max_seq_length": 128,
-            "device": "cpu",
-            "normalize_embeddings": True,
-        },
-        qdrant={
-            "host": "localhost",
-            "port": 6333,
-            "collection_name": "test_collection",
-            "vector_size": 384,
-            "distance": "Cosine",
-            "recreate_collection": False,
-        },
-        llm={
-            "provider": "mistral",
-        },
-        mistral={
-            "api_key": "test-key",
-            "model_name": "mistral-small-latest",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        openai={
-            "api_key": "test-openai-key",
-            "model_name": "gpt-4o-mini",
-            "embedding_model": "text-embedding-3-small",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
+        paths=cast(
+            PathsConfig,
+            {
+                "archive_root": str(archive_dir),
+                "docs_output": str(data_dir / "docs.jsonl"),
+                "embeddings_cache": str(embeddings_dir),
+                "video_root": str(archive_dir),
+            },
+        ),
+        embedding=cast(
+            EmbeddingConfig,
+            {
+                "provider": "local",
+                "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+                "batch_size": 8,
+                "max_seq_length": 128,
+                "device": "cpu",
+                "normalize_embeddings": True,
+            },
+        ),
+        qdrant=cast(
+            QdrantConfig,
+            {
+                "host": "localhost",
+                "port": 6333,
+                "collection_name": "test_collection",
+                "vector_size": 384,
+                "distance": "Cosine",
+                "recreate_collection": False,
+            },
+        ),
+        llm=cast(
+            LLMConfig,
+            {
+                "provider": "mistral",
+            },
+        ),
+        mistral=cast(
+            MistralConfig,
+            {
+                "api_key": "test-key",
+                "model_name": "mistral-small-latest",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        openai=cast(
+            OpenAIConfig,
+            {
+                "api_key": "test-openai-key",
+                "model_name": "gpt-4o-mini",
+                "embedding_model": "text-embedding-3-small",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
         processing={
             "num_workers": 2,
             "max_file_size": 1048576,
@@ -153,29 +182,38 @@ def test_find_video_file_mp4(temp_dir: Path, archive_with_videos: Path):
 
     # Set up config
     test_cfg = Config(
-        paths={
-            "archive_root": str(archive_with_videos),
-            "docs_output": "./data/docs.jsonl",
-            "embeddings_cache": "./embeddings",
-            "video_root": str(archive_with_videos),
-        },
-        embedding={
-            "provider": "local",
-            "model_name": "test",
-            "batch_size": 8,
-            "max_seq_length": 128,
-            "device": "cpu",
-            "normalize_embeddings": True,
-        },
-        qdrant={
-            "host": "localhost",
-            "port": 6333,
-            "collection_name": "test",
-            "vector_size": 384,
-            "distance": "Cosine",
-            "recreate_collection": False,
-        },
-        llm={"provider": "mistral"},
+        paths=cast(
+            PathsConfig,
+            {
+                "archive_root": str(archive_with_videos),
+                "docs_output": "./data/docs.jsonl",
+                "embeddings_cache": "./embeddings",
+                "video_root": str(archive_with_videos),
+            },
+        ),
+        embedding=cast(
+            EmbeddingConfig,
+            {
+                "provider": "local",
+                "model_name": "test",
+                "batch_size": 8,
+                "max_seq_length": 128,
+                "device": "cpu",
+                "normalize_embeddings": True,
+            },
+        ),
+        qdrant=cast(
+            QdrantConfig,
+            {
+                "host": "localhost",
+                "port": 6333,
+                "collection_name": "test",
+                "vector_size": 384,
+                "distance": "Cosine",
+                "recreate_collection": False,
+            },
+        ),
+        llm=cast(LLMConfig, {"provider": "mistral"}),
         mistral={
             "api_key": "test-key",
             "model_name": "mistral-small-latest",
@@ -183,14 +221,17 @@ def test_find_video_file_mp4(temp_dir: Path, archive_with_videos: Path):
             "temperature": 0.3,
             "top_k": 5,
         },
-        openai={
-            "api_key": "test-openai-key",
-            "model_name": "gpt-4o-mini",
-            "embedding_model": "text-embedding-3-small",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
+        openai=cast(
+            OpenAIConfig,
+            {
+                "api_key": "test-openai-key",
+                "model_name": "gpt-4o-mini",
+                "embedding_model": "text-embedding-3-small",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
         processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
         logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
         video={
@@ -224,28 +265,37 @@ def test_find_video_file_mkv(temp_dir: Path, archive_with_videos: Path):
     original_config = api_module.config
 
     test_cfg = Config(
-        paths={
-            "archive_root": str(archive_with_videos),
-            "docs_output": "./data/docs.jsonl",
-            "embeddings_cache": "./embeddings",
-            "video_root": str(archive_with_videos),
-        },
-        embedding={
-            "provider": "local",
-            "model_name": "test",
-            "batch_size": 8,
-            "max_seq_length": 128,
-            "device": "cpu",
-            "normalize_embeddings": True,
-        },
-        qdrant={
-            "host": "localhost",
-            "port": 6333,
-            "collection_name": "test",
-            "vector_size": 384,
-            "distance": "Cosine",
-            "recreate_collection": False,
-        },
+        paths=cast(
+            PathsConfig,
+            {
+                "archive_root": str(archive_with_videos),
+                "docs_output": "./data/docs.jsonl",
+                "embeddings_cache": "./embeddings",
+                "video_root": str(archive_with_videos),
+            },
+        ),
+        embedding=cast(
+            EmbeddingConfig,
+            {
+                "provider": "local",
+                "model_name": "test",
+                "batch_size": 8,
+                "max_seq_length": 128,
+                "device": "cpu",
+                "normalize_embeddings": True,
+            },
+        ),
+        qdrant=cast(
+            QdrantConfig,
+            {
+                "host": "localhost",
+                "port": 6333,
+                "collection_name": "test",
+                "vector_size": 384,
+                "distance": "Cosine",
+                "recreate_collection": False,
+            },
+        ),
         llm={"provider": "mistral"},
         mistral={
             "api_key": "test-key",
@@ -300,14 +350,17 @@ def test_find_video_file_not_found(temp_dir: Path, archive_with_videos: Path):
             "embeddings_cache": "./embeddings",
             "video_root": str(archive_with_videos),
         },
-        embedding={
-            "provider": "local",
-            "model_name": "test",
-            "batch_size": 8,
-            "max_seq_length": 128,
-            "device": "cpu",
-            "normalize_embeddings": True,
-        },
+        embedding=cast(
+            EmbeddingConfig,
+            {
+                "provider": "local",
+                "model_name": "test",
+                "batch_size": 8,
+                "max_seq_length": 128,
+                "device": "cpu",
+                "normalize_embeddings": True,
+            },
+        ),
         qdrant={
             "host": "localhost",
             "port": 6333,
@@ -352,10 +405,9 @@ def test_find_video_file_not_found(temp_dir: Path, archive_with_videos: Path):
         api_module.config = original_config
 
 
-def test_api_root_endpoint():
+def test_api_root_endpoint(test_client):
     """Test the root endpoint returns API information."""
-    client = _ASGIClient(app)
-    response = client.get("/")
+    response = test_client.get("/")
 
     assert response.status_code == 200
     data = response.json()
@@ -365,7 +417,7 @@ def test_api_root_endpoint():
     assert "Submit a question" in data["endpoints"]["POST /query"]
 
 
-def test_video_endpoint_security(temp_dir: Path, archive_with_videos: Path):
+def test_video_endpoint_security(test_client, temp_dir: Path, archive_with_videos: Path):
     """Test that video endpoint prevents path traversal attacks."""
     import rainrag.api as api_module
 
@@ -422,20 +474,18 @@ def test_video_endpoint_security(temp_dir: Path, archive_with_videos: Path):
     api_module.config = test_cfg
 
     try:
-        client = _ASGIClient(app)
-
         # Try path traversal attack
-        response = client.get("/video/../../../etc/passwd")
+        response = test_client.get("/video/../../../etc/passwd")
         assert response.status_code in [400, 403, 404]  # Should be rejected
 
         # Try another path traversal
-        response = client.get("/video/../../sensitive_file.txt")
+        response = test_client.get("/video/../../sensitive_file.txt")
         assert response.status_code in [400, 403, 404]  # Should be rejected
     finally:
         api_module.config = original_config
 
 
-def test_vtt_endpoint_security(temp_dir: Path, archive_with_videos: Path):
+def test_vtt_endpoint_security(test_client, temp_dir: Path, archive_with_videos: Path):
     """Test that VTT endpoint prevents path traversal attacks."""
     import rainrag.api as api_module
 
@@ -492,10 +542,8 @@ def test_vtt_endpoint_security(temp_dir: Path, archive_with_videos: Path):
     api_module.config = test_cfg
 
     try:
-        client = _ASGIClient(app)
-
         # Try path traversal attack
-        response = client.get("/vtt/../../../etc/passwd")
+        response = test_client.get("/vtt/../../../etc/passwd")
         assert response.status_code in [400, 403, 404]  # Should be rejected
     finally:
         api_module.config = original_config
@@ -508,20 +556,26 @@ def test_video_disabled(temp_dir: Path):
     original_config = api_module.config
 
     test_cfg = Config(
-        paths={
-            "archive_root": str(temp_dir),
-            "docs_output": "./data/docs.jsonl",
-            "embeddings_cache": "./embeddings",
-            "video_root": str(temp_dir),
-        },
-        embedding={
-            "provider": "local",
-            "model_name": "test",
-            "batch_size": 8,
-            "max_seq_length": 128,
-            "device": "cpu",
-            "normalize_embeddings": True,
-        },
+        paths=cast(
+            PathsConfig,
+            {
+                "archive_root": str(temp_dir),
+                "docs_output": "./data/docs.jsonl",
+                "embeddings_cache": "./embeddings",
+                "video_root": str(temp_dir),
+            },
+        ),
+        embedding=cast(
+            EmbeddingConfig,
+            {
+                "provider": "local",
+                "model_name": "test",
+                "batch_size": 8,
+                "max_seq_length": 128,
+                "device": "cpu",
+                "normalize_embeddings": True,
+            },
+        ),
         qdrant={
             "host": "localhost",
             "port": 6333,
@@ -554,7 +608,8 @@ def test_video_disabled(temp_dir: Path):
     api_module.config = test_cfg
 
     try:
-        client = _ASGIClient(app)
+        # use the FastAPI TestClient to simulate requests
+        client = _SyncASGIClient(app)
         response = client.get("/video/test.mp4")
         assert response.status_code == 404
         assert "disabled" in response.json()["detail"].lower()
@@ -641,6 +696,8 @@ def test_find_video_file_multi_resolution(temp_dir: Path, archive_with_videos: P
 
 def test_get_video_base_name_english():
     """Test extracting base name from English VTT file."""
+    from rainrag.api import get_video_base_name
+
     vtt_path = (
         "/mnt/vod/srv/storage/transcoded/3b/10/f9/3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd.en.vtt"
     )
@@ -653,6 +710,8 @@ def test_get_video_base_name_english():
 
 def test_get_video_base_name_russian():
     """Test extracting base name from Russian VTT file."""
+    from rainrag.api import get_video_base_name
+
     vtt_path = (
         "/mnt/vod/srv/storage/transcoded/3b/10/f9/3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd.ru.vtt"
     )
@@ -665,6 +724,8 @@ def test_get_video_base_name_russian():
 
 def test_get_video_base_name_grouping():
     """Test that English and Russian versions get the same base name."""
+    from rainrag.api import get_video_base_name
+
     vtt_path_en = "/archive/videos/test_hash.en.vtt"
     vtt_path_ru = "/archive/videos/test_hash.ru.vtt"
 

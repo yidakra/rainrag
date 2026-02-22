@@ -1,12 +1,38 @@
 """Unit tests for the ingestion module."""
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from rainrag.config import Config
-from rainrag.ingest import Document, Ingester, VTTParser
+from rainrag.ingest import Document, Ingester, VTTParser, WebMetadataLoader
+
+
+def _create_fake_loader(
+    web_dir: Path, metadata_factory: Callable[[str], dict]
+) -> WebMetadataLoader:
+    """Return a minimal WebMetadataLoader stub that uses the given factory.
+
+    Args:
+        web_dir: directory to pass to real loader when cleaning metadata.
+        metadata_factory: callable taking a video_hash and returning a metadata dict.
+    """
+
+    class _FakeLoader(WebMetadataLoader):
+        def __init__(self, metadata_path: Path):
+            super().__init__(metadata_path)
+
+        def load_metadata(self, video_hash):
+            return metadata_factory(video_hash)
+
+        def extract_clean_metadata(self, raw_metadata):
+            # delegate parsing to a real loader rooted at web_dir
+            loader = WebMetadataLoader(web_dir)
+            return loader.extract_clean_metadata(raw_metadata)
+
+    return _FakeLoader(web_dir)
 
 
 class TestVTTParser:
@@ -572,6 +598,7 @@ Hi
 
         assert docs == []
         assert ingester.speech_free_count == 1
+        assert ingester.speech_free_with_metadata_count == 0
 
     def test_empty_vtt_with_web_metadata_creates_doc(
         self, test_config: Config, temp_dir: Path
@@ -593,25 +620,18 @@ Hi
 
         ingester = Ingester(test_config)
 
-        # Patch the loader to return canned metadata for any hash
-        class _FakeLoader:
-            def load_metadata(self, _hash):
-                return {
-                    "name": "Silent Video Title",
-                    "preview_text": "",
-                    "detail_text": "<p>Some description of the silent video.</p>",
-                    "date_active_start": "2025-01-15T10:00:00Z",
-                    "url": "https://example.com/video/1",
-                    "video_hash": "fakehash",
-                }
-
-            def extract_clean_metadata(self, raw):
-                from rainrag.ingest import WebMetadataLoader
-
-                loader = WebMetadataLoader(web_dir)
-                return loader.extract_clean_metadata(raw)
-
-        ingester.web_metadata_loader = _FakeLoader()
+        # Use shared fake loader factory instead of repeating class
+        ingester.web_metadata_loader = _create_fake_loader(
+            web_dir,
+            lambda _: {
+                "name": "Silent Video Title",
+                "preview_text": "",
+                "detail_text": "<p>Some description of the silent video.</p>",
+                "date_active_start": "2025-01-15T10:00:00Z",
+                "url": "https://example.com/video/1",
+                "video_hash": "fakehash",
+            },
+        )
 
         docs = ingester.process_file(vtt_file)
 
@@ -639,30 +659,26 @@ Hi
 
         ingester = Ingester(test_config)
 
-        class _FakeLoader:
-            def load_metadata(self, _hash):
-                return {
-                    "name": "Title",
-                    "preview_text": "",
-                    "detail_text": "<p>Description text here.</p>",
-                    "date_active_start": None,
-                    "url": "",
-                    "video_hash": "fakehash",
-                }
-
-            def extract_clean_metadata(self, raw):
-                from pathlib import Path as _P
-
-                from rainrag.ingest import WebMetadataLoader
-
-                loader = WebMetadataLoader(_P(test_config.web_metadata.path))
-                return loader.extract_clean_metadata(raw)
-
-        ingester.web_metadata_loader = _FakeLoader()
+        # assign loader using factory and config path for extraction
+        web_dir = Path(test_config.web_metadata.path)
+        ingester.web_metadata_loader = _create_fake_loader(
+            web_dir,
+            lambda _: {
+                "name": "Title",
+                "preview_text": "",
+                "detail_text": "<p>Description text here.</p>",
+                "date_active_start": None,
+                "url": "",
+                "video_hash": "fakehash",
+            },
+        )
         docs = ingester.process_file(vtt_file)
 
         assert docs == []
         assert ingester.speech_free_with_metadata_count == 0
+        # detector should still flag the file as speech-free even though it
+        # was skipped due to configuration
+        assert ingester.speech_free_count == 1
 
     def test_invalid_vtt_counter_not_incremented_for_empty_vtt(
         self, test_config: Config, temp_dir: Path
@@ -755,25 +771,18 @@ Hi
 
         ingester = Ingester(test_config)
 
-        # Inject a loader that returns metadata for every hash
-        class _FakeLoader:
-            def load_metadata(self, _hash):
-                return {
-                    "name": "Silent Video",
-                    "preview_text": "",
-                    "detail_text": "<p>Silent footage of the archive.</p>",
-                    "date_active_start": "2024-06-01T00:00:00Z",
-                    "url": "https://example.com/silent",
-                    "video_hash": _hash,
-                }
-
-            def extract_clean_metadata(self, raw):
-                from rainrag.ingest import WebMetadataLoader
-
-                loader = WebMetadataLoader(temp_dir)
-                return loader.extract_clean_metadata(raw)
-
-        ingester.web_metadata_loader = _FakeLoader()
+        # inject loader via shared factory, using temp_dir as web root
+        ingester.web_metadata_loader = _create_fake_loader(
+            temp_dir,
+            lambda video_hash: {
+                "name": "Silent Video",
+                "preview_text": "",
+                "detail_text": "<p>Silent footage of the archive.</p>",
+                "date_active_start": "2024-06-01T00:00:00Z",
+                "url": "https://example.com/silent",
+                "video_hash": video_hash,
+            },
+        )
 
         doc_count = ingester.ingest()
 

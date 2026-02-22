@@ -39,6 +39,10 @@ class EmbeddingConfig(BaseModel):
         description="Device selection: 'auto' (default), 'cuda', 'cuda:0', 'mps', or 'cpu'",
     )
     normalize_embeddings: bool = Field(default=True)
+    prefix: str = Field(
+        default="",
+        description="Optional string prepended to texts before embedding (e.g. 'passage: ' for E5 models)",
+    )
     max_retries: int = Field(
         default=3,
         ge=1,
@@ -326,7 +330,7 @@ class TwoStageConfig(BaseModel):
     )
 
     # Multi-variant merge strategy (applied when query_rewrite_enabled and >1 variant)
-    merge_strategy: str = Field(
+    merge_strategy: Literal["coverage", "diverse_rrf"] = Field(
         default="coverage",
         description=(
             "Strategy for merging results from multiple query variants. "
@@ -350,7 +354,7 @@ class TwoStageConfig(BaseModel):
     )
 
     # Prompt document ordering (Axis F)
-    prompt_doc_order: str = Field(
+    prompt_doc_order: Literal["rank", "reversed", "book_end"] = Field(
         default="rank",
         description=(
             "Order in which retrieved documents are presented in the LLM prompt. "

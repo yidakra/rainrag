@@ -151,23 +151,35 @@ class TestAxesFlag:
         result = self._run_axes("merge_strategy,merge_rrf_k")
         assert set(result) == {"merge_strategy", "merge_rrf_k"}
 
-    def test_all_five_axes(self):
-        result = self._run_axes("hyde_alpha,rewrite_variants,pool_size,merge_strategy,merge_rrf_k")
+    def test_all_six_axes(self):
+        result = self._run_axes(
+            "hyde_alpha,rewrite_variants,pool_size,merge_strategy,merge_rrf_k,doc_order"
+        )
         assert set(result) == {
             "hyde_alpha",
             "rewrite_variants",
             "pool_size",
             "merge_strategy",
             "merge_rrf_k",
+            "doc_order",
         }
 
     def test_axes_with_spaces_trimmed(self):
         result = self._run_axes("hyde_alpha, pool_size")
         assert set(result) == {"hyde_alpha", "pool_size"}
 
+    def test_unknown_axis_raises(self):
+        # patch the experiment class to raise as it would in validation
+        with patch(_PATCH, side_effect=ValueError("Unknown axis")):
+            result = runner.invoke(
+                app,
+                ["two-stage", "--dataset", _DATASET, "--axes", "not_a_real_axis"],
+            )
+        assert result.exit_code != 0
+
 
 # ---------------------------------------------------------------------------
-# Per-axis custom-value flags (A–C)
+# Additional tests
 # ---------------------------------------------------------------------------
 
 

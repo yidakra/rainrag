@@ -163,13 +163,37 @@ def test_carbon_track_emissions_noop_without_package(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(builtins, "__import__", _mock_import)
 
     # Force re-import of carbon module with patched __import__
-    import eval.metrics.carbon as carbon_mod
+    # clear module cache so import uses patched __import__
+    import sys
+
+    sys.modules.pop("eval.metrics.carbon", None)
+    carbon_mod = __import__("eval.metrics.carbon", fromlist=["*"])
 
     with carbon_mod.track_emissions() as result:
         pass
 
     assert result.available is False
     assert result.as_metrics() == {}
+
+
+from unittest.mock import MagicMock
+
+
+def _make_hit(score, doc_id, is_speech_free):
+    """Helper for tests: mimic a Qdrant hit object with score and payload.
+
+    Mirrors the inline definitions previously duplicated in two tests.
+    """
+    hit = MagicMock()
+    hit.score = score
+    hit.payload = {
+        "doc_id": doc_id,
+        "text": "some text",
+        "path": "",
+        "language": "en",
+        "is_speech_free": is_speech_free,
+    }
+    return hit
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +203,12 @@ def test_carbon_track_emissions_noop_without_package(monkeypatch: pytest.MonkeyP
 # importing the full module (which transitively requires torch and other heavy
 # dependencies).  The module-level import test is covered by OPTIONAL_MODULES.
 # ---------------------------------------------------------------------------
+
+
+# NOTE: this helper duplicates the predicate used by
+# eval.datasets.create_eval_set._scroll_chunks (lines ~100-106).
+# If that function's filter changes, update this helper accordingly.
+# The production predicate lives in the create_eval_set module.
 
 
 def _apply_scroll_filter(payloads: list[dict], lang: str) -> list[dict]:
@@ -259,18 +289,6 @@ def test_retrieve_documents_exclude_speech_free_filters_results(test_config) -> 
     engine.config = cfg
     engine.bm25 = None  # no hybrid search
 
-    def _make_hit(score, doc_id, is_speech_free):
-        hit = MagicMock()
-        hit.score = score
-        hit.payload = {
-            "doc_id": doc_id,
-            "text": "some text",
-            "path": "",
-            "language": "en",
-            "is_speech_free": is_speech_free,
-        }
-        return hit
-
     fake_points = [_make_hit(0.9, "doc_a", False), _make_hit(0.8, "doc_b", True)]
     mock_result = MagicMock()
     mock_result.points = fake_points
@@ -301,18 +319,6 @@ def test_retrieve_documents_include_speech_free_by_default(test_config) -> None:
     engine = RAGQueryEngine.__new__(RAGQueryEngine)
     engine.config = cfg
     engine.bm25 = None
-
-    def _make_hit(score, doc_id, is_speech_free):
-        hit = MagicMock()
-        hit.score = score
-        hit.payload = {
-            "doc_id": doc_id,
-            "text": "some text",
-            "path": "",
-            "language": "en",
-            "is_speech_free": is_speech_free,
-        }
-        return hit
 
     fake_points = [_make_hit(0.9, "doc_a", False), _make_hit(0.8, "doc_b", True)]
     mock_result = MagicMock()

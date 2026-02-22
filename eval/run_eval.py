@@ -28,7 +28,7 @@ Usage
     # 7. Open the MLflow UI
     python -m eval.run_eval ui
 
-    # 8. Sweep two-stage retrieval hyper-parameters (all five axes)
+    # 8. Sweep two-stage retrieval hyper-parameters (all six axes)
     python -m eval.run_eval two-stage \\
         --dataset eval/datasets/eval_set_en.jsonl
 
@@ -47,9 +47,9 @@ Usage
         --doc-orders rank,reversed,book_end
 """
 
-from __future__ import annotations
-
+import contextlib
 import subprocess
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -65,9 +65,7 @@ app = typer.Typer(
 
 _CONFIG = Annotated[str, typer.Option("--config", "-c", help="Path to config.yaml")]
 _MLFLOW = Annotated[str, typer.Option("--mlflow-uri", help="MLflow tracking URI")]
-_DATASET = Annotated[
-    str | None, typer.Option("--dataset", "-d", help="Path to eval JSONL dataset")
-]
+_DATASET = Annotated[str | None, typer.Option("--dataset", "-d", help="Path to eval JSONL dataset")]
 _OUTPUT = Annotated[str, typer.Option("--output", "-o", help="Output file path")]
 
 
@@ -122,6 +120,8 @@ def ablation(
     ] = False,
 ) -> None:
     """Run the 8-condition feature ablation experiment."""
+    from typing import cast
+
     import eval.mlflow_tracking as mlflow_tracking
     from eval.experiments.ablation import AblationExperiment
     from eval.metrics.answer_quality import compute_ragas_metrics
@@ -163,7 +163,8 @@ def ablation(
                 run_name = f"{result['condition_label']}_k{result['top_k']}_ragas"
                 with mlflow_tracking.start_run(run_name=run_name):
                     mlflow_tracking.log_params(result["params"])
-                    mlflow_tracking.log_metrics(ragas_metrics)
+                    # cast to satisfy log_metrics signature (float | int | None)
+                    mlflow_tracking.log_metrics(cast(dict[str, float | int | None], ragas_metrics))
 
     if csv_output:
         exp.results_to_csv(results, csv_output)
@@ -344,6 +345,13 @@ def beir(
     batch_size: Annotated[
         int, typer.Option("--batch-size", help="Embedding batch size for local models")
     ] = 64,
+    trust_remote_code: Annotated[
+        bool,
+        typer.Option(
+            "--trust-remote-code/--no-trust-remote-code",
+            help="Allow execution of remote dataset code when loading BEIR (security risk)",
+        ),
+    ] = False,
     mlflow_uri: _MLFLOW = "./mlruns",
     run_ablation: Annotated[
         bool,
@@ -361,13 +369,17 @@ def beir(
     Optionally run the BM25 baseline and/or the ablation experiment on the
     generated dataset.
 
+    ``--trust-remote-code`` controls whether HF's ``load_dataset`` is called
+    with ``trust_remote_code=True`` when fetching BEIR. Enabling it may
+    execute arbitrary code from the dataset repository; leave off unless you
+    trust the source.
+
     Recommended quick sanity check::
 
         python -m eval.run_eval beir --dataset scifact --max-corpus 5000 --max-queries 50
     """
     from eval.datasets.beir_adapter import BEIRAdapter
     from eval.experiments.ablation import AblationExperiment
-    from eval.experiments.base import apply_overrides
     from rainrag.config import load_config
     from rainrag.query import RAGQueryEngine
 
@@ -376,7 +388,11 @@ def beir(
 
     typer.echo(f"Loading BEIR dataset: {dataset_name} (split={qrels_split}) ...")
     adapter = BEIRAdapter(dataset_name, qrels_split=qrels_split)
-    adapter.load(max_corpus_docs=max_corpus_docs, max_queries=max_queries)
+    adapter.load(
+        max_corpus_docs=max_corpus_docs,
+        max_queries=max_queries,
+        trust_remote_code=trust_remote_code,
+    )
     typer.echo(adapter.summary())
 
     # Optional: quick in-memory BM25 baseline
@@ -385,9 +401,11 @@ def beir(
         try:
             baseline = adapter.eval_bm25_baseline(top_k=10)
             typer.echo(
-                f"  BM25 baseline: recall@10={baseline.get('recall@10', float('nan')):.3f} "
-                f"ndcg@10={baseline.get('ndcg@10', float('nan')):.3f} "
-                f"mrr={baseline.get('mrr', float('nan')):.3f}"
+                "  BM25 baseline: recall@10={:.3f} ndcg@10={:.3f} mrr={:.3f}".format(
+                    baseline.get("recall@10", float("nan")),
+                    baseline.get("ndcg@10", float("nan")),
+                    baseline.get("mrr", float("nan")),
+                )
             )
         except Exception as exc:
             typer.echo(f"  [warn] BM25 baseline failed: {exc}")
@@ -415,13 +433,8 @@ def beir(
         typer.echo("\nRunning ablation experiment on BEIR eval set ...")
         cids = [c.strip() for c in ablation_conditions.split(",")] if ablation_conditions else None
 
-        # Override collection name to the BEIR collection
-        overridden_config = apply_overrides(
-            base_config, {"qdrant.collection_name": adapter.collection_name}
-        )
-        _ = overridden_config  # Used inside AblationExperiment via config_path override
-
-        # Write a temp config with the collection name override so AblationExperiment can load it
+        # Write a temp config with the BEIR collection name override so
+        # AblationExperiment can load it
         import tempfile
 
         import yaml  # type: ignore[import]
@@ -434,17 +447,21 @@ def beir(
             yaml.dump(cfg_dict, tmp, allow_unicode=True)
             tmp_config_path = tmp.name
 
-        exp = AblationExperiment(
-            config_path=tmp_config_path,
-            dataset_path=resolved_output,
-            mlflow_uri=mlflow_uri,
-            top_ks=(10,),
-            condition_ids=cids,
-        )
-        results = exp.run()
-        csv_path = resolved_output.replace(".jsonl", "_ablation.csv")
-        exp.results_to_csv(results, csv_path)
-        typer.echo(f"Ablation results written to {csv_path}")
+        try:
+            exp = AblationExperiment(
+                config_path=tmp_config_path,
+                dataset_path=resolved_output,
+                mlflow_uri=mlflow_uri,
+                top_ks=(10,),
+                condition_ids=cids,
+            )
+            results = exp.run()
+            csv_path = resolved_output.replace(".jsonl", "_ablation.csv")
+            exp.results_to_csv(results, csv_path)
+            typer.echo(f"Ablation results written to {csv_path}")
+        finally:
+            with contextlib.suppress(Exception):
+                Path(tmp_config_path).unlink()
 
     typer.echo(f"\nDone. Open MLflow UI with: mlflow ui --backend-store-uri {mlflow_uri}")
 

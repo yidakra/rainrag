@@ -5,7 +5,7 @@ import html
 import json
 import re
 import subprocess
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -315,12 +315,12 @@ class VTTParser:
         return cue
 
     @classmethod
-    def _parse_vtt_lines_to_cues(cls, lines: list[str]) -> list[VTTCue] | None:
+    def _parse_vtt_lines_to_cues(cls, lines: Sequence[str]) -> list[VTTCue] | None:
         """
         Parse VTT file lines into individual cues with timestamps.
 
         Args:
-            lines: List of lines from a VTT file
+            lines: Sequence of lines from a VTT file
 
         Returns:
             List of VTTCue objects or None if parsing fails
@@ -907,7 +907,9 @@ class WebMetadataLoader:
 
         # Skip only when there is genuinely nothing to index
         if not title and not description:
-            logger.debug(f"Skipping video with no usable metadata content: {title!r}")
+            logger.debug(
+                f"Skipping video with no usable metadata content: title={title!r} description={description!r}"
+            )
             return {}
 
         # Parse date
@@ -1516,10 +1518,12 @@ class Ingester:
             f"Ingestion complete! Processed {file_count} files into {doc_count} documents (chunking: {chunking_status})"
         )
         if self.invalid_vtt_count or self.speech_free_count:
+            # avoid implicit string concatenation by using logger formatting
             logger.info(
-                f"Ingestion summary: invalid_vtt={self.invalid_vtt_count}, "
-                f"speech_free={self.speech_free_count} "
-                f"(indexed with metadata: {self.speech_free_with_metadata_count})"
+                "Ingestion summary: invalid_vtt=%d, speech_free=%d (indexed with metadata: %d)",
+                self.invalid_vtt_count,
+                self.speech_free_count,
+                self.speech_free_with_metadata_count,
             )
         logger.info(f"Output saved to {output_path}")
 

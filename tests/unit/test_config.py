@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from rainrag.config import (
     ClaudeConfig,
@@ -53,6 +54,7 @@ class TestEmbeddingConfig:
         assert config.max_seq_length == 512
         assert config.device == "auto"
         assert config.normalize_embeddings is True
+        assert config.prefix == ""  # default empty, no prefix applied
 
     def test_embedding_config_custom(self) -> None:
         """Test custom embedding configuration."""
@@ -60,11 +62,13 @@ class TestEmbeddingConfig:
             model_name="custom-model",
             batch_size=64,
             device="cpu",
+            prefix="my-prefix: ",
         )
 
         assert config.model_name == "custom-model"
         assert config.batch_size == 64
         assert config.device == "cpu"
+        assert config.prefix == "my-prefix: "
 
 
 class TestQdrantConfig:
@@ -255,30 +259,29 @@ class TestTwoStageConfig:
         assert config.hyde_alpha == 0.7
 
     def test_two_stage_config_alpha_bounds(self) -> None:
-        """Test that hyde_alpha is clamped to [0, 1]."""
-        import pytest
-        from pydantic import ValidationError
-
+        """Test that hyde_alpha is bounded to [0, 1]."""
+        # out-of-range values should raise
         with pytest.raises(ValidationError):
             TwoStageConfig(hyde_alpha=1.5)
         with pytest.raises(ValidationError):
             TwoStageConfig(hyde_alpha=-0.1)
+        # boundary values should be accepted
+        TwoStageConfig(hyde_alpha=0)
+        TwoStageConfig(hyde_alpha=1)
 
     def test_two_stage_config_variants_bounds(self) -> None:
         """Test that query_rewrite_variants is clamped to [1, 5]."""
-        import pytest
-        from pydantic import ValidationError
-
+        # values outside range should raise
         with pytest.raises(ValidationError):
             TwoStageConfig(query_rewrite_variants=0)
         with pytest.raises(ValidationError):
             TwoStageConfig(query_rewrite_variants=6)
+        # boundary values should be accepted
+        TwoStageConfig(query_rewrite_variants=1)
+        TwoStageConfig(query_rewrite_variants=5)
 
     def test_two_stage_config_rewrite_temperature_bounds(self) -> None:
-        """Test that query_rewrite_temperature is clamped to [0, 2]."""
-        import pytest
-        from pydantic import ValidationError
-
+        """Test that query_rewrite_temperature is bounded to [0, 2]."""
         with pytest.raises(ValidationError):
             TwoStageConfig(query_rewrite_temperature=-0.1)
         with pytest.raises(ValidationError):
@@ -288,10 +291,7 @@ class TestTwoStageConfig:
         TwoStageConfig(query_rewrite_temperature=2.0)
 
     def test_two_stage_config_hyde_temperature_bounds(self) -> None:
-        """Test that hyde_temperature is clamped to [0, 2]."""
-        import pytest
-        from pydantic import ValidationError
-
+        """Test hyde_temperature is clamped to [0, 2]."""
         with pytest.raises(ValidationError):
             TwoStageConfig(hyde_temperature=-0.1)
         with pytest.raises(ValidationError):

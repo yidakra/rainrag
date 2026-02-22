@@ -113,7 +113,7 @@ def ndcg_at_k(retrieved: list[str], relevant: set[str], k: int) -> float: ...
 def average_precision(retrieved: list[str], relevant: set[str]) -> float: ...
 ```
 
-Reported at k ∈ {3, 5, 10}.
+Reported at k ∈ {3, 5, 10} (precision computed only at k=3 and k=5).
 
 ---
 

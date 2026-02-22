@@ -72,16 +72,9 @@ class CarbonResult:
 
 @contextlib.contextmanager
 def track_emissions(
-    project_name: str = "rainrag_eval",
-    country_iso_code: str = "USA",
-    log_level: str = "error",
+    project_name: str = "rainrag_eval", log_level: str = "error"
 ) -> Generator[CarbonResult, None, None]:
     """Context manager that tracks CO₂ emissions for the enclosed block.
-
-    Args:
-        project_name: Logical name for the CodeCarbon project.
-        country_iso_code: ISO-3166 alpha-3 code used for carbon intensity lookup.
-        log_level: CodeCarbon internal log level ("error" suppresses most output).
 
     Yields:
         A :class:`CarbonResult` that is populated once the ``with`` block exits.
@@ -105,37 +98,55 @@ def track_emissions(
         return
 
     result = CarbonResult(available=True)
-    tracker = EmissionsTracker(
-        project_name=project_name,
-        country_iso_code=country_iso_code,
-        log_level=log_level,
-        save_to_file=False,
-        save_to_api=False,
-        save_to_logger=False,
-    )
-    tracker.start()
+    tracker = None
+    started = False
+
+    # Creation and startup of the tracker can fail for a variety of reasons
+    # (missing system dependencies, invalid configuration, etc.).  We catch
+    # any exception, mark the result unavailable, and yield a no-op result so
+    # that caller code continues uninterrupted.
+    try:
+        tracker = EmissionsTracker(
+            project_name=project_name,
+            log_level=log_level,
+            save_to_file=False,
+            save_to_api=False,
+            save_to_logger=False,
+        )
+        tracker.start()
+        started = True
+    except Exception:
+        result.available = False
+        yield result
+        return
+
     try:
         yield result
     finally:
-        try:
-            emissions_kg = tracker.stop()
-            if emissions_kg is not None:
-                result.emissions_kg = float(emissions_kg)
+        # Only attempt to stop if we successfully started the tracker
+        # `started` is only set to True after tracker has been created and
+        # started, so the tracker variable is non‑None here; the previous
+        # `tracker is not None` check was causing a static type warning.
+        if started:
+            try:
+                emissions_kg = tracker.stop()
+                if emissions_kg is not None:
+                    result.emissions_kg = float(emissions_kg)
 
-            # Richer metrics from EmissionsData (codecarbon >= 2.3)
-            data = getattr(tracker, "final_emissions_data", None)
-            if data is not None:
-                _energy = getattr(data, "energy_consumed", None)
-                if _energy is not None:
-                    result.energy_kwh = float(_energy)
+                # Richer metrics from EmissionsData (codecarbon >= 2.3)
+                data = getattr(tracker, "final_emissions_data", None)
+                if data is not None:
+                    _energy = getattr(data, "energy_consumed", None)
+                    if _energy is not None:
+                        result.energy_kwh = float(_energy)
 
-                _cpu = getattr(data, "cpu_power", None)
-                if _cpu is not None:
-                    result.cpu_power_w = float(_cpu)
+                    _cpu = getattr(data, "cpu_power", None)
+                    if _cpu is not None:
+                        result.cpu_power_w = float(_cpu)
 
-                _dur = getattr(data, "duration", None)
-                if _dur is not None:
-                    result.duration_s = float(_dur)
-        except Exception:
-            # Never let tracking errors propagate into experiment code
-            result.available = False
+                    _dur = getattr(data, "duration", None)
+                    if _dur is not None:
+                        result.duration_s = float(_dur)
+            except Exception:
+                # Never let tracking errors propagate into experiment code
+                result.available = False

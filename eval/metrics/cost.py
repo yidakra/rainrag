@@ -4,13 +4,21 @@ Estimates token counts from character lengths (English: ~4 chars/token)
 and applies published per-1M-token prices.  All figures are labelled
 *estimated* — use your provider dashboards for billing accuracy.
 
-Pricing table (update when providers change rates)
---------------------------------------------------
-LLM (input + output blended, USD / 1 M tokens)
+Pricing tables (update when providers change rates).
+Costs are modelled separately for input tokens and output tokens using
+``LLM_INPUT_COST_PER_1M`` and ``LLM_OUTPUT_COST_PER_1M`` dictionaries.
+
+LLM input cost (USD / 1 M tokens)
   mistral  $2.00   mistral-large-latest
-  openai   $2.50   gpt-4o-mini
-  claude   $0.80   claude-haiku-4-5-20251001
-  gemini   $0.075  gemini-2.5-flash
+  openai   $0.15   gpt-4o-mini (input price)
+  claude   $0.80   claude-haiku-4-5-20251001 (input)
+  gemini   $0.075  gemini-2.5-flash (input)
+
+LLM output cost (USD / 1 M tokens)
+  mistral  $6.00   mistral-large-latest (output)
+  openai   $0.60   gpt-4o-mini (output)
+  claude   $4.00   claude-haiku-4-5-20251001 (output)
+  gemini   $0.30  gemini-2.5-flash (output)
 
 Embedding (USD / 1 M tokens)
   local    $0.00   SentenceTransformer (electricity not counted)
@@ -92,9 +100,14 @@ def estimate_query_cost(
     output_tokens = chars_to_tokens(answer)
     embed_tokens = chars_to_tokens(query)  # one embedding call per query
 
-    input_cost = input_tokens / 1_000_000 * LLM_INPUT_COST_PER_1M.get(llm_provider, 0.0)
-    output_cost = output_tokens / 1_000_000 * LLM_OUTPUT_COST_PER_1M.get(llm_provider, 0.0)
-    embed_cost = embed_tokens / 1_000_000 * EMBED_COST_PER_1M.get(embed_provider, 0.0)
+    # Unknown providers degrade gracefully to zero cost.
+    llm_input_rate = LLM_INPUT_COST_PER_1M.get(llm_provider, 0.0)
+    llm_output_rate = LLM_OUTPUT_COST_PER_1M.get(llm_provider, 0.0)
+    embed_rate = EMBED_COST_PER_1M.get(embed_provider, 0.0)
+
+    input_cost = input_tokens / 1_000_000 * llm_input_rate
+    output_cost = output_tokens / 1_000_000 * llm_output_rate
+    embed_cost = embed_tokens / 1_000_000 * embed_rate
 
     llm_cost = input_cost + output_cost
     total_cost = llm_cost + embed_cost

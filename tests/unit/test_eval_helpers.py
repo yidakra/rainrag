@@ -160,6 +160,51 @@ class TestBEIRQRels:
 
 
 # ---------------------------------------------------------------------------
+# _embed_documents_local prefix handling
+
+
+class TestEmbedDocumentsLocal:
+    def make_engine(self, prefix="", model_name="", has_name_attr=True):
+        from types import SimpleNamespace
+
+        from rainrag.config import EmbeddingConfig
+
+        cfg = EmbeddingConfig(prefix=prefix)
+        cfg.model_name = model_name
+        model = SimpleNamespace()
+        if has_name_attr:
+            model.name = model_name
+        model.encode = lambda texts, **kwargs: texts  # echo back
+        eng = SimpleNamespace(config=SimpleNamespace(embedding=cfg), embedding_model=model)
+        return eng
+
+    def test_respects_custom_prefix(self):
+        engine = self.make_engine(prefix="pre: ", model_name="other")
+        from eval.datasets.beir_adapter import _embed_documents_local
+
+        texts = ["foo", "bar"]
+        out = _embed_documents_local(engine, texts, batch_size=1)
+        # encode returns list of lists; original lambda outputs strings
+        assert out == ["pre: foo", "pre: bar"]
+
+    def test_auto_prefix_for_e5_model(self):
+        engine = self.make_engine(prefix="", model_name="intfloat/multilingual-e5-large")
+        from eval.datasets.beir_adapter import _embed_documents_local
+
+        texts = ["foo"]
+        out = _embed_documents_local(engine, texts, batch_size=1)
+        assert out == ["passage: foo"]
+
+    def test_no_prefix_for_non_e5_with_empty_config(self):
+        engine = self.make_engine(prefix="", model_name="bert-base-uncased")
+        from eval.datasets.beir_adapter import _embed_documents_local
+
+        texts = ["foo"]
+        out = _embed_documents_local(engine, texts, batch_size=1)
+        assert out == ["foo"]
+
+
+# ---------------------------------------------------------------------------
 # BEIRAdapter
 # ---------------------------------------------------------------------------
 
@@ -209,7 +254,7 @@ class TestBEIRAdapter:
         assert records[0]["beir_dataset"] == "test"
 
         # Verify file matches returned records
-        lines = [json.loads(l) for l in out.read_text().splitlines() if l.strip()]
+        lines = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
 
     def test_to_eval_jsonl_all_fields_present(self, tmp_path):
@@ -549,6 +594,17 @@ class TestBuildSummary:
         assert result.two_stage.prompt_doc_order == "book_end"
         assert minimal_config.two_stage.prompt_doc_order == "rank"
 
+    def test_invalid_two_stage_enum_values(self):
+        """Assigning or constructing forbidden strings should trigger validation errors."""
+        import pytest
+
+        from rainrag.config import TwoStageConfig
+
+        with pytest.raises(Exception):
+            TwoStageConfig(merge_strategy="not_a_strategy")
+        with pytest.raises(Exception):
+            TwoStageConfig(prompt_doc_order="upside_down")
+
     def test_apply_overrides_min_retrieval_score(self, minimal_config):
         """min_retrieval_score must be settable via apply_overrides."""
         from eval.experiments.base import apply_overrides
@@ -706,7 +762,7 @@ class TestResultsToCsv:
     def test_csv_row_count(self, tmp_path):
         path = str(tmp_path / "out.csv")
         self._exp().results_to_csv(self._make_results(n=3), path)
-        lines = [l for l in Path(path).read_text().splitlines() if l.strip()]
+        lines = [line for line in Path(path).read_text().splitlines() if line.strip()]
         # 1 header + 3 data rows
         assert len(lines) == 4
 

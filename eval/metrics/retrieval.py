@@ -64,7 +64,12 @@ def average_precision(retrieved: Sequence[str], relevant: set[str]) -> float:
 
 
 def percentile_at(values: list[float], p: float) -> float:
-    """p-th percentile of *values* using linear interpolation, 0 < p <= 100."""
+    """p-th percentile of *values* using linear interpolation, 0 <= p <= 100.
+
+    The implementation handles `p=0` by returning the minimum value.  The
+    caller must still provide a value in the valid range; behavior for
+    out-of-range `p` is undefined.
+    """
     if not values:
         return 0.0
     sorted_vals = sorted(values)

@@ -26,6 +26,7 @@ import json
 import random
 import sys
 import textwrap
+from collections import Counter
 from pathlib import Path
 
 
@@ -82,6 +83,8 @@ _FILTER_PROMPT = textwrap.dedent("""\
 def _scroll_chunks(engine: RAGQueryEngine, lang: str, limit: int) -> list[dict]:
     """Scroll through the Qdrant collection and return chunks matching *lang*."""
     client = engine.qdrant_client
+    if client is None:
+        raise RuntimeError("Qdrant client is not initialized; call engine.initialize() first")
     collection = engine.config.qdrant.collection_name
     all_chunks: list[dict] = []
     offset = None
@@ -103,12 +106,14 @@ def _scroll_chunks(engine: RAGQueryEngine, lang: str, limit: int) -> list[dict]:
                 and not payload.get("is_speech_free", False)  # skip metadata-only docs
             ):
                 all_chunks.append({"doc_id": payload.get("doc_id", str(point.id)), **payload})
+                if len(all_chunks) >= limit:
+                    return all_chunks
 
-        if next_offset is None or len(results) == 0:
+        if next_offset is None or len(results) == 0 or len(all_chunks) >= limit:
             break
         offset = next_offset
 
-    return all_chunks
+    return all_chunks[:limit]
 
 
 def _stratified_sample(chunks: list[dict], n: int) -> list[dict]:
@@ -154,8 +159,15 @@ def _generate_pair(engine: RAGQueryEngine, chunk: dict, lang: str) -> dict | Non
     prompt = _GENERATION_PROMPT.format(chunk_text=chunk_text[:1500])
     try:
         raw = _call_llm(engine, prompt)
-        # Strip potential markdown fences
-        raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        # Strip potential markdown fences explicitly (avoid using lstrip/rstrip sets)
+        raw = raw.strip()
+        if raw.startswith("```json"):
+            raw = raw[7:]
+        elif raw.startswith("```"):
+            raw = raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        raw = raw.strip()
         data = json.loads(raw)
     except Exception as exc:
         print(f"  [warn] Generation failed for doc_id={chunk.get('doc_id')}: {exc}")
@@ -265,8 +277,6 @@ def create_eval_set(
     print(f"Written to {output_path}")
 
     # Category breakdown
-    from collections import Counter
-
     cats = Counter(p["category"] for p in pairs)
     print("Category distribution:", dict(cats))
 

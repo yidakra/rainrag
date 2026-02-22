@@ -201,6 +201,9 @@ paths:
 embedding:
   provider: "mistral"  # Options: "local", "mistral", "openai", "gemini"
   model_name: "intfloat/multilingual-e5-large"
+  # Optional prefix added to texts before embedding (e.g. "passage: " for E5).
+  # Leave empty to auto-detect from the model name.
+  prefix: ""
   device: "cuda"  # or "cpu" (only used with local provider)
   batch_size: 32
 

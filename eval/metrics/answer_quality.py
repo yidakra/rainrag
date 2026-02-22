@@ -6,8 +6,12 @@ functions return NaN values so the rest of the eval pipeline keeps working.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 try:
@@ -34,7 +38,7 @@ try:
     )
 
     _RAGAS_AVAILABLE = True
-except ImportError:
+except Exception:
     _RAGAS_AVAILABLE = False
 
 
@@ -69,19 +73,35 @@ def compute_ragas_metrics(
     except ImportError:
         return {"ragas.available": 0.0}
 
-    rows = [
-        {
-            "question": r["question"],
-            "answer": r["answer"],
-            "contexts": r["contexts"],
-            "ground_truth": r.get("ground_truth", ""),
-        }
-        for r in records
-    ]
-    dataset = Dataset.from_list(rows)
-
-    metrics = [_faithfulness, _answer_relevancy, _context_precision, _context_recall]
-    result = _ragas_evaluate(dataset, metrics=metrics)
+    rows = []
+    malformed = 0
+    for r in records:
+        try:
+            question = r["question"]
+            answer = r["answer"]
+            contexts = r["contexts"]
+            if not isinstance(contexts, list | str):
+                raise TypeError("contexts must be list or str")
+            rows.append(
+                {
+                    "question": question,
+                    "answer": answer,
+                    "contexts": contexts,
+                    "ground_truth": r.get("ground_truth", ""),
+                }
+            )
+        except Exception as exc:  # missing key or wrong type
+            malformed += 1
+            logger.warning("Skipping malformed record in compute_ragas_metrics: %s", exc)
+    if malformed:
+        logger.warning("%d malformed records were skipped", malformed)
+    try:
+        dataset = Dataset.from_list(rows)
+        metrics = [_faithfulness, _answer_relevancy, _context_precision, _context_recall]
+        result = _ragas_evaluate(dataset, metrics=metrics)
+    except Exception as exc:
+        logger.error("RAGAS evaluation failed: %s", exc)
+        return {"ragas.available": 0.0}
 
     return {
         "ragas.faithfulness": float(result["faithfulness"]),

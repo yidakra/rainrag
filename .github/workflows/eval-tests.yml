@@ -14,6 +14,7 @@ on:
       - "eval/**"
       - "tests/unit/test_eval_*.py"
       - "pyproject.toml"
+      - ".github/workflows/eval-tests.yml"
 
 jobs:
   eval-unit-tests:

@@ -68,7 +68,7 @@ _EMBED_MODELS: dict[str, tuple[str, int]] = {
     "local": ("intfloat/multilingual-e5-large", 1024),
     "mistral": ("mistral-embed", 1024),
     "openai": ("text-embedding-3-large", 3072),
-    "gemini": ("models/text-embedding-004", 3072),
+    "gemini": ("models/text-embedding-004", 768),  # Gemini embeddings are 768-dimensional
 }
 
 
@@ -86,6 +86,8 @@ def _build_conditions() -> list[dict[str, Any]]:
                 "embedding.model_name": embed_model,
                 "qdrant.vector_size": vector_size,
             }
+            # sanity check: vector_size should match embedding dimension
+            assert overrides["qdrant.vector_size"] == vector_size
             # Point LLM-specific top_k to the right sub-config
             overrides[f"{llm}.top_k"] = 5
 

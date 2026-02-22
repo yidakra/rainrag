@@ -1,6 +1,7 @@
 """Query interface for RainRAG using Mistral/OpenAI/Claude/Gemini API and Qdrant."""
 
 import importlib
+import math as _math
 import re
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -556,8 +557,8 @@ class RAGQueryEngine:
 
         return selected
 
+    @staticmethod
     def _merge_variants_diverse_rrf(
-        self,
         all_variant_docs: list[list[dict[str, Any]]],
         retrieval_k: int,
         rrf_k: int = 60,
@@ -579,7 +580,6 @@ class RAGQueryEngine:
         Returns:
             Ordered list of documents scored by diversity-weighted RRF.
         """
-        import math as _math
 
         # Count how many variants each doc appears in (for diversity weighting).
         variant_count: dict[str, int] = {}

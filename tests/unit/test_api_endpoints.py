@@ -8,11 +8,11 @@ This module tests:
 - Error handling for API endpoints
 """
 
-import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import anyio
 import httpx
 import pytest
 
@@ -35,26 +35,22 @@ from src.rainrag.config import (
 )
 
 
-# ============================================================================
-# Test Fixtures
-# ============================================================================
-
-
-class _ASGIClient:
-    """Small sync wrapper around httpx.AsyncClient for ASGI app testing."""
+class _SyncASGIClient:
+    """Synchronous facade over httpx.AsyncClient for ASGI app tests."""
 
     def __init__(self, asgi_app):
-        self._app = asgi_app
+        self._transport = httpx.ASGITransport(app=asgi_app)
+        self._base_url = "http://testserver"
 
     def request(self, method: str, url: str, **kwargs):
-        async def _do_request():
-            transport = httpx.ASGITransport(app=self._app)
+        async def _request():
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=self._transport,
+                base_url=self._base_url,
             ) as client:
                 return await client.request(method, url, **kwargs)
 
-        return asyncio.run(_do_request())
+        return anyio.run(_request)
 
     def get(self, url: str, **kwargs):
         return self.request("GET", url, **kwargs)
@@ -63,10 +59,15 @@ class _ASGIClient:
         return self.request("POST", url, **kwargs)
 
 
+# ============================================================================
+# Test Fixtures
+# ============================================================================
+
+
 @pytest.fixture
 def test_client():
-    """Create a test client for the FastAPI app."""
-    return _ASGIClient(app)
+    """Create a FastAPI TestClient for the app."""
+    return _SyncASGIClient(app)
 
 
 @pytest.fixture
