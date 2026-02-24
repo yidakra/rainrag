@@ -27,8 +27,9 @@ class _SyncASGIClient:
     """Synchronous facade over httpx.AsyncClient for ASGI app tests."""
 
     def __init__(self, asgi_app):
-        # call superclass init to satisfy linters
+        # call parent constructor (object) to satisfy linters/analysis tools
         super().__init__()
+        # only holds transport/base URL; every request creates its own AsyncClient
         self._transport = httpx.ASGITransport(app=asgi_app)
         self._base_url = "http://testserver"
 
@@ -40,7 +41,15 @@ class _SyncASGIClient:
             ) as client:
                 return await client.request(method, url, **kwargs)
 
-        return anyio.run(_request)
+        # Prefer from_thread.run when already inside AnyIO worker (e.g. async tests).
+        # If not (sync tests), the call will raise NoEventLoopError and we fall back
+        # to anyio.run, which creates a fresh loop.
+        try:
+            # `from_thread.run` exists at runtime but isn’t exposed in the stubs,
+            # so silence the type checker here.
+            return anyio.from_thread.run(_request)  # type: ignore[attr-defined]
+        except anyio.NoEventLoopError:
+            return anyio.run(_request)
 
     def get(self, url: str, **kwargs):
         return self.request("GET", url, **kwargs)
@@ -665,7 +674,7 @@ def test_vtt_endpoint_security(test_client, temp_dir: Path, archive_with_videos:
         api_module.config = original_config
 
 
-def test_video_disabled(temp_dir: Path):
+def test_video_disabled(test_client, temp_dir: Path):
     """Test video serving when disabled in config."""
     import rainrag.api as api_module
 
@@ -742,9 +751,8 @@ def test_video_disabled(temp_dir: Path):
     api_module.config = test_cfg
 
     try:
-        # use the FastAPI TestClient to simulate requests
-        client = _SyncASGIClient(app)
-        response = client.get("/video/test.mp4")
+        # use the shared fixture client
+        response = test_client.get("/video/test.mp4")
         assert response.status_code == 404
         assert "disabled" in response.json()["detail"].lower()
     finally:
