@@ -9,7 +9,18 @@ import httpx
 import pytest
 
 from rainrag.api import app, find_video_file  # get_video_base_name imported in individual tests
-from rainrag.config import Config, EmbeddingConfig, PathsConfig, QdrantConfig, LLMConfig, MistralConfig, OpenAIConfig
+from rainrag.config import (
+    Config,
+    EmbeddingConfig,
+    LLMConfig,
+    LoggingConfig,
+    MistralConfig,
+    OpenAIConfig,
+    PathsConfig,
+    ProcessingConfig,
+    QdrantConfig,
+    VideoConfig,
+)
 
 
 class _SyncASGIClient:
@@ -115,21 +126,30 @@ def test_config_with_video(temp_dir: Path) -> Config:
                 "top_k": 5,
             },
         ),
-        processing={
-            "num_workers": 2,
-            "max_file_size": 1048576,
-            "min_text_length": 10,
-        },
-        logging={
-            "level": "ERROR",
-            "format": "{message}",
-            "log_file": str(temp_dir / "test.log"),
-        },
-        video={
-            "enabled": True,
-            "extensions": [".mp4", ".mkv", ".webm"],
-            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
-        },
+        processing=cast(
+            ProcessingConfig,
+            {
+                "num_workers": 2,
+                "max_file_size": 1048576,
+                "min_text_length": 10,
+            },
+        ),
+        logging=cast(
+            LoggingConfig,
+            {
+                "level": "ERROR",
+                "format": "{message}",
+                "log_file": str(temp_dir / "test.log"),
+            },
+        ),
+        video=cast(
+            VideoConfig,
+            {
+                "enabled": True,
+                "extensions": [".mp4", ".mkv", ".webm"],
+                "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+            },
+        ),
     )
 
 
@@ -214,13 +234,16 @@ def test_find_video_file_mp4(temp_dir: Path, archive_with_videos: Path):
             },
         ),
         llm=cast(LLMConfig, {"provider": "mistral"}),
-        mistral={
-            "api_key": "test-key",
-            "model_name": "mistral-small-latest",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
+        mistral=cast(
+            MistralConfig,
+            {
+                "api_key": "test-key",
+                "model_name": "mistral-small-latest",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
         openai=cast(
             OpenAIConfig,
             {
@@ -232,13 +255,22 @@ def test_find_video_file_mp4(temp_dir: Path, archive_with_videos: Path):
                 "top_k": 5,
             },
         ),
-        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
-        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={
-            "enabled": True,
-            "extensions": [".mp4", ".mkv", ".webm"],
-            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
-        },
+        processing=cast(
+            ProcessingConfig,
+            {"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        ),
+        logging=cast(
+            LoggingConfig,
+            {"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        ),
+        video=cast(
+            VideoConfig,
+            {
+                "enabled": True,
+                "extensions": [".mp4", ".mkv", ".webm"],
+                "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+            },
+        ),
     )
 
     # Temporarily set the global config
@@ -296,29 +328,44 @@ def test_find_video_file_mkv(temp_dir: Path, archive_with_videos: Path):
                 "recreate_collection": False,
             },
         ),
-        llm={"provider": "mistral"},
-        mistral={
-            "api_key": "test-key",
-            "model_name": "mistral-small-latest",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        openai={
-            "api_key": "test-openai-key",
-            "model_name": "gpt-4o-mini",
-            "embedding_model": "text-embedding-3-small",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
-        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={
-            "enabled": True,
-            "extensions": [".mp4", ".mkv", ".webm"],
-            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
-        },
+        llm=cast(LLMConfig, {"provider": "mistral"}),
+        mistral=cast(
+            MistralConfig,
+            {
+                "api_key": "test-key",
+                "model_name": "mistral-small-latest",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        openai=cast(
+            OpenAIConfig,
+            {
+                "api_key": "test-openai-key",
+                "model_name": "gpt-4o-mini",
+                "embedding_model": "text-embedding-3-small",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        processing=cast(
+            ProcessingConfig,
+            {"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        ),
+        logging=cast(
+            LoggingConfig,
+            {"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        ),
+        video=cast(
+            VideoConfig,
+            {
+                "enabled": True,
+                "extensions": [".mp4", ".mkv", ".webm"],
+                "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+            },
+        ),
     )
 
     api_module.config = test_cfg
@@ -344,12 +391,15 @@ def test_find_video_file_not_found(temp_dir: Path, archive_with_videos: Path):
     original_config = api_module.config
 
     test_cfg = Config(
-        paths={
-            "archive_root": str(archive_with_videos),
-            "docs_output": "./data/docs.jsonl",
-            "embeddings_cache": "./embeddings",
-            "video_root": str(archive_with_videos),
-        },
+        paths=cast(
+            PathsConfig,
+            {
+                "archive_root": str(archive_with_videos),
+                "docs_output": "./data/docs.jsonl",
+                "embeddings_cache": "./embeddings",
+                "video_root": str(archive_with_videos),
+            },
+        ),
         embedding=cast(
             EmbeddingConfig,
             {
@@ -361,37 +411,55 @@ def test_find_video_file_not_found(temp_dir: Path, archive_with_videos: Path):
                 "normalize_embeddings": True,
             },
         ),
-        qdrant={
-            "host": "localhost",
-            "port": 6333,
-            "collection_name": "test",
-            "vector_size": 384,
-            "distance": "Cosine",
-            "recreate_collection": False,
-        },
-        llm={"provider": "mistral"},
-        mistral={
-            "api_key": "test-key",
-            "model_name": "mistral-small-latest",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        openai={
-            "api_key": "test-openai-key",
-            "model_name": "gpt-4o-mini",
-            "embedding_model": "text-embedding-3-small",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
-        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={
-            "enabled": True,
-            "extensions": [".mp4", ".mkv", ".webm"],
-            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
-        },
+        qdrant=cast(
+            QdrantConfig,
+            {
+                "host": "localhost",
+                "port": 6333,
+                "collection_name": "test",
+                "vector_size": 384,
+                "distance": "Cosine",
+                "recreate_collection": False,
+            },
+        ),
+        llm=cast(LLMConfig, {"provider": "mistral"}),
+        mistral=cast(
+            MistralConfig,
+            {
+                "api_key": "test-key",
+                "model_name": "mistral-small-latest",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        openai=cast(
+            OpenAIConfig,
+            {
+                "api_key": "test-openai-key",
+                "model_name": "gpt-4o-mini",
+                "embedding_model": "text-embedding-3-small",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        processing=cast(
+            ProcessingConfig,
+            {"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        ),
+        logging=cast(
+            LoggingConfig,
+            {"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        ),
+        video=cast(
+            VideoConfig,
+            {
+                "enabled": True,
+                "extensions": [".mp4", ".mkv", ".webm"],
+                "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+            },
+        ),
     )
 
     api_module.config = test_cfg
@@ -424,51 +492,75 @@ def test_video_endpoint_security(test_client, temp_dir: Path, archive_with_video
     original_config = api_module.config
 
     test_cfg = Config(
-        paths={
-            "archive_root": str(archive_with_videos),
-            "docs_output": "./data/docs.jsonl",
-            "embeddings_cache": "./embeddings",
-            "video_root": str(archive_with_videos),
-        },
-        embedding={
-            "provider": "local",
-            "model_name": "test",
-            "batch_size": 8,
-            "max_seq_length": 128,
-            "device": "cpu",
-            "normalize_embeddings": True,
-        },
-        qdrant={
-            "host": "localhost",
-            "port": 6333,
-            "collection_name": "test",
-            "vector_size": 384,
-            "distance": "Cosine",
-            "recreate_collection": False,
-        },
-        llm={"provider": "mistral"},
-        mistral={
-            "api_key": "test-key",
-            "model_name": "mistral-small-latest",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        openai={
-            "api_key": "test-openai-key",
-            "model_name": "gpt-4o-mini",
-            "embedding_model": "text-embedding-3-small",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
-        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={
-            "enabled": True,
-            "extensions": [".mp4", ".mkv", ".webm"],
-            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
-        },
+        paths=cast(
+            PathsConfig,
+            {
+                "archive_root": str(archive_with_videos),
+                "docs_output": "./data/docs.jsonl",
+                "embeddings_cache": "./embeddings",
+                "video_root": str(archive_with_videos),
+            },
+        ),
+        embedding=cast(
+            EmbeddingConfig,
+            {
+                "provider": "local",
+                "model_name": "test",
+                "batch_size": 8,
+                "max_seq_length": 128,
+                "device": "cpu",
+                "normalize_embeddings": True,
+            },
+        ),
+        qdrant=cast(
+            QdrantConfig,
+            {
+                "host": "localhost",
+                "port": 6333,
+                "collection_name": "test",
+                "vector_size": 384,
+                "distance": "Cosine",
+                "recreate_collection": False,
+            },
+        ),
+        llm=cast(LLMConfig, {"provider": "mistral"}),
+        mistral=cast(
+            MistralConfig,
+            {
+                "api_key": "test-key",
+                "model_name": "mistral-small-latest",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        openai=cast(
+            OpenAIConfig,
+            {
+                "api_key": "test-openai-key",
+                "model_name": "gpt-4o-mini",
+                "embedding_model": "text-embedding-3-small",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        processing=cast(
+            ProcessingConfig,
+            {"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        ),
+        logging=cast(
+            LoggingConfig,
+            {"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        ),
+        video=cast(
+            VideoConfig,
+            {
+                "enabled": True,
+                "extensions": [".mp4", ".mkv", ".webm"],
+                "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+            },
+        ),
     )
 
     api_module.config = test_cfg
@@ -492,51 +584,75 @@ def test_vtt_endpoint_security(test_client, temp_dir: Path, archive_with_videos:
     original_config = api_module.config
 
     test_cfg = Config(
-        paths={
-            "archive_root": str(archive_with_videos),
-            "docs_output": "./data/docs.jsonl",
-            "embeddings_cache": "./embeddings",
-            "video_root": str(archive_with_videos),
-        },
-        embedding={
-            "provider": "local",
-            "model_name": "test",
-            "batch_size": 8,
-            "max_seq_length": 128,
-            "device": "cpu",
-            "normalize_embeddings": True,
-        },
-        qdrant={
-            "host": "localhost",
-            "port": 6333,
-            "collection_name": "test",
-            "vector_size": 384,
-            "distance": "Cosine",
-            "recreate_collection": False,
-        },
-        llm={"provider": "mistral"},
-        mistral={
-            "api_key": "test-key",
-            "model_name": "mistral-small-latest",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        openai={
-            "api_key": "test-openai-key",
-            "model_name": "gpt-4o-mini",
-            "embedding_model": "text-embedding-3-small",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
-        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={
-            "enabled": True,
-            "extensions": [".mp4", ".mkv", ".webm"],
-            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
-        },
+        paths=cast(
+            PathsConfig,
+            {
+                "archive_root": str(archive_with_videos),
+                "docs_output": "./data/docs.jsonl",
+                "embeddings_cache": "./embeddings",
+                "video_root": str(archive_with_videos),
+            },
+        ),
+        embedding=cast(
+            EmbeddingConfig,
+            {
+                "provider": "local",
+                "model_name": "test",
+                "batch_size": 8,
+                "max_seq_length": 128,
+                "device": "cpu",
+                "normalize_embeddings": True,
+            },
+        ),
+        qdrant=cast(
+            QdrantConfig,
+            {
+                "host": "localhost",
+                "port": 6333,
+                "collection_name": "test",
+                "vector_size": 384,
+                "distance": "Cosine",
+                "recreate_collection": False,
+            },
+        ),
+        llm=cast(LLMConfig, {"provider": "mistral"}),
+        mistral=cast(
+            MistralConfig,
+            {
+                "api_key": "test-key",
+                "model_name": "mistral-small-latest",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        openai=cast(
+            OpenAIConfig,
+            {
+                "api_key": "test-openai-key",
+                "model_name": "gpt-4o-mini",
+                "embedding_model": "text-embedding-3-small",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        processing=cast(
+            ProcessingConfig,
+            {"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        ),
+        logging=cast(
+            LoggingConfig,
+            {"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        ),
+        video=cast(
+            VideoConfig,
+            {
+                "enabled": True,
+                "extensions": [".mp4", ".mkv", ".webm"],
+                "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+            },
+        ),
     )
 
     api_module.config = test_cfg
@@ -576,33 +692,51 @@ def test_video_disabled(temp_dir: Path):
                 "normalize_embeddings": True,
             },
         ),
-        qdrant={
-            "host": "localhost",
-            "port": 6333,
-            "collection_name": "test",
-            "vector_size": 384,
-            "distance": "Cosine",
-            "recreate_collection": False,
-        },
-        llm={"provider": "mistral"},
-        mistral={
-            "api_key": "test-key",
-            "model_name": "mistral-small-latest",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        openai={
-            "api_key": "test-openai-key",
-            "model_name": "gpt-4o-mini",
-            "embedding_model": "text-embedding-3-small",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
-        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={"enabled": False, "extensions": [".mp4"], "vtt_extensions": [".vtt"]},
+        qdrant=cast(
+            QdrantConfig,
+            {
+                "host": "localhost",
+                "port": 6333,
+                "collection_name": "test",
+                "vector_size": 384,
+                "distance": "Cosine",
+                "recreate_collection": False,
+            },
+        ),
+        llm=cast(LLMConfig, {"provider": "mistral"}),
+        mistral=cast(
+            MistralConfig,
+            {
+                "api_key": "test-key",
+                "model_name": "mistral-small-latest",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        openai=cast(
+            OpenAIConfig,
+            {
+                "api_key": "test-openai-key",
+                "model_name": "gpt-4o-mini",
+                "embedding_model": "text-embedding-3-small",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        processing=cast(
+            ProcessingConfig,
+            {"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        ),
+        logging=cast(
+            LoggingConfig,
+            {"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        ),
+        video=cast(
+            VideoConfig,
+            {"enabled": False, "extensions": [".mp4"], "vtt_extensions": [".vtt"]},
+        ),
     )
 
     api_module.config = test_cfg
@@ -624,51 +758,75 @@ def test_find_video_file_multi_resolution(temp_dir: Path, archive_with_videos: P
     original_config = api_module.config
 
     test_cfg = Config(
-        paths={
-            "archive_root": str(archive_with_videos),
-            "docs_output": "./data/docs.jsonl",
-            "embeddings_cache": "./embeddings",
-            "video_root": str(archive_with_videos),
-        },
-        embedding={
-            "provider": "local",
-            "model_name": "test",
-            "batch_size": 8,
-            "max_seq_length": 128,
-            "device": "cpu",
-            "normalize_embeddings": True,
-        },
-        qdrant={
-            "host": "localhost",
-            "port": 6333,
-            "collection_name": "test",
-            "vector_size": 384,
-            "distance": "Cosine",
-            "recreate_collection": False,
-        },
-        llm={"provider": "mistral"},
-        mistral={
-            "api_key": "test-key",
-            "model_name": "mistral-small-latest",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        openai={
-            "api_key": "test-openai-key",
-            "model_name": "gpt-4o-mini",
-            "embedding_model": "text-embedding-3-small",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        processing={"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
-        logging={"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        video={
-            "enabled": True,
-            "extensions": [".mp4", ".mkv", ".webm"],
-            "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
-        },
+        paths=cast(
+            PathsConfig,
+            {
+                "archive_root": str(archive_with_videos),
+                "docs_output": "./data/docs.jsonl",
+                "embeddings_cache": "./embeddings",
+                "video_root": str(archive_with_videos),
+            },
+        ),
+        embedding=cast(
+            EmbeddingConfig,
+            {
+                "provider": "local",
+                "model_name": "test",
+                "batch_size": 8,
+                "max_seq_length": 128,
+                "device": "cpu",
+                "normalize_embeddings": True,
+            },
+        ),
+        qdrant=cast(
+            QdrantConfig,
+            {
+                "host": "localhost",
+                "port": 6333,
+                "collection_name": "test",
+                "vector_size": 384,
+                "distance": "Cosine",
+                "recreate_collection": False,
+            },
+        ),
+        llm=cast(LLMConfig, {"provider": "mistral"}),
+        mistral=cast(
+            MistralConfig,
+            {
+                "api_key": "test-key",
+                "model_name": "mistral-small-latest",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        openai=cast(
+            OpenAIConfig,
+            {
+                "api_key": "test-openai-key",
+                "model_name": "gpt-4o-mini",
+                "embedding_model": "text-embedding-3-small",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+        ),
+        processing=cast(
+            ProcessingConfig,
+            {"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
+        ),
+        logging=cast(
+            LoggingConfig,
+            {"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
+        ),
+        video=cast(
+            VideoConfig,
+            {
+                "enabled": True,
+                "extensions": [".mp4", ".mkv", ".webm"],
+                "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
+            },
+        ),
     )
 
     api_module.config = test_cfg

@@ -33,6 +33,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+
 # simple alias for the JSONL records so we can give them a proper type
 Record = dict[str, Any]
 
