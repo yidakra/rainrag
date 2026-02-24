@@ -258,6 +258,23 @@ class RerankerConfig(BaseModel):
     )
 
 
+class IncrementalConfig(BaseModel):
+    """Configuration for incremental re-indexing pipeline."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable incremental processing (only re-process changed documents)",
+    )
+    manifest_path: str = Field(
+        default="./data/manifest.json",
+        description="Path to file manifest for tracking source file changes",
+    )
+    alias_swap: bool = Field(
+        default=False,
+        description="Use two-phase indexing with collection alias swap for zero-downtime updates",
+    )
+
+
 class WebMetadataConfig(BaseModel):
     """Configuration for web metadata integration."""
 
@@ -312,6 +329,7 @@ class Config(BaseModel):
     video: VideoConfig = Field(default_factory=VideoConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     web_metadata: WebMetadataConfig = Field(default_factory=WebMetadataConfig)
+    incremental: IncrementalConfig = Field(default_factory=IncrementalConfig)
 
     def get_max_chunk_tokens(self) -> int:
         """

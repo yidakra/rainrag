@@ -150,6 +150,12 @@ mcp:
   # Port for HTTP-based transports (ignored for stdio)
   port: 8000
 
+# Incremental re-indexing configuration
+incremental:
+  enabled: true  # Enable incremental processing (only re-process changed documents)
+  manifest_path: "./data/manifest.json"  # File tracking source VTT file state for change detection
+  alias_swap: false  # Use two-phase indexing with collection alias swap for zero-downtime updates
+
 # Web metadata integration
 web_metadata:
   enabled: true

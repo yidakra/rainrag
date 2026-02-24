@@ -21,6 +21,15 @@ RECREATE_OPTION = typer.Option(
 RECREATE_INDEX_OPTION = typer.Option(
     False, "--recreate-index", help="Recreate the Qdrant collection"
 )
+INCREMENTAL_OPTION = typer.Option(
+    False,
+    "--incremental",
+    "-i",
+    help="Enable incremental mode: only process changed documents (skip unchanged)",
+)
+FULL_OPTION = typer.Option(
+    False, "--full", help="Force full re-processing even when incremental is configured"
+)
 SKIP_INGEST_OPTION = typer.Option(False, "--skip-ingest", help="Skip ingestion step")
 SKIP_EMBED_OPTION = typer.Option(False, "--skip-embed", help="Skip embedding step")
 TOP_K_OPTION = typer.Option(
@@ -48,22 +57,22 @@ def load_config(config_path: str):
     return _load_config(config_path)
 
 
-def run_ingestion(config_path: str):
+def run_ingestion(config_path: str, *, incremental: bool = False):
     from rainrag.ingest import run_ingestion as _run_ingestion
 
-    return _run_ingestion(config_path)
+    return _run_ingestion(config_path, incremental=incremental)
 
 
-def run_embedding(config_path: str, *, force_regenerate: bool = False):
+def run_embedding(config_path: str, *, force_regenerate: bool = False, incremental: bool = False):
     from rainrag.embed import run_embedding as _run_embedding
 
-    return _run_embedding(config_path, force_regenerate=force_regenerate)
+    return _run_embedding(config_path, force_regenerate=force_regenerate, incremental=incremental)
 
 
-def run_indexing(config_path: str, *, recreate: bool = False):
+def run_indexing(config_path: str, *, recreate: bool = False, incremental: bool = False):
     from rainrag.index import run_indexing as _run_indexing
 
-    return _run_indexing(config_path, recreate=recreate)
+    return _run_indexing(config_path, recreate=recreate, incremental=incremental)
 
 
 def run_query(config_path: str, question: str, top_k: int | None):
@@ -120,6 +129,7 @@ def setup_logging(config_path: str = "config.yaml") -> None:
 @app.command()
 def ingest(
     config: str = CONFIG_OPTION,
+    incremental: bool = INCREMENTAL_OPTION,
 ) -> None:
     """
     Ingest and parse VTT files from archive directory.
@@ -129,12 +139,15 @@ def ingest(
     2. Parse and clean the transcript text
     3. Detect language (ru/en) from file path
     4. Save parsed documents to JSONL format
+
+    With --incremental, only re-processes files that have changed since the last run.
     """
     setup_logging(config)
 
     try:
-        typer.echo("Starting ingestion pipeline...")
-        doc_count = run_ingestion(config)
+        mode = "incremental" if incremental else "full"
+        typer.echo(f"Starting ingestion pipeline ({mode} mode)...")
+        doc_count = run_ingestion(config, incremental=incremental)
 
         typer.echo(f"Ingestion complete! Processed {doc_count} documents")
 
@@ -148,6 +161,7 @@ def ingest(
 def embed(
     config: str = CONFIG_OPTION,
     force: bool = FORCE_OPTION,
+    incremental: bool = INCREMENTAL_OPTION,
 ) -> None:
     """
     Generate embeddings for parsed documents.
@@ -157,12 +171,18 @@ def embed(
     2. Load the multilingual-e5-large model
     3. Generate embeddings for all documents
     4. Cache embeddings locally
+
+    With --incremental, reuses cached embeddings for unchanged documents and
+    only embeds new/modified ones.
     """
     setup_logging(config)
 
     try:
-        typer.echo("Starting embedding generation...")
-        embeddings, documents = run_embedding(config, force_regenerate=force)
+        mode = "incremental" if incremental else "full"
+        typer.echo(f"Starting embedding generation ({mode} mode)...")
+        embeddings, documents = run_embedding(
+            config, force_regenerate=force, incremental=incremental
+        )
 
         typer.echo(f"Embedding complete! Generated embeddings for {len(documents)} documents")
         typer.echo(f"   Embedding shape: {embeddings.shape}")
@@ -177,6 +197,7 @@ def embed(
 def index(
     config: str = CONFIG_OPTION,
     recreate: bool = RECREATE_OPTION,
+    incremental: bool = INCREMENTAL_OPTION,
 ) -> None:
     """
     Index embeddings into Qdrant vector store.
@@ -186,15 +207,19 @@ def index(
     2. Create or update the collection
     3. Index all embeddings with metadata
     4. Verify the indexing
+
+    With --incremental, compares content hashes against the existing collection
+    and only upserts changed/new documents (and deletes removed ones).
     """
     setup_logging(config)
 
     try:
-        typer.echo("Starting indexing pipeline...")
+        mode = "incremental" if incremental else "full"
+        typer.echo(f"Starting indexing pipeline ({mode} mode)...")
 
         if recreate:
             typer.echo("Warning: Recreating collection (existing data will be deleted)")
-        num_indexed = run_indexing(config, recreate=recreate)
+        num_indexed = run_indexing(config, recreate=recreate, incremental=incremental)
 
         typer.echo(f"Indexing complete! Indexed {num_indexed} documents")
 
@@ -210,21 +235,28 @@ def pipeline(
     skip_ingest: bool = SKIP_INGEST_OPTION,
     skip_embed: bool = SKIP_EMBED_OPTION,
     recreate_index: bool = RECREATE_INDEX_OPTION,
+    incremental: bool = INCREMENTAL_OPTION,
 ) -> None:
     """
     Run the full pipeline: ingest -> embed -> index.
 
     This is a convenience command that runs all three steps in sequence.
+
+    With --incremental, each step operates in incremental mode:
+    - Ingest: only re-parses changed VTT files (based on file manifest)
+    - Embed: reuses cached embeddings for unchanged documents
+    - Index: only upserts changed/new points, deletes removed ones
     """
     setup_logging(config)
 
     try:
-        typer.echo("Starting full pipeline...")
+        mode = "incremental" if incremental else "full"
+        typer.echo(f"Starting full pipeline ({mode} mode)...")
 
         # Step 1: Ingest
         if not skip_ingest:
             typer.echo("\nStep 1/3: Ingestion")
-            doc_count = run_ingestion(config)
+            doc_count = run_ingestion(config, incremental=incremental)
             typer.echo(f"   Processed {doc_count} documents")
         else:
             typer.echo("\nStep 1/3: Ingestion (skipped)")
@@ -232,14 +264,14 @@ def pipeline(
         # Step 2: Embed
         if not skip_embed:
             typer.echo("\nStep 2/3: Embedding")
-            _, documents = run_embedding(config)
+            _, documents = run_embedding(config, incremental=incremental)
             typer.echo(f"   Generated embeddings for {len(documents)} documents")
         else:
             typer.echo("\nStep 2/3: Embedding (skipped)")
 
         # Step 3: Index
         typer.echo("\nStep 3/3: Indexing")
-        num_indexed = run_indexing(config, recreate=recreate_index)
+        num_indexed = run_indexing(config, recreate=recreate_index, incremental=incremental)
         typer.echo(f"   Indexed {num_indexed} documents")
 
         typer.echo("\nFull pipeline complete!")

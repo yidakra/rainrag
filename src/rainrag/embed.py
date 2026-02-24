@@ -455,18 +455,21 @@ class Embedder:
         logger.info(f"Generated embeddings with shape: {embeddings_array.shape}")
         return embeddings_array
 
-    def embed(self, force_regenerate: bool = False) -> tuple[np.ndarray, list[Document]]:
+    def embed(
+        self, force_regenerate: bool = False, incremental: bool = False
+    ) -> tuple[np.ndarray, list[Document]]:
         """
         Run the embedding pipeline.
 
         Args:
             force_regenerate: If True, regenerate embeddings even if cache exists
+            incremental: If True, only embed documents with new content_hash
 
         Returns:
             Tuple of (embeddings array, list of documents)
         """
         # Check if cache exists and we're not forcing regeneration
-        if not force_regenerate and self.cache.exists():
+        if not force_regenerate and not incremental and self.cache.exists():
             logger.info("Loading embeddings from cache")
             embeddings, documents = self.cache.load()
 
@@ -479,6 +482,10 @@ class Embedder:
         if not documents:
             logger.error("No documents found to embed")
             raise ValueError("No documents found")
+
+        # Incremental mode: reuse cached embeddings for unchanged content
+        if incremental and not force_regenerate and self.cache.exists():
+            return self._embed_incremental(documents)
 
         # Load model
         self.load_model()
@@ -493,9 +500,75 @@ class Embedder:
 
         return embeddings, documents
 
+    def _embed_incremental(
+        self, documents: list[Document]
+    ) -> tuple[np.ndarray, list[Document]]:
+        """Incrementally embed documents — reuse cached embeddings for unchanged content.
+
+        Builds a content_hash -> embedding lookup from the existing cache.
+        Only documents with a new or changed content_hash are sent to the
+        embedding model. Unchanged documents reuse their cached vectors.
+        """
+        cached_embeddings, cached_docs = self.cache.load()
+        if cached_embeddings is None or cached_docs is None:
+            logger.info("Cache load failed, falling back to full embedding")
+            self.load_model()
+            embeddings = self.generate_embeddings(documents)
+            self.cache.save(embeddings, documents)
+            return embeddings, documents
+
+        # Build content_hash -> embedding lookup from cache
+        hash_to_embedding: dict[str, np.ndarray] = {}
+        for i, doc in enumerate(cached_docs):
+            if doc.content_hash:
+                hash_to_embedding[doc.content_hash] = cached_embeddings[i]
+
+        embedding_dim = cached_embeddings.shape[1]
+        logger.info(
+            f"Incremental embedding: {len(hash_to_embedding)} cached hashes, "
+            f"{len(documents)} current documents"
+        )
+
+        # Classify documents into cached vs. needs-embedding
+        to_embed: list[Document] = []
+        to_embed_indices: list[int] = []
+        cached_count = 0
+
+        final_embeddings = np.zeros((len(documents), embedding_dim), dtype=np.float32)
+
+        for i, doc in enumerate(documents):
+            if doc.content_hash and doc.content_hash in hash_to_embedding:
+                final_embeddings[i] = hash_to_embedding[doc.content_hash]
+                cached_count += 1
+            else:
+                to_embed.append(doc)
+                to_embed_indices.append(i)
+
+        logger.info(
+            f"Incremental embedding: {cached_count} cached, "
+            f"{len(to_embed)} to embed"
+        )
+
+        if to_embed:
+            # Load model and embed only the new/changed documents
+            self.load_model()
+            new_embeddings = self.generate_embeddings(to_embed)
+            for j, idx in enumerate(to_embed_indices):
+                final_embeddings[idx] = new_embeddings[j]
+        else:
+            logger.info("All documents have cached embeddings — nothing to embed!")
+
+        # Save updated cache
+        self.cache.save(final_embeddings, documents)
+
+        logger.info("Incremental embedding pipeline complete!")
+        return final_embeddings, documents
+
 
 def run_embedding(
-    config_path: str = "config.yaml", force_regenerate: bool = False
+    config_path: str = "config.yaml",
+    force_regenerate: bool = False,
+    incremental: bool = False,
 ) -> tuple[np.ndarray, list[Document]]:
     """
     Run the embedding generation pipeline.
@@ -503,6 +576,7 @@ def run_embedding(
     Args:
         config_path: Path to configuration file
         force_regenerate: If True, regenerate embeddings even if cache exists
+        incremental: If True, only embed documents with new content_hash
 
     Returns:
         Tuple of (embeddings array, list of documents)
@@ -513,4 +587,4 @@ def run_embedding(
     config = load_config(config_path)
     logger.info("Config loaded")
     embedder = Embedder(config)
-    return embedder.embed(force_regenerate=force_regenerate)
+    return embedder.embed(force_regenerate=force_regenerate, incremental=incremental)
