@@ -34,22 +34,6 @@ from typing import Any
 from eval.experiments.base import BaseExperiment
 
 
-#: Approximate cost per 1 M tokens (input) in USD, for rough cost logging.
-#: Update these whenever provider pricing changes.
-_LLM_COST_PER_1M: dict[str, float] = {
-    "mistral": 2.0,  # mistral-large-latest
-    "openai": 2.5,  # gpt-4o-mini
-    "claude": 0.8,  # claude-haiku-4-5-20251001
-    "gemini": 0.075,  # gemini-2.5-flash
-}
-
-_EMBED_COST_PER_1M: dict[str, float] = {
-    "local": 0.0,
-    "mistral": 0.1,  # mistral-embed
-    "openai": 0.02,  # text-embedding-3-large
-    "gemini": 0.0,  # free tier
-}
-
 # Retrieval features to fix for all provider comparison runs
 _FIXED_RETRIEVAL_OVERRIDES: dict[str, Any] = {
     "hybrid_search.enabled": True,
