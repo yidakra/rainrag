@@ -106,7 +106,7 @@ chunking:
 # Hybrid search configuration (Vector + BM25)
 # Enabled by default as it provides Stage 1 corpus smoothing (BM25 IDF ≈ Dirichlet prior)
 hybrid_search:
-  enabled: true  # Enable hybrid search combining vector similarity and BM25 keyword matching
+  enabled: false  # Enable hybrid search combining vector similarity and BM25 keyword matching
   bm25_weight: 0.3  # Weight for BM25 scores (0.0-1.0, vector weight = 1 - bm25_weight)
   top_k_multiplier: 3  # Retrieve top_k * multiplier documents before reranking
   fusion_method: "rrf"  # Score fusion method: 'rrf' (Reciprocal Rank Fusion) or 'weighted'
@@ -116,7 +116,7 @@ hybrid_search:
 # Stage 1 (corpus smoothing) is handled by hybrid_search.enabled above.
 # Stage 2 (query-side smoothing) is configured here.
 two_stage:
-  enabled: true  # Master switch for Stage 2 query-side smoothing
+  enabled: false  # Master switch for Stage 2 query-side smoothing
 
   # Stage 2a: LLM query rewriting
   # Rewrites the user query into transcript-register variants before retrieval.
