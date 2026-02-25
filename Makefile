@@ -113,19 +113,12 @@ api-start: ## Start API and Streamlit services
 secrets: ## Create placeholder secret files with restrictive permissions for Docker Compose
 	@mkdir -p secrets
 	@for key in mistral_api_key openai_api_key anthropic_api_key google_api_key cohere_api_key; do \
-		touch ./secrets/$$key.txt; \
-		chmod 600 ./secrets/$$key.txt; \
+		touch ./secrets/$key.txt; \
+		chmod 600 ./secrets/$key.txt; \
 	done
 	@echo "Created placeholder files under ./secrets (chmod 600); edit them with your real API keys."
 
-secrets: ## Create placeholder secret files with restrictive permissions for Docker Compose
-	@mkdir -p secrets
-	@for key in mistral_api_key openai_api_key anthropic_api_key google_api_key cohere_api_key; do \
-		touch ./secrets/$$key.txt; \
-		chmod 600 ./secrets/$$key.txt; \
-	done
-	@echo "Created placeholder files under ./secrets (chmod 600); edit them with your real API keys."
-
+up: check-root check-qdrant-start api-start ## Start all services (Qdrant, API, Streamlit)
 up: check-root check-qdrant-start api-start ## Start all services (Qdrant, API, Streamlit)
 
 check-root: ## Check if running as root and provide guidance

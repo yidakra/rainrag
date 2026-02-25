@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Annotated, cast
 
 from loguru import logger
-from prometheus_client import REGISTRY, Counter
+from prometheus_client import REGISTRY, CollectorRegistry, Counter
 
 
 # Constants loaded once at import time (avoids repeated getenv calls per request)
@@ -32,24 +32,19 @@ def _create_query_timeout_counter() -> Counter:
     try:
         return Counter(name, "Number of query requests that timed out")
     except ValueError:
-        # metric already registered in default REGISTRY; try to find it via a
-        # public lookup
-        existing_val = REGISTRY.get_sample_value(name)
-        if existing_val is not None:
-            # traverse collectors to find the matching object
-            for collector in REGISTRY.collect():
-                for sample in collector.samples:
-                    if sample.name == name:
-                        return cast(Counter, collector)
+        # Metric already registered in default REGISTRY; recover the
+        # underlying collector directly so callers still get a Counter-like
+        # object with .inc().
+        collector = REGISTRY._names_to_collectors.get(name)
+        if collector is not None:
+            return cast(Counter, collector)
         # Couldn't retrieve the existing counter; create one in an isolated
         # registry so we still have an object.  Emit a warning so users know
         # the metric won't be exposed.
         logger.warning(
-            "Failed to recover existing counter '%s'; creating unregistered counter (won't be scraped).",
+            "Failed to recover existing counter {!r}; creating unregistered counter (won't be scraped).",
             name,
         )
-        from prometheus_client import CollectorRegistry
-
         return Counter(
             name, "Number of query requests that timed out", registry=CollectorRegistry()
         )
@@ -559,7 +554,7 @@ async def query(request: QueryRequest, authorized: Annotated[bool, Header()] = T
             except Exception:
                 logger.exception("Failed to increment timeout metric")
             logger.warning(
-                "Query timed out (question=%r, top_k=%s, language=%s, timeout=%s)",
+                "Query timed out (question={!r}, top_k={}, language={}, timeout={})",
                 request.question[:100],
                 request.top_k,
                 request.language,
