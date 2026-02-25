@@ -6,10 +6,10 @@ import os
 import string
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated
 
 from loguru import logger
-from prometheus_client import REGISTRY, CollectorRegistry, Counter
+from prometheus_client import REGISTRY, Counter
 
 
 # Constants loaded once at import time (avoids repeated getenv calls per request)
@@ -32,19 +32,33 @@ def _create_query_timeout_counter() -> Counter:
     try:
         return Counter(name, "Number of query requests that timed out")
     except ValueError:
-        # Metric already registered in default REGISTRY; recover the
-        # underlying collector directly so callers still get a Counter-like
-        # object with .inc().
-        collector = REGISTRY._names_to_collectors.get(name)
-        if collector is not None:
-            return cast(Counter, collector)
-        # Couldn't retrieve the existing counter; create one in an isolated
+        # Metric already registered in default REGISTRY; try to find it using
+        # the public API rather than poking into private internals.
+        existing_val = REGISTRY.get_sample_value(name)
+        if existing_val is not None:
+            for collector in REGISTRY.collect():
+                for sample in collector.samples:
+                    if sample.name == name:
+                        # ensure it really is a Counter before returning
+                        if isinstance(collector, Counter):
+                            return collector
+                        else:
+                            logger.warning(
+                                "Metric %r exists but is a %s, not Counter; "
+                                "falling back to unregistered counter",
+                                name,
+                                type(collector),
+                            )
+                        break
+        # Couldn't recover a usable Counter; create one in an isolated
         # registry so we still have an object.  Emit a warning so users know
         # the metric won't be exposed.
         logger.warning(
-            "Failed to recover existing counter {!r}; creating unregistered counter (won't be scraped).",
+            "Failed to recover existing counter %r; creating unregistered counter (won't be scraped).",
             name,
         )
+        from prometheus_client import CollectorRegistry
+
         return Counter(
             name, "Number of query requests that timed out", registry=CollectorRegistry()
         )
