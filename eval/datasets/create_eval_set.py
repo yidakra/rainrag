@@ -191,11 +191,10 @@ def _generate_pair(engine: Any, chunk: Record, lang: str) -> Record | None:
             raw = raw[:-3]
         raw = raw.strip()
         data = json.loads(raw)
-    except Exception as exc:
+    except Exception:
         logger.warning(
-            "  [warn] Generation failed for doc_id=%s: %s",
+            "Generation failed for doc_id=%s",
             chunk.get("doc_id"),
-            exc,
             exc_info=True,
         )
         return None

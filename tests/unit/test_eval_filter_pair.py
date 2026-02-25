@@ -44,9 +44,15 @@ def test_filter_pair_accepts_on_error_and_logs(
 
     # there should be exactly one warning record and it should include both
     # the generic message and the simulated error text
-    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name == "eval.datasets.create_eval_set"
+    ]
     assert len(records) == 1
     rec = records[0]
     assert "LLM quality-filter call raised exception" in rec.getMessage()
+    # ensure exception info was attached
+    assert rec.exc_info is not None, "Logger call should include exception info"
     # the exception text appears in the traceback portion of the log output
     assert "simulated LLM failure" in caplog.text
