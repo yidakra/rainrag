@@ -1,0 +1,18 @@
+[Unit]
+Description=RainRAG Streamlit UI (IP access)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/rainrag
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=RAINRAG_API_URL=https://172.16.52.220/api
+EnvironmentFile=-/home/ubuntu/rainrag/.env
+ExecStart=/usr/bin/env bash -lc 'cd /home/ubuntu/rainrag && poetry run streamlit run app.py --server.address 127.0.0.1 --server.port 7861 --server.headless true'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

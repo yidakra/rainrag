@@ -13,6 +13,7 @@ QDRANT_PREFIX="${QDRANT_PREFIX:-qdrant}"
 SNAPSHOT_DIR="${QDRANT_SNAPSHOT_DIR:-/tmp/rainrag_qdrant_snapshots}"
 ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 SNAPSHOT_NAME="${QDRANT_SNAPSHOT_NAME:-}"
+UPLOAD_TIMEOUT_SECONDS="${QDRANT_UPLOAD_TIMEOUT_SECONDS:-1800}"
 
 mkdir -p "$SNAPSHOT_DIR"
 
@@ -48,7 +49,7 @@ echo "Uploading snapshot to Qdrant collection: ${QDRANT_COLLECTION}"
 # perform upload and capture exit code explicitly
 curl -fsS -X POST \
   --connect-timeout 10 \
-  -m 60 \
+  -m "$UPLOAD_TIMEOUT_SECONDS" \
   -F "snapshot=@${local_snapshot}" \
   "${QDRANT_URL}/collections/${QDRANT_COLLECTION}/snapshots/upload" >/dev/null
 rc=$?

@@ -88,7 +88,7 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
 DEFAULT_LANGUAGE = "ru"
 DEFAULT_TOP_K = 3
-REQUEST_TIMEOUT = 60.0  # 60 seconds timeout for API requests
+REQUEST_TIMEOUT = float(os.getenv("RAINRAG_REQUEST_TIMEOUT_SECONDS", "240"))
 DOCS_PATH = os.getenv("RAINRAG_DOCS_PATH", "./data/docs.jsonl")
 
 # Initialize Argon2 password hasher for secure password hashing
@@ -1145,10 +1145,10 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                                 video_full_url += f"#t={int(float(start_time_seconds))}"
 
                         try:
-                            # HTML5 video player with native controls
+                            # HTML5 video player so the browser streams /video directly
                             st.markdown(
                                 f"""
-                                <video controls controlsList="nodownload"
+                                <video controls playsinline
                                        style="max-width: 100%; height: auto; border-radius: 8px;"
                                        preload="metadata">
                                     <source src="{html.escape(video_full_url)}" type="video/mp4">
