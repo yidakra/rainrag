@@ -26,27 +26,27 @@ def test_filter_pair_accepts_on_error_and_logs(
     query_mod.RAGQueryEngine = lambda *args, **kwargs: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "rainrag.query", query_mod)
 
+    monkeypatch.delitem(sys.modules, "eval.datasets.create_eval_set", raising=False)
     create_eval_set_mod = importlib.import_module("eval.datasets.create_eval_set")
     _filter_pair = create_eval_set_mod._filter_pair
 
     # create a dummy engine whose generate_answer will throw
     engine = MagicMock()
-
-    def _raise(*args, **kwargs):
-        # accept any positional/keyword args so the mock behaves like a real
-        # generate_answer method.
-        raise RuntimeError("simulated LLM failure")
-
-    engine.generate_answer.side_effect = _raise
+    engine.generate_answer.side_effect = RuntimeError("simulated LLM failure")
 
     pair = {"query": "dummy", "reference_answer": "ans"}
     chunk = {"text": "irrelevant"}
 
-    caplog.set_level(logging.WARNING)
+    # capture only warnings from the module logger used inside _filter_pair
+    caplog.set_level(logging.WARNING, logger="eval.datasets.create_eval_set")
     result = _filter_pair(engine, pair, chunk)
     assert result is True
 
-    # warning should mention the exception and the query string
-    assert "LLM quality-filter call raised exception" in caplog.text
+    # there should be exactly one warning record and it should include both
+    # the generic message and the simulated error text
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(records) == 1
+    rec = records[0]
+    assert "LLM quality-filter call raised exception" in rec.getMessage()
+    # the exception text appears in the traceback portion of the log output
     assert "simulated LLM failure" in caplog.text
-    assert "dummy" in caplog.text

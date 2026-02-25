@@ -162,9 +162,6 @@ def _stratified_sample(chunks: list[Record], n: int) -> list[Record]:
         if remaining:
             picks = random.sample(remaining, min(n - len(sampled), len(remaining)))
             sampled.extend(picks)
-            for c in picks:
-                cid = c.get("doc_id") or str(c.get("path", ""))
-                sampled_ids.add(cid)
 
     return sampled[:n]
 
@@ -195,7 +192,12 @@ def _generate_pair(engine: Any, chunk: Record, lang: str) -> Record | None:
         raw = raw.strip()
         data = json.loads(raw)
     except Exception as exc:
-        print(f"  [warn] Generation failed for doc_id={chunk.get('doc_id')}: {exc}")
+        logger.warning(
+            "  [warn] Generation failed for doc_id=%s: %s",
+            chunk.get("doc_id"),
+            exc,
+            exc_info=True,
+        )
         return None
 
     question = data.get("question", "").strip()
