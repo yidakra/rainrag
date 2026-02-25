@@ -1,5 +1,6 @@
 """FastAPI backend for RainRAG query interface."""
 
+import asyncio
 import contextlib
 import hmac
 import os
@@ -475,14 +476,29 @@ async def query(request: QueryRequest, authorized: bool = Header(True)):  # type
     try:
         logger.info(f"Received query: {request.question[:100]}... (language: {request.language})")
 
-        # Execute query with language and date filter parameters
-        result = query_engine.query(
-            question=request.question,
-            top_k=request.top_k,
-            language=request.language,
-            date_from=request.date_from,
-            date_to=request.date_to,
-        )
+        # Execute query in a worker thread so the event loop remains responsive
+        # (health checks/UI should not freeze while a long LLM call is running).
+        query_timeout_seconds = float(os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS", "240"))
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    query_engine.query,
+                    question=request.question,
+                    top_k=request.top_k,
+                    language=request.language,
+                    date_from=request.date_from,
+                    date_to=request.date_to,
+                ),
+                timeout=query_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    "Query timed out while generating answer. "
+                    "Please try a shorter or more specific question."
+                ),
+            ) from exc
 
         # Format response with video and VTT URLs
         context_chunks = []

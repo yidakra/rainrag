@@ -1,0 +1,14 @@
+# Custom values to enable ingress for rag.tvrain.tv
+ingress:
+  enabled: true
+  className: "nginx"  # Change this to your ingress controller class
+  hosts:
+    - host: rag.tvrain.tv
+      paths:
+        - path: /
+          pathType: Prefix
+  # Uncomment and configure TLS if you have cert-manager
+  # tls:
+  #   - secretName: rainrag-tls
+  #     hosts:
+  #       - rag.tvrain.tv
