@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, cast
 
+from loguru import logger
 from prometheus_client import REGISTRY, Counter
 
 
@@ -16,21 +17,41 @@ QUERY_TIMEOUT_SECONDS: float = float(os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS", 
 
 
 def _create_query_timeout_counter() -> Counter:
-    """Create or retrieve timeout counter without duplicate-registration errors."""
+    """Create or retrieve timeout counter without duplicate-registration errors.
+
+    The Prometheus client raises ``ValueError`` if you try to register the
+    same metric name twice in the default registry.  Previously we poked into
+    the private ``REGISTRY._names_to_collectors`` dict to recover the existing
+    object, but that's brittle.  Instead we now use the public
+    ``CollectorRegistry`` APIs.  If a counter already exists we attempt to
+    find and return it; if we can't locate it we fall back to creating a
+    counter in its own registry and log a warning so operators know it won't
+    be scraped.
+    """
+    name = "rainrag_query_timeouts_total"
     try:
-        return Counter(
-            "rainrag_query_timeouts_total",
-            "Number of query requests that timed out",
-        )
+        return Counter(name, "Number of query requests that timed out")
     except ValueError:
-        existing = REGISTRY._names_to_collectors.get("rainrag_query_timeouts_total")
-        if existing is not None and hasattr(existing, "inc"):
-            return cast(Counter, existing)
-        # Last resort: create an unregistered counter (should rarely happen)
+        # metric already registered in default REGISTRY; try to find it via a
+        # public lookup
+        existing_val = REGISTRY.get_sample_value(name)
+        if existing_val is not None:
+            # traverse collectors to find the matching object
+            for collector in REGISTRY.collect():
+                for sample in collector.samples:
+                    if sample.name == name:
+                        return cast(Counter, collector)
+        # Couldn't retrieve the existing counter; create one in an isolated
+        # registry so we still have an object.  Emit a warning so users know
+        # the metric won't be exposed.
+        logger.warning(
+            "Failed to recover existing counter '%s'; creating unregistered counter (won't be scraped).",
+            name,
+        )
+        from prometheus_client import CollectorRegistry
+
         return Counter(
-            "rainrag_query_timeouts_total",
-            "Number of query requests that timed out",
-            registry=None,
+            name, "Number of query requests that timed out", registry=CollectorRegistry()
         )
 
 
@@ -42,7 +63,6 @@ QUERY_TIMEOUT_COUNTER: Counter = _create_query_timeout_counter()
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from loguru import logger
 from pydantic import BaseModel, Field
 
 from rainrag.config import Config, load_config

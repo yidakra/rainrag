@@ -90,7 +90,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
-      redis: {}
 
   # MCP Server (for Claude Desktop, ChatGPT, Cursor integration)
   mcp:

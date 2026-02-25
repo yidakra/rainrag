@@ -585,6 +585,13 @@ docker-compose logs -f
 
 # Stop services
 docker-compose down
+
+#
+# NOTE: The compose file expects a `./secrets` directory containing
+# API key files (mistral_api_key.txt, openai_api_key.txt, etc.). You can
+# create placeholders with `make secrets` and then edit them with real
+# keys. Docker Compose mounts these as secrets and sets corresponding
+# *_API_KEY_FILE environment variables in the containers.
 ```
 
 ### Network Access Configuration
@@ -870,6 +877,14 @@ docker run --rm --gpus all \
   -v $(pwd)/embeddings:/data/embeddings \
   --network host \
   rainrag:gpu pipeline
+
+# If you need to supply API keys or other secrets with a standalone
+# `docker run` invocation, you can mount a local directory of key files
+# and then set the corresponding *_API_KEY_FILE environment variables
+# (for example, `-v $(pwd)/secrets:/run/secrets:ro` plus
+# `-e OPENAI_API_KEY_FILE=/run/secrets/openai_api_key`). See
+# `docker-compose.yaml` for the Compose-based pattern which automatically
+# exposes `./secrets/*.txt` as Docker secrets.
 ```
 
 ## Kubernetes Deployment with Helm

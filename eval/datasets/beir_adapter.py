@@ -342,7 +342,7 @@ def _index_corpus_into_qdrant(
         batch_size: Embedding batch size (for local models).
         recreate: Drop and recreate the collection if it already exists.
     """
-    from qdrant_client.models import PointStruct, VectorParams  # type: ignore[import]
+    from qdrant_client.models import Distance, PointStruct, VectorParams  # type: ignore[import]
 
     client = engine.qdrant_client
     vector_size = engine.config.qdrant.vector_size
@@ -359,18 +359,26 @@ def _index_corpus_into_qdrant(
 
     logger.info(f"Creating Qdrant collection '{collection_name}' (vector_size={vector_size}) ...")
     # respect engine configuration for distance metric
-    dist_str = engine.config.qdrant.distance
-    # Use string values to avoid strict typing issues with qdrant enum stubs.
-    distance_map: dict[str, str] = {
-        "cosine": "Cosine",
-        "euclid": "Euclid",
-        "euclidean": "Euclid",  # sometimes spelled out
-        "dot": "Dot",
+    dist_raw = engine.config.qdrant.distance
+    dist_key = str(dist_raw).lower() if dist_raw is not None else "cosine"
+
+    distance_member_map: dict[str, str] = {
+        "cosine": "COSINE",
+        "euclid": "EUCLID",
+        "euclidean": "EUCLID",  # sometimes spelled out
+        "dot": "DOT",
     }
-    distance_value = distance_map.get(dist_str.lower())
-    if distance_value is None:
-        logger.warning(f"Unknown Qdrant distance '{dist_str}', defaulting to COSINE")
-        distance_value = "Cosine"
+    member_name = distance_member_map.get(dist_key)
+    if member_name is None:
+        logger.warning(f"Unknown Qdrant distance '{dist_raw}', defaulting to COSINE")
+        member_name = "COSINE"
+
+    distance_enum_cls: type[Any] = cast(type[Any], Distance)
+    distance_value = getattr(
+        distance_enum_cls,
+        member_name,
+        distance_enum_cls.COSINE,
+    )
 
     client.create_collection(
         collection_name=collection_name,
@@ -603,7 +611,7 @@ class BEIRAdapter:
         ]
         tokenized = [re.findall(r"\w+", t.lower()) for t in texts]
         # instantiate BM25 on the tokenized corpus
-        bm25: object = BM25Okapi(tokenized)  # type: ignore[reportUnknownVariableType]
+        bm25: Any = BM25Okapi(tokenized)  # type: ignore[reportUnknownMemberType]
 
         per_query: list[dict[str, float]] = []
         # Always include the caller-requested cut-off while preserving the
@@ -611,8 +619,8 @@ class BEIRAdapter:
         ks = tuple(sorted({top_k, 3, 5, 10}))
         for qid, qtext in self._queries.queries.items():
             qtokens = re.findall(r"\w+", qtext.lower())
-            raw_scores = cast(list[Any], cast(Any, bm25).get_scores(qtokens))
-            scores = [float(s) for s in raw_scores]
+            raw_scores_any: Any = cast(Any, bm25).get_scores(qtokens)
+            scores = [float(s) for s in cast(list[float], raw_scores_any)]
             top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
             retrieved = [doc_ids[i] for i in top_indices]
             relevant = self._qrels.relevant_doc_ids(qid)
