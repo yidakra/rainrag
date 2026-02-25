@@ -44,8 +44,7 @@ def _create_query_timeout_counter() -> Counter:
                             return collector
                         else:
                             logger.warning(
-                                "Metric %r exists but is a %s, not Counter; "
-                                "falling back to unregistered counter",
+                                "Metric %r exists but is a %s, not Counter; falling back to unregistered counter",
                                 name,
                                 type(collector),
                             )

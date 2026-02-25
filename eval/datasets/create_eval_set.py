@@ -21,6 +21,7 @@ or merge duplicates before running experiments.
 
 from __future__ import annotations
 
+# pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 import argparse
 import json
 import random
@@ -28,13 +29,17 @@ import sys
 import textwrap
 from collections import Counter
 from pathlib import Path
+from typing import Any, TypeAlias
 
 
 # Allow running as a script from repo root
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from rainrag.config import load_config
-from rainrag.query import RAGQueryEngine
+from rainrag.config import load_config  # type: ignore
+from rainrag.query import RAGQueryEngine  # type: ignore
+
+
+Record: TypeAlias = dict[str, Any]
 
 
 _GENERATION_PROMPT = textwrap.dedent("""\
@@ -80,13 +85,13 @@ _FILTER_PROMPT = textwrap.dedent("""\
 """)
 
 
-def _scroll_chunks(engine: RAGQueryEngine, lang: str, limit: int) -> list[dict]:
+def _scroll_chunks(engine: Any, lang: str, limit: int) -> list[Record]:
     """Scroll through the Qdrant collection and return chunks matching *lang*."""
     client = engine.qdrant_client
     if client is None:
         raise RuntimeError("Qdrant client is not initialized; call engine.initialize() first")
     collection = engine.config.qdrant.collection_name
-    all_chunks: list[dict] = []
+    all_chunks: list[Record] = []
     offset = None
 
     while True:
@@ -99,13 +104,15 @@ def _scroll_chunks(engine: RAGQueryEngine, lang: str, limit: int) -> list[dict]:
             with_vectors=False,
         )
         for point in results:
-            payload = point.payload or {}
+            point_obj: Any = point
+            payload_obj: Any = point_obj.payload
+            payload: Record = payload_obj if isinstance(payload_obj, dict) else {}
             if (
                 payload.get("language", "en") == lang
                 and payload.get("text", "")
                 and not payload.get("is_speech_free", False)  # skip metadata-only docs
             ):
-                all_chunks.append({"doc_id": payload.get("doc_id", str(point.id)), **payload})
+                all_chunks.append({"doc_id": payload.get("doc_id", str(point_obj.id)), **payload})
                 if len(all_chunks) >= limit:
                     return all_chunks
 
@@ -116,17 +123,17 @@ def _scroll_chunks(engine: RAGQueryEngine, lang: str, limit: int) -> list[dict]:
     return all_chunks[:limit]
 
 
-def _stratified_sample(chunks: list[dict], n: int) -> list[dict]:
+def _stratified_sample(chunks: list[Record], n: int) -> list[Record]:
     """Roughly stratify by video_id then sample n chunks uniformly."""
     if len(chunks) <= n:
         return chunks
     # Group by video_id to avoid sampling too many chunks from one video
-    by_video: dict[str, list[dict]] = {}
+    by_video: dict[str, list[Record]] = {}
     for chunk in chunks:
         vid = chunk.get("video_id") or chunk.get("path", "unknown")
         by_video.setdefault(vid, []).append(chunk)
 
-    sampled: list[dict] = []
+    sampled: list[Record] = []
     videos = list(by_video.keys())
     random.shuffle(videos)
     per_video = max(1, n // len(videos))
@@ -144,13 +151,13 @@ def _stratified_sample(chunks: list[dict], n: int) -> list[dict]:
     return sampled[:n]
 
 
-def _call_llm(engine: RAGQueryEngine, prompt: str) -> str:
+def _call_llm(engine: Any, prompt: str) -> str:
     """Call the configured LLM with a single user message and return the response text."""
     messages = [{"role": "user", "content": prompt}]
     return engine.generate_answer(messages, temperature=0.3)
 
 
-def _generate_pair(engine: RAGQueryEngine, chunk: dict, lang: str) -> dict | None:
+def _generate_pair(engine: Any, chunk: Record, lang: str) -> Record | None:
     """Generate a (question, reference_answer, category) triple for one chunk."""
     chunk_text = chunk.get("text", "")
     if len(chunk_text.strip()) < 50:
@@ -197,7 +204,7 @@ def _generate_pair(engine: RAGQueryEngine, chunk: dict, lang: str) -> dict | Non
     }
 
 
-def _filter_pair(engine: RAGQueryEngine, pair: dict, chunk: dict) -> bool:
+def _filter_pair(engine: Any, pair: Record, chunk: Record) -> bool:
     """Ask the LLM to quality-gate the generated pair. Returns True if accepted."""
     prompt = _FILTER_PROMPT.format(
         question=pair["query"],
@@ -231,8 +238,8 @@ def create_eval_set(
     """
     random.seed(seed)
     print(f"Loading config from {config_path} ...")
-    config = load_config(config_path)
-    engine = RAGQueryEngine(config)
+    config: Any = load_config(config_path)
+    engine: Any = RAGQueryEngine(config)
     engine.initialize()
 
     print(f"Scrolling Qdrant collection '{config.qdrant.collection_name}' for lang='{lang}' ...")
@@ -247,7 +254,7 @@ def create_eval_set(
     candidates = _stratified_sample(all_chunks, n * 2)
     print(f"  Sampled {len(candidates)} candidate chunks (2× target for filter headroom).")
 
-    pairs: list[dict] = []
+    pairs: list[Record] = []
     for i, chunk in enumerate(candidates):
         if len(pairs) >= n:
             break
@@ -281,9 +288,9 @@ def create_eval_set(
     print("Category distribution:", dict(cats))
 
 
-def load_eval_set(path: str) -> list[dict]:
+def load_eval_set(path: str) -> list[Record]:
     """Load an eval JSONL file into a list of record dicts."""
-    records = []
+    records: list[Record] = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
