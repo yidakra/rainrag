@@ -44,13 +44,36 @@ CLI (via run_eval.py)::
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass, field
+from importlib import import_module
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from loguru import logger
+
+logger = logging.getLogger(__name__)
+
+
+def _new_docs_dict() -> dict[str, dict[str, str]]:
+    """Typed default factory for BEIR corpus docs."""
+    return {}
+
+
+def _new_queries_dict() -> dict[str, str]:
+    """Typed default factory for BEIR queries."""
+    return {}
+
+
+def _new_qrels_dict() -> dict[str, dict[str, int]]:
+    """Typed default factory for BEIR qrels."""
+    return {}
+
+
+def _rows_from_dataset(dataset: Any) -> list[dict[str, Any]]:
+    """Normalize a HF dataset split into a typed list of row dicts."""
+    return [dict(row) for row in dataset]
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +85,7 @@ from loguru import logger
 class BEIRCorpus:
     """Loaded BEIR corpus: doc_id → {title, text}."""
 
-    docs: dict[str, dict[str, str]] = field(default_factory=dict)
+    docs: dict[str, dict[str, str]] = field(default_factory=_new_docs_dict)
 
     def __len__(self) -> int:
         return len(self.docs)
@@ -72,7 +95,7 @@ class BEIRCorpus:
 class BEIRQueries:
     """Loaded BEIR queries: query_id → query_text."""
 
-    queries: dict[str, str] = field(default_factory=dict)
+    queries: dict[str, str] = field(default_factory=_new_queries_dict)
 
     def __len__(self) -> int:
         return len(self.queries)
@@ -82,7 +105,7 @@ class BEIRQueries:
 class BEIRQRels:
     """BEIR relevance judgements: query_id → {doc_id → relevance_score}."""
 
-    qrels: dict[str, dict[str, int]] = field(default_factory=dict)
+    qrels: dict[str, dict[str, int]] = field(default_factory=_new_qrels_dict)
 
     def relevant_doc_ids(self, query_id: str, min_score: int = 1) -> list[str]:
         """Return doc IDs with relevance >= min_score."""
@@ -134,54 +157,67 @@ def _load_from_hf(
         logger.warning(
             "trust_remote_code=True will execute remote dataset code; use only with datasets you trust"
         )
-    corpus_ds = load_dataset(hf_name, "corpus", split="corpus", trust_remote_code=trust_remote_code)
+    load_dataset_any = cast(Any, load_dataset)
+
+    corpus_ds_raw: Any = load_dataset_any(
+        hf_name,
+        "corpus",
+        split="corpus",
+        trust_remote_code=trust_remote_code,
+    )
     logger.info(f"Loading BEIR queries from {hf_name} ...")
-    queries_ds = load_dataset(
+    queries_ds_raw: Any = load_dataset_any(
         hf_name, "queries", split="queries", trust_remote_code=trust_remote_code
     )
     logger.info(f"Loading BEIR qrels from {hf_qrels_name} (split={qrels_split}) ...")
-    qrels_ds = load_dataset(hf_qrels_name, split=qrels_split, trust_remote_code=trust_remote_code)
+    qrels_ds_raw: Any = load_dataset_any(
+        hf_qrels_name,
+        split=qrels_split,
+        trust_remote_code=trust_remote_code,
+    )
+
+    corpus_ds = _rows_from_dataset(corpus_ds_raw)
+    queries_ds = _rows_from_dataset(queries_ds_raw)
+    qrels_ds = _rows_from_dataset(qrels_ds_raw)
 
     # --- Corpus
     corpus = BEIRCorpus()
     for i, raw in enumerate(corpus_ds):
         if max_corpus_docs and i >= max_corpus_docs:
             break
-        # HF Dataset rows may be returned as not-typed sequences; convert to a
-        # plain dict so the type checker knows `.get` and `__getitem__` work.
-        row = dict(raw)  # type: ignore[assignment]
-        corpus.docs[row["_id"]] = {"title": row.get("title", ""), "text": row.get("text", "")}
+        row = raw
+        doc_id = str(row.get("_id", ""))
+        if not doc_id:
+            continue
+        corpus.docs[doc_id] = {
+            "title": str(row.get("title", "")),
+            "text": str(row.get("text", "")),
+        }
     logger.info(f"Loaded {len(corpus)} corpus documents.")
 
     # --- QRels first (so we can filter queries to only those with qrels)
     qrels = BEIRQRels()
     corpus_doc_ids = set(corpus.docs.keys())
     for row in qrels_ds:
-        # HF Dataset rows may be returned as not-typed sequences; convert to a
-        # plain dict (and annotate) so the type checker knows `.get` exists.
-        row = dict(row)  # type: ignore[assignment]
         qid = str(row.get("query-id") or row.get("query_id"))
         did = str(row.get("corpus-id") or row.get("corpus_id"))
         # Skip qrels for docs not in the (possibly limited) corpus
         if did not in corpus_doc_ids:
             continue
-        score = int(row["score"])
+        score = int(row.get("score", 0))
         qrels.qrels.setdefault(qid, {})[did] = score
 
     # --- Queries (only those that appear in qrels)
     queries = BEIRQueries()
     qids_with_qrels = set(qrels.qrels.keys())
     count = 0
-    for raw in queries_ds:
-        # HF Dataset rows may be returned as not-typed sequences; convert to a
-        # plain dict so the type checker knows `.get` and `__getitem__` work.
-        row = dict(raw)  # type: ignore[assignment]
+    for row in queries_ds:
         qid = str(row.get("_id"))
         if qid not in qids_with_qrels:
             continue
         if max_queries and count >= max_queries:
             break
-        queries.queries[qid] = row.get("text", "")
+        queries.queries[qid] = str(row.get("text", ""))
         count += 1
     logger.info(f"Loaded {len(queries)} queries (with qrels).")
 
@@ -239,11 +275,11 @@ def _embed_documents_api(
     Note: this is slow for large corpora. Use local embeddings for BEIR eval
     or keep max_corpus_docs small.
     """
-    embeddings = []
+    embeddings: list[list[float]] = []
     for i, text in enumerate(texts):
         if i % 50 == 0 and i > 0:
             logger.info(f"  Embedded {i}/{len(texts)} documents ...")
-        embeddings.append(engine.embed_query(text))
+        embeddings.append(cast(list[float], engine.embed_query(text)))
         if delay_s > 0:
             time.sleep(delay_s)
     return embeddings
@@ -291,7 +327,7 @@ def _index_corpus_into_qdrant(
         batch_size: Embedding batch size (for local models).
         recreate: Drop and recreate the collection if it already exists.
     """
-    from qdrant_client.models import Distance, PointStruct, VectorParams  # type: ignore[import]
+    from qdrant_client.models import PointStruct, VectorParams  # type: ignore[import]
 
     client = engine.qdrant_client
     vector_size = engine.config.qdrant.vector_size
@@ -307,9 +343,10 @@ def _index_corpus_into_qdrant(
             return
 
     logger.info(f"Creating Qdrant collection '{collection_name}' (vector_size={vector_size}) ...")
+    distance_cosine = "Cosine"
     client.create_collection(
         collection_name=collection_name,
-        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
+        vectors_config=VectorParams(size=vector_size, distance=distance_cosine),
     )
 
     # Embed corpus
@@ -325,7 +362,7 @@ def _index_corpus_into_qdrant(
         upsert_batch = batch_size
     for start in range(0, total, upsert_batch):
         batch_doc_ids = doc_ids[start : start + upsert_batch]
-        points = []
+        points: list[Any] = []
         for int_id, doc_id in enumerate(batch_doc_ids, start=start):
             doc = corpus.docs[doc_id]
             text = (doc["title"] + " " + doc["text"]).strip()
@@ -525,7 +562,9 @@ class BEIRAdapter:
         except ImportError as exc:
             raise ImportError("rank-bm25 is required: pip install rank-bm25") from exc
 
-        from eval.metrics.retrieval import aggregate_metrics, compute_all_metrics
+        retrieval_mod = cast(Any, import_module("eval.metrics.retrieval"))
+        aggregate_metrics = retrieval_mod.aggregate_metrics
+        compute_all_metrics = retrieval_mod.compute_all_metrics
 
         doc_ids = list(self._corpus.docs.keys())
         texts = [
@@ -533,20 +572,23 @@ class BEIRAdapter:
             for did in doc_ids
         ]
         tokenized = [re.findall(r"\w+", t.lower()) for t in texts]
-        bm25 = BM25Okapi(tokenized)
+        bm25_cls = cast(Any, BM25Okapi)
+        bm25 = bm25_cls(tokenized)
 
-        per_query = []
+        per_query: list[dict[str, float]] = []
         # Always include the caller-requested cut-off while preserving the
         # standard dashboard cut-offs.
         ks = tuple(sorted({top_k, 3, 5, 10}))
         for qid, qtext in self._queries.queries.items():
             qtokens = re.findall(r"\w+", qtext.lower())
-            scores = bm25.get_scores(qtokens)
+            raw_scores = bm25.get_scores(qtokens)
+            scores = [float(s) for s in raw_scores]
             top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
             retrieved = [doc_ids[i] for i in top_indices]
             relevant = self._qrels.relevant_doc_ids(qid)
             if relevant:
-                per_query.append(compute_all_metrics(retrieved, relevant, ks=ks))
+                metrics = cast(dict[str, float], compute_all_metrics(retrieved, relevant, ks=ks))
+                per_query.append(metrics)
 
         agg = aggregate_metrics(per_query)
         logger.info(f"BM25 baseline on BEIR/{self.name}: {agg}")

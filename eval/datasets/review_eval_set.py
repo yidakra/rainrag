@@ -31,7 +31,7 @@ import os
 import sys
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 # simple alias for the JSONL records so we can give them a proper type
@@ -320,12 +320,14 @@ def filter_valid(input_path: str, output_path: str) -> int:
 
 def review_stats(input_path: str) -> dict[str, int]:
     """Print a quick summary of review progress without starting a session."""
-    records = []
+    records: list[Record] = []
     with open(input_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
-                records.append(json.loads(line))
+                loaded = json.loads(line)
+                if isinstance(loaded, dict):
+                    records.append(cast(Record, loaded))
 
     total = len(records)
     reviewed = sum(1 for r in records if r.get("reviewed"))
