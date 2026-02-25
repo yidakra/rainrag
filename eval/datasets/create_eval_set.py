@@ -24,12 +24,17 @@ from __future__ import annotations
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 import argparse
 import json
+import logging
 import random
 import sys
 import textwrap
 from collections import Counter
 from pathlib import Path
 from typing import Any, TypeAlias
+
+
+# module logger for warnings and debug
+logger = logging.getLogger(__name__)
 
 
 # Allow running as a script from repo root
@@ -134,19 +139,32 @@ def _stratified_sample(chunks: list[Record], n: int) -> list[Record]:
         by_video.setdefault(vid, []).append(chunk)
 
     sampled: list[Record] = []
+    sampled_ids: set[str] = set()
+
     videos = list(by_video.keys())
     random.shuffle(videos)
     per_video = max(1, n // len(videos))
 
     for vid in videos:
-        sampled.extend(random.sample(by_video[vid], min(per_video, len(by_video[vid]))))
+        picks = random.sample(by_video[vid], min(per_video, len(by_video[vid])))
+        sampled.extend(picks)
+        for c in picks:
+            cid = c.get("doc_id") or str(c.get("path", ""))
+            sampled_ids.add(cid)
         if len(sampled) >= n:
             break
 
     # Top-up if we're short
-    remaining = [c for c in chunks if c not in sampled]
-    if len(sampled) < n and remaining:
-        sampled.extend(random.sample(remaining, min(n - len(sampled), len(remaining))))
+    if len(sampled) < n:
+        remaining = [
+            c for c in chunks if (c.get("doc_id") or str(c.get("path", ""))) not in sampled_ids
+        ]
+        if remaining:
+            picks = random.sample(remaining, min(n - len(sampled), len(remaining)))
+            sampled.extend(picks)
+            for c in picks:
+                cid = c.get("doc_id") or str(c.get("path", ""))
+                sampled_ids.add(cid)
 
     return sampled[:n]
 
@@ -215,6 +233,16 @@ def _filter_pair(engine: Any, pair: Record, chunk: Record) -> bool:
         verdict = _call_llm(engine, prompt).strip().lower()
         return verdict.startswith("yes")
     except Exception:
+        # Log the failure so we can distinguish accept-on-error from a
+        # genuine LLM "yes" verdict; include the prompt (truncated) and
+        # some pair context for debugging.
+        logger.warning(
+            "LLM quality-filter call raised exception; accepting pair by default. "
+            + "pair_query=%r prompt_head=%r",
+            pair.get("query"),
+            prompt[:500],
+            exc_info=True,
+        )
         return True  # Accept on error to avoid losing too many pairs
 
 

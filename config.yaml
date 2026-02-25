@@ -8,7 +8,7 @@ paths:
   # Output directory for parsed documents
   docs_output: "./data/docs.jsonl"
   # Directory for cached embeddings
-  embeddings_cache: "/embeddings"
+  embeddings_cache: "./embeddings"
   # Root directory containing video files (defaults to archive_root if not specified)
   video_root: "/mnt/vod/srv/storage/transcoded"
 

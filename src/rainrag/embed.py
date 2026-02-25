@@ -28,7 +28,17 @@ class EmbeddingCache:
         """
         super().__init__()
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            fallback_dir = Path("./embeddings")
+            logger.warning(
+                "Embedding cache path {!r} is not writable; falling back to {!r}",
+                str(self.cache_dir),
+                str(fallback_dir),
+            )
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            self.cache_dir = fallback_dir
 
         self.embeddings_file = self.cache_dir / "embeddings.npy"
         self.metadata_file = self.cache_dir / "metadata.jsonl"
