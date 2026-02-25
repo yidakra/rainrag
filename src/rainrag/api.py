@@ -6,7 +6,38 @@ import os
 import string
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
+
+from prometheus_client import REGISTRY, Counter
+
+
+# Constants loaded once at import time (avoids repeated getenv calls per request)
+QUERY_TIMEOUT_SECONDS: float = float(os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS", "240"))
+
+
+def _create_query_timeout_counter() -> Counter:
+    """Create or retrieve timeout counter without duplicate-registration errors."""
+    try:
+        return Counter(
+            "rainrag_query_timeouts_total",
+            "Number of query requests that timed out",
+        )
+    except ValueError:
+        existing = REGISTRY._names_to_collectors.get("rainrag_query_timeouts_total")
+        if existing is not None and hasattr(existing, "inc"):
+            return cast(Counter, existing)
+        # Last resort: create an unregistered counter (should rarely happen)
+        return Counter(
+            "rainrag_query_timeouts_total",
+            "Number of query requests that timed out",
+            registry=None,
+        )
+
+
+# Prometheus metrics
+# Ensure the counter isn't registered twice when the module is imported under
+# different package names (e.g. `rainrag.api` vs `src.rainrag.api`).
+QUERY_TIMEOUT_COUNTER: Counter = _create_query_timeout_counter()
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -466,7 +497,7 @@ async def health_check():
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest, authorized: bool = Header(True)):
+async def query(request: QueryRequest, authorized: Annotated[bool, Header()] = True):
     """
     Query the RAG system.
 
@@ -488,7 +519,7 @@ async def query(request: QueryRequest, authorized: bool = Header(True)):
 
         # Execute query in a worker thread so the event loop remains responsive
         # (health checks/UI should not freeze while a long LLM call is running).
-        query_timeout_seconds = float(os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS", "240"))
+        # Use module-level constant to avoid repeated environment lookups.
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -499,9 +530,21 @@ async def query(request: QueryRequest, authorized: bool = Header(True)):
                     date_from=request.date_from,
                     date_to=request.date_to,
                 ),
-                timeout=query_timeout_seconds,
+                timeout=QUERY_TIMEOUT_SECONDS,
             )
-        except TimeoutError as exc:
+        except asyncio.TimeoutError as exc:
+            # metric increment and warning log; background thread will keep running
+            try:
+                QUERY_TIMEOUT_COUNTER.inc()
+            except Exception:
+                logger.exception("Failed to increment timeout metric")
+            logger.warning(
+                "Query timed out (question=%r, top_k=%s, language=%s, timeout=%s)",
+                request.question[:100],
+                request.top_k,
+                request.language,
+                QUERY_TIMEOUT_SECONDS,
+            )
             raise HTTPException(
                 status_code=504,
                 detail=(
@@ -587,7 +630,7 @@ class RelatedChunksResponse(BaseModel):
 @app.post("/related-chunks", response_model=RelatedChunksResponse)
 async def get_related_chunks(
     request: RelatedChunksRequest,
-    authorized: bool = Header(True),
+    authorized: Annotated[bool, Header()] = True,
 ):
     """
     Find chunks related to a given chunk based on vector similarity.

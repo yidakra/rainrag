@@ -510,36 +510,53 @@ def load_config(config_path: str = "config.yaml") -> Config:
     with open(config_file) as f:
         config_data = cast(dict[str, Any], yaml.safe_load(f))
 
+    def _get_secret_or_env(env_name: str) -> str | None:
+        """Read secret from <ENV>_FILE path first, then fallback to <ENV>."""
+        file_var = f"{env_name}_FILE"
+        secret_file = os.getenv(file_var)
+        if secret_file:
+            try:
+                value = Path(secret_file).read_text(encoding="utf-8").strip()
+                if value:
+                    return value
+            except OSError:
+                pass
+
+        value = os.getenv(env_name)
+        if value:
+            return value
+        return None
+
     # Override Mistral API key from environment variable if set
-    mistral_api_key = os.getenv("MISTRAL_API_KEY")
+    mistral_api_key = _get_secret_or_env("MISTRAL_API_KEY")
     if mistral_api_key:
         if "mistral" not in config_data:
             config_data["mistral"] = {}
         config_data["mistral"]["api_key"] = mistral_api_key
 
     # Override OpenAI API key from environment variable if set
-    openai_api_key = os.getenv("OPENAI_API_KEY")
+    openai_api_key = _get_secret_or_env("OPENAI_API_KEY")
     if openai_api_key:
         if "openai" not in config_data:
             config_data["openai"] = {}
         config_data["openai"]["api_key"] = openai_api_key
 
     # Override Anthropic API key from environment variable if set
-    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    anthropic_api_key = _get_secret_or_env("ANTHROPIC_API_KEY")
     if anthropic_api_key:
         if "claude" not in config_data:
             config_data["claude"] = {}
         config_data["claude"]["api_key"] = anthropic_api_key
 
     # Override Google API key from environment variable if set
-    google_api_key = os.getenv("GOOGLE_API_KEY")
+    google_api_key = _get_secret_or_env("GOOGLE_API_KEY")
     if google_api_key:
         if "gemini" not in config_data:
             config_data["gemini"] = {}
         config_data["gemini"]["api_key"] = google_api_key
 
     # Override Cohere API key from environment variable if set
-    cohere_api_key = os.getenv("COHERE_API_KEY")
+    cohere_api_key = _get_secret_or_env("COHERE_API_KEY")
     if cohere_api_key:
         if "cohere" not in config_data:
             config_data["cohere"] = {}

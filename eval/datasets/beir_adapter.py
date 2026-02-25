@@ -183,7 +183,7 @@ def _load_from_hf(
     # --- Corpus
     corpus = BEIRCorpus()
     for i, raw in enumerate(corpus_ds):
-        if max_corpus_docs and i >= max_corpus_docs:
+        if max_corpus_docs is not None and i >= max_corpus_docs:
             break
         doc_id = str(raw.get("_id", ""))
         if not doc_id:
@@ -230,7 +230,7 @@ def _load_from_hf(
             continue
         if qid not in qids_with_qrels:
             continue
-        if max_queries and count >= max_queries:
+        if max_queries is not None and count >= max_queries:
             break
         queries.queries[qid] = str(row.get("text", ""))
         count += 1
@@ -342,7 +342,7 @@ def _index_corpus_into_qdrant(
         batch_size: Embedding batch size (for local models).
         recreate: Drop and recreate the collection if it already exists.
     """
-    from qdrant_client.models import Distance, PointStruct, VectorParams  # type: ignore[import]
+    from qdrant_client.models import PointStruct, VectorParams  # type: ignore[import]
 
     client = engine.qdrant_client
     vector_size = engine.config.qdrant.vector_size
@@ -358,11 +358,25 @@ def _index_corpus_into_qdrant(
             return
 
     logger.info(f"Creating Qdrant collection '{collection_name}' (vector_size={vector_size}) ...")
+    # respect engine configuration for distance metric
+    dist_str = engine.config.qdrant.distance
+    # Use string values to avoid strict typing issues with qdrant enum stubs.
+    distance_map: dict[str, str] = {
+        "cosine": "Cosine",
+        "euclid": "Euclid",
+        "euclidean": "Euclid",  # sometimes spelled out
+        "dot": "Dot",
+    }
+    distance_value = distance_map.get(dist_str.lower())
+    if distance_value is None:
+        logger.warning(f"Unknown Qdrant distance '{dist_str}', defaulting to COSINE")
+        distance_value = "Cosine"
+
     client.create_collection(
         collection_name=collection_name,
         vectors_config=VectorParams(
             size=vector_size,
-            distance=Distance.COSINE,  # pyright: ignore[reportUnknownMemberType]
+            distance=distance_value,  # pyright: ignore[reportArgumentType]
         ),
     )
 
@@ -588,9 +602,8 @@ class BEIRAdapter:
             for did in doc_ids
         ]
         tokenized = [re.findall(r"\w+", t.lower()) for t in texts]
-        # directly instantiate BM25 with the tokenized corpus
-        bm25_cls = cast(Any, BM25Okapi)
-        bm25: Any = bm25_cls(tokenized)
+        # instantiate BM25 on the tokenized corpus
+        bm25: object = BM25Okapi(tokenized)  # type: ignore[reportUnknownVariableType]
 
         per_query: list[dict[str, float]] = []
         # Always include the caller-requested cut-off while preserving the
@@ -598,8 +611,8 @@ class BEIRAdapter:
         ks = tuple(sorted({top_k, 3, 5, 10}))
         for qid, qtext in self._queries.queries.items():
             qtokens = re.findall(r"\w+", qtext.lower())
-            raw_scores = bm25.get_scores(qtokens)
-            scores = [float(s) for s in cast(list[Any], raw_scores)]
+            raw_scores = cast(list[Any], cast(Any, bm25).get_scores(qtokens))
+            scores = [float(s) for s in raw_scores]
             top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
             retrieved = [doc_ids[i] for i in top_indices]
             relevant = self._qrels.relevant_doc_ids(qid)
