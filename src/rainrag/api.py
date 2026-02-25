@@ -1,7 +1,6 @@
 """FastAPI backend for RainRAG query interface."""
 
 import asyncio
-import contextlib
 import hmac
 import os
 import string

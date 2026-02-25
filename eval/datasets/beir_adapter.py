@@ -185,13 +185,12 @@ def _load_from_hf(
     for i, raw in enumerate(corpus_ds):
         if max_corpus_docs and i >= max_corpus_docs:
             break
-        row = raw
-        doc_id = str(row.get("_id", ""))
+        doc_id = str(raw.get("_id", ""))
         if not doc_id:
             continue
         corpus.docs[doc_id] = {
-            "title": str(row.get("title", "")),
-            "text": str(row.get("text", "")),
+            "title": str(raw.get("title", "")),
+            "text": str(raw.get("text", "")),
         }
     logger.info(f"Loaded {len(corpus)} corpus documents.")
 
@@ -199,12 +198,26 @@ def _load_from_hf(
     qrels = BEIRQRels()
     corpus_doc_ids = set(corpus.docs.keys())
     for row in qrels_ds:
-        qid = str(row.get("query-id") or row.get("query_id"))
-        did = str(row.get("corpus-id") or row.get("corpus_id"))
+        qid_raw = row.get("query-id")
+        if qid_raw is None:
+            qid_raw = row.get("query_id")
+
+        did_raw = row.get("corpus-id")
+        if did_raw is None:
+            did_raw = row.get("corpus_id")
+
+        if qid_raw is None or did_raw is None:
+            continue
+
+        qid = str(qid_raw)
+        did = str(did_raw)
         # Skip qrels for docs not in the (possibly limited) corpus
         if did not in corpus_doc_ids:
             continue
-        score = int(row.get("score", 0))
+        score_raw = row.get("score", 0)
+        if score_raw is None:
+            score_raw = 0
+        score = int(score_raw)
         qrels.qrels.setdefault(qid, {})[did] = score
 
     # --- Queries (only those that appear in qrels)
@@ -212,7 +225,9 @@ def _load_from_hf(
     qids_with_qrels = set(qrels.qrels.keys())
     count = 0
     for row in queries_ds:
-        qid = str(row.get("_id"))
+        qid = str(row.get("_id", ""))
+        if not qid:
+            continue
         if qid not in qids_with_qrels:
             continue
         if max_queries and count >= max_queries:
@@ -327,7 +342,7 @@ def _index_corpus_into_qdrant(
         batch_size: Embedding batch size (for local models).
         recreate: Drop and recreate the collection if it already exists.
     """
-    from qdrant_client.models import PointStruct, VectorParams  # type: ignore[import]
+    from qdrant_client.models import Distance, PointStruct, VectorParams  # type: ignore[import]
 
     client = engine.qdrant_client
     vector_size = engine.config.qdrant.vector_size
@@ -343,10 +358,12 @@ def _index_corpus_into_qdrant(
             return
 
     logger.info(f"Creating Qdrant collection '{collection_name}' (vector_size={vector_size}) ...")
-    distance_cosine = "Cosine"
     client.create_collection(
         collection_name=collection_name,
-        vectors_config=VectorParams(size=vector_size, distance=distance_cosine),
+        vectors_config=VectorParams(
+            size=vector_size,
+            distance=Distance.COSINE,  # pyright: ignore[reportUnknownMemberType]
+        ),
     )
 
     # Embed corpus
@@ -413,7 +430,6 @@ class BEIRAdapter:
         qrels_split: str = "test",
         collection_suffix: str | None = None,
     ) -> None:
-        super().__init__()  # ensure parent __init__ is called
         self.name = name
         self.qrels_split = qrels_split
         self.collection_name = f"beir_{collection_suffix or name}"
@@ -572,8 +588,9 @@ class BEIRAdapter:
             for did in doc_ids
         ]
         tokenized = [re.findall(r"\w+", t.lower()) for t in texts]
+        # directly instantiate BM25 with the tokenized corpus
         bm25_cls = cast(Any, BM25Okapi)
-        bm25 = bm25_cls(tokenized)
+        bm25: Any = bm25_cls(tokenized)
 
         per_query: list[dict[str, float]] = []
         # Always include the caller-requested cut-off while preserving the
@@ -582,7 +599,7 @@ class BEIRAdapter:
         for qid, qtext in self._queries.queries.items():
             qtokens = re.findall(r"\w+", qtext.lower())
             raw_scores = bm25.get_scores(qtokens)
-            scores = [float(s) for s in raw_scores]
+            scores = [float(s) for s in cast(list[Any], raw_scores)]
             top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
             retrieved = [doc_ids[i] for i in top_indices]
             relevant = self._qrels.relevant_doc_ids(qid)

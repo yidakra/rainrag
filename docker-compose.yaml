@@ -1,4 +1,3 @@
-version: '3.8'
 
 services:
   # Qdrant vector database
@@ -44,19 +43,19 @@ services:
     environment:
       - RAINRAG_CONFIG=/app/config.yaml
       - RAINRAG_AUTH_TOKEN=${RAINRAG_AUTH_TOKEN:-}
-      - MISTRAL_API_KEY=${MISTRAL_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - COHERE_API_KEY=${COHERE_API_KEY}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - COHERE_API_KEY=${COHERE_API_KEY:-}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/app/data
       - ./embeddings:/app/embeddings
     entrypoint: ["python", "-m", "uvicorn", "rainrag.api:app", "--host", "0.0.0.0", "--port", "8001"]
-    # depends_on:
-    #   qdrant:
-    #     condition: service_healthy
+    depends_on:
+      qdrant:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
