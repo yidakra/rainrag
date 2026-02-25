@@ -146,7 +146,7 @@ def aggregate_metrics(per_query: list[dict[str, float]]) -> dict[str, float]:
     """
     if not per_query:
         return {}
-    keys = list(per_query[0].keys())
+    keys: list[str] = list(dict.fromkeys(k for d in per_query for k in d))
     agg: dict[str, float] = {}
     for k in keys:
         vals = [d[k] for d in per_query if k in d]
