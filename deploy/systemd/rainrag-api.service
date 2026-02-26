@@ -9,6 +9,8 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/rainrag
 Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=RAINRAG_CONFIG=/home/ubuntu/rainrag/config.yaml
+Environment=RAINRAG_ALLOWED_HOSTS=rag.tvrain.tv,localhost,127.0.0.1
+Environment=RAINRAG_CORS_ORIGINS=https://rag.tvrain.tv
 EnvironmentFile=-/home/ubuntu/rainrag/.env
 ExecStart=/usr/bin/env bash -lc 'cd /home/ubuntu/rainrag && poetry run python -m uvicorn rainrag.api:app --host 127.0.0.1 --port 8001'
 Restart=on-failure

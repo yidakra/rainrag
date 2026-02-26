@@ -72,6 +72,7 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
 from rainrag.query import RAGQueryEngine
@@ -80,6 +81,22 @@ from rainrag.query import RAGQueryEngine
 # Global query engine instance and config
 query_engine: RAGQueryEngine | None = None
 config: Config | None = None
+
+
+def _parse_csv_env(name: str, default: list[str]) -> list[str]:
+    """Parse comma-separated env values into a de-duplicated list."""
+    raw = os.getenv(name, "")
+    if not raw.strip():
+        return default
+
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in raw.split(","):
+        value = item.strip()
+        if value and value not in seen:
+            values.append(value)
+            seen.add(value)
+    return values or default
 
 
 class QueryRequest(BaseModel):
@@ -420,10 +437,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add CORS middleware to allow cross-origin requests from Streamlit
+# External deployment defaults (can be overridden in environment)
+allowed_hosts = _parse_csv_env(
+    "RAINRAG_ALLOWED_HOSTS", ["rag.tvrain.tv", "localhost", "127.0.0.1"]
+)
+cors_origins = _parse_csv_env(
+    "RAINRAG_CORS_ORIGINS",
+    ["https://rag.tvrain.tv", "http://localhost:7860", "http://127.0.0.1:7860"],
+)
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
+# CORS for browser-based clients (Streamlit UI / API consumers)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
