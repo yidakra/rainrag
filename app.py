@@ -90,6 +90,18 @@ DEFAULT_LANGUAGE = "ru"
 DEFAULT_TOP_K = 3
 REQUEST_TIMEOUT = float(os.getenv("RAINRAG_REQUEST_TIMEOUT_SECONDS", "240"))
 DOCS_PATH = os.getenv("RAINRAG_DOCS_PATH", "./data/docs.jsonl")
+ENABLE_DATE_FILTER = os.getenv("RAINRAG_ENABLE_DATE_FILTER", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+ENABLE_RELATED_CHUNKS = os.getenv("RAINRAG_ENABLE_RELATED_CHUNKS", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # Initialize Argon2 password hasher for secure password hashing
 # Using recommended parameters: time_cost=2, memory_cost=102400 (100MB), parallelism=8
@@ -1228,7 +1240,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
 
                     # Add "Find Related" button for each chunk
                     doc_id = chunk.get("doc_id")
-                    if doc_id:
+                    if ENABLE_RELATED_CHUNKS and doc_id:
                         col1 = st.columns([1, 4])[0]
                         with col1:
                             if st.button(
@@ -1313,44 +1325,48 @@ def render_sidebar(lang: str):
             step=1,
         )
 
-        # Date range filter
-        with st.expander(get_text("date_filter_label", lang), expanded=False):
-            min_date, max_date = get_archive_date_range()
-            # Clamp stored dates to available range (if known)
-            if min_date and st.session_state.date_from and st.session_state.date_from < min_date:
-                st.session_state.date_from = min_date
-            if max_date and st.session_state.date_from and st.session_state.date_from > max_date:
-                st.session_state.date_from = max_date
-            if min_date and st.session_state.date_to and st.session_state.date_to < min_date:
-                st.session_state.date_to = min_date
-            if max_date and st.session_state.date_to and st.session_state.date_to > max_date:
-                st.session_state.date_to = max_date
+        # Optional date range filter (disabled by default for deployed UI)
+        if ENABLE_DATE_FILTER:
+            with st.expander(get_text("date_filter_label", lang), expanded=False):
+                min_date, max_date = get_archive_date_range()
+                # Clamp stored dates to available range (if known)
+                if min_date and st.session_state.date_from and st.session_state.date_from < min_date:
+                    st.session_state.date_from = min_date
+                if max_date and st.session_state.date_from and st.session_state.date_from > max_date:
+                    st.session_state.date_from = max_date
+                if min_date and st.session_state.date_to and st.session_state.date_to < min_date:
+                    st.session_state.date_to = min_date
+                if max_date and st.session_state.date_to and st.session_state.date_to > max_date:
+                    st.session_state.date_to = max_date
 
-            col1, col2 = st.columns(2)
-            with col1:
-                date_from = st.date_input(
-                    get_text("date_from_label", lang),
-                    value=st.session_state.date_from,
-                    min_value=min_date or date(1900, 1, 1),
-                    max_value=max_date or date.today(),
-                    key=f"date_from_input_{st.session_state.date_input_reset_counter}",
-                )
-                st.session_state.date_from = date_from if date_from else None
-            with col2:
-                date_to = st.date_input(
-                    get_text("date_to_label", lang),
-                    value=st.session_state.date_to,
-                    min_value=min_date or date(1900, 1, 1),
-                    max_value=max_date or date.today(),
-                    key=f"date_to_input_{st.session_state.date_input_reset_counter}",
-                )
-                st.session_state.date_to = date_to if date_to else None
+                col1, col2 = st.columns(2)
+                with col1:
+                    date_from = st.date_input(
+                        get_text("date_from_label", lang),
+                        value=st.session_state.date_from,
+                        min_value=min_date or date(1900, 1, 1),
+                        max_value=max_date or date.today(),
+                        key=f"date_from_input_{st.session_state.date_input_reset_counter}",
+                    )
+                    st.session_state.date_from = date_from if date_from else None
+                with col2:
+                    date_to = st.date_input(
+                        get_text("date_to_label", lang),
+                        value=st.session_state.date_to,
+                        min_value=min_date or date(1900, 1, 1),
+                        max_value=max_date or date.today(),
+                        key=f"date_to_input_{st.session_state.date_input_reset_counter}",
+                    )
+                    st.session_state.date_to = date_to if date_to else None
 
-            if st.button(get_text("clear_dates", lang), use_container_width=True):
-                st.session_state.date_from = None
-                st.session_state.date_to = None
-                st.session_state.date_input_reset_counter += 1
-                st.rerun()
+                if st.button(get_text("clear_dates", lang), use_container_width=True):
+                    st.session_state.date_from = None
+                    st.session_state.date_to = None
+                    st.session_state.date_input_reset_counter += 1
+                    st.rerun()
+        else:
+            st.session_state.date_from = None
+            st.session_state.date_to = None
 
         st.divider()
 
@@ -1601,10 +1617,17 @@ def main():
                 status_container.info(get_text("searching", lang))
 
                 # Query the RAG system
-                date_from = (
-                    st.session_state.date_from.isoformat() if st.session_state.date_from else None
-                )
-                date_to = st.session_state.date_to.isoformat() if st.session_state.date_to else None
+                date_from = None
+                date_to = None
+                if ENABLE_DATE_FILTER:
+                    date_from = (
+                        st.session_state.date_from.isoformat()
+                        if st.session_state.date_from
+                        else None
+                    )
+                    date_to = (
+                        st.session_state.date_to.isoformat() if st.session_state.date_to else None
+                    )
                 response = asyncio.run(
                     query_rag(
                         user_input,

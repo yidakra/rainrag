@@ -25,7 +25,11 @@ Environment
 - Put secrets in /home/ubuntu/rainrag/.env (RAINRAG_PASSWORD_HASH already added per your note).
 - Set MISTRAL_API_KEY or other provider keys as needed.
 - Optional: RAINRAG_AUTH_TOKEN for API protection.
+- For external DNS deployments, set:
+  - RAINRAG_ALLOWED_HOSTS=rag.tvrain.tv,localhost,127.0.0.1
+  - RAINRAG_CORS_ORIGINS=https://rag.tvrain.tv
 
 Notes
 - The Streamlit service sets RAINRAG_API_URL=https://rag.tvrain.tv/api and nginx strips /api before proxying.
 - If you want to use /embeddings, either update config.yaml or symlink ./embeddings to /embeddings.
+- The alternate Streamlit service (`rainrag-streamlit-ip.service`) also targets https://rag.tvrain.tv/api (no intranet IP dependency).

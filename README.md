@@ -480,7 +480,7 @@ RainRAG includes a complete web-based query interface with:
 - **Streamlit Frontend**: Modern chat-style UI for asking questions
 - **FastAPI Backend**: RESTful API for query processing
 - **Multilingual Support**: Interface available in Russian and English
-- **Network Access**: Accessible from other devices on your LAN
+- **Network Access**: Accessible over LAN or Internet via DNS/reverse proxy (for example `https://rag.tvrain.tv`)
 
 ### Prerequisites
 
