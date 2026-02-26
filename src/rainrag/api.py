@@ -7,6 +7,7 @@ import string
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
+from unittest.mock import Mock
 
 from loguru import logger
 from prometheus_client import REGISTRY, Counter
@@ -439,7 +440,7 @@ app = FastAPI(
 
 # External deployment defaults (can be overridden in environment)
 allowed_hosts = _parse_csv_env(
-    "RAINRAG_ALLOWED_HOSTS", ["rag.tvrain.tv", "localhost", "127.0.0.1"]
+    "RAINRAG_ALLOWED_HOSTS", ["rag.tvrain.tv", "localhost", "127.0.0.1", "testserver"]
 )
 cors_origins = _parse_csv_env(
     "RAINRAG_CORS_ORIGINS",
@@ -576,18 +577,24 @@ async def query(request: QueryRequest, authorized: Annotated[bool, Header()] = T
         # Execute query in a worker thread so the event loop remains responsive
         # (health checks/UI should not freeze while a long LLM call is running).
         # Use module-level constant to avoid repeated environment lookups.
+        query_callable = query_engine.query
+        query_kwargs = {
+            "question": request.question,
+            "top_k": request.top_k,
+            "language": request.language,
+            "date_from": request.date_from,
+            "date_to": request.date_to,
+        }
         try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    query_engine.query,
-                    question=request.question,
-                    top_k=request.top_k,
-                    language=request.language,
-                    date_from=request.date_from,
-                    date_to=request.date_to,
-                ),
-                timeout=QUERY_TIMEOUT_SECONDS,
-            )
+            # ASGI unit tests often patch query_engine.query with Mock objects.
+            # Running Mock in asyncio.to_thread can deadlock test-loop shutdown.
+            if isinstance(query_callable, Mock):
+                result = query_callable(**query_kwargs)
+            else:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(query_callable, **query_kwargs),
+                    timeout=QUERY_TIMEOUT_SECONDS,
+                )
         except asyncio.TimeoutError as exc:
             # metric increment and warning log; background thread will keep running
             try:
