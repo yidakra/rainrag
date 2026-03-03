@@ -111,9 +111,13 @@ python -m eval.run_eval latency \
 ### 7. Open the MLflow UI
 
 ```bash
+# wrapper honors the standard MLflow variable `MLFLOW_TRACKING_URI` (see
+# `python -m eval.run_eval ui` below), but when you invoke mlflow directly we
+# prefer our custom name while still falling back to the standard one.
 python -m eval.run_eval ui
-# or directly:
-mlflow ui --backend-store-uri "$RAINRAG_MLFLOW_URI"
+# or directly; check RAINRAG_MLFLOW_URI first, then MLFLOW_TRACKING_URI, then
+# the default path:
+mlflow ui --backend-store-uri "${RAINRAG_MLFLOW_URI:-${MLFLOW_TRACKING_URI:-$HOME/.local/state/rainrag/mlruns}}"
 ```
 
 Then open http://localhost:5000 in your browser.
@@ -121,8 +125,10 @@ Then open http://localhost:5000 in your browser.
 By default, eval runs are stored outside the repo at:
 `$XDG_STATE_HOME/rainrag/mlruns` (fallback: `~/.local/state/rainrag/mlruns`).
 
-To override this location, set either `RAINRAG_MLFLOW_URI` (preferred) or
-`MLFLOW_TRACKING_URI`.
+To override this location you can set **either** environment variable.  the
+`python -m eval.run_eval ui` wrapper primarily honors the standard
+`MLFLOW_TRACKING_URI`, whereas our direct command uses `RAINRAG_MLFLOW_URI` if
+present and otherwise falls back to `MLFLOW_TRACKING_URI`.
 
 ---
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import math
 import os
 import re
@@ -61,9 +62,7 @@ def default_tracking_uri() -> str:
     if env_override:
         return env_override
 
-    xdg_state_home = Path(
-        os.getenv("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
-    )
+    xdg_state_home = Path(os.getenv("XDG_STATE_HOME") or str(Path.home() / ".local" / "state"))
     state_dir = xdg_state_home / "rainrag" / "mlruns"
     state_dir.mkdir(parents=True, exist_ok=True)
     return str(state_dir)
@@ -108,12 +107,21 @@ def log_params(params: dict[str, Any]) -> None:
     mlflow.log_params(clean)
 
 
+# module-level logger for warnings
+_logger = logging.getLogger(__name__)
+
+
 def log_metrics(metrics: dict[str, float | int | None], step: int | None = None) -> None:
     """Log a flat dict of metrics.
 
     Skips NaN and None values and casts integer metrics to float so that the
     dict passed to ``mlflow.log_metrics`` has the required ``float`` value
     type.
+
+    Metric name collisions are resolved by appending a suffix ("_2", "_3",
+    etc.) to the sanitized name.  Previously this happened silently which made
+    debugging confusing; we now emit a warning when a collision occurs so that
+    the caller can trace which original key led to the renamed metric.
     """
     if not _MLFLOW_AVAILABLE:
         return
@@ -129,6 +137,12 @@ def log_metrics(metrics: dict[str, float | int | None], step: int | None = None)
         suffix = 2
         while safe_key in clean:
             safe_key = f"{base}_{suffix}"
+            _logger.warning(
+                "metric name collision: original=%r sanitized=%r renamed=%r",
+                key,
+                base,
+                safe_key,
+            )
             suffix += 1
 
         clean[safe_key] = float(value)

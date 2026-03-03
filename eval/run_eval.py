@@ -49,12 +49,19 @@ Usage
 
 import contextlib
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any, cast
 
-import typer
+import typer as _typer  # type: ignore[import]
 
-from eval.mlflow_tracking import default_tracking_uri
+from eval.mlflow_tracking import (
+    default_tracking_uri as _default_tracking_uri,  # type: ignore[import]
+)
+
+
+typer: Any = cast(Any, _typer)
+default_tracking_uri = cast(Callable[[], str], _default_tracking_uri)
 
 
 app = typer.Typer(
@@ -70,7 +77,7 @@ _MLFLOW = Annotated[str, typer.Option("--mlflow-uri", help="MLflow tracking URI"
 _DATASET = Annotated[str | None, typer.Option("--dataset", "-d", help="Path to eval JSONL dataset")]
 _OUTPUT = Annotated[str, typer.Option("--output", "-o", help="Output file path")]
 
-_DEFAULT_MLFLOW_URI = default_tracking_uri()
+_DEFAULT_MLFLOW_URI: str = default_tracking_uri()
 
 
 # ── create-dataset ──────────────────────────────────────────────────────────
@@ -88,7 +95,9 @@ def create_dataset(
     ] = False,
 ) -> None:
     """Generate a synthetic eval dataset from the live Qdrant collection."""
-    from eval.datasets.create_eval_set import create_eval_set
+    from eval.datasets.create_eval_set import create_eval_set  # type: ignore[import]
+
+    create_eval_set = cast(Any, create_eval_set)
 
     typer.echo(f"Creating {n} eval pairs (lang={lang}) → {output}")
     create_eval_set(
@@ -126,9 +135,13 @@ def ablation(
     """Run the 8-condition feature ablation experiment."""
     from typing import cast
 
-    import eval.mlflow_tracking as mlflow_tracking
-    from eval.experiments.ablation import AblationExperiment
-    from eval.metrics.answer_quality import compute_ragas_metrics
+    import eval.mlflow_tracking as mlflow_tracking  # type: ignore[import]
+    from eval.experiments.ablation import AblationExperiment  # type: ignore[import]
+    from eval.metrics.answer_quality import compute_ragas_metrics  # type: ignore[import]
+
+    mlflow_tracking = cast(Any, mlflow_tracking)
+    ablation_experiment_cls = cast(Any, AblationExperiment)
+    compute_ragas_metrics = cast(Any, compute_ragas_metrics)
 
     if dataset is None:
         typer.echo("ERROR: --dataset is required for the ablation experiment.", err=True)
@@ -137,7 +150,7 @@ def ablation(
     ks = tuple(int(k.strip()) for k in top_ks.split(","))
     cids = [c.strip() for c in conditions.split(",")] if conditions else None
 
-    exp = AblationExperiment(
+    exp = ablation_experiment_cls(
         config_path=config,
         dataset_path=dataset,
         mlflow_uri=mlflow_uri,
@@ -195,7 +208,11 @@ def providers(
     ] = None,
 ) -> None:
     """Run the LLM × embedding provider comparison experiment."""
-    from eval.experiments.provider_comparison import ProviderComparisonExperiment
+    from eval.experiments.provider_comparison import (
+        ProviderComparisonExperiment,  # type: ignore[import]
+    )
+
+    provider_comparison_experiment_cls = cast(Any, ProviderComparisonExperiment)
 
     if dataset is None:
         typer.echo("ERROR: --dataset is required for the providers experiment.", err=True)
@@ -204,7 +221,7 @@ def providers(
     llm_list = [p.strip() for p in llm_providers.split(",")] if llm_providers else None
     emb_list = [p.strip() for p in embed_providers.split(",")] if embed_providers else None
 
-    exp = ProviderComparisonExperiment(
+    exp = provider_comparison_experiment_cls(
         config_path=config,
         dataset_path=dataset,
         mlflow_uri=mlflow_uri,
@@ -237,7 +254,9 @@ def latency(
     top_k: Annotated[int, typer.Option("--top-k")] = 5,
 ) -> None:
     """Profile per-stage query latency for selected ablation conditions."""
-    from eval.experiments.latency import LatencyExperiment
+    from eval.experiments.latency import LatencyExperiment  # type: ignore[import]
+
+    latency_experiment_cls = cast(Any, LatencyExperiment)
 
     if dataset is None:
         typer.echo("ERROR: --dataset is required for latency profiling.", err=True)
@@ -245,7 +264,7 @@ def latency(
 
     cids = [c.strip() for c in conditions.split(",")]
 
-    exp = LatencyExperiment(
+    exp = latency_experiment_cls(
         config_path=config,
         dataset_path=dataset,
         mlflow_uri=mlflow_uri,
@@ -300,7 +319,12 @@ def review(
 
     Progress is persisted after every decision; the session can be safely interrupted.
     """
-    from eval.datasets.review_eval_set import filter_valid, review_eval_set, review_stats
+    import eval.datasets.review_eval_set as _review_eval_set  # type: ignore[import]
+
+    review_mod: Any = cast(Any, _review_eval_set)
+    filter_valid = cast(Any, review_mod.filter_valid)
+    review_eval_set = cast(Any, review_mod.review_eval_set)
+    review_stats = cast(Any, review_mod.review_stats)
 
     if stats_only:
         review_stats(input_path)
@@ -382,16 +406,21 @@ def beir(
 
         python -m eval.run_eval beir --dataset scifact --max-corpus 5000 --max-queries 50
     """
-    from eval.datasets.beir_adapter import BEIRAdapter
-    from eval.experiments.ablation import AblationExperiment
-    from rainrag.config import load_config
-    from rainrag.query import RAGQueryEngine
+    from eval.datasets.beir_adapter import BEIRAdapter  # type: ignore[import]
+    from eval.experiments.ablation import AblationExperiment  # type: ignore[import]
+    from rainrag.config import load_config  # type: ignore[import]
+    from rainrag.query import RAGQueryEngine  # type: ignore[import]
+
+    beir_adapter_cls = cast(Any, BEIRAdapter)
+    ablation_experiment_cls = cast(Any, AblationExperiment)
+    load_config = cast(Any, load_config)
+    rag_query_engine_cls = cast(Any, RAGQueryEngine)
 
     # Resolve output path (substitute {dataset} placeholder)
     resolved_output = output.replace("{dataset}", dataset_name)
 
     typer.echo(f"Loading BEIR dataset: {dataset_name} (split={qrels_split}) ...")
-    adapter = BEIRAdapter(dataset_name, qrels_split=qrels_split)
+    adapter = beir_adapter_cls(dataset_name, qrels_split=qrels_split)
     adapter.load(
         max_corpus_docs=max_corpus_docs,
         max_queries=max_queries,
@@ -419,12 +448,12 @@ def beir(
 
     if not skip_index:
         typer.echo(f"\nIndexing corpus into Qdrant collection '{adapter.collection_name}' ...")
-        engine = RAGQueryEngine(base_config)
+        engine = rag_query_engine_cls(base_config)
         engine.initialize()
         adapter.index_corpus(engine, batch_size=batch_size, recreate=True)
     else:
         typer.echo(f"\nSkipping index (assuming '{adapter.collection_name}' already exists).")
-        engine = RAGQueryEngine(base_config)
+        engine = rag_query_engine_cls(base_config)
         engine.initialize()
 
     # Generate eval JSONL
@@ -452,7 +481,7 @@ def beir(
             tmp_config_path = tmp.name
 
         try:
-            exp = AblationExperiment(
+            exp = ablation_experiment_cls(
                 config_path=tmp_config_path,
                 dataset_path=resolved_output,
                 mlflow_uri=mlflow_uri,
@@ -558,7 +587,9 @@ def two_stage(
         # HyDE alpha axis only with custom values
         python -m eval.run_eval two-stage --dataset ... --axes hyde_alpha --hyde-alphas 0.1,0.3,0.7
     """
-    from eval.experiments.two_stage_sweep import TwoStageSweepExperiment
+    from eval.experiments.two_stage_sweep import TwoStageSweepExperiment  # type: ignore[import]
+
+    two_stage_sweep_experiment_cls = cast(Any, TwoStageSweepExperiment)
 
     if dataset is None:
         typer.echo("ERROR: --dataset is required for the two-stage sweep.", err=True)
@@ -573,7 +604,7 @@ def two_stage(
     rrf_ks = [int(v.strip()) for v in merge_rrf_ks.split(",")] if merge_rrf_ks else None
     orders = [o.strip() for o in doc_orders.split(",")] if doc_orders else None
 
-    exp = TwoStageSweepExperiment(
+    exp = two_stage_sweep_experiment_cls(
         config_path=config,
         dataset_path=dataset,
         mlflow_uri=mlflow_uri,
@@ -645,12 +676,13 @@ def plot(
 
     from pathlib import Path as _Path
 
-    from eval.plot_results import (
-        _load_runs,
-        plot_cost_vs_quality,
-        plot_latency_breakdown,
-        plot_retrieval_bars,
-    )
+    import eval.plot_results as _plot_results  # type: ignore[import]
+
+    plot_mod: Any = cast(Any, _plot_results)
+    _load_runs = cast(Any, plot_mod._load_runs)
+    plot_cost_vs_quality = cast(Any, plot_mod.plot_cost_vs_quality)
+    plot_latency_breakdown = cast(Any, plot_mod.plot_latency_breakdown)
+    plot_retrieval_bars = cast(Any, plot_mod.plot_retrieval_bars)
 
     output_dir = _Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)

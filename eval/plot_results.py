@@ -42,12 +42,21 @@ CLI reference
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any, cast
 
-import typer
+import typer as _typer  # type: ignore[import]
 
-from eval.mlflow_tracking import default_tracking_uri
+# relative import so the module can be resolved when this file is run as
+# `python -m eval.plot_results`
+from .mlflow_tracking import (
+    default_tracking_uri as _default_tracking_uri,  # type: ignore[import]
+)
+
+
+typer: Any = cast(Any, _typer)
+default_tracking_uri: Callable[[], str] = _default_tracking_uri
 
 
 app = typer.Typer(
@@ -67,16 +76,19 @@ def _load_runs(
     experiment_names: list[str],
     top_k_filter: int,
     sweep_axis_filter: str | None,
-):
+) -> Any:
     """Load MLflow runs for the given experiments, returning a pandas DataFrame."""
     try:
-        import mlflow  # type: ignore[import]
-        import pandas as pd  # type: ignore[import]
+        import mlflow as _mlflow  # type: ignore[import]
+        import pandas as _pd  # type: ignore[import]
     except ImportError as exc:
         raise SystemExit(f"ERROR: {exc}. Install with: pip install mlflow pandas") from exc
 
+    mlflow: Any = cast(Any, _mlflow)
+    pd: Any = cast(Any, _pd)
+
     mlflow.set_tracking_uri(mlflow_uri)
-    frames = []
+    frames: list[Any] = []
     for name in experiment_names:
         exp = mlflow.get_experiment_by_name(name)
         if exp is None:
@@ -105,7 +117,7 @@ def _load_runs(
     return runs
 
 
-def _condition_label(row) -> str:
+def _condition_label(row: Any) -> str:
     """Best human-readable label for a run row."""
     for col in ("params.condition_label", "tags.mlflow.runName", "run_id"):
         val = row.get(col)
@@ -114,7 +126,7 @@ def _condition_label(row) -> str:
     return "unknown"
 
 
-def _safe_float(val) -> float | None:
+def _safe_float(val: Any) -> float | None:
     try:
         f = float(val)
         return None if math.isnan(f) else f
@@ -131,7 +143,7 @@ def _metric_col_variants(name: str) -> tuple[str, str]:
     return (f"metrics.{name}", f"metrics.{name.replace('@', '_at_')}")
 
 
-def _metric_from_row(row, name: str) -> float | None:
+def _metric_from_row(row: Any, name: str) -> float | None:
     """Read a metric value from a run row using compatible column variants."""
     for col in _metric_col_variants(name):
         value = _safe_float(row.get(col))
@@ -145,16 +157,21 @@ def _metric_from_row(row, name: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 
-def plot_retrieval_bars(runs, output_dir: Path, show: bool, dpi: int) -> None:
+def plot_retrieval_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> None:
     """Grouped bar chart: recall@5 and ndcg@5 per condition."""
     try:
-        import matplotlib.pyplot as plt  # type: ignore[import]
-        import numpy as np  # type: ignore[import]
+        import matplotlib.pyplot as _plt  # type: ignore[import]
+        import numpy as _np  # type: ignore[import]
     except ImportError as exc:
         typer.echo(f"[warn] Skipping retrieval bar chart: {exc}", err=True)
         return
 
-    labels, recall5, ndcg5 = [], [], []
+    plt: Any = cast(Any, _plt)
+    np: Any = cast(Any, _np)
+
+    labels: list[str] = []
+    recall5: list[float] = []
+    ndcg5: list[float] = []
     for _, row in runs.iterrows():
         lbl = _condition_label(row)
         r5 = _metric_from_row(row, "recall@5")
@@ -197,14 +214,17 @@ def plot_retrieval_bars(runs, output_dir: Path, show: bool, dpi: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def plot_latency_breakdown(runs, output_dir: Path, show: bool, dpi: int) -> None:
+def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) -> None:
     """Stacked bar chart: p50 latency broken down by pipeline stage."""
     try:
-        import matplotlib.pyplot as plt  # type: ignore[import]
-        import numpy as np  # type: ignore[import]
+        import matplotlib.pyplot as _plt  # type: ignore[import]
+        import numpy as _np  # type: ignore[import]
     except ImportError as exc:
         typer.echo(f"[warn] Skipping latency chart: {exc}", err=True)
         return
+
+    plt: Any = cast(Any, _plt)
+    np: Any = cast(Any, _np)
 
     stages = ["embed", "retrieve", "rerank", "generate"]
     stage_cols = [f"metrics.{s}_p50_ms" for s in stages]
@@ -218,7 +238,7 @@ def plot_latency_breakdown(runs, output_dir: Path, show: bool, dpi: int) -> None
         typer.echo("[warn] No latency metrics found — skipping latency chart.", err=True)
         return
 
-    labels = []
+    labels: list[str] = []
     stage_values: dict[str, list[float]] = {s: [] for s in stages}
     totals: list[float] = []
 
@@ -271,7 +291,7 @@ def plot_latency_breakdown(runs, output_dir: Path, show: bool, dpi: int) -> None
 # ---------------------------------------------------------------------------
 
 
-def plot_robustness_bars(runs, output_dir: Path, show: bool, dpi: int) -> None:
+def plot_robustness_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> None:
     """Side-by-side bars: mean vs worst-decile (p10) for recall@5 and ndcg@5.
 
     Exposes whether a condition improves average performance while leaving hard
@@ -279,11 +299,14 @@ def plot_robustness_bars(runs, output_dir: Path, show: bool, dpi: int) -> None:
     is strictly better only if *both* the mean and the p10 improve.
     """
     try:
-        import matplotlib.pyplot as plt  # type: ignore[import]
-        import numpy as np  # type: ignore[import]
+        import matplotlib.pyplot as _plt  # type: ignore[import]
+        import numpy as _np  # type: ignore[import]
     except ImportError as exc:
         typer.echo(f"[warn] Skipping robustness chart: {exc}", err=True)
         return
+
+    plt: Any = cast(Any, _plt)
+    np: Any = cast(Any, _np)
 
     metrics = [
         ("recall@5", "recall@5_p10", "Recall@5"),
@@ -347,13 +370,15 @@ def plot_robustness_bars(runs, output_dir: Path, show: bool, dpi: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def plot_cost_vs_quality(runs, output_dir: Path, show: bool, dpi: int) -> None:
+def plot_cost_vs_quality(runs: Any, output_dir: Path, show: bool, dpi: int) -> None:
     """Scatter plot: total USD/query (x) vs recall@5 (y), coloured by experiment."""
     try:
-        import matplotlib.pyplot as plt  # type: ignore[import]
+        import matplotlib.pyplot as _plt  # type: ignore[import]
     except ImportError as exc:
         typer.echo(f"[warn] Skipping scatter chart: {exc}", err=True)
         return
+
+    plt: Any = cast(Any, _plt)
 
     experiment_names = runs["_experiment"].unique() if "_experiment" in runs.columns else ["runs"]
     cmap = plt.get_cmap("tab10")
@@ -413,8 +438,8 @@ def plot_cost_vs_quality(runs, output_dir: Path, show: bool, dpi: int) -> None:
 @app.command()
 def main(
     mlflow_uri: Annotated[
-        str, typer.Option("--mlflow-uri", help="MLflow tracking URI")
-    ] = default_tracking_uri(),
+        str | None, typer.Option("--mlflow-uri", help="MLflow tracking URI")
+    ] = None,
     experiment: Annotated[
         list[str] | None, typer.Option("--experiment", "-e", help="Experiment name (repeatable)")
     ] = None,
@@ -446,12 +471,13 @@ def main(
     """
     if experiment is None:
         experiment = ["ablation"]
+    resolved_mlflow_uri = mlflow_uri or default_tracking_uri()
     output_dir = Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    typer.echo(f"Loading runs from: {mlflow_uri}")
+    typer.echo(f"Loading runs from: {resolved_mlflow_uri}")
     runs = _load_runs(
-        mlflow_uri=mlflow_uri,
+        mlflow_uri=resolved_mlflow_uri,
         experiment_names=list(experiment),
         top_k_filter=top_k,
         sweep_axis_filter=filter_axis,

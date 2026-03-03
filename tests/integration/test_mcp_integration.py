@@ -7,6 +7,7 @@ They require Qdrant to be running and are marked as integration tests.
 import re
 import subprocess
 import time
+from os import environ
 from pathlib import Path
 from shutil import which
 
@@ -15,6 +16,20 @@ import requests
 
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SRC_PATH = str(_REPO_ROOT / "src")
+
+
+def _subprocess_env() -> dict[str, str]:
+    env = dict(environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = _SRC_PATH if not existing else f"{_SRC_PATH}:{existing}"
+    return env
+
+
+def _rainrag_mcp_cmd(*args: str) -> list[str]:
+    return ["poetry", "run", "python", "-m", "rainrag.cli", "mcp", *args]
 
 
 def _strip_ansi(text: str) -> str:
@@ -94,21 +109,18 @@ mcp:
         """
         # Start the MCP server as a subprocess
         process = subprocess.Popen(
-            [
-                "poetry",
-                "run",
-                "rainrag",
-                "mcp",
+            _rainrag_mcp_cmd(
                 "--config",
                 str(config_file),
                 "--transport",
                 "streamable-http",
                 "--port",
                 "8888",
-            ],
+            ),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=_subprocess_env(),
         )
 
         try:
@@ -166,21 +178,18 @@ mcp:
         This test verifies the server responds to HTTP requests.
         """
         process = subprocess.Popen(
-            [
-                "poetry",
-                "run",
-                "rainrag",
-                "mcp",
+            _rainrag_mcp_cmd(
                 "--config",
                 str(config_file),
                 "--transport",
                 "streamable-http",
                 "--port",
                 "8889",
-            ],
+            ),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=_subprocess_env(),
         )
 
         try:
@@ -234,10 +243,11 @@ class TestMCPServerCommandLine:
     def test_mcp_help_command(self) -> None:
         """Test that mcp command help works."""
         result = subprocess.run(
-            ["poetry", "run", "rainrag", "mcp", "--help"],
+            _rainrag_mcp_cmd("--help"),
             capture_output=True,
             text=True,
             timeout=10,
+            env=_subprocess_env(),
         )
 
         assert result.returncode == 0, "Help command should succeed"
@@ -275,19 +285,16 @@ logging: {}
         # Try to run with invalid transport (should fail during initialization)
         # Note: The actual validation might happen at different points
         result = subprocess.run(
-            [
-                "poetry",
-                "run",
-                "rainrag",
-                "mcp",
+            _rainrag_mcp_cmd(
                 "--config",
                 str(config),
                 "--transport",
                 "invalid-transport",
-            ],
+            ),
             capture_output=True,
             text=True,
             timeout=10,
+            env=_subprocess_env(),
         )
 
         # Server should either fail immediately or after trying to start

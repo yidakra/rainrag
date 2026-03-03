@@ -28,6 +28,7 @@ from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from eval.mlflow_tracking import default_tracking_uri
 from eval.run_eval import app
 
 
@@ -43,7 +44,7 @@ _PATCH = "eval.experiments.two_stage_sweep.TwoStageSweepExperiment"
 # ---------------------------------------------------------------------------
 
 _DATASET = "eval/datasets/fake.jsonl"
-_MLFLOW = "./mlruns"
+_MLFLOW = default_tracking_uri()
 
 
 def _mock_experiment(n_conditions: int = 3) -> MagicMock:
