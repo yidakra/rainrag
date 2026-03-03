@@ -30,7 +30,7 @@ Usage
 
 CLI reference
 -------------
-    --mlflow-uri   MLflow tracking URI (default: ./mlruns)
+    --mlflow-uri   MLflow tracking URI (default: user state dir)
     --experiment   Experiment name to load (repeatable for multi-experiment scatter)
     --filter-axis  Only include runs whose sweep_axis tag equals this value
     --top-k        Retrieval depth filter; 0 = all (default: 5)
@@ -46,6 +46,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+
+from eval.mlflow_tracking import default_tracking_uri
 
 
 app = typer.Typer(
@@ -120,6 +122,24 @@ def _safe_float(val) -> float | None:
         return None
 
 
+def _metric_col_variants(name: str) -> tuple[str, str]:
+    """Return candidate MLflow DataFrame column names for a metric key.
+
+    Supports both legacy keys (e.g. ``metrics.recall@5``) and sanitized keys
+    logged via mlflow_tracking (e.g. ``metrics.recall_at_5``).
+    """
+    return (f"metrics.{name}", f"metrics.{name.replace('@', '_at_')}")
+
+
+def _metric_from_row(row, name: str) -> float | None:
+    """Read a metric value from a run row using compatible column variants."""
+    for col in _metric_col_variants(name):
+        value = _safe_float(row.get(col))
+        if value is not None:
+            return value
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Chart 1: Recall & NDCG bar chart
 # ---------------------------------------------------------------------------
@@ -137,8 +157,8 @@ def plot_retrieval_bars(runs, output_dir: Path, show: bool, dpi: int) -> None:
     labels, recall5, ndcg5 = [], [], []
     for _, row in runs.iterrows():
         lbl = _condition_label(row)
-        r5 = _safe_float(row.get("metrics.recall@5"))
-        n5 = _safe_float(row.get("metrics.ndcg@5"))
+        r5 = _metric_from_row(row, "recall@5")
+        n5 = _metric_from_row(row, "ndcg@5")
         if r5 is not None or n5 is not None:
             labels.append(lbl)
             recall5.append(r5 or 0.0)
@@ -275,13 +295,13 @@ def plot_robustness_bars(runs, output_dir: Path, show: bool, dpi: int) -> None:
 
     for _, row in runs.iterrows():
         lbl = _condition_label(row)
-        mean_r5 = _safe_float(row.get("metrics.recall@5"))
+        mean_r5 = _metric_from_row(row, "recall@5")
         if mean_r5 is None:
             continue
         labels.append(lbl)
         for mean_col, p10_col, _ in metrics:
-            data[mean_col].append(_safe_float(row.get(f"metrics.{mean_col}")) or 0.0)
-            data[p10_col].append(_safe_float(row.get(f"metrics.{p10_col}")) or 0.0)
+            data[mean_col].append(_metric_from_row(row, mean_col) or 0.0)
+            data[p10_col].append(_metric_from_row(row, p10_col) or 0.0)
 
     if not labels:
         typer.echo("[warn] No recall@5 metrics found — skipping robustness chart.", err=True)
@@ -344,7 +364,7 @@ def plot_cost_vs_quality(runs, output_dir: Path, show: bool, dpi: int) -> None:
 
     for _, row in runs.iterrows():
         cost = _safe_float(row.get("metrics.cost.total_usd_est_per_query"))
-        recall = _safe_float(row.get("metrics.recall@5"))
+        recall = _metric_from_row(row, "recall@5")
         if cost is None or recall is None:
             continue
         lbl = _condition_label(row)
@@ -394,7 +414,7 @@ def plot_cost_vs_quality(runs, output_dir: Path, show: bool, dpi: int) -> None:
 def main(
     mlflow_uri: Annotated[
         str, typer.Option("--mlflow-uri", help="MLflow tracking URI")
-    ] = "./mlruns",
+    ] = default_tracking_uri(),
     experiment: Annotated[
         list[str] | None, typer.Option("--experiment", "-e", help="Experiment name (repeatable)")
     ] = None,

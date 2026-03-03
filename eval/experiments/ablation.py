@@ -139,7 +139,7 @@ class AblationExperiment(BaseExperiment):
         self,
         config_path: str = "config.yaml",
         dataset_path: str | None = None,
-        mlflow_uri: str = "./mlruns",
+        mlflow_uri: str | None = None,
         top_ks: tuple[int, ...] = (5, 10),
         condition_ids: list[str] | None = None,
     ) -> None:

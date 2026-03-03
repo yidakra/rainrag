@@ -270,7 +270,7 @@ class TwoStageSweepExperiment(BaseExperiment):
         self,
         config_path: str = "config.yaml",
         dataset_path: str | None = None,
-        mlflow_uri: str = "./mlruns",
+        mlflow_uri: str | None = None,
         top_ks: tuple[int, ...] = (5, 10),
         axes: list[str] | None = None,
         hyde_alphas: list[float] | None = None,

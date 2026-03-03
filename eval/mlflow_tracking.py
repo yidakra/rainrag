@@ -9,31 +9,74 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
+import re
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 try:
-    import mlflow
+    import mlflow as _mlflow  # type: ignore[import]
 except ImportError:  # type: ignore[import]
-    mlflow = None
+    _mlflow = None
+
+# MLflow may be unavailable in some environments and ships limited type hints.
+# Treat it as a dynamic dependency to avoid strict "unknown member" diagnostics.
+mlflow: Any | None = cast(Any | None, _mlflow)
 
 _MLFLOW_AVAILABLE = mlflow is not None
+
+
+def _sanitize_metric_name(name: str) -> str:
+    """Return an MLflow-safe metric name.
+
+    MLflow metric names allow alphanumerics, underscore, dash, period,
+    spaces, colon and slash.  RainRAG metrics historically include `@`
+    (e.g. ``recall@5``), so we map that to ``_at_`` and replace any
+    remaining invalid characters with ``_``.
+    """
+    mapped = name.strip().replace("@", "_at_")
+    safe = re.sub(r"[^A-Za-z0-9_\-\. /:]", "_", mapped)
+    safe = re.sub(r"_+", "_", safe).strip(" _")
+    return safe or "metric"
 
 
 def is_available() -> bool:
     return _MLFLOW_AVAILABLE
 
 
-def setup(tracking_uri: str = "./mlruns", experiment_name: str = "rainrag_eval") -> None:
+def default_tracking_uri() -> str:
+    """Return the default MLflow tracking URI for RainRAG evals.
+
+    Resolution order:
+    1) ``RAINRAG_MLFLOW_URI`` (project-specific override)
+    2) ``MLFLOW_TRACKING_URI`` (MLflow standard override)
+    3) ``$XDG_STATE_HOME/rainrag/mlruns`` (or ``~/.local/state/rainrag/mlruns``)
+
+    Using a user-state directory avoids polluting the git working tree.
+    """
+    env_override = os.getenv("RAINRAG_MLFLOW_URI") or os.getenv("MLFLOW_TRACKING_URI")
+    if env_override:
+        return env_override
+
+    xdg_state_home = Path(
+        os.getenv("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
+    )
+    state_dir = xdg_state_home / "rainrag" / "mlruns"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return str(state_dir)
+
+
+def setup(tracking_uri: str | None = None, experiment_name: str = "rainrag_eval") -> None:
     """Configure MLflow tracking URI and active experiment."""
     if not _MLFLOW_AVAILABLE:
         return
+    uri = tracking_uri or default_tracking_uri()
     # mypy/pyright can't see the guard above, so make the contract explicit
     assert mlflow is not None
-    mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_tracking_uri(uri)
     mlflow.set_experiment(experiment_name)
 
 
@@ -75,12 +118,21 @@ def log_metrics(metrics: dict[str, float | int | None], step: int | None = None)
     if not _MLFLOW_AVAILABLE:
         return
     assert mlflow is not None
-    # filter out null/NaN and make sure all values are actual floats
-    clean: dict[str, float] = {
-        k: float(v)  # cast int->float, float remains unchanged
-        for k, v in metrics.items()
-        if v is not None and not (isinstance(v, float) and math.isnan(v))
-    }
+    # filter out null/NaN, sanitize metric names, and make all values floats
+    clean: dict[str, float] = {}
+    for key, value in metrics.items():
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            continue
+
+        base = _sanitize_metric_name(key)
+        safe_key = base
+        suffix = 2
+        while safe_key in clean:
+            safe_key = f"{base}_{suffix}"
+            suffix += 1
+
+        clean[safe_key] = float(value)
+
     mlflow.log_metrics(clean, step=step)
 
 
@@ -128,8 +180,9 @@ def log_config_snapshot(config: Any, filename: str = "config_snapshot.yaml") -> 
     except ImportError:
         return
     # prepare serializable data
+    data: Any
     if isinstance(config, dict):
-        data = config
+        data = cast(dict[str, Any], config)
     else:
         try:
             data = config.model_dump()
@@ -155,7 +208,7 @@ def get_run_url() -> str | None:
         run = mlflow.active_run()
         if run is None:
             return None
-        uri = mlflow.get_tracking_uri()
+        uri = str(mlflow.get_tracking_uri())
         return f"{uri}/#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}"
     except Exception:
         return None

@@ -54,6 +54,8 @@ from typing import Annotated
 
 import typer
 
+from eval.mlflow_tracking import default_tracking_uri
+
 
 app = typer.Typer(
     name="eval",
@@ -67,6 +69,8 @@ _CONFIG = Annotated[str, typer.Option("--config", "-c", help="Path to config.yam
 _MLFLOW = Annotated[str, typer.Option("--mlflow-uri", help="MLflow tracking URI")]
 _DATASET = Annotated[str | None, typer.Option("--dataset", "-d", help="Path to eval JSONL dataset")]
 _OUTPUT = Annotated[str, typer.Option("--output", "-o", help="Output file path")]
+
+_DEFAULT_MLFLOW_URI = default_tracking_uri()
 
 
 # ── create-dataset ──────────────────────────────────────────────────────────
@@ -104,7 +108,7 @@ def create_dataset(
 def ablation(
     config: _CONFIG = "config.yaml",
     dataset: _DATASET = None,
-    mlflow_uri: _MLFLOW = "./mlruns",
+    mlflow_uri: _MLFLOW = _DEFAULT_MLFLOW_URI,
     top_ks: Annotated[
         str, typer.Option("--top-ks", help="Comma-separated retrieval depths, e.g. 5,10")
     ] = "5,10",
@@ -179,7 +183,7 @@ def ablation(
 def providers(
     config: _CONFIG = "config.yaml",
     dataset: _DATASET = None,
-    mlflow_uri: _MLFLOW = "./mlruns",
+    mlflow_uri: _MLFLOW = _DEFAULT_MLFLOW_URI,
     llm_providers: Annotated[
         str | None, typer.Option("--llm", help="Comma-separated LLM providers")
     ] = None,
@@ -224,7 +228,7 @@ def providers(
 def latency(
     config: _CONFIG = "config.yaml",
     dataset: _DATASET = None,
-    mlflow_uri: _MLFLOW = "./mlruns",
+    mlflow_uri: _MLFLOW = _DEFAULT_MLFLOW_URI,
     conditions: Annotated[
         str, typer.Option("--conditions", help="Comma-separated ablation condition IDs")
     ] = "01,06,08",
@@ -352,7 +356,7 @@ def beir(
             help="Allow execution of remote dataset code when loading BEIR (security risk)",
         ),
     ] = False,
-    mlflow_uri: _MLFLOW = "./mlruns",
+    mlflow_uri: _MLFLOW = _DEFAULT_MLFLOW_URI,
     run_ablation: Annotated[
         bool,
         typer.Option(
@@ -473,7 +477,7 @@ def beir(
 def two_stage(
     config: _CONFIG = "config.yaml",
     dataset: _DATASET = None,
-    mlflow_uri: _MLFLOW = "./mlruns",
+    mlflow_uri: _MLFLOW = _DEFAULT_MLFLOW_URI,
     top_ks: Annotated[
         str, typer.Option("--top-ks", help="Comma-separated retrieval depths")
     ] = "5,10",
@@ -597,7 +601,7 @@ def two_stage(
 
 @app.command("plot")
 def plot(
-    mlflow_uri: _MLFLOW = "./mlruns",
+    mlflow_uri: _MLFLOW = _DEFAULT_MLFLOW_URI,
     experiment: Annotated[
         str | None,
         typer.Option("--experiment", "-e", help="Comma-separated experiment names"),
@@ -671,7 +675,7 @@ def plot(
 
 @app.command("ui")
 def ui(
-    mlflow_uri: _MLFLOW = "./mlruns",
+    mlflow_uri: _MLFLOW = _DEFAULT_MLFLOW_URI,
     port: Annotated[int, typer.Option("--port")] = 5000,
 ) -> None:
     """Launch the MLflow UI."""

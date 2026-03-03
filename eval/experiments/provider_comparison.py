@@ -104,7 +104,7 @@ class ProviderComparisonExperiment(BaseExperiment):
         self,
         config_path: str = "config.yaml",
         dataset_path: str | None = None,
-        mlflow_uri: str = "./mlruns",
+        mlflow_uri: str | None = None,
         top_ks: tuple[int, ...] = (5,),
         llm_providers: list[str] | None = None,
         embed_providers: list[str] | None = None,

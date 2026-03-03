@@ -1330,9 +1330,17 @@ def render_sidebar(lang: str):
             with st.expander(get_text("date_filter_label", lang), expanded=False):
                 min_date, max_date = get_archive_date_range()
                 # Clamp stored dates to available range (if known)
-                if min_date and st.session_state.date_from and st.session_state.date_from < min_date:
+                if (
+                    min_date
+                    and st.session_state.date_from
+                    and st.session_state.date_from < min_date
+                ):
                     st.session_state.date_from = min_date
-                if max_date and st.session_state.date_from and st.session_state.date_from > max_date:
+                if (
+                    max_date
+                    and st.session_state.date_from
+                    and st.session_state.date_from > max_date
+                ):
                     st.session_state.date_from = max_date
                 if min_date and st.session_state.date_to and st.session_state.date_to < min_date:
                     st.session_state.date_to = min_date

@@ -54,13 +54,13 @@ class BaseExperiment(ABC):
         self,
         config_path: str = "config.yaml",
         dataset_path: str | None = None,
-        mlflow_uri: str = "./mlruns",
+        mlflow_uri: str | None = None,
         experiment_name: str = "rainrag_eval",
         top_ks: tuple[int, ...] = (5, 10),
     ) -> None:
         self.config_path = config_path
         self.dataset_path = dataset_path
-        self.mlflow_uri = mlflow_uri
+        self.mlflow_uri = mlflow_uri or mlflow_tracking.default_tracking_uri()
         self.experiment_name = experiment_name
         self.top_ks = top_ks
 

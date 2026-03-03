@@ -1704,8 +1704,7 @@ Question: {query}"""
             for idx, doc in enumerate(documents):
                 doc["rank"] = idx + 1
             logger.info(
-                f"[Two-Stage] Merged {len(documents)} unique docs from {len(query_variants)} "
-                f"query variants (strategy={merge_strategy})"
+                f"[Two-Stage] Merged {len(documents)} unique docs from {len(query_variants)} query variants (strategy={merge_strategy})"
             )
         else:
             documents = self.retrieve_documents(

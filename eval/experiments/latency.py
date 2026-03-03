@@ -126,7 +126,7 @@ class LatencyExperiment:
         self,
         config_path: str = "config.yaml",
         dataset_path: str | None = None,
-        mlflow_uri: str = "./mlruns",
+        mlflow_uri: str | None = None,
         condition_ids: list[str] | None = None,
         n_queries: int = 10,
         n_repeats: int = 3,
@@ -134,7 +134,7 @@ class LatencyExperiment:
     ) -> None:
         self.config_path = config_path
         self.dataset_path = dataset_path
-        self.mlflow_uri = mlflow_uri
+        self.mlflow_uri = mlflow_uri or mlflow_tracking.default_tracking_uri()
         self.condition_ids = condition_ids or ["01", "06", "08"]
         self.n_queries = n_queries
         self.n_repeats = n_repeats
