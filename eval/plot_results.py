@@ -46,12 +46,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, cast
 
-import typer as _typer  # type: ignore[import]
+import typer as _typer
 
 # relative import so the module can be resolved when this file is run as
 # `python -m eval.plot_results`
 from .mlflow_tracking import (
-    default_tracking_uri as _default_tracking_uri,  # type: ignore[import]
+    default_tracking_uri as _default_tracking_uri,
 )
 
 
@@ -79,8 +79,8 @@ def _load_runs(
 ) -> Any:
     """Load MLflow runs for the given experiments, returning a pandas DataFrame."""
     try:
-        import mlflow as _mlflow  # type: ignore[import]
-        import pandas as _pd  # type: ignore[import]
+        import mlflow as _mlflow
+        import pandas as _pd
     except ImportError as exc:
         raise SystemExit(f"ERROR: {exc}. Install with: pip install mlflow pandas") from exc
 
@@ -160,8 +160,8 @@ def _metric_from_row(row: Any, name: str) -> float | None:
 def plot_retrieval_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> None:
     """Grouped bar chart: recall@5 and ndcg@5 per condition."""
     try:
-        import matplotlib.pyplot as _plt  # type: ignore[import]
-        import numpy as _np  # type: ignore[import]
+        import matplotlib.pyplot as _plt
+        import numpy as _np
     except ImportError as exc:
         typer.echo(f"[warn] Skipping retrieval bar chart: {exc}", err=True)
         return
@@ -217,8 +217,8 @@ def plot_retrieval_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> No
 def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) -> None:
     """Stacked bar chart: p50 latency broken down by pipeline stage."""
     try:
-        import matplotlib.pyplot as _plt  # type: ignore[import]
-        import numpy as _np  # type: ignore[import]
+        import matplotlib.pyplot as _plt
+        import numpy as _np
     except ImportError as exc:
         typer.echo(f"[warn] Skipping latency chart: {exc}", err=True)
         return
@@ -299,8 +299,8 @@ def plot_robustness_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
     is strictly better only if *both* the mean and the p10 improve.
     """
     try:
-        import matplotlib.pyplot as _plt  # type: ignore[import]
-        import numpy as _np  # type: ignore[import]
+        import matplotlib.pyplot as _plt
+        import numpy as _np
     except ImportError as exc:
         typer.echo(f"[warn] Skipping robustness chart: {exc}", err=True)
         return
@@ -373,7 +373,7 @@ def plot_robustness_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
 def plot_cost_vs_quality(runs: Any, output_dir: Path, show: bool, dpi: int) -> None:
     """Scatter plot: total USD/query (x) vs recall@5 (y), coloured by experiment."""
     try:
-        import matplotlib.pyplot as _plt  # type: ignore[import]
+        import matplotlib.pyplot as _plt
     except ImportError as exc:
         typer.echo(f"[warn] Skipping scatter chart: {exc}", err=True)
         return

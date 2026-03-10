@@ -46,15 +46,16 @@ Record = dict[str, Any]
 
 try:
     from rich.console import Console
-    from rich.panel import Panel
+    from rich.panel import Panel as RichPanel
     # from rich.text import Text  # not used
 
-    _console = Console()
+    _console: Console | None = Console()
+    _panel_cls: type[RichPanel] | None = RichPanel
     _rich = True
 except ImportError:
-    _console = None  # type: ignore[assignment]
+    _console = None
+    _panel_cls = None
     _rich = False
-    Panel = None  # type: ignore[name-defined]  # ensure Panel is always defined
 
 
 def _print_record(record: Record, index: int, total: int, accepted: int, deleted: int) -> None:
@@ -63,7 +64,7 @@ def _print_record(record: Record, index: int, total: int, accepted: int, deleted
         # _console is only None when rich wasn't imported; the _rich flag
         # guards all usage, but help static checkers understand that.
         assert _console is not None
-        assert Panel is not None  # ensure Panel is callable when rich is available
+        assert _panel_cls is not None  # ensure Panel is callable when rich is available
 
         header = (
             f"[bold cyan]{index}/{total}[/]  "
@@ -87,7 +88,7 @@ def _print_record(record: Record, index: int, total: int, accepted: int, deleted
             )
         _console.print()
         _console.rule(header)
-        _console.print(Panel(body.strip(), expand=False))
+        _console.print(_panel_cls(body.strip(), expand=False))
     else:
         print(f"\n{'─' * 60}")
         print(f"{index}/{total}  accepted={accepted}  deleted={deleted}")

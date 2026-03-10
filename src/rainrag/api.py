@@ -578,21 +578,27 @@ async def query(request: QueryRequest, authorized: Annotated[bool, Header()] = T
         # (health checks/UI should not freeze while a long LLM call is running).
         # Use module-level constant to avoid repeated environment lookups.
         query_callable = query_engine.query
-        query_kwargs = {
-            "question": request.question,
-            "top_k": request.top_k,
-            "language": request.language,
-            "date_from": request.date_from,
-            "date_to": request.date_to,
-        }
         try:
             # ASGI unit tests often patch query_engine.query with Mock objects.
             # Running Mock in asyncio.to_thread can deadlock test-loop shutdown.
             if isinstance(query_callable, Mock):
-                result = query_callable(**query_kwargs)
+                result = query_callable(
+                    question=request.question,
+                    top_k=request.top_k,
+                    language=request.language,
+                    date_from=request.date_from,
+                    date_to=request.date_to,
+                )
             else:
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(query_callable, **query_kwargs),
+                    asyncio.to_thread(
+                        query_callable,
+                        question=request.question,
+                        top_k=request.top_k,
+                        language=request.language,
+                        date_from=request.date_from,
+                        date_to=request.date_to,
+                    ),
                     timeout=QUERY_TIMEOUT_SECONDS,
                 )
         except asyncio.TimeoutError as exc:

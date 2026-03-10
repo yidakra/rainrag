@@ -90,7 +90,7 @@ def track_emissions(
         mlflow.log_metrics(carbon.as_metrics())
     """
     try:
-        from codecarbon import EmissionsTracker  # type: ignore[import]
+        from codecarbon import EmissionsTracker
     except ImportError:
         # Graceful no-op: yield an empty result without blocking the caller
         result = CarbonResult(available=False)

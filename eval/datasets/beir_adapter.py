@@ -142,7 +142,7 @@ def _load_from_hf(
         (corpus, queries, qrels) triple.
     """
     try:
-        from datasets import load_dataset  # type: ignore[import]
+        from datasets import load_dataset
     except ImportError as exc:
         raise ImportError(
             "The `datasets` package is required for BEIR loading. "
@@ -225,7 +225,10 @@ def _load_from_hf(
     qids_with_qrels = set(qrels.qrels.keys())
     count = 0
     for row in queries_ds:
-        qid = str(row.get("_id", ""))
+        qid_raw = row.get("_id")
+        if qid_raw is None:
+            continue  # skip malformed rows
+        qid = str(qid_raw)
         if not qid:
             continue
         if qid not in qids_with_qrels:
@@ -342,7 +345,7 @@ def _index_corpus_into_qdrant(
         batch_size: Embedding batch size (for local models).
         recreate: Drop and recreate the collection if it already exists.
     """
-    from qdrant_client.models import Distance, PointStruct, VectorParams  # type: ignore[import]
+    from qdrant_client.models import Distance, PointStruct, VectorParams
 
     client = engine.qdrant_client
     vector_size = engine.config.qdrant.vector_size
@@ -508,9 +511,10 @@ class BEIRAdapter:
             recreate: Drop the collection first if it already exists.
         """
         self._require_loaded()
+        assert self._corpus is not None
         _index_corpus_into_qdrant(
             engine,
-            self._corpus,  # type: ignore[arg-type]
+            self._corpus,
             collection_name=self.collection_name,
             batch_size=batch_size,
             recreate=recreate,
@@ -596,7 +600,7 @@ class BEIRAdapter:
         assert self._qrels is not None
 
         try:
-            from rank_bm25 import BM25Okapi  # type: ignore[import]
+            from rank_bm25 import BM25Okapi
         except ImportError as exc:
             raise ImportError("rank-bm25 is required: pip install rank-bm25") from exc
 
@@ -611,7 +615,7 @@ class BEIRAdapter:
         ]
         tokenized = [re.findall(r"\w+", t.lower()) for t in texts]
         # instantiate BM25 on the tokenized corpus
-        bm25: Any = BM25Okapi(tokenized)  # type: ignore[reportUnknownMemberType]
+        bm25: Any = BM25Okapi(tokenized)
 
         per_query: list[dict[str, float]] = []
         # Always include the caller-requested cut-off while preserving the
@@ -619,7 +623,7 @@ class BEIRAdapter:
         ks = tuple(sorted({top_k, 3, 5, 10}))
         for qid, qtext in self._queries.queries.items():
             qtokens = re.findall(r"\w+", qtext.lower())
-            raw_scores_any: Any = cast(Any, bm25).get_scores(qtokens)
+            raw_scores_any: Any = bm25.get_scores(qtokens)
             scores = [float(s) for s in cast(list[float], raw_scores_any)]
             top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
             retrieved = [doc_ids[i] for i in top_indices]
@@ -643,17 +647,20 @@ class BEIRAdapter:
     @property
     def corpus(self) -> BEIRCorpus:
         self._require_loaded()
-        return self._corpus  # type: ignore[return-value]
+        assert self._corpus is not None
+        return self._corpus
 
     @property
     def queries(self) -> BEIRQueries:
         self._require_loaded()
-        return self._queries  # type: ignore[return-value]
+        assert self._queries is not None
+        return self._queries
 
     @property
     def qrels(self) -> BEIRQRels:
         self._require_loaded()
-        return self._qrels  # type: ignore[return-value]
+        assert self._qrels is not None
+        return self._qrels
 
     def summary(self) -> str:
         # only report counts when both corpus and queries are available

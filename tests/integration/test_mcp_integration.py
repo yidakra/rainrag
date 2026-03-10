@@ -4,10 +4,10 @@ These tests verify the MCP server works end-to-end with actual components.
 They require Qdrant to be running and are marked as integration tests.
 """
 
+import os
 import re
 import subprocess
 import time
-from os import environ
 from pathlib import Path
 from shutil import which
 
@@ -22,9 +22,9 @@ _SRC_PATH = str(_REPO_ROOT / "src")
 
 
 def _subprocess_env() -> dict[str, str]:
-    env = dict(environ)
+    env = dict(os.environ)
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = _SRC_PATH if not existing else f"{_SRC_PATH}:{existing}"
+    env["PYTHONPATH"] = _SRC_PATH if not existing else f"{_SRC_PATH}{os.pathsep}{existing}"
     return env
 
 

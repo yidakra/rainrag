@@ -13,6 +13,15 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_rouge_scorer: Any | None = None
+_ragas_evaluate: Any | None = None
+_answer_relevancy: Any | None = None
+_context_precision: Any | None = None
+_context_recall: Any | None = None
+_faithfulness: Any | None = None
+_ROUGE_AVAILABLE = False
+_RAGAS_AVAILABLE = False
+
 
 try:
     from rouge_score import rouge_scorer as _rouge_scorer
@@ -46,6 +55,7 @@ def rouge_l(hypothesis: str, reference: str) -> float:
     """ROUGE-L F1 between generated answer and reference answer."""
     if not _ROUGE_AVAILABLE or not reference.strip():
         return math.nan
+    assert _rouge_scorer is not None
     scorer = _rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
     score = scorer.score(reference, hypothesis)
     return score["rougeL"].fmeasure
@@ -67,9 +77,14 @@ def compute_ragas_metrics(
     """
     if not _RAGAS_AVAILABLE:
         return {"ragas.available": 0.0}
+    assert _faithfulness is not None
+    assert _answer_relevancy is not None
+    assert _context_precision is not None
+    assert _context_recall is not None
+    assert _ragas_evaluate is not None
 
     try:
-        from datasets import Dataset  # type: ignore[import]
+        from datasets import Dataset
     except ImportError:
         return {"ragas.available": 0.0}
 
@@ -95,6 +110,9 @@ def compute_ragas_metrics(
             logger.warning("Skipping malformed record in compute_ragas_metrics: %s", exc)
     if malformed:
         logger.warning("%d malformed records were skipped", malformed)
+    if not rows:
+        logger.error("No valid records to evaluate")
+        return {"ragas.available": 0.0}
     try:
         dataset = Dataset.from_list(rows)
         metrics = [_faithfulness, _answer_relevancy, _context_precision, _context_recall]

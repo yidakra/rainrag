@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any
 
 import eval.mlflow_tracking as mlflow_tracking
@@ -164,9 +165,8 @@ class BaseExperiment(ABC):
                 relevant_set = set(relevant_ids)
 
                 # Per-variant retrieval IDs (populated when two-stage rewriting is active)
-                variant_retrieved_ids: list[list[str]] = response.get(
-                    "variant_retrieved_ids", [retrieved_ids]
-                )
+                raw_variant_ids = response.get("variant_retrieved_ids", [retrieved_ids])
+                variant_retrieved_ids: list[Sequence[str]] = [tuple(ids) for ids in raw_variant_ids]
 
                 retrieval_metrics = (
                     compute_all_metrics(retrieved_ids, relevant_ids) if relevant_ids else {}
@@ -328,7 +328,7 @@ class BaseExperiment(ABC):
         intent_cov = m.get("intent_coverage@5", float("nan"))
         intent_str = f" ic@5={intent_cov:.3f}" if not _math.isnan(intent_cov) else ""
 
-        print(
+        summary = (
             f"[{result['condition_id']}] {result['condition_label']} k={result['top_k']} | "
             f"recall@5={m.get('recall@5', float('nan')):.3f} "
             f"{ndcg5_str} "
@@ -338,6 +338,7 @@ class BaseExperiment(ABC):
             f"p50={m.get('latency_p50_ms', float('nan')):.0f}ms "
             f"{cost_str}"
         )
+        print(summary)
 
     def results_to_csv(self, results: list[dict], output: str) -> None:
         """Write a CSV summary of all conditions to *output*."""
@@ -365,7 +366,7 @@ class BaseExperiment(ABC):
             with open(output, "w", encoding="utf-8") as f:
                 f.write(",".join(header) + "\n")
                 for r in results:
-                    row = [str(r["condition_id"]), r["condition_label"], str(r["top_k"])]
-                    row += [str(r["metrics"].get(k, "")) for k in all_keys]
-                    f.write(",".join(row) + "\n")
+                    csv_row = [str(r["condition_id"]), r["condition_label"], str(r["top_k"])]
+                    csv_row += [str(r["metrics"].get(k, "")) for k in all_keys]
+                    f.write(",".join(csv_row) + "\n")
             print(f"Results written to {output}")

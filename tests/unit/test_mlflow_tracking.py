@@ -47,3 +47,26 @@ class TestMlflowTracking:
         mlflow_tracking.log_metrics({"ok@1": 1.0, "none": None, "nan": float("nan")})
 
         assert fake.logged == {"ok_at_1": 1.0}
+
+    def test_log_metrics_collision_warns_once_with_final_key(self, monkeypatch, caplog) -> None:
+        fake = _FakeMlflow()
+        monkeypatch.setattr(mlflow_tracking, "mlflow", fake)
+        monkeypatch.setattr(mlflow_tracking, "_MLFLOW_AVAILABLE", True)
+
+        with caplog.at_level("WARNING"):
+            mlflow_tracking.log_metrics(
+                {
+                    "a#b": 1.0,
+                    "a!b": 2.0,
+                    "a?b": 3.0,
+                }
+            )
+
+        assert fake.logged == {"a_b": 1.0, "a_b_2": 2.0, "a_b_3": 3.0}
+        assert len(caplog.records) == 2
+        assert "metric name collision" in caplog.records[0].message
+        assert "original='a!b'" in caplog.records[0].message
+        assert "sanitized='a_b'" in caplog.records[0].message
+        assert "renamed='a_b_2'" in caplog.records[0].message
+        assert "original='a?b'" in caplog.records[1].message
+        assert "renamed='a_b_3'" in caplog.records[1].message

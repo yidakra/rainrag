@@ -19,8 +19,8 @@ from typing import Any, cast
 
 
 try:
-    import mlflow as _mlflow  # type: ignore[import]
-except ImportError:  # type: ignore[import]
+    import mlflow as _mlflow
+except ImportError:
     _mlflow = None
 
 # MLflow may be unavailable in some environments and ships limited type hints.
@@ -137,13 +137,15 @@ def log_metrics(metrics: dict[str, float | int | None], step: int | None = None)
         suffix = 2
         while safe_key in clean:
             safe_key = f"{base}_{suffix}"
+            suffix += 1
+
+        if safe_key != base:
             _logger.warning(
                 "metric name collision: original=%r sanitized=%r renamed=%r",
                 key,
                 base,
                 safe_key,
             )
-            suffix += 1
 
         clean[safe_key] = float(value)
 
@@ -190,7 +192,7 @@ def log_config_snapshot(config: Any, filename: str = "config_snapshot.yaml") -> 
         return
     assert mlflow is not None
     try:
-        import yaml  # type: ignore[import]
+        import yaml
     except ImportError:
         return
     # prepare serializable data
