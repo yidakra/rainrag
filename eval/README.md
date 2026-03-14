@@ -5,7 +5,58 @@ tracked with **MLflow** and measured with **RAGAS** + classical IR metrics.
 
 ---
 
-## Quick start
+## Recommended Setup (Single-Server Production)
+
+Use this profile if your evals run on the same machine as the live API/Qdrant
+and you want to avoid overload or accidental full reindex.
+
+### 1. Keep tracking local and explicit
+
+```bash
+# Start local MLflow server (persisted in repo-local mlruns/)
+mlflow server \
+  --host 127.0.0.1 \
+  --port 5000 \
+  --backend-store-uri /home/ubuntu/rainrag/mlruns \
+  --default-artifact-root file:///home/ubuntu/rainrag/mlruns
+
+# Optional: make eval commands use this by default
+export RAINRAG_MLFLOW_URI=http://127.0.0.1:5000
+```
+
+### 2. Run eval only (no ingest/embed/index)
+
+```bash
+# Safe baseline check (low risk)
+python -m eval.run_eval ablation \
+  --dataset eval/datasets/eval_set_en.jsonl \
+  --conditions 01 \
+  --top-ks 5,10 \
+  --mlflow-uri http://127.0.0.1:5000 \
+  --csv eval/ablation_results_vector_only.csv
+```
+
+Then expand to more conditions (`02`, `07`, `08`) once baseline is stable.
+
+### 3. Avoid refresh/indexing commands during eval windows
+
+Do **not** run these on the same host while evaluating unless you explicitly
+intend a full data refresh:
+
+- `rainrag ingest`
+- `rainrag embed --force`
+- `rainrag index --recreate`
+- Any wrapper pipeline that includes the above
+
+These are data-refresh operations, not evaluation operations.
+
+### 4. Where results will be saved
+
+- MLflow runs/artifacts: `/home/ubuntu/rainrag/mlruns`
+- CSV summaries: paths passed via `--csv` (gitignored by default for eval outputs)
+- Console/log output: whatever log file you redirect to (for example `logs/*.log`)
+
+## Full Quick Start
 
 ### 1. Install eval dependencies
 
