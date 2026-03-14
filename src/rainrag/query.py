@@ -244,7 +244,7 @@ class RAGQueryEngine:
             port=self.config.qdrant.port,
             prefer_grpc=False,
             api_key=None,  # No authentication for local Qdrant
-            timeout=60,
+            timeout=self.config.qdrant.timeout,
         )
 
         # Test connection

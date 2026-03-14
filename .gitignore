@@ -214,6 +214,8 @@ mlruns/
 secrets/
 *.jsonl
 *.npy
+eval/ablation_results*.csv
+eval/datasets/*_ablation.csv
 models/
 qdrant_storage/
 .DS_Store

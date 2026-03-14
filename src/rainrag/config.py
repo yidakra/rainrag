@@ -58,6 +58,11 @@ class QdrantConfig(BaseModel):
 
     host: str = Field(default="localhost")
     port: int = Field(default=6333)
+    timeout: int = Field(
+        default=180,
+        ge=1,
+        description="HTTP timeout in seconds for Qdrant requests",
+    )
     collection_name: str = Field(default="broadcast_transcripts")
     vector_size: int = Field(default=1024)
     distance: str = Field(default="Cosine")
