@@ -4,7 +4,7 @@ import importlib
 import math as _math
 import re
 from datetime import datetime, timedelta
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import cohere
 import torch
@@ -15,7 +15,9 @@ from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
-from sentence_transformers import SentenceTransformer
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
 
@@ -91,7 +93,7 @@ class RAGQueryEngine:
         """
         super().__init__()
         self.config = config
-        self.embedding_model: SentenceTransformer | None = None
+        self.embedding_model: Any = None
         self.qdrant_client: QdrantClient | None = None
 
         # BM25 for hybrid search
@@ -198,6 +200,8 @@ class RAGQueryEngine:
             logger.info(f"Loading local embedding model: {self.config.embedding.model_name}")
             try:
                 device = _resolve_device(self.config.embedding.device)
+                from sentence_transformers import SentenceTransformer
+
                 try:
                     model_cls = cast(Any, SentenceTransformer)
                     self.embedding_model = model_cls(

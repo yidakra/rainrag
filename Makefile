@@ -119,7 +119,6 @@ secrets: ## Create placeholder secret files with restrictive permissions for Doc
 	@echo "Created placeholder files under ./secrets (chmod 600); edit them with your real API keys."
 
 up: check-root check-qdrant-start api-start ## Start all services (Qdrant, API, Streamlit)
-up: check-root check-qdrant-start api-start ## Start all services (Qdrant, API, Streamlit)
 
 check-root: ## Check if running as root and provide guidance
 	@if [ "$$(id -u)" = "0" ]; then \

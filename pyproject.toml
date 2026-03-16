@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Local-first RAG pipeline for VTT subtitle processing"
 authors = ["RainRAG Team"]
 readme = "README.md"
-packages = [{include = "rainrag", from = "src"}]
+packages = [{include = "rainrag", from = "src"}, {include = "eval"}]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.14"
@@ -61,7 +61,7 @@ bandit = "^1.9.1"
 
 [tool.poetry.scripts]
 rainrag = "rainrag.cli:app"
-rainrag-eval = "rainrag.eval.run_eval:app"
+rainrag-eval = "eval.run_eval:app"
 
 [build-system]
 requires = ["poetry-core"]

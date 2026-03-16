@@ -4,13 +4,15 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import torch
 from google.genai import types
 from loguru import logger
-from sentence_transformers import SentenceTransformer
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
 from rainrag.ingest import Document
@@ -123,7 +125,7 @@ class Embedder:
         super().__init__()
         self.config = config
         self.cache = EmbeddingCache(config.paths.embeddings_cache)
-        self.model: SentenceTransformer | None = None
+        self.model: Any = None
         self.openai_client: Any = None
         self.mistral_client: Any = None
         self.genai_client: Any = None
@@ -185,6 +187,8 @@ class Embedder:
             logger.info(f"Using device: {device}")
 
         # Load model
+        from sentence_transformers import SentenceTransformer
+
         try:
             model_cls = cast(Any, SentenceTransformer)
             self.model = model_cls(
