@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import statistics
 import time
-from typing import Any
+from typing import Any, cast
 
 import eval.mlflow_tracking as mlflow_tracking
 from eval.datasets.create_eval_set import load_eval_set
@@ -207,7 +207,7 @@ class LatencyExperiment:
             run_name = f"latency_{condition['label']}"
             with mlflow_tracking.start_run(run_name=run_name, tags={"experiment_type": "latency"}):
                 mlflow_tracking.log_params(params)
-                mlflow_tracking.log_metrics(metrics)
+                mlflow_tracking.log_metrics(cast(dict[str, float | int | None], metrics))
                 mlflow_tracking.log_dict_as_artifact(
                     {"condition": condition["label"], "timings": stage_times},
                     "raw_timings.json",

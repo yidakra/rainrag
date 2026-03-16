@@ -270,7 +270,7 @@ class TestTwoStageConfig:
         TwoStageConfig(hyde_alpha=1)
 
     def test_two_stage_config_variants_bounds(self) -> None:
-        """Test that query_rewrite_variants is clamped to [1, 5]."""
+        """Test that query_rewrite_variants is bounded to [1, 5]."""
         # values outside range should raise
         with pytest.raises(ValidationError):
             TwoStageConfig(query_rewrite_variants=0)
@@ -291,7 +291,7 @@ class TestTwoStageConfig:
         TwoStageConfig(query_rewrite_temperature=2.0)
 
     def test_two_stage_config_hyde_temperature_bounds(self) -> None:
-        """Test hyde_temperature is clamped to [0, 2]."""
+        """Test that hyde_temperature is bounded to [0, 2]."""
         with pytest.raises(ValidationError):
             TwoStageConfig(hyde_temperature=-0.1)
         with pytest.raises(ValidationError):

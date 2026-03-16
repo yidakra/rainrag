@@ -24,28 +24,28 @@ _RAGAS_AVAILABLE = False
 
 
 try:
-    from rouge_score import rouge_scorer as _rouge_scorer
+    from rouge_score import rouge_scorer
 
+    _rouge_scorer = rouge_scorer
     _ROUGE_AVAILABLE = True
 except ImportError:
     _ROUGE_AVAILABLE = False
 
 try:
     # RAGAS 0.1.x / 0.2.x compatible import
-    from ragas import evaluate as _ragas_evaluate
+    from ragas import evaluate
     from ragas.metrics import (
-        answer_relevancy as _answer_relevancy,
-    )
-    from ragas.metrics import (
-        context_precision as _context_precision,
-    )
-    from ragas.metrics import (
-        context_recall as _context_recall,
-    )
-    from ragas.metrics import (
-        faithfulness as _faithfulness,
+        answer_relevancy,
+        context_precision,
+        context_recall,
+        faithfulness,
     )
 
+    _ragas_evaluate = evaluate
+    _answer_relevancy = answer_relevancy
+    _context_precision = context_precision
+    _context_recall = context_recall
+    _faithfulness = faithfulness
     _RAGAS_AVAILABLE = True
 except Exception:
     _RAGAS_AVAILABLE = False

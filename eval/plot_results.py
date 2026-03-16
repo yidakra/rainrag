@@ -117,6 +117,24 @@ def _load_runs(
     return runs
 
 
+def load_runs(
+    mlflow_uri: str,
+    experiment_names: list[str],
+    top_k_filter: int,
+    sweep_axis_filter: str | None,
+) -> Any:
+    """Public wrapper around `_load_runs`.
+
+    Maintains backwards compatibility while allowing callers to use a public API.
+    """
+    return _load_runs(
+        mlflow_uri=mlflow_uri,
+        experiment_names=experiment_names,
+        top_k_filter=top_k_filter,
+        sweep_axis_filter=sweep_axis_filter,
+    )
+
+
 def _condition_label(row: Any) -> str:
     """Best human-readable label for a run row."""
     for col in ("params.condition_label", "tags.mlflow.runName", "run_id"):
@@ -476,7 +494,7 @@ def main(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     typer.echo(f"Loading runs from: {resolved_mlflow_uri}")
-    runs = _load_runs(
+    runs = load_runs(
         mlflow_uri=resolved_mlflow_uri,
         experiment_names=list(experiment),
         top_k_filter=top_k,

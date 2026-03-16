@@ -94,6 +94,7 @@ reranker:
   provider: "cohere"
   top_n: 5  # Number of documents to return after reranking
   initial_k: 20  # Number of candidates to retrieve before reranking
+  min_retrieval_score: 0.0  # Minimum document score (0-1) to include in prompt (0 disables)
 
 # Chunking configuration
 chunking:
@@ -135,6 +136,13 @@ two_stage:
   # Higher temperature → more varied hypothetical passages, improving embedding coverage.
   # Keep separate from answer temperature (0) for deterministic journalist output.
   hyde_temperature: 0.7
+
+  # Multi-variant merge strategy (applied when query_rewrite_enabled and >1 variant)
+  merge_strategy: "coverage"  # coverage | diverse_rrf
+  merge_rrf_k: 60  # RRF constant used by 'diverse_rrf' merge strategy
+
+  # Prompt document ordering (Axis F)
+  prompt_doc_order: "rank"  # rank | reversed | book_end
 
 # Processing configuration
 processing:

@@ -4,7 +4,7 @@ import importlib
 import math as _math
 import re
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import cohere
 import torch
@@ -16,8 +16,11 @@ from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
 
-if TYPE_CHECKING:
+
+try:
     from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None  # type: ignore[assignment]
 
 from rainrag.config import Config
 
@@ -200,10 +203,14 @@ class RAGQueryEngine:
             logger.info(f"Loading local embedding model: {self.config.embedding.model_name}")
             try:
                 device = _resolve_device(self.config.embedding.device)
-                from sentence_transformers import SentenceTransformer
+                model_cls_any = SentenceTransformer
+                if model_cls_any is None:
+                    from sentence_transformers import SentenceTransformer as _SentenceTransformer
+
+                    model_cls_any = _SentenceTransformer
 
                 try:
-                    model_cls = cast(Any, SentenceTransformer)
+                    model_cls = cast(Any, model_cls_any)
                     self.embedding_model = model_cls(
                         self.config.embedding.model_name,
                         device=device,
@@ -211,7 +218,7 @@ class RAGQueryEngine:
                     )
                 except TypeError:
                     # Older sentence-transformers versions don't accept model_kwargs
-                    self.embedding_model = SentenceTransformer(
+                    self.embedding_model = cast(Any, model_cls_any)(
                         self.config.embedding.model_name,
                         device=device,
                     )

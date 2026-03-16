@@ -210,9 +210,12 @@ def log_config_snapshot(config: Any, filename: str = "config_snapshot.yaml") -> 
                 data = getattr(config, "__dict__", config)
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / filename
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
-        mlflow.log_artifact(str(path))
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+            mlflow.log_artifact(str(path))
+        except Exception:
+            _logger.warning("Failed to log config snapshot: data not YAML-serializable")
 
 
 def get_run_url() -> str | None:

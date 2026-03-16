@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -601,9 +602,9 @@ class TestBuildSummary:
         from rainrag.config import TwoStageConfig
 
         with pytest.raises(Exception):
-            TwoStageConfig(merge_strategy="not_a_strategy")
+            TwoStageConfig(merge_strategy=cast(Any, "not_a_strategy"))
         with pytest.raises(Exception):
-            TwoStageConfig(prompt_doc_order="upside_down")
+            TwoStageConfig(prompt_doc_order=cast(Any, "upside_down"))
 
     def test_apply_overrides_min_retrieval_score(self, minimal_config):
         """min_retrieval_score must be settable via apply_overrides."""

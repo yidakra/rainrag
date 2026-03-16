@@ -656,6 +656,7 @@ Hi
         test_config.chunking.enabled = False
         test_config.web_metadata.enabled = True
         test_config.web_metadata.ingest_speech_free = False
+        test_config.web_metadata.path = str(temp_dir)
 
         ingester = Ingester(test_config)
 

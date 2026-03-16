@@ -53,15 +53,9 @@ import subprocess
 from pathlib import Path
 from typing import Annotated, Any, cast
 
-import typer as _typer
+import typer
 
-from eval.mlflow_tracking import (
-    default_tracking_uri as _default_tracking_uri,
-)
-
-
-typer: Any = cast(Any, _typer)
-default_tracking_uri = _default_tracking_uri
+from eval.mlflow_tracking import default_tracking_uri
 
 
 app = typer.Typer(
@@ -677,7 +671,7 @@ def plot(
     import eval.plot_results as _plot_results
 
     plot_mod: Any = cast(Any, _plot_results)
-    _load_runs = plot_mod._load_runs
+    load_runs = plot_mod.load_runs
     plot_cost_vs_quality = plot_mod.plot_cost_vs_quality
     plot_latency_breakdown = plot_mod.plot_latency_breakdown
     plot_retrieval_bars = plot_mod.plot_retrieval_bars
@@ -686,7 +680,7 @@ def plot(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     typer.echo(f"Loading runs from: {mlflow_uri}")
-    runs = _load_runs(
+    runs = load_runs(
         mlflow_uri=mlflow_uri,
         experiment_names=exp_list,
         top_k_filter=top_k,
@@ -718,6 +712,15 @@ def ui(
     except FileNotFoundError:
         typer.echo("ERROR: mlflow not found. Install with: pip install mlflow", err=True)
         raise typer.Exit(1)
+    except subprocess.CalledProcessError as exc:
+        typer.echo(
+            f"ERROR: mlflow ui exited with code {exc.returncode} (cmd: {exc.cmd})",
+            err=True,
+        )
+        raise typer.Exit(exc.returncode)
+    except KeyboardInterrupt:
+        typer.echo("Interrupted. Stopping MLflow UI.")
+        raise typer.Exit(0)
 
 
 # ── entry point ───────────────────────────────────────────────────────────────

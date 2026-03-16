@@ -78,7 +78,7 @@ def _print_record(record: Record, index: int, total: int, accepted: int, deleted
             f"[bold]Temporal:[/] {record.get('temporal', '—')}\n\n"
             f"[bold yellow]Query:[/]\n{record.get('query', '')}\n\n"
             f"[bold yellow]Reference answer:[/]\n{record.get('reference_answer', '—') or '(empty)'}\n\n"
-            f"[bold]Relevant doc IDs:[/] {', '.join(record.get('relevant_doc_ids', []))}\n"
+            f"[bold]Relevant doc IDs:[/] {', '.join(str(x) for x in record.get('relevant_doc_ids', []))}\n"
         )
         if record.get("source_path"):
             body += f"[bold]Source:[/] {record['source_path']}\n"
@@ -121,17 +121,15 @@ def _save(records: list[Record], path: Path) -> None:
     cruft behind.
     """
 
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             for rec in records:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
             # ensure all data is on disk before renaming
             f.flush()
             os.fsync(f.fileno())
-        # atomic replace
         tmp_path.replace(path)
     except Exception:
         # clean up temp file if something went wrong
@@ -200,6 +198,7 @@ def review_eval_set(
         print("Keys:  [a] Accept  [e] Edit  [s] Skip  [d] Delete  [q] Quit\n")
 
     reviewed_count = 0
+    skipped = 0
     for seq, idx in enumerate(pending, 1):
         record = records[idx]
         _print_record(record, seq, n_pending, accepted, deleted)
@@ -212,20 +211,23 @@ def review_eval_set(
             if key == "q":
                 _save(records, out)
                 print(
-                    f"\nSaved. Session ended: {accepted} accepted, {deleted} deleted, {seq - 1} reviewed this session."
+                    f"\nSaved. Session ended: {accepted} accepted, {deleted} deleted, {skipped} skipped, {seq - 1} reviewed this session."
                 )
                 return {
                     "total": total,
                     "accepted": accepted,
                     "deleted": deleted,
-                    "skipped": n_pending - seq + 1,
+                    "skipped": skipped,
                 }
 
             if key == "a":
-                if record.get("valid") is not True:
-                    accepted += 1
-                elif record.get("valid") is False:
+                prev = record.get("valid")
+                if prev is True:
+                    pass
+                elif prev is False:
                     deleted -= 1
+                    accepted += 1
+                else:
                     accepted += 1
                 record["valid"] = True
                 record["reviewed"] = True
@@ -233,10 +235,13 @@ def review_eval_set(
                 break
 
             if key == "d":
-                if record.get("valid") is not False:
-                    deleted += 1
-                elif record.get("valid") is True:
+                prev = record.get("valid")
+                if prev is False:
+                    pass
+                elif prev is True:
                     accepted -= 1
+                    deleted += 1
+                else:
                     deleted += 1
                 record["valid"] = False
                 record["reviewed"] = True
@@ -245,6 +250,7 @@ def review_eval_set(
 
             if key == "s":
                 # Skip without marking reviewed
+                skipped += 1
                 break
 
             if key == "e":
@@ -262,9 +268,17 @@ def review_eval_set(
                 if lines:
                     record["reference_answer"] = " ".join(lines)
                     print(f"  Updated: {record['reference_answer'][:80]}")
+                    prev = record.get("valid")
+                    if prev is True:
+                        pass
+                    elif prev is False:
+                        if deleted > 0:
+                            deleted -= 1
+                        accepted += 1
+                    else:
+                        accepted += 1
                     record["valid"] = True
                     record["reviewed"] = True
-                    accepted += 1
                     reviewed_count += 1
                 break
 
@@ -276,16 +290,16 @@ def review_eval_set(
 
     # All pending records reviewed
     _save(records, out)
-    summary = {"total": total, "accepted": accepted, "deleted": deleted, "skipped": 0}
+    summary = {"total": total, "accepted": accepted, "deleted": deleted, "skipped": skipped}
 
     if _rich:
         assert _console is not None
         _console.print(
-            f"\n[bold green]Review complete![/]  {accepted} accepted · {deleted} deleted · {reviewed_count} reviewed this session\n"
+            f"\n[bold green]Review complete![/]  {accepted} accepted · {deleted} deleted · {skipped} skipped · {reviewed_count} reviewed this session\n"
             + f"Saved to [cyan]{out}[/]\n"
         )
     else:
-        print(f"\nReview complete: {accepted} accepted, {deleted} deleted.")
+        print(f"\nReview complete: {accepted} accepted, {deleted} deleted, {skipped} skipped.")
         print(f"Saved to {out}")
 
     return summary
@@ -380,9 +394,22 @@ if __name__ == "__main__":
     stats_p = sub.add_parser("stats", help="Show review progress stats.")
     stats_p.add_argument("input")
 
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
 
-    if args.cmd == "review" or args.cmd is None:
+    # If no subcommand was provided, treat the first unknown arg as the input path
+    # for the default "review" action, preserving any flags passed via the
+    # review subparser (e.g. --output, --all).
+    if args.cmd is None:
+        try:
+            review_args = review_p.parse_args(unknown)
+        except SystemExit:
+            # argparse will call sys.exit() on parse errors; show help instead.
+            review_p.print_help()
+            sys.exit(1)
+        args = review_args
+        args.cmd = "review"
+
+    if args.cmd == "review":
         inp = args.input if hasattr(args, "input") else (sys.argv[1] if len(sys.argv) > 1 else None)
         if not inp:
             parser.print_help()

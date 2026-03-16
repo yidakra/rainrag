@@ -207,6 +207,10 @@ def _load_from_hf(
             did_raw = row.get("corpus_id")
 
         if qid_raw is None or did_raw is None:
+            logger.warning(
+                "Skipping BEIR qrels row missing query-id or corpus-id: %r",
+                row,
+            )
             continue
 
         qid = str(qid_raw)
@@ -310,7 +314,8 @@ def _embed_corpus(
 ) -> dict[str, list[float]]:
     """Embed all corpus documents and return doc_id → vector mapping."""
     doc_ids = list(docs.keys())
-    texts = [docs[did]["title"] + " " + docs[did]["text"] for did in doc_ids]
+    # Normalize whitespace consistently with _index_corpus_into_qdrant
+    texts = [(docs[did]["title"] + " " + docs[did]["text"]).strip() for did in doc_ids]
 
     if engine.config.embedding.provider == "local" and engine.embedding_model is not None:
         logger.info(f"Batch-encoding {len(texts)} documents with local model ...")
@@ -609,8 +614,9 @@ class BEIRAdapter:
         compute_all_metrics = retrieval_mod.compute_all_metrics
 
         doc_ids = list(self._corpus.docs.keys())
+        # Ensure whitespace normalization matches _embed_corpus
         texts = [
-            self._corpus.docs[did]["title"] + " " + self._corpus.docs[did]["text"]
+            (self._corpus.docs[did]["title"] + " " + self._corpus.docs[did]["text"]).strip()
             for did in doc_ids
         ]
         tokenized = [re.findall(r"\w+", t.lower()) for t in texts]

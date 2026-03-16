@@ -4,18 +4,20 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import numpy as np
 import torch
-from google.genai import types
 from loguru import logger
-
-if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
 
 from rainrag.config import Config
 from rainrag.ingest import Document
+
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None  # type: ignore[assignment]
 
 
 class EmbeddingCache:
@@ -26,9 +28,8 @@ class EmbeddingCache:
         Initialize the embedding cache.
 
         Args:
-            cache_dir: Directory to store cache files
+            cache_dir: Path to the cache directory
         """
-        super().__init__()
         self.cache_dir = Path(cache_dir)
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -39,9 +40,13 @@ class EmbeddingCache:
                 str(self.cache_dir),
                 str(fallback_dir),
             )
-            fallback_dir.mkdir(parents=True, exist_ok=True)
-            self.cache_dir = fallback_dir
-
+            try:
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                self.cache_dir = fallback_dir
+            except PermissionError:
+                raise PermissionError(
+                    f"Cannot create embedding cache directory: neither {self.cache_dir} nor {fallback_dir} is writable"
+                )
         self.embeddings_file = self.cache_dir / "embeddings.npy"
         self.metadata_file = self.cache_dir / "metadata.jsonl"
 
@@ -186,11 +191,15 @@ class Embedder:
 
             logger.info(f"Using device: {device}")
 
-        # Load model
-        from sentence_transformers import SentenceTransformer
+        # Load model (module-level symbol allows tests to patch rainrag.embed.SentenceTransformer)
+        model_cls_any = SentenceTransformer
+        if model_cls_any is None:
+            from sentence_transformers import SentenceTransformer as _SentenceTransformer
+
+            model_cls_any = _SentenceTransformer
 
         try:
-            model_cls = cast(Any, SentenceTransformer)
+            model_cls = cast(Any, model_cls_any)
             self.model = model_cls(
                 self.config.embedding.model_name,
                 device=device,
@@ -198,7 +207,7 @@ class Embedder:
             )
         except TypeError:
             # Older sentence-transformers versions don't accept model_kwargs
-            self.model = SentenceTransformer(
+            self.model = cast(Any, model_cls_any)(
                 self.config.embedding.model_name,
                 device=device,
             )
@@ -387,11 +396,14 @@ class Embedder:
             if self.genai_client is None:
                 try:
                     from google import genai
+                    from google.genai import types as genai_types
                 except ImportError as e:
                     raise ImportError(
                         "google-genai package is required for Gemini embeddings. Install it with: pip install google-genai"
                     ) from e
                 self.genai_client = genai.Client(api_key=self.config.gemini.api_key)
+                # Store module-level alias for config type usage later
+                self._genai_types = genai_types
             client = None  # Gemini uses direct API calls
             model = self.config.gemini.embedding_model
         else:
@@ -427,10 +439,15 @@ class Embedder:
                         response = client.embeddings.create(model=model, inputs=batch_texts)
                         batch_embeddings = [item.embedding for item in response.data]
                     elif provider == "gemini":
+                        genai_types = getattr(self, "_genai_types", None)
+                        if genai_types is None:
+                            raise RuntimeError(
+                                "Gemini client types not initialized. Ensure google-genai is installed."
+                            )
                         result = self.genai_client.models.embed_content(
                             model=model,
                             contents=batch_texts,
-                            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
+                            config=genai_types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
                         )
                         if result and result.embeddings:
                             batch_embeddings = []

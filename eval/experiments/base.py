@@ -277,6 +277,12 @@ class BaseExperiment(ABC):
         metrics["num_queries"] = float(len(valid))
         metrics["num_errors"] = float(len(all_results) - len(valid))
 
+        # Guard against missing two_stage fields (config may be partial/malformed)
+        # by falling back to sensible defaults.
+        two_stage_merge_strategy = getattr(cfg.two_stage, "merge_strategy", "coverage")
+        two_stage_merge_rrf_k = getattr(cfg.two_stage, "merge_rrf_k", 60)
+        two_stage_prompt_doc_order = getattr(cfg.two_stage, "prompt_doc_order", "rank")
+
         params = {
             "condition_id": condition["id"],
             "condition_label": condition["label"],
@@ -289,9 +295,9 @@ class BaseExperiment(ABC):
             "two_stage.query_rewrite_variants": cfg.two_stage.query_rewrite_variants,
             "two_stage.hyde_enabled": cfg.two_stage.hyde_enabled,
             "two_stage.hyde_alpha": cfg.two_stage.hyde_alpha,
-            "two_stage.merge_strategy": cfg.two_stage.merge_strategy,
-            "two_stage.merge_rrf_k": cfg.two_stage.merge_rrf_k,
-            "two_stage.prompt_doc_order": cfg.two_stage.prompt_doc_order,
+            "two_stage.merge_strategy": two_stage_merge_strategy,
+            "two_stage.merge_rrf_k": two_stage_merge_rrf_k,
+            "two_stage.prompt_doc_order": two_stage_prompt_doc_order,
             "reranker.enabled": cfg.reranker.enabled,
             "reranker.top_n": cfg.reranker.top_n,
             "reranker.min_retrieval_score": cfg.reranker.min_retrieval_score,

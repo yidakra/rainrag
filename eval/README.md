@@ -168,8 +168,9 @@ python -m eval.run_eval latency \
 python -m eval.run_eval ui
 # or directly; check RAINRAG_MLFLOW_URI first, then MLFLOW_TRACKING_URI, then
 # the default path:
-mlflow ui --backend-store-uri "${RAINRAG_MLFLOW_URI:-${MLFLOW_TRACKING_URI:-${XDG_STATE_HOME:-$HOME/.local/state}/rainrag/mlruns}}"
-```
+mlflow ui --backend-store-uri "${XDG_STATE_HOME:-$HOME/.local/state}/rainrag/mlruns"
+# If using a tracking server, open its URL directly:
+# ${RAINRAG_MLFLOW_URI:-${MLFLOW_TRACKING_URI:-http://127.0.0.1:5000}}
 
 Then open http://localhost:5000 in your browser.
 
