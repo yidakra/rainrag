@@ -203,7 +203,8 @@ Reported at k ∈ {3, 5, 10}.
 | Metric | Description |
 |---|---|
 | `ragas.faithfulness` | Is the answer grounded in retrieved context? |
-| `ragas.answer_relevance` | Does the answer address the question? |
+| `ragas.answer_relevance` | Does the answer address the question? (compat key) |
+| `ragas.answer_relevancy` | Same metric as above, using RAGAS naming |
 | `ragas.context_precision` | Are retrieved docs relevant to the query? |
 | `ragas.context_recall` | Does context cover all aspects of ground truth? |
 | `rouge_l` | ROUGE-L F1 vs. reference answer (no LLM) |

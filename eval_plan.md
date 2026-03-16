@@ -113,7 +113,7 @@ def ndcg_at_k(retrieved: list[str], relevant: set[str], k: int) -> float: ...
 def average_precision(retrieved: list[str], relevant: set[str]) -> float: ...
 ```
 
-Reported at k ∈ {3, 5, 10} (precision computed only at k=3 and k=5).
+Reported at k ∈ {3, 5, 10} (precision computed only at k=3 and k=5; NDCG computed only at k=5 and k=10).
 
 ---
 
@@ -196,6 +196,7 @@ mlflow.log_metrics({
     "ndcg@10": 0.79,
     "ragas.faithfulness": 0.91,
     "ragas.answer_relevance": 0.87,
+    "ragas.answer_relevancy": 0.87,
     "ragas.context_precision": 0.76,
     "ragas.context_recall": 0.83,
     "rouge_l": 0.44,

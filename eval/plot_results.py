@@ -406,7 +406,10 @@ def plot_cost_vs_quality(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
     plotted = 0
 
     for _, row in runs.iterrows():
+        # Try both raw and sanitized key formats
         cost = _safe_float(row.get("metrics.cost.total_usd_est_per_query"))
+        if cost is None:
+            cost = _safe_float(row.get("metrics.cost_total_usd_est_per_query"))
         recall = _metric_from_row(row, "recall@5")
         if cost is None or recall is None:
             continue

@@ -121,9 +121,12 @@ def compute_ragas_metrics(
         logger.error("RAGAS evaluation failed: %s", exc)
         return {"ragas.available": 0.0}
 
+    answer_relevancy_score = float(result["answer_relevancy"])
     return {
         "ragas.faithfulness": float(result["faithfulness"]),
-        "ragas.answer_relevance": float(result["answer_relevancy"]),
+        # Keep both spellings for backward compatibility with existing dashboards.
+        "ragas.answer_relevance": answer_relevancy_score,
+        "ragas.answer_relevancy": answer_relevancy_score,
         "ragas.context_precision": float(result["context_precision"]),
         "ragas.context_recall": float(result["context_recall"]),
     }

@@ -164,8 +164,6 @@ def test_carbon_track_emissions_noop_without_package(monkeypatch: pytest.MonkeyP
 
     # Force re-import of carbon module with patched __import__
     # clear module cache so import uses patched __import__
-    import sys
-
     sys.modules.pop("eval.metrics.carbon", None)
     carbon_mod = __import__("eval.metrics.carbon", fromlist=["*"])
 
@@ -279,8 +277,6 @@ def test_retrieve_documents_exclude_speech_free_filters_results(test_config) -> 
     """retrieve_documents(exclude_speech_free=True) must strip is_speech_free docs."""
     pytest.importorskip("qdrant_client")  # skip if not installed
     torch = pytest.importorskip("torch")  # noqa: F841 — skip if torch not installed
-
-    from unittest.mock import MagicMock
 
     from rainrag.query import RAGQueryEngine
 

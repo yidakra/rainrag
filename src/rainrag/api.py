@@ -14,7 +14,17 @@ from prometheus_client import REGISTRY, Counter
 
 
 # Constants loaded once at import time (avoids repeated getenv calls per request)
-QUERY_TIMEOUT_SECONDS: float = float(os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS", "240"))
+# Guard against invalid env values (float() would otherwise raise and prevent
+# the module from importing).
+try:
+    QUERY_TIMEOUT_SECONDS: float = float(os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS", "240"))
+except (TypeError, ValueError) as exc:
+    logger.warning(
+        "Invalid RAINRAG_QUERY_TIMEOUT_SECONDS=%r, using default 240.0: %s",
+        os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS"),
+        exc,
+    )
+    QUERY_TIMEOUT_SECONDS = 240.0
 
 
 def _create_query_timeout_counter() -> Counter:
@@ -33,23 +43,20 @@ def _create_query_timeout_counter() -> Counter:
     try:
         return Counter(name, "Number of query requests that timed out")
     except ValueError:
-        # Metric already registered in default REGISTRY; try to find it using
-        # the public API rather than poking into private internals.
-        existing_val = REGISTRY.get_sample_value(name)
-        if existing_val is not None:
-            for collector in REGISTRY.collect():
-                for sample in collector.samples:
-                    if sample.name == name:
-                        # ensure it really is a Counter before returning
-                        if isinstance(collector, Counter):
-                            return collector
-                        else:
-                            logger.warning(
-                                "Metric %r exists but is a %s, not Counter; falling back to unregistered counter",
-                                name,
-                                type(collector),
-                            )
-                        break
+        # Metric already registered in default REGISTRY; attempt to recover the
+        # existing Counter using the registry internals (the public API doesn't
+        # provide a way to get the collector object by name).
+        collector_obj = REGISTRY._names_to_collectors.get(name)
+        if isinstance(collector_obj, Counter):
+            return collector_obj
+
+        if collector_obj is not None:
+            logger.warning(
+                "Metric %r exists but is a %s, not Counter; falling back to unregistered counter",
+                name,
+                type(collector_obj),
+            )
+
         # Couldn't recover a usable Counter; create one in an isolated
         # registry so we still have an object.  Emit a warning so users know
         # the metric won't be exposed.

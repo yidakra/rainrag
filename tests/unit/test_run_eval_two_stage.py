@@ -77,7 +77,8 @@ class TestDatasetRequired:
 
     def test_missing_dataset_error_message(self):
         result = runner.invoke(app, ["two-stage"])
-        assert "dataset" in result.output.lower() or "dataset" in (result.stderr or "").lower()
+        # CliRunner defaults to mix_stderr=True, so errors appear in output.
+        assert "dataset" in result.output.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +106,8 @@ class TestSuccessfulInvocation:
 
     def test_output_contains_condition_count(self):
         result, _, _ = self._run(n_conditions=5)
-        assert "5" in result.output
+        # Verify the CLI reports the number of conditions in a stable phrase.
+        assert "Running two-stage sweep (5 conditions" in result.output
 
     def test_output_contains_mlflow_hint(self):
         result, _, _ = self._run()
@@ -376,7 +378,7 @@ class TestDocOrdersFlag:
 # ---------------------------------------------------------------------------
 
 
-class TestAxisFalone:
+class TestAxisFAlone:
     def test_axis_f_only(self):
         """--axes doc_order with --doc-orders forwarded correctly."""
         mock_exp = _mock_experiment()

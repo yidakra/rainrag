@@ -69,7 +69,7 @@ def _print_record(record: Record, index: int, total: int, accepted: int, deleted
         header = (
             f"[bold cyan]{index}/{total}[/]  "
             f"[green]{accepted} accepted[/]  [red]{deleted} deleted[/]  "
-            f"remaining: {total - index + 1}"
+            f"remaining: {total - index}"
         )
         body = (
             f"[bold]ID:[/]       {record.get('query_id', '—')}\n"
@@ -98,7 +98,9 @@ def _print_record(record: Record, index: int, total: int, accepted: int, deleted
         )
         print(f"\nQuery:\n{record.get('query', '')}")
         print(f"\nReference answer:\n{record.get('reference_answer', '') or '(empty)'}")
-        print(f"\nRelevant doc IDs: {', '.join(record.get('relevant_doc_ids', []))}")
+        print(
+            f"\nRelevant doc IDs: {', '.join(str(x) for x in record.get('relevant_doc_ids', []))}"
+        )
         if record.get("source_path"):
             print(f"Source: {record['source_path']}")
 
@@ -168,11 +170,16 @@ def review_eval_set(
 
     # Load all records
     records: list[Record] = []
-    with open(inp, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
+    try:
+        with open(inp, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+    except FileNotFoundError:
+        # If the file disappears between the existence check and open(), provide
+        # a consistent, user-friendly error message.
+        raise FileNotFoundError(f"file not found: {inp}")
 
     total = len(records)
     if total == 0:
@@ -314,6 +321,10 @@ def filter_valid(input_path: str, output_path: str) -> int:
         Number of records written.
     """
     inp = Path(input_path)
+    if not inp.exists() or not inp.is_file():
+        # match review_eval_set's behavior for missing input files
+        raise FileNotFoundError(f"file not found: {inp}")
+
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 

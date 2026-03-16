@@ -8,6 +8,8 @@ running queries, computing metrics, logging to MLflow — lives here.
 from __future__ import annotations
 
 import copy
+import math
+import statistics
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -250,8 +252,12 @@ class BaseExperiment(ABC):
         latency_metrics: dict[str, float] = {}
         if latencies:
             latencies_sorted = sorted(latencies)
-            latency_metrics["latency_p50_ms"] = latencies_sorted[len(latencies_sorted) // 2]
-            latency_metrics["latency_p95_ms"] = latencies_sorted[int(len(latencies_sorted) * 0.95)]
+            latency_metrics["latency_p50_ms"] = statistics.median(latencies_sorted)
+            # Use a clamped index for p95 to avoid out-of-bounds access on small lists.
+            idx = max(
+                0, min(len(latencies_sorted) - 1, math.ceil(len(latencies_sorted) * 0.95) - 1)
+            )
+            latency_metrics["latency_p95_ms"] = latencies_sorted[idx]
             latency_metrics["latency_mean_ms"] = sum(latencies) / len(latencies)
 
         rouge_scores = [r["rouge_l"] for r in valid if r.get("rouge_l") is not None]
