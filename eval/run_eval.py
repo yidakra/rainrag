@@ -64,6 +64,31 @@ app = typer.Typer(
     add_completion=False,
 )
 
+
+def _parse_ints(value: str, name: str) -> list[int]:
+    """Parse a comma-separated list of integers, exiting with a friendly error on failure."""
+    try:
+        return [int(v.strip()) for v in value.split(",") if v.strip()]
+    except ValueError:
+        typer.echo(
+            f"ERROR: Invalid {name!r}; expected comma-separated integers, got: {value!r}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
+def _parse_floats(value: str, name: str) -> list[float]:
+    """Parse a comma-separated list of floats, exiting with a friendly error on failure."""
+    try:
+        return [float(v.strip()) for v in value.split(",") if v.strip()]
+    except ValueError:
+        typer.echo(
+            f"ERROR: Invalid {name!r}; expected comma-separated numbers, got: {value!r}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
 # ── Shared options ──────────────────────────────────────────────────────────
 
 _CONFIG = Annotated[str, typer.Option("--config", "-c", help="Path to config.yaml")]
@@ -139,8 +164,12 @@ def ablation(
         typer.echo("ERROR: --dataset is required for the ablation experiment.", err=True)
         raise typer.Exit(1)
 
-    ks = tuple(int(k.strip()) for k in top_ks.split(","))
-    cids = [c.strip() for c in conditions.split(",")] if conditions else None
+    ks = tuple(_parse_ints(top_ks, "top_ks"))
+    cids = None
+    if conditions:
+        # Validate conditions are integers so we fail fast with a clear message.
+        _parse_ints(conditions, "conditions")
+        cids = [c.strip() for c in conditions.split(",") if c.strip()]
 
     exp = ablation_experiment_cls(
         config_path=config,
@@ -587,13 +616,13 @@ def two_stage(
         typer.echo("ERROR: --dataset is required for the two-stage sweep.", err=True)
         raise typer.Exit(1)
 
-    ks = tuple(int(k.strip()) for k in top_ks.split(","))
+    ks = tuple(_parse_ints(top_ks, "top_ks"))
     axes_list = [a.strip() for a in axes.split(",")] if axes else None
-    alphas = [float(v.strip()) for v in hyde_alphas.split(",")] if hyde_alphas else None
-    variants = [int(v.strip()) for v in rewrite_variants.split(",")] if rewrite_variants else None
-    pools = [int(v.strip()) for v in pool_sizes.split(",")] if pool_sizes else None
+    alphas = _parse_floats(hyde_alphas, "hyde_alphas") if hyde_alphas else None
+    variants = _parse_ints(rewrite_variants, "rewrite_variants") if rewrite_variants else None
+    pools = _parse_ints(pool_sizes, "pool_sizes") if pool_sizes else None
     strategies = [s.strip() for s in merge_strategies.split(",")] if merge_strategies else None
-    rrf_ks = [int(v.strip()) for v in merge_rrf_ks.split(",")] if merge_rrf_ks else None
+    rrf_ks = _parse_ints(merge_rrf_ks, "merge_rrf_ks") if merge_rrf_ks else None
     orders = [o.strip() for o in doc_orders.split(",")] if doc_orders else None
 
     exp = two_stage_sweep_experiment_cls(

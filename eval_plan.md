@@ -113,7 +113,7 @@ def ndcg_at_k(retrieved: list[str], relevant: set[str], k: int) -> float: ...
 def average_precision(retrieved: list[str], relevant: set[str]) -> float: ...
 ```
 
-Reported at k ∈ {3, 5, 10} (precision computed only at k=3 and k=5; NDCG computed only at k=5 and k=10).
+Reported at k ∈ {3, 5, 10} (precision and NDCG are computed at each k).
 
 ---
 
@@ -192,6 +192,7 @@ mlflow.log_metrics({
     "precision@3": 0.61,
     "precision@5": 0.52,
     "mrr": 0.68,
+    "ndcg@3": 0.69,
     "ndcg@5": 0.74,
     "ndcg@10": 0.79,
     "ragas.faithfulness": 0.91,
@@ -202,9 +203,43 @@ mlflow.log_metrics({
     "rouge_l": 0.44,
     "latency_p50_ms": 820,
     "latency_p95_ms": 1640,
-    "cost_usd_per_query": 0.003,
+    "cost.total_usd_est_per_query": 0.003,
 })
 ```
+
+### Cost Estimation ("cost_usd_per_query")
+
+The reported metric `cost.total_usd_est_per_query` (referred to as `cost_usd_per_query` in these docs) is an **estimated** per-query cost based on configured rate tables and estimated token counts. It does **not** use real API billing data.
+
+**Included API calls**
+
+- **Embedding** (one call per query, query text only)
+- **LLM generation** (one call per query; prompt includes a system prompt + retrieved contexts + the query; output is the generated answer)
+
+**Excluded (not counted)**
+
+- Query rewrite / HyDE LLM calls (additional LLM calls)
+- Reranker API calls (e.g., Cohere)
+
+**Pricing assumptions**
+
+- Rates are defined in `eval/metrics/cost.py` as per-1M-token prices for each provider (input/output for LLMs and embeddings).
+- Token counts are estimated as `len(text) / 4` characters per token and rounded for reporting.
+- The system prompt is approximated as 200 tokens.
+
+**Cost formula**
+
+```
+input_cost = (input_tokens / 1_000_000) * llm_input_rate
+output_cost = (output_tokens / 1_000_000) * llm_output_rate
+embed_cost = (embed_tokens / 1_000_000) * embed_rate
+cost_usd_per_query = input_cost + output_cost + embed_cost
+```
+
+**Aggregation rules**
+
+- Per-query costs are averaged across all evaluated queries to produce `cost.total_usd_est_per_query`.
+- Token counts and per-query components are also logged as `cost.input_tokens_est`, `cost.output_tokens_est`, `cost.embed_tokens_est`, `cost.llm_usd_est`, `cost.embed_usd_est`, and `cost.total_usd_est`.
 
 ### Artifacts Per Run
 

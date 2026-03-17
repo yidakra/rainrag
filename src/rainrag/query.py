@@ -545,6 +545,9 @@ class RAGQueryEngine:
             for doc in variant_docs:
                 doc_id = doc["doc_id"]
                 coverage.setdefault(doc_id, set()).add(i)
+                # Keep the highest-score copy for a given doc_id so duplicate
+                # documents surfaced by multiple variants preserve their best
+                # retrieval score in the merged output.
                 if doc_id not in best_doc or doc["score"] > best_doc[doc_id]["score"]:
                     best_doc[doc_id] = doc
 
@@ -600,7 +603,9 @@ class RAGQueryEngine:
             for doc in variant_docs:
                 doc_id = doc["doc_id"]
                 variant_count[doc_id] = variant_count.get(doc_id, 0) + 1
-                if doc_id not in best_doc or doc["score"] > best_doc[doc_id]["score"]:
+                # Prefer the first-seen document for a given doc_id to avoid
+                # comparing raw scores across variants (different scales).
+                if doc_id not in best_doc:
                     best_doc[doc_id] = doc
 
         # Compute diversity-weighted RRF score.
@@ -1239,14 +1244,14 @@ class RAGQueryEngine:
             ordered = list(reversed(documents))
         elif order == "book_end":
             if len(documents) == 2:
-                ordered = documents  # already book-ended
+                ordered = list(documents)  # already book-ended, but copy to avoid input mutation
             else:
                 first = documents[0]
                 second_best = documents[1]
-                middle = documents[2:-1]
-                last = documents[-1]
-                # Swap second-best to the end position
-                ordered = [first] + middle + [last, second_best]
+                # Keep all remaining documents (including the original last) in order,
+                # but remove the second-best from its original position.
+                remaining = documents[2:]
+                ordered = [first] + remaining + [second_best]
         else:
             logger.warning("Unknown prompt_doc_order %r; falling back to 'rank'", order)
             return documents

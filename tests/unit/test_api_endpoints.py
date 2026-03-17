@@ -39,6 +39,7 @@ class _SyncASGIClient:
     """Synchronous facade over httpx.AsyncClient for ASGI app tests."""
 
     def __init__(self, asgi_app):
+        super().__init__()
         self._transport = httpx.ASGITransport(app=asgi_app)
         self._base_url = "http://testserver"
 
@@ -66,7 +67,7 @@ class _SyncASGIClient:
 
 @pytest.fixture
 def test_client():
-    """Create a FastAPI TestClient for the app."""
+    """Create a synchronous ASGI test client (via _SyncASGIClient) for the FastAPI app."""
     return _SyncASGIClient(app)
 
 
