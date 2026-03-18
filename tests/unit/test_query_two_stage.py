@@ -480,6 +480,10 @@ class TestTwoStagePipeline:
             "num_documents",
             "query_variants",
             "variant_retrieved_ids",
+            "cost.llm_calls_count",
+            "cost.llm_query_rewrite_calls",
+            "cost.llm_hyde_calls",
+            "cost.reranker_calls_count",
         }
 
     def test_answer_generation_uses_zero_temperature(

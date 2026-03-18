@@ -68,7 +68,8 @@ def rouge_l(hypothesis: str, reference: str) -> float:
     """ROUGE-L F1 between generated answer and reference answer."""
     if not _ROUGE_AVAILABLE or _rouge_scorer is None:
         return math.nan
-    if not reference or not reference.strip() or not hypothesis:
+    # Normalize both inputs to avoid treating whitespace-only strings as valid.
+    if not reference or not str(reference).strip() or not hypothesis or not str(hypothesis).strip():
         return math.nan
     scorer = _rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
     score = scorer.score(reference, hypothesis)
@@ -136,15 +137,22 @@ def compute_ragas_metrics(
         logger.error("RAGAS evaluation failed: %s", exc)
         return {"ragas.available": 0.0}
 
-    answer_relevancy_score = float(result["answer_relevancy"])
-    return {
-        "ragas.faithfulness": float(result["faithfulness"]),
-        # Keep both spellings for backward compatibility with existing dashboards.
-        "ragas.answer_relevance": answer_relevancy_score,
-        "ragas.answer_relevancy": answer_relevancy_score,
-        "ragas.context_precision": float(result["context_precision"]),
-        "ragas.context_recall": float(result["context_recall"]),
-    }
+    try:
+        dataset = datasets.Dataset.from_list(rows)
+        metrics = [_faithfulness, _answer_relevancy, _context_precision, _context_recall]
+        result = _ragas_evaluate(dataset, metrics=metrics)
+        answer_relevancy_score = float(result["answer_relevancy"])
+        return {
+            "ragas.faithfulness": float(result["faithfulness"]),
+            # Keep both spellings for backward compatibility with existing dashboards.
+            "ragas.answer_relevance": answer_relevancy_score,
+            "ragas.answer_relevancy": answer_relevancy_score,
+            "ragas.context_precision": float(result["context_precision"]),
+            "ragas.context_recall": float(result["context_recall"]),
+        }
+    except Exception as exc:
+        logger.error("RAGAS evaluation failed: %s", exc)
+        return {"ragas.available": 0.0}
 
 
 def answer_length(answer: str) -> int:

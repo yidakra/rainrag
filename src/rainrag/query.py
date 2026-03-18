@@ -1766,6 +1766,17 @@ Question: {query}"""
         # Step 7: Generate the answer
         answer = self.generate_answer(messages)
 
+        # Track API call counts for transparency (cost estimates currently
+        # only include the main answer generation + embedding). These counts
+        # enable downstream cost calculations in the MLflow metrics.
+        llm_query_rewrite_calls = (
+            1 if two_stage_enabled and self.config.two_stage.query_rewrite_enabled else 0
+        )
+        llm_hyde_calls = 1 if two_stage_enabled and self.config.two_stage.hyde_enabled else 0
+        llm_calls = 1 + llm_query_rewrite_calls + llm_hyde_calls
+
+        reranker_calls = 1 if self.config.reranker.enabled and bool(documents) else 0
+
         return {
             "question": question,
             "answer": answer,
@@ -1773,6 +1784,10 @@ Question: {query}"""
             "num_documents": len(documents),
             "query_variants": query_variants,
             "variant_retrieved_ids": variant_retrieved_ids,
+            "cost.llm_calls_count": llm_calls,
+            "cost.llm_query_rewrite_calls": llm_query_rewrite_calls,
+            "cost.llm_hyde_calls": llm_hyde_calls,
+            "cost.reranker_calls_count": reranker_calls,
         }
 
 

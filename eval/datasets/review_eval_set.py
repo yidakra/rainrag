@@ -336,9 +336,7 @@ def filter_valid(input_path: str, output_path: str) -> int:
                 records.append(json.loads(line))
 
     valid = [r for r in records if r.get("valid") is True]
-    with open(out, "w", encoding="utf-8") as f:
-        for r in valid:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    _save(valid, out)
 
     print(f"Written {len(valid)}/{len(records)} valid records to {out}")
     return len(valid)
@@ -346,8 +344,13 @@ def filter_valid(input_path: str, output_path: str) -> int:
 
 def review_stats(input_path: str) -> dict[str, int]:
     """Print a quick summary of review progress without starting a session."""
+    inp = Path(input_path)
+    if not inp.exists() or not inp.is_file():
+        # match review_eval_set/filter_valid behavior for missing input files
+        raise FileNotFoundError(f"file not found: {inp}")
+
     records: list[Record] = []
-    with open(input_path, encoding="utf-8") as f:
+    with open(inp, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:

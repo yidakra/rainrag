@@ -113,7 +113,7 @@ def ndcg_at_k(retrieved: list[str], relevant: set[str], k: int) -> float: ...
 def average_precision(retrieved: list[str], relevant: set[str]) -> float: ...
 ```
 
-Reported at k ∈ {3, 5, 10} (precision and NDCG are computed at each k).
+Reported at k ∈ {3, 5, 10} (recall, precision, and NDCG are computed at each k).
 
 ---
 
@@ -196,7 +196,6 @@ mlflow.log_metrics({
     "ndcg@5": 0.74,
     "ndcg@10": 0.79,
     "ragas.faithfulness": 0.91,
-    "ragas.answer_relevance": 0.87,
     "ragas.answer_relevancy": 0.87,
     "ragas.context_precision": 0.76,
     "ragas.context_recall": 0.83,
@@ -209,7 +208,7 @@ mlflow.log_metrics({
 
 ### Cost Estimation ("cost_usd_per_query")
 
-The reported metric `cost.total_usd_est_per_query` (referred to as `cost_usd_per_query` in these docs) is an **estimated** per-query cost based on configured rate tables and estimated token counts. It does **not** use real API billing data.
+The reported metric `cost.total_usd_est_per_query` (referred to as `cost_usd_per_query` in these docs — i.e. `cost_usd_per_query := cost.total_usd_est_per_query`) is an **estimated** per-query cost based on configured rate tables and estimated token counts. It does **not** use real API billing data.
 
 **Included API calls**
 
@@ -220,6 +219,15 @@ The reported metric `cost.total_usd_est_per_query` (referred to as `cost_usd_per
 
 - Query rewrite / HyDE LLM calls (additional LLM calls)
 - Reranker API calls (e.g., Cohere)
+
+To help interpret cost comparisons, we log additional usage metrics for every query:
+
+- `cost.llm_calls_count` — total number of LLM calls (including query rewrite/HyDE and final answer)
+- `cost.llm_query_rewrite_calls` — number of query rewrite calls
+- `cost.llm_hyde_calls` — number of HyDE generation calls
+- `cost.reranker_calls_count` — number of reranker API calls
+
+These can be used to adjust or extend the cost model outside this suite.
 
 **Pricing assumptions**
 
@@ -238,7 +246,7 @@ cost_usd_per_query = input_cost + output_cost + embed_cost
 
 **Aggregation rules**
 
-- Per-query costs are averaged across all evaluated queries to produce `cost.total_usd_est_per_query`.
+- Per-query costs are averaged across all evaluated queries to produce `cost_usd_per_query` (logged as `cost.total_usd_est_per_query`).
 - Token counts and per-query components are also logged as `cost.input_tokens_est`, `cost.output_tokens_est`, `cost.embed_tokens_est`, `cost.llm_usd_est`, `cost.embed_usd_est`, and `cost.total_usd_est`.
 
 ### Artifacts Per Run

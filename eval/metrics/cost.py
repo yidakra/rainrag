@@ -4,6 +4,12 @@ Estimates token counts from character lengths (English: ~4 chars/token)
 and applies published per-1M-token prices.  All figures are labelled
 *estimated* — use your provider dashboards for billing accuracy.
 
+NOTE: This estimator only accounts for the *main answer generation* LLM call
+(and the query embedding call). It does **not** include additional LLM calls
+(e.g., query rewrite, HyDE) or third-party reranker calls. For those, the
+evaluation suite logs usage metrics (`cost.llm_calls_count`, etc.) to enable
+post-hoc cost modeling.
+
 Pricing tables (update when providers change rates).
 Costs are modelled separately for input tokens and output tokens using
 ``LLM_INPUT_COST_PER_1M`` and ``LLM_OUTPUT_COST_PER_1M`` dictionaries.

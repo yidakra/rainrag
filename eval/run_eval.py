@@ -47,9 +47,9 @@ Usage
         --doc-orders rank,reversed,book_end
 """
 
-import contextlib
 import importlib
 import subprocess
+import time
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -514,8 +514,22 @@ def beir(
             exp.results_to_csv(results, csv_path)
             typer.echo(f"Ablation results written to {csv_path}")
         finally:
-            with contextlib.suppress(Exception):
-                Path(tmp_config_path).unlink()
+            # Clean up the temp config file created above.
+            # Retry a few times to handle transient Windows file-lock races.
+            tmp_path = Path(tmp_config_path)
+            for attempt in range(3):
+                try:
+                    tmp_path.unlink()
+                    break
+                except FileNotFoundError:
+                    # Already removed, nothing to do.
+                    break
+                except PermissionError:
+                    # May happen on Windows due to file locks; retry a few times.
+                    if attempt < 2:
+                        time.sleep(0.1)
+                        continue
+                    raise
 
     typer.echo(f"\nDone. Open MLflow UI with: mlflow ui --backend-store-uri {mlflow_uri}")
 

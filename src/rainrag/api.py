@@ -10,7 +10,7 @@ from typing import Annotated
 from unittest.mock import Mock
 
 from loguru import logger
-from prometheus_client import REGISTRY, Counter
+from prometheus_client import Counter
 
 
 # Constants loaded once at import time (avoids repeated getenv calls per request)
@@ -28,40 +28,23 @@ except (TypeError, ValueError) as exc:
 
 
 def _create_query_timeout_counter() -> Counter:
-    """Create or retrieve timeout counter without duplicate-registration errors.
+    """Create a timeout counter while avoiding duplicate-registration errors.
 
     The Prometheus client raises ``ValueError`` if you try to register the
-    same metric name twice in the default registry.  Previously we poked into
-    the private ``REGISTRY._names_to_collectors`` dict to recover the existing
-    object, but that's brittle.  Instead we now use the public
-    ``CollectorRegistry`` APIs.  If a counter already exists we attempt to
-    find and return it; if we can't locate it we fall back to creating a
-    counter in its own registry and log a warning so operators know it won't
-    be scraped.
+    same metric name twice in the default registry.  We intentionally do NOT
+    access private registry internals; instead, if the metric name is already
+    registered, we fall back to creating the counter in a fresh registry.
+
+    Note: the fallback counter will not be scraped by the default Prometheus
+    registry, but it allows the application to safely increment the counter
+    without crashing on import.
     """
     name = "rainrag_query_timeouts_total"
     try:
         return Counter(name, "Number of query requests that timed out")
     except ValueError:
-        # Metric already registered in default REGISTRY; attempt to recover the
-        # existing Counter using the registry internals (the public API doesn't
-        # provide a way to get the collector object by name).
-        collector_obj = REGISTRY._names_to_collectors.get(name)
-        if isinstance(collector_obj, Counter):
-            return collector_obj
-
-        if collector_obj is not None:
-            logger.warning(
-                "Metric %r exists but is a %s, not Counter; falling back to unregistered counter",
-                name,
-                type(collector_obj),
-            )
-
-        # Couldn't recover a usable Counter; create one in an isolated
-        # registry so we still have an object.  Emit a warning so users know
-        # the metric won't be exposed.
         logger.warning(
-            "Failed to recover existing counter %r; creating unregistered counter (won't be scraped).",
+            "Metric %r already registered in default registry; creating unregistered counter (won't be scraped).",
             name,
         )
         from prometheus_client import CollectorRegistry
@@ -299,7 +282,8 @@ def _resolve_media_relative(path_str: str, root: Path) -> Path | None:
     # 1) Standard case: path already under root
     try:
         return candidate.resolve().relative_to(root)
-    except Exception:
+    except (ValueError, OSError):
+        # ValueError: path not under root; OSError: resolution failed (permissions, etc.)
         pass
 
     # 2) Heuristic: recover relative suffix after root basename (e.g. /transcoded/...)

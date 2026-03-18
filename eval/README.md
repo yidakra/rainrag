@@ -221,6 +221,27 @@ Stages: `embed`, `retrieve`, `rerank`, `generate`, `total`.
 
 ---
 
+## Cost & usage metrics
+
+The evaluation suite reports an **estimated** cost per query based on the main
+LLM generation call (prompt + output) and the embedding call. It **does not
+include** additional API calls made by optional features such as query rewriting,
+HyDE, or reranking.
+
+### Logged per-query cost/usage metrics
+
+| Metric | Description |
+|---|---|
+| `cost.total_usd_est_per_query` | Estimated USD cost per query (main answer + embedding only) |
+| `cost.llm_calls_count` | Total number of LLM calls (incl. rewrite, HyDE, answer) |
+| `cost.llm_query_rewrite_calls` | Query rewrite LLM calls |
+| `cost.llm_hyde_calls` | HyDE generation LLM calls |
+| `cost.reranker_calls_count` | Number of reranker API calls (e.g. Cohere) |
+
+Use the call counts to approximate additional cost for those features if desired.
+
+---
+
 ## Ablation conditions
 
 | ID | Label | hybrid | rewrite | HyDE | reranker |

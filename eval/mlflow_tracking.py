@@ -64,7 +64,13 @@ def default_tracking_uri() -> str:
 
     xdg_state_home = Path(os.getenv("XDG_STATE_HOME") or str(Path.home() / ".local" / "state"))
     state_dir = xdg_state_home / "rainrag" / "mlruns"
-    state_dir.mkdir(parents=True, exist_ok=True)
+
+    # Only create the directory when MLflow is actually available.
+    # This avoids creating state directories in environments where MLflow is
+    # not installed but the helper is still imported.
+    if _MLFLOW_AVAILABLE:
+        state_dir.mkdir(parents=True, exist_ok=True)
+
     return str(state_dir)
 
 

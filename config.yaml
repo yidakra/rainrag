@@ -106,7 +106,7 @@ chunking:
   token_buffer: 50  # Buffer to account for special tokens
 
 # Hybrid search configuration (Vector + BM25)
-# Enabled by default as it provides Stage 1 corpus smoothing (BM25 IDF ≈ Dirichlet prior)
+# Provides Stage 1 corpus smoothing (BM25 IDF ≈ Dirichlet prior) when enabled
 hybrid_search:
   enabled: false  # Enable hybrid search combining vector similarity and BM25 keyword matching
   bm25_weight: 0.3  # Weight for BM25 scores (0.0-1.0, vector weight = 1 - bm25_weight)

@@ -211,7 +211,7 @@ def _generate_pair(engine: Any, chunk: Record, lang: str) -> Record | None:
         "query_id": None,  # filled later
         "query": question,
         "language": lang,
-        "relevant_doc_ids": [chunk["doc_id"]],
+        "relevant_doc_ids": [chunk.get("doc_id", "")],
         "reference_answer": reference_answer,
         "category": category
         if category in {"factual", "temporal", "entity", "multilingual"}

@@ -258,7 +258,6 @@ def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) ->
 
     labels: list[str] = []
     stage_values: dict[str, list[float]] = {s: [] for s in stages}
-    totals: list[float] = []
 
     for _, row in runs.iterrows():
         lbl = _condition_label(row)
@@ -273,7 +272,6 @@ def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) ->
         labels.append(lbl)
         for s in stages:
             stage_values[s].append(row_stages[s])
-        totals.append(sum(stage_values[s][-1] for s in stages))
 
     if not labels:
         typer.echo("[warn] No valid latency data to plot.", err=True)
