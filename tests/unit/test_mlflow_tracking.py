@@ -39,6 +39,17 @@ class TestMlflowTracking:
         assert fake.logged["metric_bad_chars"] == 1.0
         assert fake.step == 7
 
+    def test_log_metrics_no_mlflow_does_not_call_mlflow(self, monkeypatch) -> None:
+        fake = _FakeMlflow()
+        monkeypatch.setattr(mlflow_tracking, "mlflow", fake)
+        monkeypatch.setattr(mlflow_tracking, "_MLFLOW_AVAILABLE", False)
+
+        # Should be a no-op when MLflow is unavailable.
+        mlflow_tracking.log_metrics({"ok@1": 1.0}, step=1)
+
+        assert fake.logged is None
+        assert fake.step is None
+
     def test_log_metrics_skips_none_and_nan(self, monkeypatch) -> None:
         fake = _FakeMlflow()
         monkeypatch.setattr(mlflow_tracking, "mlflow", fake)

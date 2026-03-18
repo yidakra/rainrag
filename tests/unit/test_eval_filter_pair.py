@@ -28,6 +28,8 @@ def test_filter_pair_accepts_on_error_and_logs(
 
     monkeypatch.delitem(sys.modules, "eval.datasets.create_eval_set", raising=False)
     create_eval_set_mod = importlib.import_module("eval.datasets.create_eval_set")
+    # Ensure the imported module is restored/removed by monkeypatch teardown.
+    monkeypatch.setitem(sys.modules, "eval.datasets.create_eval_set", create_eval_set_mod)
     _filter_pair = create_eval_set_mod._filter_pair
 
     # create a dummy engine whose generate_answer will throw

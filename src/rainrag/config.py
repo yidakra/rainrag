@@ -1,5 +1,6 @@
 """Configuration management for RainRAG."""
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -7,6 +8,8 @@ from typing import Any, Literal, cast
 import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+_logger = logging.getLogger(__name__)
 
 
 class PathsConfig(BaseModel):
@@ -524,8 +527,15 @@ def load_config(config_path: str = "config.yaml") -> Config:
                 value = Path(secret_file).read_text(encoding="utf-8").strip()
                 if value:
                     return value
-            except OSError:
-                pass
+            except OSError as exc:
+                # If the secret file cannot be read, log the issue and fall back to the
+                # environment variable. We don't want this to crash the program.
+                _logger.debug(
+                    "Failed to read %s from %s: %s",
+                    file_var,
+                    secret_file,
+                    exc,
+                )
 
         value = os.getenv(env_name)
         if value:

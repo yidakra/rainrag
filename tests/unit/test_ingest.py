@@ -553,16 +553,12 @@ Hi
 
     def test_empty_vtt_parse_returns_empty_list(self) -> None:
         """_parse_vtt_lines_to_cues must return [] (not None) for a header-only VTT."""
-        from rainrag.ingest import VTTParser
-
         lines = self._EMPTY_VTT.splitlines(keepends=True)
         result = VTTParser._parse_vtt_lines_to_cues(lines)
         assert result == []
 
     def test_empty_vtt_parse_with_timecodes_returns_empty_string(self, temp_dir: Path) -> None:
         """parse_vtt_with_timecodes must return ('', None, None) for a header-only VTT."""
-        from rainrag.ingest import VTTParser
-
         vtt_file = temp_dir / "silent.vtt"
         vtt_file.write_text(self._EMPTY_VTT)
         result = VTTParser.parse_vtt_with_timecodes(vtt_file)

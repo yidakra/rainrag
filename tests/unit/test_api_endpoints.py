@@ -39,19 +39,22 @@ class _SyncASGIClient:
     """Synchronous facade over httpx.AsyncClient for ASGI app tests."""
 
     def __init__(self, asgi_app):
-        super().__init__()
         self._transport = httpx.ASGITransport(app=asgi_app)
         self._base_url = "http://testserver"
+        self._client = httpx.AsyncClient(transport=self._transport, base_url=self._base_url)
 
     def request(self, method: str, url: str, **kwargs):
         async def _request():
-            async with httpx.AsyncClient(
-                transport=self._transport,
-                base_url=self._base_url,
-            ) as client:
-                return await client.request(method, url, **kwargs)
+            return await self._client.request(method, url, **kwargs)
 
         return anyio.run(_request)
+
+    def close(self):
+        """Close the underlying AsyncClient."""
+        async def _close():
+            await self._client.aclose()
+
+        return anyio.run(_close)
 
     def get(self, url: str, **kwargs):
         return self.request("GET", url, **kwargs)
@@ -68,7 +71,11 @@ class _SyncASGIClient:
 @pytest.fixture
 def test_client():
     """Create a synchronous ASGI test client (via _SyncASGIClient) for the FastAPI app."""
-    return _SyncASGIClient(app)
+    client = _SyncASGIClient(app)
+    try:
+        yield client
+    finally:
+        client.close()
 
 
 @pytest.fixture

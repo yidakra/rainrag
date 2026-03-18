@@ -456,7 +456,7 @@ def test_info_command_with_custom_config():
                     ),
                     llm=LLMConfig(provider="mistral"),
                     mistral=MistralConfig(api_key="test", model_name="test"),
-                    openai=OpenAIConfig(api_key="test", model_name="gpt-4o-mini"),
+                    openai=OpenAIConfig(api_key="test", model_name="test"),
                     processing=ProcessingConfig(num_workers=4, max_file_size=10485760),
                     logging=LoggingConfig(level="INFO", log_file="/test/logs.log"),
                     video=VideoConfig(enabled=True),

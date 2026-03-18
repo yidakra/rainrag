@@ -385,7 +385,7 @@ def redis_get_failed_attempts(identifier: str) -> dict[str, Any]:
         return {"count": 0, "lockout_until": None}
 
     key = _get_lockout_key(identifier)
-    data = cast(dict[str, Any], redis_client.hgetall(key))
+    data = cast(dict[str, str], redis_client.hgetall(key))
 
     if not data:
         return {"count": 0, "lockout_until": None}

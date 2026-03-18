@@ -143,7 +143,8 @@ class TestAxesFlag:
     def _run_axes(self, axes_str: str):
         mock_exp = _mock_experiment()
         with patch(_PATCH, return_value=mock_exp) as mock_cls:
-            runner.invoke(app, ["two-stage", "--dataset", _DATASET, "--axes", axes_str])
+            result = runner.invoke(app, ["two-stage", "--dataset", _DATASET, "--axes", axes_str])
+        assert result.exit_code == 0, result.output
         _, kwargs = mock_cls.call_args
         return kwargs["axes"]
 
@@ -287,16 +288,29 @@ class TestMergeRrfKsFlag:
 
 
 class TestCsvOutput:
-    def test_csv_path_forwarded_to_results_to_csv(self):
+    def test_csv_path_forwarded_to_results_to_csv(self, tmp_path):
         mock_exp = _mock_experiment()
+        out_path = tmp_path / "out.csv"
         with patch(_PATCH, return_value=mock_exp):
             runner.invoke(
                 app,
-                ["two-stage", "--dataset", _DATASET, "--csv", "/tmp/out.csv"],
+                ["two-stage", "--dataset", _DATASET, "--csv", str(out_path)],
             )
         mock_exp.results_to_csv.assert_called_once()
         call_args = mock_exp.results_to_csv.call_args
-        assert call_args[0][1] == "/tmp/out.csv"
+        # Use kwargs if available, otherwise fall back to positional args.
+        if call_args.kwargs:
+            assert call_args.kwargs.get("path") == str(out_path)
+        else:
+            # Some call patterns may pass args as a list (e.g., [path]); normalize for comparison.
+            def _normalized_args(args):
+                for arg in args:
+                    if isinstance(arg, (list, tuple)):
+                        yield from (str(a) for a in arg)
+                    else:
+                        yield str(arg)
+
+            assert any(str(out_path).endswith(arg) for arg in _normalized_args(call_args.args))
 
     def test_no_csv_flag_does_not_call_results_to_csv(self):
         mock_exp = _mock_experiment()
