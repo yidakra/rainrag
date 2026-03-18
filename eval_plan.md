@@ -214,20 +214,28 @@ The reported metric `cost.total_usd_est_per_query` (referred to as `cost_usd_per
 
 - **Embedding** (one call per query, query text only)
 - **LLM generation** (one call per query; prompt includes a system prompt + retrieved contexts + the query; output is the generated answer)
+- **Query rewrite** (optional; may involve 0–N additional LLM calls)
+- **HyDE** (optional; may involve 0–N additional LLM calls)
+- **Reranker** (optional; may involve 0–N external API calls)
 
-**Excluded (not counted)**
+For each query we log an itemized breakdown so you can compare strategies in detail:
 
-- Query rewrite / HyDE LLM calls (additional LLM calls)
-- Reranker API calls (e.g., Cohere)
+- `cost.llm_base_usd_est` — estimated USD cost of the main answer-generation LLM call
+- `cost.llm_rewrite_usd_est` — estimated USD cost of query rewrite calls
+- `cost.llm_hyde_usd_est` — estimated USD cost of HyDE calls
+- `cost.reranker_usd_est` — estimated USD cost of reranker calls (set to 0 by default)
+- `cost.total_usd_est` — sum of the above plus embedding cost
+- `cost.total_mean_usd_est_per_query` — mean (average) per-query estimated cost across evaluated queries
+- `cost.total_usd_est_per_query` — legacy alias for `cost.total_mean_usd_est_per_query`
 
-To help interpret cost comparisons, we log additional usage metrics for every query:
+We still log usage counters for transparency:
 
 - `cost.llm_calls_count` — total number of LLM calls (including query rewrite/HyDE and final answer)
 - `cost.llm_query_rewrite_calls` — number of query rewrite calls
 - `cost.llm_hyde_calls` — number of HyDE generation calls
 - `cost.reranker_calls_count` — number of reranker API calls
 
-These can be used to adjust or extend the cost model outside this suite.
+These can be used to tune or replace the cost model outside this suite.
 
 **Pricing assumptions**
 
@@ -241,13 +249,17 @@ These can be used to adjust or extend the cost model outside this suite.
 input_cost = (input_tokens / 1_000_000) * llm_input_rate
 output_cost = (output_tokens / 1_000_000) * llm_output_rate
 embed_cost = (embed_tokens / 1_000_000) * embed_rate
-cost_usd_per_query = input_cost + output_cost + embed_cost
+llm_base_cost = input_cost + output_cost
+llm_rewrite_cost = llm_base_cost * num_rewrite_calls
+llm_hyde_cost = llm_base_cost * num_hyde_calls
+reranker_cost = 0.0  # configurable in future
+cost_usd_per_query = embed_cost + llm_base_cost + llm_rewrite_cost + llm_hyde_cost + reranker_cost
 ```
 
 **Aggregation rules**
 
 - Per-query costs are averaged across all evaluated queries to produce `cost_usd_per_query` (logged as `cost.total_usd_est_per_query`).
-- Token counts and per-query components are also logged as `cost.input_tokens_est`, `cost.output_tokens_est`, `cost.embed_tokens_est`, `cost.llm_usd_est`, `cost.embed_usd_est`, and `cost.total_usd_est`.
+- Token counts and per-query components are also logged as `cost.input_tokens_est`, `cost.output_tokens_est`, `cost.embed_tokens_est`, `cost.llm_base_usd_est`, `cost.llm_rewrite_usd_est`, `cost.llm_hyde_usd_est`, `cost.reranker_usd_est`, `cost.llm_usd_est`, `cost.embed_usd_est`, and `cost.total_usd_est`.
 
 ### Artifacts Per Run
 

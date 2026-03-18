@@ -39,6 +39,9 @@ argon2-cffi = "^23.1.0"
 # Redis for server-side session storage
 redis = "^5.0.0"
 
+[tool.poetry.group.eval]
+optional = true
+
 [tool.poetry.group.eval.dependencies]
 mlflow = "^2.14"
 ragas = "^0.1"         # lock to 0.1.x series to avoid accidental minor/major bumps

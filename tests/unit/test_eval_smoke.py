@@ -162,16 +162,23 @@ def test_carbon_track_emissions_noop_without_package(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(builtins, "__import__", _mock_import)
 
-    # Force re-import of carbon module with patched __import__
-    # clear module cache so import uses patched __import__
-    sys.modules.pop("eval.metrics.carbon", None)
-    carbon_mod = __import__("eval.metrics.carbon", fromlist=["*"])
+    orig = sys.modules.get("eval.metrics.carbon")
+    try:
+        # Force re-import of carbon module with patched __import__
+        # clear module cache so import uses patched __import__
+        sys.modules.pop("eval.metrics.carbon", None)
+        carbon_mod = __import__("eval.metrics.carbon", fromlist=["*"])
 
-    with carbon_mod.track_emissions() as result:
-        pass
+        with carbon_mod.track_emissions() as result:
+            pass
 
-    assert result.available is False
-    assert result.as_metrics() == {}
+        assert result.available is False
+        assert result.as_metrics() == {}
+    finally:
+        if orig is None:
+            sys.modules.pop("eval.metrics.carbon", None)
+        else:
+            sys.modules["eval.metrics.carbon"] = orig
 
 
 from unittest.mock import MagicMock

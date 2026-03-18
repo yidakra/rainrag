@@ -254,6 +254,7 @@ class TestTwoStageConfig:
         )
 
         assert config.enabled is True
+        assert config.query_rewrite_enabled is True
         assert config.query_rewrite_variants == 3
         assert config.hyde_enabled is True
         assert config.hyde_alpha == 0.7

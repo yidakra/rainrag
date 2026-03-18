@@ -170,6 +170,23 @@ def _metric_from_row(row: Any, name: str) -> float | None:
     return None
 
 
+def _cost_from_row(row: Any) -> float | None:
+    """Read estimated per-query cost from a run row.
+
+    Supports both the legacy ``metrics.cost_total_usd_est_per_query`` key and the
+    more recent ``metrics.cost.total_usd_est_per_query`` key.
+    """
+    for col in (
+        "metrics.cost.total_mean_usd_est_per_query",
+        "metrics.cost.total_usd_est_per_query",
+        "metrics.cost_total_usd_est_per_query",
+    ):
+        value = _safe_float(row.get(col))
+        if value is not None:
+            return value
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Chart 1: Recall & NDCG bar chart
 # ---------------------------------------------------------------------------
@@ -194,10 +211,12 @@ def plot_retrieval_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> No
         lbl = _condition_label(row)
         r5 = _metric_from_row(row, "recall@5")
         n5 = _metric_from_row(row, "ndcg@5")
-        if r5 is not None or n5 is not None:
+        # Only include runs that have both recall and ndcg available.
+        # This avoids pretending missing metrics are actual zeros.
+        if r5 is not None and n5 is not None:
             labels.append(lbl)
-            recall5.append(r5 or 0.0)
-            ndcg5.append(n5 or 0.0)
+            recall5.append(r5)
+            ndcg5.append(n5)
 
     if not labels:
         typer.echo("[warn] No recall@5 / ndcg@5 metrics found — skipping bar chart.", err=True)
@@ -404,10 +423,7 @@ def plot_cost_vs_quality(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
     plotted = 0
 
     for _, row in runs.iterrows():
-        # Try both raw and sanitized key formats
-        cost = _safe_float(row.get("metrics.cost.total_usd_est_per_query"))
-        if cost is None:
-            cost = _safe_float(row.get("metrics.cost_total_usd_est_per_query"))
+        cost = _cost_from_row(row)
         recall = _metric_from_row(row, "recall@5")
         if cost is None or recall is None:
             continue

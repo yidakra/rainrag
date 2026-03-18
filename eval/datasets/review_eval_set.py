@@ -37,8 +37,6 @@ from typing import Any, cast
 # simple alias for the JSONL records so we can give them a proper type
 Record = dict[str, Any]
 
-# (typing import added above)
-
 
 # ---------------------------------------------------------------------------
 # Optional rich formatting
@@ -174,8 +172,11 @@ def review_eval_set(
         with open(inp, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if line:
-                    records.append(json.loads(line))
+                if not line:
+                    continue
+                loaded = json.loads(line)
+                if isinstance(loaded, dict):
+                    records.append(cast(Record, loaded))
     except FileNotFoundError:
         # If the file disappears between the existence check and open(), provide
         # a consistent, user-friendly error message.
@@ -210,6 +211,7 @@ def review_eval_set(
         record = records[idx]
         _print_record(record, seq, n_pending, accepted, deleted)
 
+        edited = False
         while True:
             key = _prompt("\n  [a/e/s/d/q] → ").lower()
             if key == "":
@@ -261,19 +263,26 @@ def review_eval_set(
                 break
 
             if key == "e":
-                print("  Enter corrected reference answer (blank line to finish):")
+                print("  Enter corrected reference answer (blank line to finish; :q to cancel):")
                 lines: list[str] = []
                 while True:
-                    ln = _prompt("  > ")
+                    try:
+                        ln = _prompt("  > ")
+                    except KeyboardInterrupt:
+                        print("  Edit cancelled")
+                        lines = []
+                        break
+
                     if ln == "":
                         break
-                    if ln.lower() == "q":
+                    if ln == ":q":
                         print("  Edit cancelled")
                         lines = []
                         break
                     lines.append(ln)
                 if lines:
-                    record["reference_answer"] = " ".join(lines)
+                    record["reference_answer"] = "\n".join(lines)
+                    edited = True
                     print(f"  Updated: {record['reference_answer'][:80]}")
                     prev = record.get("valid")
                     if prev is True:
@@ -291,8 +300,9 @@ def review_eval_set(
 
             print("  Unknown key. Use a, e, s, d, or q.")
 
-        # Save after every decision (except skip) to preserve progress
-        if key in ("a", "d", "e"):
+        # Save after every decision (except skip) to preserve progress.
+        # Only write to disk for accept/delete, or when an edit actually changed the record.
+        if key in ("a", "d") or edited:
             _save(records, out)
 
     # All pending records reviewed
@@ -332,8 +342,11 @@ def filter_valid(input_path: str, output_path: str) -> int:
     with open(inp, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line:
-                records.append(json.loads(line))
+            if not line:
+                continue
+            loaded = json.loads(line)
+            if isinstance(loaded, dict):
+                records.append(cast(Record, loaded))
 
     valid = [r for r in records if r.get("valid") is True]
     _save(valid, out)
@@ -424,13 +437,12 @@ if __name__ == "__main__":
         args.cmd = "review"
 
     if args.cmd == "review":
-        inp = args.input if hasattr(args, "input") else (sys.argv[1] if len(sys.argv) > 1 else None)
-        if not inp:
+        if not getattr(args, "input", None):
             parser.print_help()
             sys.exit(1)
         try:
             review_eval_set(
-                inp,
+                args.input,
                 output_path=getattr(args, "output", None),
                 only_unreviewed=not getattr(args, "all_records", False),
             )

@@ -12,6 +12,8 @@ from collections.abc import Sequence
 
 def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     """Fraction of relevant docs found in the top-k results."""
+    if not isinstance(k, int) or k < 0:
+        raise ValueError("k must be a non-negative integer")
     if not relevant:
         return 0.0
     hits = set(retrieved[:k]) & relevant
@@ -20,6 +22,8 @@ def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
 
 def precision_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     """Fraction of top-k results that are relevant."""
+    if not isinstance(k, int) or k < 0:
+        raise ValueError("k must be a non-negative integer")
     if k == 0:
         return 0.0
     hits = set(retrieved[:k]) & relevant

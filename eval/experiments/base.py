@@ -192,6 +192,9 @@ class BaseExperiment(ABC):
                     answer=answer,
                     llm_provider=engine.config.llm.provider,
                     embed_provider=engine.config.embedding.provider,
+                    llm_query_rewrite_calls=response.get("cost.llm_query_rewrite_calls", 0),
+                    llm_hyde_calls=response.get("cost.llm_hyde_calls", 0),
+                    reranker_calls=response.get("cost.reranker_calls_count", 0),
                 )
                 results.append(
                     {
@@ -326,7 +329,9 @@ class BaseExperiment(ABC):
         import math as _math
 
         m = result["metrics"]
-        cost = m.get("cost.total_usd_est_per_query", float("nan"))
+        cost = m.get("cost.total_mean_usd_est_per_query", float("nan"))
+        if _math.isnan(cost):
+            cost = m.get("cost.total_usd_est_per_query", float("nan"))
         cost_str = f"${cost:.4f}/q" if not _math.isnan(cost) else "cost=n/a"
 
         ndcg5 = m.get("ndcg@5", float("nan"))

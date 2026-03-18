@@ -129,13 +129,6 @@ def compute_ragas_metrics(
     if not rows:
         logger.error("No valid records to evaluate")
         return {"ragas.available": 0.0}
-    try:
-        dataset = datasets.Dataset.from_list(rows)
-        metrics = [_faithfulness, _answer_relevancy, _context_precision, _context_recall]
-        result = _ragas_evaluate(dataset, metrics=metrics)
-    except Exception as exc:
-        logger.error("RAGAS evaluation failed: %s", exc)
-        return {"ragas.available": 0.0}
 
     try:
         dataset = datasets.Dataset.from_list(rows)

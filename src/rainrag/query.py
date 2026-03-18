@@ -20,7 +20,7 @@ from qdrant_client import QdrantClient, models
 try:
     from sentence_transformers import SentenceTransformer
 except ImportError:
-    SentenceTransformer = None  # type: ignore[assignment]
+    SentenceTransformer = None
 
 from rainrag.config import Config
 

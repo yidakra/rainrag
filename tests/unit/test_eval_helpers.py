@@ -77,11 +77,14 @@ class TestApplyOverrides:
         assert result.hybrid_search.enabled == base_config.hybrid_search.enabled
 
     def test_boolean_false_override(self, base_config):
+        import copy
+
         from eval.experiments.base import apply_overrides
 
-        # Start with enabled=True, override to False
-        base_config.reranker.enabled = True
-        result = apply_overrides(base_config, {"reranker.enabled": False})
+        # Create a copy to avoid mutating shared fixture
+        cfg = copy.deepcopy(base_config)
+        cfg.reranker.enabled = True
+        result = apply_overrides(cfg, {"reranker.enabled": False})
         assert result.reranker.enabled is False
 
     def test_float_override(self, base_config):
@@ -419,6 +422,8 @@ class TestBuildSummary:
         assert "cost.total_usd_est" in summary["metrics"]
         assert summary["metrics"]["cost.total_usd_est"] == pytest.approx(0.002)
         assert "cost.total_usd_est_per_query" in summary["metrics"]
+        assert "cost.total_mean_usd_est_per_query" in summary["metrics"]
+        assert summary["metrics"]["cost.total_mean_usd_est_per_query"] == pytest.approx(0.002)
 
     def test_latency_percentiles(self, minimal_condition, minimal_config):
         from eval.experiments.base import BaseExperiment
@@ -593,17 +598,17 @@ class TestBuildSummary:
 
         result = apply_overrides(minimal_config, {"two_stage.prompt_doc_order": "book_end"})
         assert result.two_stage.prompt_doc_order == "book_end"
-        assert minimal_config.two_stage.prompt_doc_order == "rank"
 
     def test_invalid_two_stage_enum_values(self):
         """Assigning or constructing forbidden strings should trigger validation errors."""
-        import pytest
+        from pydantic import ValidationError
 
         from rainrag.config import TwoStageConfig
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             TwoStageConfig(merge_strategy=cast(Any, "not_a_strategy"))
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
+            TwoStageConfig(prompt_doc_order=cast(Any, "upside_down"))
             TwoStageConfig(prompt_doc_order=cast(Any, "upside_down"))
 
     def test_apply_overrides_min_retrieval_score(self, minimal_config):

@@ -144,6 +144,11 @@ ENV/
 env.bak/
 venv.bak/
 
+# Secrets (API keys used by docker-compose)
+# Keep actual key files out of version control; use the *.txt.example templates.
+secrets/*.txt
+!secrets/*.txt.example
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -211,7 +216,6 @@ data/
 embeddings/
 logs/
 mlruns/
-secrets/
 *.jsonl
 *.npy
 eval/ablation_results*.csv
@@ -219,6 +223,13 @@ eval/datasets/*_ablation.csv
 models/
 qdrant_storage/
 .DS_Store
+
+# Secret/key files (keep private & avoid accidental commits)
+secrets/
+*.key
+*.pem
+*credentials*
+*.secret
 
 # Pyright local configuration
 .pyrightconfig.local.json

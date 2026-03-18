@@ -17,7 +17,7 @@ from rainrag.ingest import Document
 try:
     from sentence_transformers import SentenceTransformer
 except ImportError:
-    SentenceTransformer = None  # type: ignore[assignment]
+    SentenceTransformer = None
 
 
 class EmbeddingCache:

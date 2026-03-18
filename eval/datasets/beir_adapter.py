@@ -292,11 +292,14 @@ def _embed_documents_api(
     texts: list[str],
     delay_s: float = 0.05,
 ) -> list[list[float]]:
-    """Embed documents via an API provider by calling embed_query() in a loop.
+    """Embed documents via an API provider.
 
-    Note: this is slow for large corpora. Use local embeddings for BEIR eval
-    or keep max_corpus_docs small.
+    Note: this is slow for large corpora and may not apply the correct
+    document prefix. Use local embeddings for BEIR eval or keep
+    max_corpus_docs small.
     """
+    # TODO: Use a document-specific embedding method if available
+    # to ensure correct prefix handling for models like E5.
     embeddings: list[list[float]] = []
     for i, text in enumerate(texts):
         if i % 50 == 0 and i > 0:

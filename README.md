@@ -251,7 +251,7 @@ gemini:
 
 ### Two-Stage Retrieval
 
-RainRAG implements two-stage retrieval (Zhai & Lafferty, SIGIR 2002) to improve recall on broadcast-transcript corpora, where user queries are typically formal or terse but the source material is informal spoken language.
+RainRAG implements two-stage retrieval (Zhai & Lafferty, [SIGIR 2002](https://dl.acm.org/doi/10.1145/564376.564386)) to improve recall on broadcast-transcript corpora, where user queries are typically formal or terse but the source material is informal spoken language.
 
 **Stage 1 – Corpus smoothing**: handled by `hybrid_search` (BM25 + vector).
 
@@ -586,10 +586,32 @@ docker-compose logs -f
 docker-compose down
 
 #
-# NOTE: The compose file expects a `./secrets` directory containing
-# API key files (mistral_api_key.txt, openai_api_key.txt, etc.). You can
-# create placeholders with `make secrets` and then edit them with real
-# keys. Docker Compose mounts these as secrets and sets corresponding
+# NOTE: The compose file expects a `./secrets` directory containing API key files.
+# Create the directory and key files before running `docker-compose up`.
+#
+#   mkdir -p ./secrets
+#   make secrets
+#
+# Then edit the generated files (e.g. `./secrets/mistral_api_key.txt`) and
+# populate them with your provider API keys.
+#
+# Default providers (used out of the box):
+#   - Mistral (LLM)
+#   - Cohere (reranking)
+#
+# Optional providers (only needed if you configure them in `config.yaml`):
+#   - OpenAI (GPT / embeddings)
+#   - Anthropic (Claude)
+#   - Google Gemini
+#
+# For safety, keep the secrets directory out of source control:
+#   - The repo includes `secrets/*.txt.example` templates you can copy
+#   - Your real secret files should be named `*.txt` and are ignored by git
+#
+# Recommended permissions (production):
+#   chmod 600 ./secrets/*.txt
+#
+# Docker Compose mounts these as secrets and sets corresponding
 # *_API_KEY_FILE environment variables in the containers.
 ```
 

@@ -17,8 +17,12 @@ Typical usage inside an experiment::
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import Generator
 from dataclasses import dataclass
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +120,11 @@ def track_emissions(
         tracker.start()
         started = True
     except Exception:
+        # Log failures during tracker initialization, but continue without
+        # carbon tracking.
+        logger.debug(
+            "Failed to initialize EmissionsTracker; disabling carbon tracking.", exc_info=True
+        )
         result.available = False
         yield result
         return
@@ -128,6 +137,10 @@ def track_emissions(
         # started, so the tracker variable is non‑None here; the previous
         # `tracker is not None` check was causing a static type warning.
         if started:
+            # `started` only becomes True after tracker is created and started,
+            # so it must be non-None here.  This assertion helps static type
+            # checkers reason about `tracker`.
+            assert tracker is not None
             try:
                 emissions_kg = tracker.stop()
                 if emissions_kg is not None:
@@ -149,4 +162,8 @@ def track_emissions(
                         result.duration_s = float(_dur)
             except Exception:
                 # Never let tracking errors propagate into experiment code
+                logger.debug(
+                    "Error stopping EmissionsTracker; disabling carbon tracking.",
+                    exc_info=True,
+                )
                 result.available = False

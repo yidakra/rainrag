@@ -7,16 +7,11 @@ entirely in-process with deterministic inputs and expected outputs.
 from __future__ import annotations
 
 import math
-import sys
-from pathlib import Path
 
 import pytest
 
-
-# Allow imports from the repo root (eval/ lives alongside src/)
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
 from eval.metrics.answer_quality import answer_length, rouge_l
+from eval.metrics.cost import aggregate_costs, chars_to_tokens, estimate_query_cost
 from eval.metrics.retrieval import (
     aggregate_metrics,
     average_precision,
@@ -33,11 +28,6 @@ from eval.metrics.retrieval import (
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
-
-
-def _ids(*args: str) -> list[str]:
-    """Convenience: build a list of doc-id strings."""
-    return list(args)
 
 
 # ---------------------------------------------------------------------------
@@ -416,14 +406,20 @@ class TestRougeL:
         assert score == pytest.approx(1.0, abs=1e-4)
 
     def test_completely_different(self):
-        score = rouge_l("Hello world foo bar", "Completely unrelated text xyz.")
-        assert 0.0 <= score < 0.5
+        # Use controlled token sequences with no overlap so the LCS is 0 regardless of
+        # tokenization differences across rouge-score versions.
+        score = rouge_l("a b c", "d e f")
+        assert score == pytest.approx(0.0, abs=1e-8)
 
     def test_partial_overlap(self):
-        hypothesis = "The bridge will be repaired by autumn."
-        reference = "The bridge will be repaired in autumn."
+        # Use controlled token sequences with a single shared token so the expected
+        # ROUGE-L score is stable even if tokenization changes.
+        hypothesis = "a b c d"
+        reference = "a x y z"
         score = rouge_l(hypothesis, reference)
-        assert 0.5 < score <= 1.0
+        # With a single common token in 4-token inputs, the LCS-based ROUGE-L score is
+        # expected to be around 0.25; allow a small range to remain robust.
+        assert 0.2 < score < 0.3
 
     def test_empty_reference_returns_nan(self):
         score = rouge_l("some answer", "")
@@ -465,16 +461,12 @@ class TestAnswerQualityFallback:
 # ---------------------------------------------------------------------------
 
 
-from eval.metrics.cost import (
-    aggregate_costs,
-    chars_to_tokens,
-    estimate_query_cost,
-)
-
-
 class TestCharsToTokens:
     def test_empty_string(self):
         assert chars_to_tokens("") == 0.0
+
+    def test_none_returns_zero(self):
+        assert chars_to_tokens(None) == 0.0
 
     def test_four_chars(self):
         assert chars_to_tokens("abcd") == pytest.approx(1.0)
@@ -484,13 +476,26 @@ class TestCharsToTokens:
 
 
 class TestEstimateQueryCost:
-    def _call(self, llm="openai", embed="openai", query="test", contexts=None, answer="ok"):
+    def _call(
+        self,
+        llm="openai",
+        embed="openai",
+        query="test",
+        contexts=None,
+        answer="ok",
+        llm_query_rewrite_calls: int = 0,
+        llm_hyde_calls: int = 0,
+        reranker_calls: int = 0,
+    ):
         return estimate_query_cost(
             query=query,
             contexts=contexts or ["context text"],
             answer=answer,
             llm_provider=llm,
             embed_provider=embed,
+            llm_query_rewrite_calls=llm_query_rewrite_calls,
+            llm_hyde_calls=llm_hyde_calls,
+            reranker_calls=reranker_calls,
         )
 
     def test_returns_all_keys(self):
@@ -499,6 +504,10 @@ class TestEstimateQueryCost:
             "cost.input_tokens_est",
             "cost.output_tokens_est",
             "cost.embed_tokens_est",
+            "cost.llm_base_usd_est",
+            "cost.llm_rewrite_usd_est",
+            "cost.llm_hyde_usd_est",
+            "cost.reranker_usd_est",
             "cost.llm_usd_est",
             "cost.embed_usd_est",
             "cost.total_usd_est",
@@ -515,6 +524,17 @@ class TestEstimateQueryCost:
         assert result["cost.total_usd_est"] == pytest.approx(
             result["cost.llm_usd_est"] + result["cost.embed_usd_est"]
         )
+
+    def test_additional_llm_calls_increase_total(self):
+        base = self._call()
+        rewrite = self._call(llm_query_rewrite_calls=1)
+        hyde = self._call(llm_hyde_calls=1)
+
+        assert rewrite["cost.llm_rewrite_usd_est"] > 0
+        assert rewrite["cost.total_usd_est"] > base["cost.total_usd_est"]
+
+        assert hyde["cost.llm_hyde_usd_est"] > 0
+        assert hyde["cost.total_usd_est"] > base["cost.total_usd_est"]
 
     def test_unknown_provider_gives_zero_cost(self):
         result = estimate_query_cost(
@@ -570,6 +590,7 @@ class TestAggregateCosts:
         result = aggregate_costs([q])
         assert result["cost.total_usd_est"] == pytest.approx(0.0011)
         assert result["cost.total_usd_est_per_query"] == pytest.approx(0.0011)
+        assert result["cost.total_mean_usd_est_per_query"] == pytest.approx(0.0011)
 
     def test_averages_two_queries(self):
         q1 = {"cost.total_usd_est": 0.002}
@@ -577,12 +598,17 @@ class TestAggregateCosts:
         result = aggregate_costs([q1, q2])
         assert result["cost.total_usd_est"] == pytest.approx(0.006)
         assert result["cost.total_usd_est_per_query"] == pytest.approx(0.003)
+        assert result["cost.total_mean_usd_est_per_query"] == pytest.approx(0.003)
 
     def test_all_cost_keys_aggregated(self):
         keys = [
             "cost.input_tokens_est",
             "cost.output_tokens_est",
             "cost.embed_tokens_est",
+            "cost.llm_base_usd_est",
+            "cost.llm_rewrite_usd_est",
+            "cost.llm_hyde_usd_est",
+            "cost.reranker_usd_est",
             "cost.llm_usd_est",
             "cost.embed_usd_est",
             "cost.total_usd_est",

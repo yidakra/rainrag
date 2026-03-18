@@ -37,8 +37,11 @@ from typing import Any, TypeAlias
 logger = logging.getLogger(__name__)
 
 
-# Allow running as a script from repo root
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+# Allow running as a script from repo root (only if the src/ directory exists).
+# Prefer installing the package in editable mode (pip install -e .) for reliable imports.
+src_dir = Path(__file__).parent.parent.parent / "src"
+if src_dir.is_dir():
+    sys.path.insert(0, str(src_dir))
 
 from rainrag.config import load_config
 from rainrag.query import RAGQueryEngine
@@ -217,7 +220,7 @@ def _generate_pair(engine: Any, chunk: Record, lang: str) -> Record | None:
         if category in {"factual", "temporal", "entity", "multilingual"}
         else "factual",
         "temporal": temporal,
-        "source_doc_id": chunk["doc_id"],
+        "source_doc_id": chunk.get("doc_id", ""),
         "source_path": chunk.get("path", ""),
         "source_date": chunk.get("web_date") or chunk.get("date", ""),
     }

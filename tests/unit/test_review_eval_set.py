@@ -33,10 +33,20 @@ def test_review_eval_set_editing_deleted_record_does_not_decrement_below_zero(
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     # Simulate: edit the record, supply a new answer, finish edit.
-    inputs = iter(["e", "new answer", ""])
+    inputs = ["e", "new answer", ""]
+    idx = 0
 
     def _fake_input(prompt: str = "") -> str:
-        return next(inputs)
+        nonlocal idx
+        try:
+            value = inputs[idx]
+        except IndexError as exc:
+            raise RuntimeError(
+                f"No more fake inputs available for prompt {prompt!r} (index={idx}) "
+                f"— remaining inputs: {inputs!r}"
+            ) from exc
+        idx += 1
+        return value
 
     monkeypatch.setattr(builtins, "input", _fake_input)
 

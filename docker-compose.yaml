@@ -44,20 +44,23 @@ services:
       - RAINRAG_CONFIG=/app/config.yaml
       - RAINRAG_AUTH_TOKEN=${RAINRAG_AUTH_TOKEN:-}
       - MISTRAL_API_KEY_FILE=/run/secrets/mistral_api_key
-      - OPENAI_API_KEY_FILE=/run/secrets/openai_api_key
-      - ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key
-      - GOOGLE_API_KEY_FILE=/run/secrets/google_api_key
       - COHERE_API_KEY_FILE=/run/secrets/cohere_api_key
+      # Optional providers (uncomment + create secret file if using):
+      # - OPENAI_API_KEY_FILE=/run/secrets/openai_api_key
+      # - ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key
+      # - GOOGLE_API_KEY_FILE=/run/secrets/google_api_key
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/app/data
       - ./embeddings:/app/embeddings
+    # Default providers: Mistral (LLM) and Cohere (reranking). If you use other
+    # providers (OpenAI, Anthropic, Google Gemini), uncomment the matching secret(s).
     secrets:
       - mistral_api_key
-      - openai_api_key
-      - anthropic_api_key
-      - google_api_key
       - cohere_api_key
+      # - openai_api_key
+      # - anthropic_api_key
+      # - google_api_key
     entrypoint: ["python", "-m", "uvicorn", "rainrag.api:app", "--host", "0.0.0.0", "--port", "8001"]
     depends_on:
       qdrant:
@@ -102,21 +105,24 @@ services:
       - "8000:8000"
     environment:
       - MISTRAL_API_KEY_FILE=/run/secrets/mistral_api_key
-      - OPENAI_API_KEY_FILE=/run/secrets/openai_api_key
-      - ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key
-      - GOOGLE_API_KEY_FILE=/run/secrets/google_api_key
       - COHERE_API_KEY_FILE=/run/secrets/cohere_api_key
+      # Optional providers (uncomment + create secret file if using):
+      # - OPENAI_API_KEY_FILE=/run/secrets/openai_api_key
+      # - ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key
+      # - GOOGLE_API_KEY_FILE=/run/secrets/google_api_key
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/data/rainrag
       - ./embeddings:/data/embeddings
       - ./logs:/app/logs
+    # Default providers: Mistral (LLM) and Cohere (reranking). If you use other
+    # providers (OpenAI, Anthropic, Google Gemini), uncomment the matching secret(s).
     secrets:
       - mistral_api_key
-      - openai_api_key
-      - anthropic_api_key
-      - google_api_key
       - cohere_api_key
+      # - openai_api_key
+      # - anthropic_api_key
+      # - google_api_key
     command: rainrag mcp --transport streamable-http --host 0.0.0.0 --port 8000
     depends_on:
       qdrant:
@@ -132,6 +138,29 @@ volumes:
   qdrant_storage:
   redis_data:
 
+# API provider secrets (optional; only required for the providers you plan
+# to use). Docker Compose will error if a defined secret file does not exist.
+#
+# Create the secrets directory + files before running `docker-compose up`:
+#
+#   mkdir -p ./secrets
+#   # Either create your own key files, or use the helper:
+#   make secrets
+#   # Then edit the files with your real keys (do NOT commit them)
+#   # e.g. edit ./secrets/mistral_api_key.txt, ./secrets/openai_api_key.txt, etc.
+#
+# Recommended permissions for production:
+#   chmod 600 ./secrets/*.txt
+#
+# Provider  (config key)   Secret file (mounted as /run/secrets/<name>)
+# - mistral  (llm.provider="mistral")   -> ./secrets/mistral_api_key.txt
+# - openai   (llm.provider="openai")    -> ./secrets/openai_api_key.txt
+# - claude   (llm.provider="claude")    -> ./secrets/anthropic_api_key.txt
+# - gemini   (llm.provider="gemini")    -> ./secrets/google_api_key.txt
+# - cohere   (reranker.provider="cohere")-> ./secrets/cohere_api_key.txt
+#
+# If you want to override the secret file path, you can set the corresponding
+# *_API_KEY_FILE env var in an env file or via docker-compose override.
 secrets:
   mistral_api_key:
     file: ./secrets/mistral_api_key.txt

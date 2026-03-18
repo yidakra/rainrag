@@ -6,8 +6,7 @@ import os
 import string
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
-from unittest.mock import Mock
+from typing import Annotated, Any
 
 from loguru import logger
 from prometheus_client import Counter
@@ -88,6 +87,19 @@ def _parse_csv_env(name: str, default: list[str]) -> list[str]:
             values.append(value)
             seen.add(value)
     return values or default
+
+
+def _is_mock_like(obj: Any) -> bool:
+    """Detect objects that behave like unittest.mock.Mock without importing it.
+
+    This is used primarily in unit tests where the query callable is patched with
+    a Mock. Running Mock instances via ``asyncio.to_thread`` can deadlock the
+    test runner teardown, so we invoke them directly when we detect this behavior.
+    """
+
+    # The official unittest.mock.Mock has attributes like ``called`` and
+    # ``assert_called``. We use duck-typing to avoid importing test-only utilities.
+    return callable(obj) and hasattr(obj, "called") and hasattr(obj, "assert_called")
 
 
 class QueryRequest(BaseModel):
@@ -545,7 +557,8 @@ async def health_check():
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest, authorized: Annotated[bool, Header()] = True):
+@app.post("/query", response_model=QueryResponse)
+async def query(request: QueryRequest):
     """
     Query the RAG system.
 
@@ -571,8 +584,8 @@ async def query(request: QueryRequest, authorized: Annotated[bool, Header()] = T
         query_callable = query_engine.query
         try:
             # ASGI unit tests often patch query_engine.query with Mock objects.
-            # Running Mock in asyncio.to_thread can deadlock test-loop shutdown.
-            if isinstance(query_callable, Mock):
+            # Running a Mock via asyncio.to_thread can deadlock test-loop shutdown.
+            if _is_mock_like(query_callable):
                 result = query_callable(
                     question=request.question,
                     top_k=request.top_k,

@@ -203,8 +203,8 @@ Reported at k ∈ {3, 5, 10}.
 | Metric | Description |
 |---|---|
 | `ragas.faithfulness` | Is the answer grounded in retrieved context? |
-| `ragas.answer_relevance` | Does the answer address the question? (compat key) |
-| `ragas.answer_relevancy` | Same metric as above, using RAGAS naming |
+| `ragas.answer_relevancy` | Does the answer address the question? (canonical name; also logged as `ragas.answer_relevance` for backward compatibility) |
+| `ragas.answer_relevance` | Backward-compatible alias for `ragas.answer_relevancy` |
 | `ragas.context_precision` | Are retrieved docs relevant to the query? |
 | `ragas.context_recall` | Does context cover all aspects of ground truth? |
 | `rouge_l` | ROUGE-L F1 vs. reference answer (no LLM) |
@@ -223,22 +223,33 @@ Stages: `embed`, `retrieve`, `rerank`, `generate`, `total`.
 
 ## Cost & usage metrics
 
-The evaluation suite reports an **estimated** cost per query based on the main
-LLM generation call (prompt + output) and the embedding call. It **does not
-include** additional API calls made by optional features such as query rewriting,
-HyDE, or reranking.
+The evaluation suite reports an **estimated** cost per query based on:
+
+- The main LLM generation call (prompt + output)
+- The embedding call
+- Estimated cost for any additional LLM calls (query rewrite, HyDE)
+- Estimated cost for reranker calls (currently modeled as zero)
+
+Because query rewriting, HyDE, and reranking are optional, we log both a
+**breakdown** and a **total** so you can compare ablation conditions directly.
 
 ### Logged per-query cost/usage metrics
 
 | Metric | Description |
 |---|---|
-| `cost.total_usd_est_per_query` | Estimated USD cost per query (main answer + embedding only) |
+| `cost.total_mean_usd_est_per_query` | Estimated mean USD cost per query across the evaluated queries |
+| `cost.total_usd_est_per_query` | Legacy alias for `cost.total_mean_usd_est_per_query` |
+| `cost.llm_base_usd_est` | Estimated USD cost of the main answer-generation LLM call |
+| `cost.llm_rewrite_usd_est` | Estimated USD cost of query rewrite LLM calls |
+| `cost.llm_hyde_usd_est` | Estimated USD cost of HyDE LLM calls |
+| `cost.reranker_usd_est` | Estimated USD cost of reranker calls (zero by default) |
 | `cost.llm_calls_count` | Total number of LLM calls (incl. rewrite, HyDE, answer) |
 | `cost.llm_query_rewrite_calls` | Query rewrite LLM calls |
 | `cost.llm_hyde_calls` | HyDE generation LLM calls |
 | `cost.reranker_calls_count` | Number of reranker API calls (e.g. Cohere) |
 
-Use the call counts to approximate additional cost for those features if desired.
+Use the call counts and per-call USD estimates to compare conditions and
+understand where costs are coming from.
 
 ---
 
@@ -266,10 +277,10 @@ running expensive experiments on your proprietary archive.
 
 | Dataset | Queries | Corpus | Domain |
 |---|---|---|---|
-| `scifact` | 300 | 5 183 | Scientific fact checking |
-| `nfcorpus` | 323 | 3 633 | Medical IR |
-| `arguana` | 1 406 | 8 674 | Argument retrieval |
-| `fiqa` | 648 | 57 638 | Financial QA |
+| `scifact` | 300 | 5,183 | Scientific fact checking |
+| `nfcorpus` | 323 | 3,633 | Medical IR |
+| `arguana` | 1,406 | 8,674 | Argument retrieval |
+| `fiqa` | 648 | 57,638 | Financial QA |
 
 ### Quick sanity check (no Qdrant needed)
 

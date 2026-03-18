@@ -1,4 +1,4 @@
-.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop api streamlit up down api-bg streamlit-bg mcp mcp-http mcp-inspector backup-embeddings-r2 restore-embeddings-r2 backup-qdrant-r2 restore-qdrant-r2
+.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop api streamlit up down api-bg streamlit-bg mcp mcp-http mcp-inspector secrets backup-embeddings-r2 restore-embeddings-r2 backup-qdrant-r2 restore-qdrant-r2
 
 # Enable BuildKit for all Docker operations
 export DOCKER_BUILDKIT=1
