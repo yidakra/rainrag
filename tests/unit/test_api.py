@@ -46,7 +46,7 @@ class _SyncASGIClient:
         # Otherwise, run a fresh event loop (sync tests).
         try:
             in_async_task = anyio.get_current_task() is not None
-        except anyio.NoEventLoopError:
+        except Exception:
             in_async_task = False
 
         if not in_async_task:

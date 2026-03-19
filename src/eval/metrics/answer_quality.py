@@ -51,7 +51,7 @@ try:
     _context_recall = context_recall
     _faithfulness = faithfulness
     _ragas_available = True
-except Exception:
+except (ImportError, AttributeError):
     _ragas_available = False
 
 _RAGAS_AVAILABLE = _ragas_available
@@ -85,7 +85,8 @@ def compute_ragas_metrics(
         - ``question`` (str)
         - ``answer`` (str) — the system's generated answer
         - ``contexts`` (list[str]) — texts of the retrieved documents
-        - ``ground_truth`` (str) — reference answer (may be empty string)
+        - ``ground_truth`` (str) — reference answer (required for context_recall)
+          (if omitted/empty, context_recall is skipped)
 
     Returns a dict of averaged metric scores. Keys are prefixed with ``ragas.``.
     Returns ``{"ragas.available": 0.0}`` when RAGAS is not installed.
@@ -113,12 +114,18 @@ def compute_ragas_metrics(
             else:
                 raise TypeError("contexts must be list or str")
 
+            if not contexts:
+                raise ValueError("contexts must be a non-empty list or non-empty string")
+
+            ground_truth = str(r.get("ground_truth", ""))
+            has_ground_truth = bool(ground_truth and ground_truth.strip())
             rows.append(
                 {
                     "question": question,
                     "answer": answer,
                     "contexts": contexts,
-                    "ground_truth": str(r.get("ground_truth", "")),
+                    "ground_truth": ground_truth,
+                    "ragas_context_recall_enabled": has_ground_truth,
                 }
             )
         except Exception as exc:  # missing key or wrong type
@@ -132,17 +139,29 @@ def compute_ragas_metrics(
 
     try:
         dataset = datasets.Dataset.from_list(rows)
-        metrics = [_faithfulness, _answer_relevancy, _context_precision, _context_recall]
+        context_recall_enabled = all(r.get("ragas_context_recall_enabled", False) for r in rows)
+
+        metrics: list[Any] = [_faithfulness, _answer_relevancy, _context_precision]
+        if context_recall_enabled:
+            metrics.append(_context_recall)
+
         result = _ragas_evaluate(dataset, metrics=metrics)
         answer_relevancy_score = float(result["answer_relevancy"])
-        return {
+
+        output = {
             "ragas.faithfulness": float(result["faithfulness"]),
             # Keep both spellings for backward compatibility with existing dashboards.
             "ragas.answer_relevance": answer_relevancy_score,
             "ragas.answer_relevancy": answer_relevancy_score,
             "ragas.context_precision": float(result["context_precision"]),
-            "ragas.context_recall": float(result["context_recall"]),
         }
+
+        if context_recall_enabled and "context_recall" in result:
+            output["ragas.context_recall"] = float(result["context_recall"])
+        else:
+            output["ragas.context_recall"] = math.nan
+
+        return output
     except Exception as exc:
         logger.error("RAGAS evaluation failed: %s", exc)
         return {"ragas.available": 0.0}

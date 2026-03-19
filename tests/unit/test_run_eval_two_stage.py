@@ -305,7 +305,7 @@ class TestCsvOutput:
             # Some call patterns may pass args as a list (e.g., [path]); normalize for comparison.
             def _normalized_args(args):
                 for arg in args:
-                    if isinstance(arg, (list, tuple)):
+                    if isinstance(arg, list | tuple):
                         yield from (str(a) for a in arg)
                     else:
                         yield str(arg)

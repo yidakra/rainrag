@@ -483,6 +483,7 @@ class TestTwoStagePipeline:
             "cost.llm_calls_count",
             "cost.llm_query_rewrite_calls",
             "cost.llm_hyde_calls",
+            "cost.embed_calls_count",
             "cost.reranker_calls_count",
         }
 

@@ -277,6 +277,7 @@ two_stage:
 ```
 
 **Temperature design note:** `query_rewrite_temperature` and `hyde_temperature` are intentionally separate from the provider `temperature` setting used for final answer generation. Answer generation uses a low temperature (e.g., 0.3) for deterministic, source-grounded journalist output. The rewrite and HyDE calls use a higher temperature (default 0.7) to produce meaningfully diverse paraphrases and hypothetical passages — which is the whole point of these techniques.
+
 ### Choosing an Embedding Provider
 
 RainRAG supports four embedding providers:

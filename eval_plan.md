@@ -80,7 +80,9 @@ Fields:
 - `relevant_doc_ids` — list of Qdrant payload `doc_id` values that are relevant
   (used for retrieval metrics without needing LLM)
 - `reference_answer` — ground-truth answer used for RAGAS Context Recall and
-  Answer Relevance; can be null if using LLM-as-judge only
+  Answer Relevance. If null or empty, `context_recall` is skipped (RAGAS may still
+  compute other metrics such as answer relevancy, but `context_recall` is
+  unavailable for that record).
 - `category` — `factual | temporal | entity | multilingual`
 - `temporal` — whether the query uses recency language ("latest", "recent")
 
@@ -202,13 +204,17 @@ mlflow.log_metrics({
     "rouge_l": 0.44,
     "latency_p50_ms": 820,
     "latency_p95_ms": 1640,
-    "cost.total_usd_est_per_query": 0.003,
+    "cost.mean_usd_est_per_query": 0.003,
 })
 ```
 
 ### Cost Estimation ("cost_usd_per_query")
 
-The reported metric `cost.total_usd_est_per_query` (referred to as `cost_usd_per_query` in these docs — i.e. `cost_usd_per_query := cost.total_usd_est_per_query`) is an **estimated** per-query cost based on configured rate tables and estimated token counts. It does **not** use real API billing data.
+The reported metric `cost.mean_usd_est_per_query` is the **mean estimated cost per query** across the evaluated dataset. Per-query cost estimates are computed for each query and averaged; the averaged metric is logged as `cost.mean_usd_est_per_query` and the run-wide sum is logged as `cost.aggregate_usd_est`.
+
+`cost.total_usd_est_per_query` is a legacy alias and is not emitted in the modern pipeline to avoid mixing "total" and "per_query" semantics.
+
+All costs are **estimated** based on configured rate tables and estimated token counts. These estimates do **not** use real API billing data.
 
 **Included API calls**
 
@@ -224,9 +230,9 @@ For each query we log an itemized breakdown so you can compare strategies in det
 - `cost.llm_rewrite_usd_est` — estimated USD cost of query rewrite calls
 - `cost.llm_hyde_usd_est` — estimated USD cost of HyDE calls
 - `cost.reranker_usd_est` — estimated USD cost of reranker calls (set to 0 by default)
-- `cost.total_usd_est` — sum of the above plus embedding cost
-- `cost.total_mean_usd_est_per_query` — mean (average) per-query estimated cost across evaluated queries
-- `cost.total_usd_est_per_query` — legacy alias for `cost.total_mean_usd_est_per_query`
+- `cost.aggregate_usd_est` — run-wide total estimated cost (sum of `cost.total_usd_est` across all queries)
+- `cost.mean_usd_est_per_query` — average estimated cost per query (mean of per-query `cost.total_usd_est`)
+- `cost.total_usd_est_per_query` — legacy alias removed; avoid using this mix-style key
 
 We still log usage counters for transparency:
 
@@ -240,25 +246,42 @@ These can be used to tune or replace the cost model outside this suite.
 **Pricing assumptions**
 
 - Rates are defined in `eval/metrics/cost.py` as per-1M-token prices for each provider (input/output for LLMs and embeddings).
-- Token counts are estimated as `len(text) / 4` characters per token and rounded for reporting.
+- Token counts are estimated as `len(text) / 4` characters per token and rounded for reporting. This is an English-centric heuristic and can under- or over-estimate tokens for non‑Latin scripts (e.g., Russian); for accurate counts use the model's tokenizer when possible.
 - The system prompt is approximated as 200 tokens.
 
 **Cost formula**
+
+The per-query estimate (`cost_usd_per_query`) is computed from estimated token counts and provider rates.
+Additional LLM calls (query rewrite, HyDE) are charged using a small fixed token budget per call rather than reusing the full base-call cost.
+Reranker calls likewise use a fixed per-call estimate.
 
 ```
 input_cost = (input_tokens / 1_000_000) * llm_input_rate
 output_cost = (output_tokens / 1_000_000) * llm_output_rate
 embed_cost = (embed_tokens / 1_000_000) * embed_rate
 llm_base_cost = input_cost + output_cost
-llm_rewrite_cost = llm_base_cost * num_rewrite_calls
-llm_hyde_cost = llm_base_cost * num_hyde_calls
-reranker_cost = 0.0  # configurable in future
-cost_usd_per_query = embed_cost + llm_base_cost + llm_rewrite_cost + llm_hyde_cost + reranker_cost
+
+# Auxiliary LLM call cost (e.g., query rewrite / HyDE)
+aux_cost_per_call = (aux_tokens / 1_000_000) * (llm_input_rate + llm_output_rate)
+llm_rewrite_cost = aux_cost_per_call * num_rewrite_calls
+llm_hyde_cost = aux_cost_per_call * num_hyde_calls
+
+# Reranker cost is provider-specific; we use a fixed per-call estimate.
+reranker_cost = reranker_calls * reranker_cost_per_call
+
+cost_usd_per_query = (
+    embed_cost
+    + llm_base_cost
+    + llm_rewrite_cost
+    + llm_hyde_cost
+    + reranker_cost
+)
 ```
 
 **Aggregation rules**
 
-- Per-query costs are averaged across all evaluated queries to produce `cost_usd_per_query` (logged as `cost.total_usd_est_per_query`).
+- Per-query costs are averaged across all evaluated queries to produce `cost.mean_usd_est_per_query`.
+- The run-wide sum of per-query totals is reported as `cost.aggregate_usd_est`.
 - Token counts and per-query components are also logged as `cost.input_tokens_est`, `cost.output_tokens_est`, `cost.embed_tokens_est`, `cost.llm_base_usd_est`, `cost.llm_rewrite_usd_est`, `cost.llm_hyde_usd_est`, `cost.reranker_usd_est`, `cost.llm_usd_est`, `cost.embed_usd_est`, and `cost.total_usd_est`.
 
 ### Artifacts Per Run

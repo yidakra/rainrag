@@ -292,6 +292,12 @@ class TwoStageSweepExperiment(BaseExperiment):
         if unknown:
             raise ValueError(f"Unknown sweep axes: {unknown!r}. Valid: {self._ALL_AXES}")
 
+        if not self._axes:
+            raise ValueError(
+                "At least one axis must be selected for sweep; "
+                "your axes list is empty. See conditions() usage."
+            )
+
         self._hyde_alphas = hyde_alphas if hyde_alphas is not None else HYDE_ALPHAS
         self._rewrite_variants = (
             rewrite_variants if rewrite_variants is not None else REWRITE_VARIANTS
@@ -305,14 +311,12 @@ class TwoStageSweepExperiment(BaseExperiment):
 
         # Validate provided sweep values
         for alpha in self._hyde_alphas:
-            if not isinstance(alpha, (int, float)) or isinstance(alpha, bool):
+            if not isinstance(alpha, int | float) or isinstance(alpha, bool):
                 raise ValueError(
                     f"hyde_alphas must be numeric (int/float); got {alpha!r} ({type(alpha).__name__})"
                 )
             if not 0 <= float(alpha) <= 1:
-                raise ValueError(
-                    f"hyde_alphas must be between 0 and 1 (inclusive); got {alpha!r}"
-                )
+                raise ValueError(f"hyde_alphas must be between 0 and 1 (inclusive); got {alpha!r}")
 
         for n in self._rewrite_variants:
             if not isinstance(n, int) or isinstance(n, bool):
@@ -324,9 +328,7 @@ class TwoStageSweepExperiment(BaseExperiment):
 
         for m in self._pool_sizes:
             if not isinstance(m, int) or isinstance(m, bool):
-                raise ValueError(
-                    f"pool_sizes must be integers > 0; got {m!r} ({type(m).__name__})"
-                )
+                raise ValueError(f"pool_sizes must be integers > 0; got {m!r} ({type(m).__name__})")
             if m <= 0:
                 raise ValueError(f"pool_sizes must be > 0; got {m}")
 
@@ -346,9 +348,7 @@ class TwoStageSweepExperiment(BaseExperiment):
 
         for order in self._doc_orders:
             if order not in DOC_ORDERS:
-                raise ValueError(
-                    f"doc_orders must be one of {DOC_ORDERS}; got {order!r}"
-                )
+                raise ValueError(f"doc_orders must be one of {DOC_ORDERS}; got {order!r}")
 
     def conditions(self) -> list[dict[str, Any]]:
         """Build and return all sweep conditions for the selected axes."""

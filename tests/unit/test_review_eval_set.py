@@ -15,10 +15,10 @@ import pytest
 from eval.datasets.review_eval_set import review_eval_set
 
 
-def test_review_eval_set_editing_deleted_record_does_not_decrement_below_zero(
+def test_review_eval_set_editing_invalid_pending_record_does_not_decrement_below_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Editing a previously deleted record must not make the deleted counter go negative."""
+    """Editing an invalid pending record must not make the deleted counter go negative."""
 
     record = {
         "query_id": "q1",

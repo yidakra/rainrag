@@ -237,8 +237,9 @@ Because query rewriting, HyDE, and reranking are optional, we log both a
 
 | Metric | Description |
 |---|---|
-| `cost.total_mean_usd_est_per_query` | Estimated mean USD cost per query across the evaluated queries |
-| `cost.total_usd_est_per_query` | Legacy alias for `cost.total_mean_usd_est_per_query` |
+| `cost.mean_usd_est_per_query` | Estimated mean USD cost per query across the evaluated queries |
+| `cost.aggregate_usd_est` | Run-wide total estimated cost across all queries |
+| `cost.total_usd_est` | Per-query total estimated cost (for the current query)
 | `cost.llm_base_usd_est` | Estimated USD cost of the main answer-generation LLM call |
 | `cost.llm_rewrite_usd_est` | Estimated USD cost of query rewrite LLM calls |
 | `cost.llm_hyde_usd_est` | Estimated USD cost of HyDE LLM calls |

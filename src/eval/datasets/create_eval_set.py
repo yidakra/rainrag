@@ -39,8 +39,8 @@ logger = logging.getLogger(__name__)
 
 # Allow running as a script from repo root (only if the src/ directory exists).
 # Prefer installing the package in editable mode (pip install -e .) for reliable imports.
-src_dir = Path(__file__).parent.parent.parent / "src"
-if src_dir.is_dir():
+src_dir = Path(__file__).resolve().parent.parent.parent  # repo/src/
+if src_dir.is_dir() and str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
 from rainrag.config import load_config

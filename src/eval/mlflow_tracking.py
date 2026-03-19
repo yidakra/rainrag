@@ -132,10 +132,10 @@ def log_metrics(metrics: dict[str, float | int | None], step: int | None = None)
     if not _MLFLOW_AVAILABLE:
         return
     assert mlflow is not None
-    # filter out null/NaN, sanitize metric names, and make all values floats
+    # filter out null/NaN/Infinity, sanitize metric names, and make all values floats
     clean: dict[str, float] = {}
     for key, value in metrics.items():
-        if value is None or (isinstance(value, float) and math.isnan(value)):
+        if value is None or (isinstance(value, float) and (math.isnan(value) or math.isinf(value))):
             continue
 
         base = _sanitize_metric_name(key)
@@ -234,6 +234,10 @@ def get_run_url() -> str | None:
         if run is None:
             return None
         uri = str(mlflow.get_tracking_uri())
+        # File-based tracking has no web UI
+        if uri.startswith("file://") or not uri.startswith(("http://", "https://")):
+            return None
+        uri = uri.rstrip("/")
         return f"{uri}/#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}"
     except Exception:
         return None

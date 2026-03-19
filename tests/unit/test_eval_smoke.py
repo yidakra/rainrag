@@ -314,8 +314,6 @@ def test_retrieve_documents_include_speech_free_by_default(test_config) -> None:
     pytest.importorskip("qdrant_client")
     pytest.importorskip("torch")
 
-    from unittest.mock import MagicMock
-
     from rainrag.query import RAGQueryEngine
 
     cfg = test_config

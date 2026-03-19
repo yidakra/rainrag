@@ -40,6 +40,9 @@ def mrr(retrieved: Sequence[str], relevant: set[str]) -> float:
 
 def ndcg_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     """Normalized Discounted Cumulative Gain at k (binary relevance)."""
+    if not isinstance(k, int) or k < 0:
+        raise ValueError("k must be a non-negative integer")
+
     retrieved_k = list(retrieved[:k])
 
     def dcg(items: list[str]) -> float:
@@ -48,7 +51,6 @@ def ndcg_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
         )
 
     actual_dcg = dcg(retrieved_k)
-    # Ideal: all relevant docs first
     ideal_len = min(len(relevant), k)
     ideal_dcg = sum(1.0 / math.log2(i + 2) for i in range(ideal_len))
     return actual_dcg / ideal_dcg if ideal_dcg > 0 else 0.0
@@ -58,12 +60,14 @@ def average_precision(retrieved: Sequence[str], relevant: set[str]) -> float:
     """Average Precision (area under the precision-recall curve)."""
     if not relevant:
         return 0.0
+
     num_hits = 0
     precision_sum = 0.0
     for i, doc_id in enumerate(retrieved, 1):
         if doc_id in relevant:
             num_hits += 1
             precision_sum += num_hits / i
+
     return precision_sum / len(relevant)
 
 
@@ -91,9 +95,9 @@ def intent_coverage_at_k(
 ) -> float:
     """Fraction of query variants with ≥1 relevant doc in their top-k.
 
-    Operationalises the VRisk intuition (Takehi et al., WSDM 2026): a result
-    set is robust only when *every interpretation* of an ambiguous query (each
-    rewrite variant) is adequately served — not just the majority reading.
+    Operationalises the VRisk intuition: a result set is robust only when
+    *every interpretation* of an ambiguous query (each rewrite variant) is
+    adequately served — not just the majority reading.
 
     Args:
         variant_retrieved_ids: One ordered list of retrieved doc IDs per query variant.
@@ -105,6 +109,8 @@ def intent_coverage_at_k(
     """
     if not variant_retrieved_ids or not relevant:
         return 0.0
+    if not isinstance(k, int) or k <= 0:
+        raise ValueError("k must be a positive integer")
     covered = sum(1 for ids in variant_retrieved_ids if set(ids[:k]) & relevant)
     return covered / len(variant_retrieved_ids)
 

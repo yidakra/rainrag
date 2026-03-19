@@ -173,10 +173,12 @@ def _metric_from_row(row: Any, name: str) -> float | None:
 def _cost_from_row(row: Any) -> float | None:
     """Read estimated per-query cost from a run row.
 
-    Supports both the legacy ``metrics.cost_total_usd_est_per_query`` key and the
-    more recent ``metrics.cost.total_usd_est_per_query`` key.
+    Supports the current key ``metrics.cost.mean_usd_est_per_query`` and a
+    fallback to ``metrics.cost.aggregate_usd_est`` if per-query mean is missing.
     """
     for col in (
+        "metrics.cost.mean_usd_est_per_query",
+        "metrics.cost.aggregate_usd_est",
         "metrics.cost.total_mean_usd_est_per_query",
         "metrics.cost.total_usd_est_per_query",
         "metrics.cost_total_usd_est_per_query",
@@ -356,6 +358,15 @@ def plot_robustness_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
         mean_r5 = _metric_from_row(row, "recall@5")
         if mean_r5 is None:
             continue
+        # Skip rows where p10 is missing to keep mean/p10 alignment correct.
+        row_missing_p10 = False
+        for _, p10_col, _ in metrics:
+            if _metric_from_row(row, p10_col) is None:
+                row_missing_p10 = True
+                break
+        if row_missing_p10:
+            continue
+
         labels.append(lbl)
         for mean_col, p10_col, _ in metrics:
             data[mean_col].append(_metric_from_row(row, mean_col) or 0.0)

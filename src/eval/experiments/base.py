@@ -329,9 +329,9 @@ class BaseExperiment(ABC):
         import math as _math
 
         m = result["metrics"]
-        cost = m.get("cost.total_mean_usd_est_per_query", float("nan"))
+        cost = m.get("cost.mean_usd_est_per_query", float("nan"))
         if _math.isnan(cost):
-            cost = m.get("cost.total_usd_est_per_query", float("nan"))
+            cost = m.get("cost.aggregate_usd_est", float("nan"))
         cost_str = f"${cost:.4f}/q" if not _math.isnan(cost) else "cost=n/a"
 
         ndcg5 = m.get("ndcg@5", float("nan"))
@@ -378,12 +378,19 @@ class BaseExperiment(ABC):
             print(f"Results written to {output}")
         except ImportError:
             # Fallback: plain CSV
+            import csv
+
             all_keys = list(results[0]["metrics"].keys())
             header = ["condition_id", "label", "top_k"] + all_keys
-            with open(output, "w", encoding="utf-8") as f:
-                f.write(",".join(header) + "\n")
+            with open(output, "w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
                 for r in results:
-                    csv_row = [str(r["condition_id"]), r["condition_label"], str(r["top_k"])]
-                    csv_row += [str(r["metrics"].get(k, "")) for k in all_keys]
-                    f.write(",".join(csv_row) + "\n")
+                    csv_row = [
+                        str(r["condition_id"]),
+                        r["condition_label"],
+                        str(r["top_k"]),
+                    ]
+                    csv_row += [r["metrics"].get(k, "") for k in all_keys]
+                    writer.writerow(csv_row)
             print(f"Results written to {output}")

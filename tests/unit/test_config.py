@@ -266,9 +266,11 @@ class TestTwoStageConfig:
             TwoStageConfig(hyde_alpha=1.5)
         with pytest.raises(ValidationError):
             TwoStageConfig(hyde_alpha=-0.1)
-        # boundary values should be accepted
-        TwoStageConfig(hyde_alpha=0)
-        TwoStageConfig(hyde_alpha=1)
+        # boundary values should be accepted and preserved
+        cfg_low = TwoStageConfig(hyde_alpha=0)
+        cfg_high = TwoStageConfig(hyde_alpha=1)
+        assert cfg_low.hyde_alpha == 0
+        assert cfg_high.hyde_alpha == 1
 
     def test_two_stage_config_variants_bounds(self) -> None:
         """Test that query_rewrite_variants is bounded to [1, 5]."""

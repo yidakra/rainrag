@@ -9,6 +9,7 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
+
 _logger = logging.getLogger(__name__)
 
 

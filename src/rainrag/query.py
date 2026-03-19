@@ -1666,6 +1666,7 @@ Question: {query}"""
 
         # Step 2: Embed primary query, then optionally blend with HyDE (Stage 2b)
         primary_vector = self.embed_query(question)
+        embed_calls = 1
 
         if two_stage_enabled and self.config.two_stage.hyde_enabled:
             import numpy as np
@@ -1692,7 +1693,11 @@ Question: {query}"""
             # is reused for the original query via index-based check.
             all_variant_docs: list[list[dict[str, Any]]] = []
             for i, variant in enumerate(query_variants):
-                variant_vector = primary_vector if i == 0 else self.embed_query(variant)
+                if i == 0:
+                    variant_vector = primary_vector
+                else:
+                    variant_vector = self.embed_query(variant)
+                    embed_calls += 1
                 variant_docs = self.retrieve_documents(
                     variant_vector,
                     retrieval_k,
@@ -1787,6 +1792,7 @@ Question: {query}"""
             "cost.llm_calls_count": llm_calls,
             "cost.llm_query_rewrite_calls": llm_query_rewrite_calls,
             "cost.llm_hyde_calls": llm_hyde_calls,
+            "cost.embed_calls_count": embed_calls,
             "cost.reranker_calls_count": reranker_calls,
         }
 

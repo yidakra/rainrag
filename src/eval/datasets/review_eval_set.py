@@ -103,11 +103,18 @@ def _print_record(record: Record, index: int, total: int, accepted: int, deleted
             print(f"Source: {record['source_path']}")
 
 
-def _prompt(msg: str = "") -> str:
-    """Read a line of input; handle EOF gracefully."""
+def _prompt(msg: str = "", *, raise_on_interrupt: bool = False) -> str:
+    """Read a line of input; handle EOF gracefully.
+
+    If :paramref:`raise_on_interrupt` is True, a KeyboardInterrupt is
+    propagated to the caller (useful for cancelling nested input loops).
+    Otherwise, it is treated as a quit signal ("q").
+    """
     try:
         return input(msg).strip()
     except (EOFError, KeyboardInterrupt):
+        if raise_on_interrupt:
+            raise
         return "q"
 
 
@@ -220,7 +227,7 @@ def review_eval_set(
             if key == "q":
                 _save(records, out)
                 print(
-                    f"\nSaved. Session ended: {accepted} accepted, {deleted} deleted, {skipped} skipped, {seq - 1} reviewed this session."
+                    f"\nSaved. Session ended: {accepted} accepted, {deleted} deleted, {skipped} skipped, {reviewed_count} reviewed this session."
                 )
                 return {
                     "total": total,
@@ -267,7 +274,7 @@ def review_eval_set(
                 lines: list[str] = []
                 while True:
                     try:
-                        ln = _prompt("  > ")
+                        ln = _prompt("  > ", raise_on_interrupt=True)
                     except KeyboardInterrupt:
                         print("  Edit cancelled")
                         lines = []
@@ -451,6 +458,14 @@ if __name__ == "__main__":
             print(f"ERROR: {e}")
             sys.exit(1)
     elif args.cmd == "filter":
-        filter_valid(args.input, args.output)
+        try:
+            filter_valid(args.input, args.output)
+        except FileNotFoundError as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)
     elif args.cmd == "stats":
-        review_stats(args.input)
+        try:
+            review_stats(args.input)
+        except FileNotFoundError as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)

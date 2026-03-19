@@ -115,8 +115,27 @@ class ProviderComparisonExperiment(BaseExperiment):
             experiment_name="provider_comparison",
             top_ks=top_ks,
         )
-        self._llm_providers = set(llm_providers or _LLM_PROVIDERS)
-        self._embed_providers = set(embed_providers or _EMBED_PROVIDERS)
+
+        requested_llm_providers = set(llm_providers or _LLM_PROVIDERS)
+        requested_embed_providers = set(embed_providers or _EMBED_PROVIDERS)
+
+        invalid_llm = sorted(requested_llm_providers - set(_LLM_PROVIDERS))
+        invalid_embed = sorted(requested_embed_providers - set(_EMBED_PROVIDERS))
+
+        invalid_entries = []
+        if invalid_llm:
+            invalid_entries.append(
+                f"llm_providers contains invalid values {invalid_llm!r}; allowed: {_LLM_PROVIDERS!r}"
+            )
+        if invalid_embed:
+            invalid_entries.append(
+                f"embed_providers contains invalid values {invalid_embed!r}; allowed: {_EMBED_PROVIDERS!r}"
+            )
+        if invalid_entries:
+            raise ValueError("; ".join(invalid_entries))
+
+        self._llm_providers = requested_llm_providers
+        self._embed_providers = requested_embed_providers
 
     def conditions(self) -> list[dict[str, Any]]:
         all_conditions = _build_conditions()

@@ -64,6 +64,23 @@ EMBED_COST_PER_1M: dict[str, float] = {
 # Character-to-token ratio (rough estimate for English / mixed text)
 _CHARS_PER_TOKEN: float = 4.0
 
+# Estimated tokens consumed by the system prompt in a main answer generation call.
+# Adjust this constant as provider/system prompt behavior evolves.
+SYSTEM_PROMPT_TOKEN_ESTIMATE: float = 200.0
+
+
+# ---------------------------------------------------------------------------
+# Auxiliary call cost estimators
+# ---------------------------------------------------------------------------
+
+# Estimated tokens consumed by an auxiliary LLM call (e.g., query rewrite or HyDE).
+# These are heuristics; actual prompt/output lengths will vary.
+_AUX_LLM_TOKENS_EST: float = 100.0
+
+# Estimated cost per reranker API call. This is a rough placeholder and can be
+# adjusted based on the specific reranker provider/implementation.
+_RERANKER_COST_PER_CALL_USD: float = 0.0005
+
 
 # ---------------------------------------------------------------------------
 # Core estimation functions
@@ -115,13 +132,16 @@ def estimate_query_cost(
           ``cost.embed_usd_est``            – estimated embedding cost in USD
           ``cost.total_usd_est``            – sum of all cost components
     """
-    # Input = system prompt + context + query (system prompt approximated as 200 tokens)
+    # Input = system prompt + context + query.
+    # SYSTEM_PROMPT_TOKEN_ESTIMATE is the estimated token budget for the static system prompt.
     # Normalize contexts so we never pass None / non-str values into chars_to_tokens.
     # (e.g., some retrieval pipelines may return None for missing documents.)
     contexts = contexts or []
     cleaned_contexts = [str(c) for c in contexts if c is not None]
     context_text = " ".join(cleaned_contexts)
-    input_tokens = 200 + chars_to_tokens(context_text) + chars_to_tokens(query)
+    input_tokens = (
+        SYSTEM_PROMPT_TOKEN_ESTIMATE + chars_to_tokens(context_text) + chars_to_tokens(query)
+    )
     output_tokens = chars_to_tokens(answer)
     embed_tokens = chars_to_tokens(query)  # one embedding call per query
 
@@ -137,13 +157,14 @@ def estimate_query_cost(
     # Base LLM cost is the cost for the final answer generation call.
     llm_base_cost = input_cost + output_cost
 
-    # Additional LLM calls (rewrite, HyDE) are estimated using the same per-call cost.
-    # This is a simple proxy; the real cost depends on prompt lengths and output sizes.
-    llm_rewrite_cost = llm_base_cost * llm_query_rewrite_calls
-    llm_hyde_cost = llm_base_cost * llm_hyde_calls
+    # Additional LLM calls (rewrite, HyDE) are estimated using a modest fixed
+    # token budget per call rather than reusing the full main-call cost.
+    aux_cost_per_call = (_AUX_LLM_TOKENS_EST / 1_000_000) * (llm_input_rate + llm_output_rate)
+    llm_rewrite_cost = aux_cost_per_call * llm_query_rewrite_calls
+    llm_hyde_cost = aux_cost_per_call * llm_hyde_calls
 
-    # Reranker cost is not known (provider-dependent). Default to zero and allow later extension.
-    reranker_cost = 0.0
+    # Reranker cost is highly provider-specific; use a small default estimate per call.
+    reranker_cost = reranker_calls * _RERANKER_COST_PER_CALL_USD
 
     total_cost = embed_cost + llm_base_cost + llm_rewrite_cost + llm_hyde_cost + reranker_cost
 
@@ -165,20 +186,25 @@ def estimate_query_cost(
 def aggregate_costs(per_query_costs: list[dict[str, float]]) -> dict[str, float]:
     """Sum token counts and costs across all queries, add per-query averages.
 
-    Returns keys like ``cost.total_usd_est`` (total) and
-    ``cost.total_usd_est_per_query`` (mean).
+    Returns keys like ``cost.total_usd_est`` (per-query total) and
+    ``cost.aggregate_usd_est`` (run-wide total), plus ``cost.mean_usd_est_per_query``
+    (average per-query cost across all records).
     """
     if not per_query_costs:
         return {}
 
     keys = per_query_costs[0].keys()
     totals = {k: sum(d.get(k, 0.0) for d in per_query_costs) for k in keys}
+    totals["cost.aggregate_usd_est"] = totals.get("cost.total_usd_est", 0.0)
+
     n = len(per_query_costs)
     averages = {f"{k}_per_query": v / n for k, v in totals.items()}
 
-    # Clarify that the per-query cost is a mean across the evaluated queries.
-    # Provide an explicit (and more descriptive) key for the main total cost metric.
+    # Use clear metric names and remove legacy ambiguous key.
     if "cost.total_usd_est_per_query" in averages:
-        averages["cost.total_mean_usd_est_per_query"] = averages["cost.total_usd_est_per_query"]
+        averages["cost.mean_usd_est_per_query"] = averages.pop("cost.total_usd_est_per_query")
+
+    # Legacy key removed explicitly to avoid "total_per_query" mix.
+    averages.pop("cost.total_usd_est_per_query", None)
 
     return {**totals, **averages}

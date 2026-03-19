@@ -5,12 +5,6 @@
     "include": ["src", "eval", "tests", "app.py"],
     "exclude": [],
     "extraPaths": [".", "src"],
-    "executionEnvironments": [
-        {
-            "root": ".",
-            "extraPaths": [".", "src"]
-        }
-    ],
     "reportMissingImports": "warning",
     "reportMissingTypeStubs": "none",
     "reportImportCycles": "warning",

@@ -557,7 +557,6 @@ async def health_check():
 
 
 @app.post("/query", response_model=QueryResponse)
-@app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest):
     """
     Query the RAG system.

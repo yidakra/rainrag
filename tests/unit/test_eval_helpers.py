@@ -165,8 +165,8 @@ class TestBEIRQRels:
 
 # ---------------------------------------------------------------------------
 # _embed_documents_local prefix handling
-
-
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 class TestEmbedDocumentsLocal:
     def make_engine(self, prefix="", model_name="", has_name_attr=True):
         from types import SimpleNamespace
@@ -188,7 +188,6 @@ class TestEmbedDocumentsLocal:
 
         texts = ["foo", "bar"]
         out = _embed_documents_local(engine, texts, batch_size=1)
-        # encode returns list of lists; original lambda outputs strings
         assert out == ["pre: foo", "pre: bar"]
 
     def test_auto_prefix_for_e5_model(self):
@@ -305,7 +304,7 @@ class TestBEIRAdapter:
         records = adapter.to_eval_jsonl(str(out), min_relevance=2)
         assert records[0]["relevant_doc_ids"] == ["d1"]
 
-    def test_eval_bm25_baseline_perfect(self, tmp_path):
+    def test_eval_bm25_baseline_perfect(self):
         """With a tiny corpus where the query perfectly matches the doc, BM25 should rank it first."""
         from eval.datasets.beir_adapter import BEIRAdapter, BEIRCorpus, BEIRQRels, BEIRQueries
 
@@ -329,7 +328,7 @@ class TestBEIRAdapter:
         assert metrics["recall@2"] == 1.0
         assert metrics["mrr"] == 1.0
 
-    def test_eval_bm25_baseline_returns_standard_keys(self, tmp_path):
+    def test_eval_bm25_baseline_returns_standard_keys(self):
         """eval_bm25_baseline must return the standard retrieval metric keys."""
         from eval.datasets.beir_adapter import BEIRAdapter, BEIRCorpus, BEIRQRels, BEIRQueries
 
@@ -421,9 +420,10 @@ class TestBuildSummary:
 
         assert "cost.total_usd_est" in summary["metrics"]
         assert summary["metrics"]["cost.total_usd_est"] == pytest.approx(0.002)
-        assert "cost.total_usd_est_per_query" in summary["metrics"]
-        assert "cost.total_mean_usd_est_per_query" in summary["metrics"]
-        assert summary["metrics"]["cost.total_mean_usd_est_per_query"] == pytest.approx(0.002)
+        assert "cost.aggregate_usd_est" in summary["metrics"]
+        assert summary["metrics"]["cost.aggregate_usd_est"] == pytest.approx(0.002)
+        assert "cost.mean_usd_est_per_query" in summary["metrics"]
+        assert summary["metrics"]["cost.mean_usd_est_per_query"] == pytest.approx(0.002)
 
     def test_latency_percentiles(self, minimal_condition, minimal_config):
         from eval.experiments.base import BaseExperiment
@@ -609,7 +609,6 @@ class TestBuildSummary:
             TwoStageConfig(merge_strategy=cast(Any, "not_a_strategy"))
         with pytest.raises(ValidationError):
             TwoStageConfig(prompt_doc_order=cast(Any, "upside_down"))
-            TwoStageConfig(prompt_doc_order=cast(Any, "upside_down"))
 
     def test_apply_overrides_min_retrieval_score(self, minimal_config):
         """min_retrieval_score must be settable via apply_overrides."""
@@ -689,7 +688,7 @@ class TestPrintResult:
                 "ndcg@5": 0.4,
                 "mrr": 0.6,
                 "rouge_l": 0.3,
-                "cost.total_usd_est_per_query": 0.0012,
+                "cost.mean_usd_est_per_query": 0.0012,
             },
             capsys,
         )

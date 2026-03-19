@@ -589,16 +589,16 @@ class TestAggregateCosts:
         }
         result = aggregate_costs([q])
         assert result["cost.total_usd_est"] == pytest.approx(0.0011)
-        assert result["cost.total_usd_est_per_query"] == pytest.approx(0.0011)
-        assert result["cost.total_mean_usd_est_per_query"] == pytest.approx(0.0011)
+        assert result["cost.aggregate_usd_est"] == pytest.approx(0.0011)
+        assert result["cost.mean_usd_est_per_query"] == pytest.approx(0.0011)
 
     def test_averages_two_queries(self):
         q1 = {"cost.total_usd_est": 0.002}
         q2 = {"cost.total_usd_est": 0.004}
         result = aggregate_costs([q1, q2])
         assert result["cost.total_usd_est"] == pytest.approx(0.006)
-        assert result["cost.total_usd_est_per_query"] == pytest.approx(0.003)
-        assert result["cost.total_mean_usd_est_per_query"] == pytest.approx(0.003)
+        assert result["cost.aggregate_usd_est"] == pytest.approx(0.006)
+        assert result["cost.mean_usd_est_per_query"] == pytest.approx(0.003)
 
     def test_all_cost_keys_aggregated(self):
         keys = [
@@ -617,4 +617,7 @@ class TestAggregateCosts:
         result = aggregate_costs(queries)
         for k in keys:
             assert result[k] == pytest.approx(4.0), f"total for {k}"
-            assert result[f"{k}_per_query"] == pytest.approx(2.0), f"avg for {k}"
+            if k == "cost.total_usd_est":
+                assert result["cost.mean_usd_est_per_query"] == pytest.approx(2.0)
+            else:
+                assert result[f"{k}_per_query"] == pytest.approx(2.0), f"avg for {k}"

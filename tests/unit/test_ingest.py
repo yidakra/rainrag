@@ -551,10 +551,12 @@ Hi
 
     _EMPTY_VTT = "WEBVTT\n\n"  # Valid header, zero cues
 
-    def test_empty_vtt_parse_returns_empty_list(self) -> None:
-        """_parse_vtt_lines_to_cues must return [] (not None) for a header-only VTT."""
-        lines = self._EMPTY_VTT.splitlines(keepends=True)
-        result = VTTParser._parse_vtt_lines_to_cues(lines)
+    def test_empty_vtt_parse_to_cues_returns_empty_list(self, temp_dir: Path) -> None:
+        """parse_vtt_to_cues must return [] (not None) for a header-only VTT."""
+        vtt_path = temp_dir / "empty.vtt"
+        vtt_path.write_text(self._EMPTY_VTT)
+
+        result = VTTParser.parse_vtt_to_cues(vtt_path)
         assert result == []
 
     def test_empty_vtt_parse_with_timecodes_returns_empty_string(self, temp_dir: Path) -> None:

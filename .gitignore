@@ -225,10 +225,14 @@ qdrant_storage/
 .DS_Store
 
 # Secret/key files (keep private & avoid accidental commits)
-secrets/
+# Keep template files (e.g. *.txt.example) under version control.
+# Actual secret files should be stored outside git or in a secure secrets store.
+credentials.json
+credential.key
+credentials.env
+secrets/credentials/*
 *.key
 *.pem
-*credentials*
 *.secret
 
 # Pyright local configuration

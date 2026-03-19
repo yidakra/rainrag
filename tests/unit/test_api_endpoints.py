@@ -12,9 +12,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import anyio
-import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 
 # Add parent directory to path
@@ -35,34 +34,6 @@ from src.rainrag.config import (
 )
 
 
-class _SyncASGIClient:
-    """Synchronous facade over httpx.AsyncClient for ASGI app tests."""
-
-    def __init__(self, asgi_app):
-        self._transport = httpx.ASGITransport(app=asgi_app)
-        self._base_url = "http://testserver"
-        self._client = httpx.AsyncClient(transport=self._transport, base_url=self._base_url)
-
-    def request(self, method: str, url: str, **kwargs):
-        async def _request():
-            return await self._client.request(method, url, **kwargs)
-
-        return anyio.run(_request)
-
-    def close(self):
-        """Close the underlying AsyncClient."""
-        async def _close():
-            await self._client.aclose()
-
-        return anyio.run(_close)
-
-    def get(self, url: str, **kwargs):
-        return self.request("GET", url, **kwargs)
-
-    def post(self, url: str, **kwargs):
-        return self.request("POST", url, **kwargs)
-
-
 # ============================================================================
 # Test Fixtures
 # ============================================================================
@@ -70,8 +41,8 @@ class _SyncASGIClient:
 
 @pytest.fixture
 def test_client():
-    """Create a synchronous ASGI test client (via _SyncASGIClient) for the FastAPI app."""
-    client = _SyncASGIClient(app)
+    """Create a synchronous FastAPI test client for the app."""
+    client = TestClient(app)
     try:
         yield client
     finally:
