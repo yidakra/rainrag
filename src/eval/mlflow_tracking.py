@@ -199,7 +199,10 @@ def log_config_snapshot(config: Any, filename: str = "config_snapshot.yaml") -> 
     assert mlflow is not None
     try:
         import yaml
-    except ImportError:
+    except ImportError as exc:
+        logging.getLogger(__name__).warning(
+            "YAML package not installed, config snapshot will not be logged: %s", exc
+        )
         return
     # prepare serializable data
     data: Any

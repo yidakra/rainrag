@@ -35,6 +35,8 @@ Embedding (USD / 1 M tokens)
 
 from __future__ import annotations
 
+import warnings
+
 
 # ---------------------------------------------------------------------------
 # Pricing tables (USD / 1 M tokens)
@@ -163,8 +165,17 @@ def estimate_query_cost(
     llm_rewrite_cost = aux_cost_per_call * llm_query_rewrite_calls
     llm_hyde_cost = aux_cost_per_call * llm_hyde_calls
 
-    # Reranker cost is highly provider-specific; use a small default estimate per call.
-    reranker_cost = reranker_calls * _RERANKER_COST_PER_CALL_USD
+    # Reranker cost is highly provider-specific and is not yet modeled in detail.
+    # Keep default cost at 0.0 (not included in total), but warn when reranker
+    # usage is present so callers are not misled by the existing parameter.
+    reranker_cost = 0.0
+    if reranker_calls > 0:
+        warnings.warn(
+            "reranker_calls > 0 provided to estimate_query_cost, but reranker "
+            "cost is not currently included in estimate and is treated as 0.0",
+            UserWarning,
+            stacklevel=2,
+        )
 
     total_cost = embed_cost + llm_base_cost + llm_rewrite_cost + llm_hyde_cost + reranker_cost
 
@@ -193,18 +204,23 @@ def aggregate_costs(per_query_costs: list[dict[str, float]]) -> dict[str, float]
     if not per_query_costs:
         return {}
 
-    keys = per_query_costs[0].keys()
+    # Collect the union of keys across all per-query cost dicts to tolerate missing
+    # or additional keys in individual query records.
+    keys = {k for d in per_query_costs for k in d}
     totals = {k: sum(d.get(k, 0.0) for d in per_query_costs) for k in keys}
     totals["cost.aggregate_usd_est"] = totals.get("cost.total_usd_est", 0.0)
 
     n = len(per_query_costs)
     averages = {f"{k}_per_query": v / n for k, v in totals.items()}
 
-    # Use clear metric names and remove legacy ambiguous key.
+    # Use clear metric names and map to a single canonical per-query metric name.
+    # Previously, both "cost.total_usd_est_per_query" and
+    # "cost.mean_usd_est_per_query" might have been used; we keep
+    # "cost.mean_usd_est_per_query" as canonical and drop the other.
     if "cost.total_usd_est_per_query" in averages:
         averages["cost.mean_usd_est_per_query"] = averages.pop("cost.total_usd_est_per_query")
 
-    # Legacy key removed explicitly to avoid "total_per_query" mix.
+    # Explicitly remove any remaining legacy key to avoid duplicate semantics.
     averages.pop("cost.total_usd_est_per_query", None)
 
     return {**totals, **averages}

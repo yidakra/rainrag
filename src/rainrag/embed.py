@@ -134,6 +134,7 @@ class Embedder:
         self.openai_client: Any = None
         self.mistral_client: Any = None
         self.genai_client: Any = None
+        self._genai_types: Any = None
 
     def load_model(self) -> None:
         """Load the embedding model based on provider."""
@@ -205,12 +206,20 @@ class Embedder:
                 device=device,
                 model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
             )
-        except TypeError:
-            # Older sentence-transformers versions don't accept model_kwargs
-            self.model = cast(Any, model_cls_any)(
-                self.config.embedding.model_name,
-                device=device,
-            )
+        except TypeError as exc:
+            message = str(exc).lower()
+            if "unexpected" in message or "model_kwargs" in message:
+                # Older sentence-transformers versions do not support model_kwargs
+                self.model = cast(Any, model_cls_any)(
+                    self.config.embedding.model_name,
+                    device=device,
+                )
+            else:
+                logger.error(
+                    "sentence-transformers model construction failed: %s",
+                    exc,
+                )
+                raise
 
         assert self.model is not None, "Model should be loaded after load_model() call"
         # Set max sequence length

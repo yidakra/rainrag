@@ -1,6 +1,7 @@
 """Tests for the FastAPI backend."""
 
 # asyncio not needed in these tests
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
@@ -21,6 +22,19 @@ from rainrag.config import (
     QdrantConfig,
     VideoConfig,
 )
+
+
+@contextmanager
+def override_api_config(test_cfg):
+    """Temporarily override rainrag.api.config in context, restoring after exit."""
+    import rainrag.api as api_module
+
+    original_config = api_module.config
+    api_module.config = test_cfg
+    try:
+        yield
+    finally:
+        api_module.config = original_config
 
 
 class _SyncASGIClient:
@@ -65,7 +79,7 @@ class _SyncASGIClient:
 
 @pytest.fixture
 def test_client():
-    """Create a FastAPI TestClient for the app."""
+    """Create a sync ASGI test client (returns _SyncASGIClient) for the app."""
     return _SyncASGIClient(app)
 
 
@@ -82,14 +96,11 @@ def test_config_with_video(temp_dir: Path) -> Config:
     embeddings_dir.mkdir()
 
     return Config(
-        paths=cast(
-            PathsConfig,
-            {
-                "archive_root": str(archive_dir),
-                "docs_output": str(data_dir / "docs.jsonl"),
-                "embeddings_cache": str(embeddings_dir),
-                "video_root": str(archive_dir),
-            },
+        paths=PathsConfig(
+            archive_root=str(archive_dir),
+            docs_output=str(data_dir / "docs.jsonl"),
+            embeddings_cache=str(embeddings_dir),
+            video_root=str(archive_dir),
         ),
         embedding=cast(
             EmbeddingConfig,
@@ -174,10 +185,10 @@ def make_test_config(archive_root: str, video_enabled: bool = True) -> Config:
         paths=cast(
             PathsConfig,
             {
-                "archive_root": str(archive_root),
+                "archive_root": archive_root,
                 "docs_output": "./data/docs.jsonl",
                 "embeddings_cache": "./embeddings",
-                "video_root": str(archive_root),
+                "video_root": archive_root,
             },
         ),
         embedding=cast(
@@ -290,37 +301,22 @@ def archive_with_videos(temp_dir: Path, sample_vtt_en: str) -> Path:
 def test_find_video_file_mp4(temp_dir: Path, archive_with_videos: Path):
     """Test finding MP4 video file for VTT."""
 
-    # Set up config
     test_cfg = make_test_config(str(archive_with_videos))
 
-    # Temporarily set the global config
-    import rainrag.api as api_module
-
-    original_config = api_module.config
-    api_module.config = test_cfg
-
-    try:
+    with override_api_config(test_cfg):
         vtt_path = str(archive_with_videos / "test_videos" / "video1.en.vtt")
         video_file = find_video_file(vtt_path)
 
         assert video_file is not None
         assert video_file.endswith("video1.mp4")
         assert Path(video_file).exists()
-    finally:
-        api_module.config = original_config
 
 
 def test_find_video_file_mkv(temp_dir: Path, archive_with_videos: Path):
     """Test finding video file for VTT with hash-based naming (multi-resolution)."""
-    import rainrag.api as api_module
-
-    original_config = api_module.config
-
     test_cfg = make_test_config(str(archive_with_videos))
 
-    api_module.config = test_cfg
-
-    try:
+    with override_api_config(test_cfg):
         # Test with hash-based naming that has multiple resolutions
         hash_name = "3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd"
         vtt_path = str(archive_with_videos / "test_videos" / f"{hash_name}.ru.vtt")
@@ -330,8 +326,6 @@ def test_find_video_file_mkv(temp_dir: Path, archive_with_videos: Path):
         # Should find one of the resolution variants
         assert hash_name in video_file
         assert Path(video_file).exists()
-    finally:
-        api_module.config = original_config
 
 
 def test_find_video_file_not_found(temp_dir: Path, archive_with_videos: Path):

@@ -17,8 +17,12 @@ and you want to avoid overload or accidental full reindex.
 mlflow server \
   --host 127.0.0.1 \
   --port 5000 \
-  --backend-store-uri /home/ubuntu/rainrag/mlruns \
-  --default-artifact-root file:///home/ubuntu/rainrag/mlruns
+  --backend-store-uri $PWD/mlruns \  
+  --default-artifact-root file://$PWD/mlruns
+
+# Or set an explicit path if not running from repo root:
+# --backend-store-uri <your-project-root>/mlruns \
+# --default-artifact-root file://<your-project-root>/mlruns
 
 # Optional: make eval commands use this by default
 export RAINRAG_MLFLOW_URI=http://127.0.0.1:5000

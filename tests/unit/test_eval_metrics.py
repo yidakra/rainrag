@@ -525,6 +525,16 @@ class TestEstimateQueryCost:
             result["cost.llm_usd_est"] + result["cost.embed_usd_est"]
         )
 
+    def test_total_includes_reranker_cost(self):
+        result = self._call(reranker_calls=1)
+        # reranker cost is currently not estimated (0.0) but should be included in total when available.
+        assert result["cost.reranker_usd_est"] == 0.0
+        assert result["cost.total_usd_est"] == pytest.approx(
+            result["cost.llm_usd_est"]
+            + result["cost.embed_usd_est"]
+            + result["cost.reranker_usd_est"]
+        )
+
     def test_additional_llm_calls_increase_total(self):
         base = self._call()
         rewrite = self._call(llm_query_rewrite_calls=1)
@@ -621,3 +631,27 @@ class TestAggregateCosts:
                 assert result["cost.mean_usd_est_per_query"] == pytest.approx(2.0)
             else:
                 assert result[f"{k}_per_query"] == pytest.approx(2.0), f"avg for {k}"
+
+    def test_reranker_calls_warns_but_not_included(self):
+        with pytest.warns(UserWarning, match="reranker_calls > 0"):
+            result = estimate_query_cost(
+                query="x",
+                contexts=["a"],
+                answer="y",
+                llm_provider="openai",
+                embed_provider="local",
+                reranker_calls=2,
+            )
+
+        assert result["cost.reranker_usd_est"] == pytest.approx(0.0)
+
+    def test_diff_keys_are_unioned(self):
+        q1 = {"cost.total_usd_est": 0.001, "cost.llm_usd_est": 0.001}
+        q2 = {"cost.total_usd_est": 0.002, "cost.embed_usd_est": 0.0002}
+        result = aggregate_costs([q1, q2])
+
+        assert result["cost.llm_usd_est"] == pytest.approx(0.001)
+        assert result["cost.embed_usd_est"] == pytest.approx(0.0002)
+        assert result["cost.total_usd_est"] == pytest.approx(0.003)
+        assert result["cost.aggregate_usd_est"] == pytest.approx(0.003)
+        assert result["cost.mean_usd_est_per_query"] == pytest.approx(0.0015)

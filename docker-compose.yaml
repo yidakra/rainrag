@@ -103,6 +103,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - MISTRAL_API_KEY_FILE=/run/secrets/mistral_api_key
       - COHERE_API_KEY_FILE=/run/secrets/cohere_api_key

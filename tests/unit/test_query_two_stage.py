@@ -68,25 +68,27 @@ def base_config():
 @pytest.fixture
 def two_stage_config(base_config):
     """Config with two-stage Stage 2a (query rewriting) enabled."""
-    base_config.two_stage = TwoStageConfig(
+    cfg = base_config.copy(deep=False)
+    cfg.two_stage = TwoStageConfig(
         enabled=True,
         query_rewrite_enabled=True,
         query_rewrite_variants=2,
         hyde_enabled=False,
     )
-    return base_config
+    return cfg
 
 
 @pytest.fixture
 def hyde_config(base_config):
     """Config with two-stage Stage 2b (HyDE) enabled, rewriting disabled."""
-    base_config.two_stage = TwoStageConfig(
+    cfg = base_config.copy(deep=False)
+    cfg.two_stage = TwoStageConfig(
         enabled=True,
         query_rewrite_enabled=False,
         hyde_enabled=True,
         hyde_alpha=0.5,
     )
-    return base_config
+    return cfg
 
 
 @pytest.fixture
@@ -523,6 +525,13 @@ class TestMergeStrategies:
 
     Uses RAGQueryEngine.__new__ to bypass __init__ so no real config/clients
     are required.
+
+    NOTE: The engine fixture constructs the object via
+    RAGQueryEngine.__new__(RAGQueryEngine) and intentionally skips __init__.
+    This is to test pure helper methods (as seen in _doc and merge strategy
+    logic) without requiring full runtime state. If __init__ later adds
+    required instance state, update these tests to construct a full instance
+    (or set needed attributes on the fixture) to avoid false negatives.
     """
 
     @pytest.fixture

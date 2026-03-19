@@ -326,24 +326,22 @@ class BaseExperiment(ABC):
 
     @staticmethod
     def _print_result(result: dict) -> None:
-        import math as _math
-
         m = result["metrics"]
         cost = m.get("cost.mean_usd_est_per_query", float("nan"))
-        if _math.isnan(cost):
+        if math.isnan(cost):
             cost = m.get("cost.aggregate_usd_est", float("nan"))
-        cost_str = f"${cost:.4f}/q" if not _math.isnan(cost) else "cost=n/a"
+        cost_str = f"${cost:.4f}/q" if not math.isnan(cost) else "cost=n/a"
 
         ndcg5 = m.get("ndcg@5", float("nan"))
         ndcg5_p10 = m.get("ndcg@5_p10", float("nan"))
         ndcg5_str = (
             f"ndcg@5={ndcg5:.3f}(p10={ndcg5_p10:.3f})"
-            if not _math.isnan(ndcg5_p10)
+            if not math.isnan(ndcg5_p10)
             else f"ndcg@5={ndcg5:.3f}"
         )
 
         intent_cov = m.get("intent_coverage@5", float("nan"))
-        intent_str = f" ic@5={intent_cov:.3f}" if not _math.isnan(intent_cov) else ""
+        intent_str = f" ic@5={intent_cov:.3f}" if not math.isnan(intent_cov) else ""
 
         summary = (
             f"[{result['condition_id']}] {result['condition_label']} k={result['top_k']} | "

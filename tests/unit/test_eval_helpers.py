@@ -10,14 +10,10 @@ No external services required.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
-
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +368,7 @@ class TestBuildSummary:
     def _make_valid_result(
         query_id: str = "q1",
         elapsed_ms: float = 100.0,
-        recall5: float = 0.8,
+        retrieval_score: float = 0.8,
         ndcg5: float = 0.75,
         mrr: float = 0.9,
         cost_total_usd: float = 0.001,
@@ -384,11 +380,11 @@ class TestBuildSummary:
             "query": "test query",
             "language": "en",
             "elapsed_ms": elapsed_ms,
-            "recall@3": recall5,
-            "recall@5": recall5,
-            "recall@10": recall5,
-            "precision@3": recall5,
-            "precision@5": recall5,
+            "recall@3": retrieval_score,
+            "recall@5": retrieval_score,
+            "recall@10": retrieval_score,
+            "precision@3": retrieval_score,
+            "precision@5": retrieval_score,
             "ndcg@5": ndcg5,
             "ndcg@10": ndcg5,
             "mrr": mrr,

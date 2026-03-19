@@ -46,8 +46,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, cast
 
-import typer as _typer
-
 # relative import so the module can be resolved when this file is run as
 # `python -m eval.plot_results`
 from .mlflow_tracking import (
@@ -55,7 +53,17 @@ from .mlflow_tracking import (
 )
 
 
-typer: Any = cast(Any, _typer)
+def _get_typer():
+    try:
+        import typer as _typer
+    except ImportError as exc:
+        raise SystemExit(
+            "ERROR: typer package not installed. Install with: pip install typer"
+        ) from exc
+    return _typer
+
+
+typer = _get_typer()
 default_tracking_uri: Callable[[], str] = _default_tracking_uri
 
 
@@ -279,18 +287,23 @@ def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) ->
 
     labels: list[str] = []
     stage_values: dict[str, list[float]] = {s: [] for s in stages}
+    fallback_flags: list[bool] = []
 
     for _, row in runs.iterrows():
         lbl = _condition_label(row)
         row_stages = {s: _safe_float(row.get(f"metrics.{s}_p50_ms")) or 0.0 for s in stages}
         row_total = sum(row_stages.values())
+        fallback = False
         if row_total == 0.0:
-            # Fallback: use total p50 as a single block
+            # Fallback: use total p50 as a single block. Mark for special styling.
             total = _safe_float(row.get("metrics.latency_p50_ms")) or 0.0
             if total == 0.0:
                 continue
             row_stages = {s: (total if s == "generate" else 0.0) for s in stages}
+            fallback = True
+
         labels.append(lbl)
+        fallback_flags.append(fallback)
         for s in stages:
             stage_values[s].append(row_stages[s])
 
@@ -302,10 +315,30 @@ def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) ->
     colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52"]
     fig, ax = plt.subplots(figsize=(max(8, len(labels) * 0.9), 5))
     bottom = np.zeros(len(labels))
-    for s, color in zip(stages, colors, strict=False):
+
+    # Plot non-generate stages first.
+    for s, color in zip(stages[:-1], colors[:-1], strict=False):
         vals = np.array(stage_values[s])
         ax.bar(x, vals, bottom=bottom, label=s, color=color)
         bottom += vals
+
+    # Plot generate stage with fallback highlighting.
+    generate_vals = np.array(stage_values["generate"])
+    generate_norm = np.where(np.array(fallback_flags), 0.0, generate_vals)
+    generate_fb = np.where(np.array(fallback_flags), generate_vals, 0.0)
+
+    ax.bar(x, generate_norm, bottom=bottom, label="generate", color=colors[-1])
+    bottom += generate_norm
+    ax.bar(
+        x,
+        generate_fb,
+        bottom=bottom,
+        label="generate (fallback)",
+        color=colors[-1],
+        hatch="//",
+        edgecolor="black",
+    )
+    bottom += generate_fb
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=9)

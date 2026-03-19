@@ -18,15 +18,10 @@ Covers:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
-
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from eval.mlflow_tracking import default_tracking_uri
 from eval.run_eval import app
@@ -63,6 +58,20 @@ def _mock_experiment(n_conditions: int = 3) -> MagicMock:
         for i in range(n_conditions)
     ]
     return exp
+
+
+@pytest.fixture
+def kwargs_helper():
+    """Helper fixture to run `two-stage` and capture the patched exam constructor kwargs."""
+
+    def _fn(extra: list[str]) -> dict:
+        mock_exp = _mock_experiment()
+        with patch(_PATCH, return_value=mock_exp) as mock_cls:
+            runner.invoke(app, ["two-stage", "--dataset", _DATASET] + extra)
+        _, kwargs = mock_cls.call_args
+        return kwargs
+
+    return _fn
 
 
 # ---------------------------------------------------------------------------
@@ -188,27 +197,20 @@ class TestAxesFlag:
 
 
 class TestPerAxisCustomValues:
-    def _kwargs(self, extra: list[str]):
-        mock_exp = _mock_experiment()
-        with patch(_PATCH, return_value=mock_exp) as mock_cls:
-            runner.invoke(app, ["two-stage", "--dataset", _DATASET] + extra)
-        _, kwargs = mock_cls.call_args
-        return kwargs
-
-    def test_hyde_alphas_parsed(self):
-        kwargs = self._kwargs(["--hyde-alphas", "0.1,0.3,0.9"])
+    def test_hyde_alphas_parsed(self, kwargs_helper):
+        kwargs = kwargs_helper(["--hyde-alphas", "0.1,0.3,0.9"])
         assert kwargs["hyde_alphas"] == pytest.approx([0.1, 0.3, 0.9])
 
-    def test_rewrite_variants_parsed(self):
-        kwargs = self._kwargs(["--rewrite-variants", "1,3,5"])
+    def test_rewrite_variants_parsed(self, kwargs_helper):
+        kwargs = kwargs_helper(["--rewrite-variants", "1,3,5"])
         assert kwargs["rewrite_variants"] == [1, 3, 5]
 
-    def test_pool_sizes_parsed(self):
-        kwargs = self._kwargs(["--pool-sizes", "2,4"])
+    def test_pool_sizes_parsed(self, kwargs_helper):
+        kwargs = kwargs_helper(["--pool-sizes", "2,4"])
         assert kwargs["pool_sizes"] == [2, 4]
 
-    def test_top_ks_parsed(self):
-        kwargs = self._kwargs(["--top-ks", "3,5,10"])
+    def test_top_ks_parsed(self, kwargs_helper):
+        kwargs = kwargs_helper(["--top-ks", "3,5,10"])
         assert kwargs["top_ks"] == (3, 5, 10)
 
 
@@ -218,25 +220,15 @@ class TestPerAxisCustomValues:
 
 
 class TestMergeStrategiesFlag:
-    def _kwargs(self, flag_value: str):
-        mock_exp = _mock_experiment()
-        with patch(_PATCH, return_value=mock_exp) as mock_cls:
-            runner.invoke(
-                app,
-                ["two-stage", "--dataset", _DATASET, "--merge-strategies", flag_value],
-            )
-        _, kwargs = mock_cls.call_args
-        return kwargs
+    def test_single_strategy_parsed(self, kwargs_helper):
+        assert kwargs_helper(["--merge-strategies", "coverage"])["merge_strategies"] == ["coverage"]
 
-    def test_single_strategy_parsed(self):
-        assert self._kwargs("coverage")["merge_strategies"] == ["coverage"]
-
-    def test_both_strategies_parsed(self):
-        result = self._kwargs("coverage,diverse_rrf")["merge_strategies"]
+    def test_both_strategies_parsed(self, kwargs_helper):
+        result = kwargs_helper(["--merge-strategies", "coverage,diverse_rrf"])["merge_strategies"]
         assert result == ["coverage", "diverse_rrf"]
 
-    def test_strategies_with_spaces_trimmed(self):
-        result = self._kwargs("coverage, diverse_rrf")["merge_strategies"]
+    def test_strategies_with_spaces_trimmed(self, kwargs_helper):
+        result = kwargs_helper(["--merge-strategies", "coverage, diverse_rrf"])["merge_strategies"]
         assert result == ["coverage", "diverse_rrf"]
 
     def test_omitting_flag_gives_none(self):
@@ -253,25 +245,15 @@ class TestMergeStrategiesFlag:
 
 
 class TestMergeRrfKsFlag:
-    def _kwargs(self, flag_value: str):
-        mock_exp = _mock_experiment()
-        with patch(_PATCH, return_value=mock_exp) as mock_cls:
-            runner.invoke(
-                app,
-                ["two-stage", "--dataset", _DATASET, "--merge-rrf-ks", flag_value],
-            )
-        _, kwargs = mock_cls.call_args
-        return kwargs
+    def test_single_k_parsed(self, kwargs_helper):
+        assert kwargs_helper(["--merge-rrf-ks", "40"])["merge_rrf_ks"] == [40]
 
-    def test_single_k_parsed(self):
-        assert self._kwargs("40")["merge_rrf_ks"] == [40]
-
-    def test_multiple_ks_parsed(self):
-        result = self._kwargs("20,40,60")["merge_rrf_ks"]
+    def test_multiple_ks_parsed(self, kwargs_helper):
+        result = kwargs_helper(["--merge-rrf-ks", "20,40,60"])["merge_rrf_ks"]
         assert result == [20, 40, 60]
 
-    def test_ks_with_spaces_trimmed(self):
-        result = self._kwargs("20, 60")["merge_rrf_ks"]
+    def test_ks_with_spaces_trimmed(self, kwargs_helper):
+        result = kwargs_helper(["--merge-rrf-ks", "20, 60"])["merge_rrf_ks"]
         assert result == [20, 60]
 
     def test_omitting_flag_gives_none(self):
@@ -298,19 +280,11 @@ class TestCsvOutput:
             )
         mock_exp.results_to_csv.assert_called_once()
         call_args = mock_exp.results_to_csv.call_args
-        # Use kwargs if available, otherwise fall back to positional args.
+
         if call_args.kwargs:
             assert call_args.kwargs.get("path") == str(out_path)
         else:
-            # Some call patterns may pass args as a list (e.g., [path]); normalize for comparison.
-            def _normalized_args(args):
-                for arg in args:
-                    if isinstance(arg, list | tuple):
-                        yield from (str(a) for a in arg)
-                    else:
-                        yield str(arg)
-
-            assert any(str(out_path).endswith(arg) for arg in _normalized_args(call_args.args))
+            assert call_args.args[1] == str(out_path)
 
     def test_no_csv_flag_does_not_call_results_to_csv(self):
         mock_exp = _mock_experiment()
@@ -356,28 +330,21 @@ class TestAxesDECombined:
 
 
 class TestDocOrdersFlag:
-    def _kwargs(self, flag_value: str) -> dict:
-        mock_exp = _mock_experiment()
-        with patch(_PATCH, return_value=mock_exp) as mock_cls:
-            runner.invoke(
-                app,
-                ["two-stage", "--dataset", _DATASET, "--doc-orders", flag_value],
-            )
-        _, kwargs = mock_cls.call_args
-        return kwargs
+    def test_single_order_parsed(self, kwargs_helper):
+        assert kwargs_helper(["--doc-orders", "rank"])["doc_orders"] == ["rank"]
 
-    def test_single_order_parsed(self):
-        assert self._kwargs("rank")["doc_orders"] == ["rank"]
-
-    def test_multiple_orders_parsed(self):
-        assert self._kwargs("rank,reversed,book_end")["doc_orders"] == [
+    def test_multiple_orders_parsed(self, kwargs_helper):
+        assert kwargs_helper(["--doc-orders", "rank,reversed,book_end"])["doc_orders"] == [
             "rank",
             "reversed",
             "book_end",
         ]
 
-    def test_whitespace_stripped(self):
-        assert self._kwargs("rank, book_end")["doc_orders"] == ["rank", "book_end"]
+    def test_whitespace_stripped(self, kwargs_helper):
+        assert kwargs_helper(["--doc-orders", "rank, book_end"])["doc_orders"] == [
+            "rank",
+            "book_end",
+        ]
 
     def test_omitting_flag_gives_none(self):
         mock_exp = _mock_experiment()

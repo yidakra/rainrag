@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -181,9 +182,6 @@ def test_carbon_track_emissions_noop_without_package(monkeypatch: pytest.MonkeyP
             sys.modules["eval.metrics.carbon"] = orig
 
 
-from unittest.mock import MagicMock
-
-
 def _make_hit(score, doc_id, is_speech_free):
     """Helper for tests: mimic a Qdrant hit object with score and payload.
 
@@ -273,6 +271,49 @@ def test_scroll_chunks_filter_respects_language() -> None:
     result = _apply_scroll_filter(payloads, "en")
     assert len(result) == 1
     assert result[0]["doc_id"] == "en_doc"
+
+
+def test_apply_scroll_filter_matches_create_eval_set_scroll_chunks() -> None:
+    """Ensure the local predicate matches the production _scroll_chunks behavior."""
+    try:
+        from eval.datasets.create_eval_set import _scroll_chunks
+    except ImportError as exc:
+        pytest.skip(f"Skipping due to missing create_eval_set dependency: {exc}")
+
+    class FakePoint:
+        def __init__(self, payload, _id=None):
+            self.payload = payload
+            self.id = _id
+
+    class FakeClient:
+        def __init__(self, points):
+            self._points = points
+
+        def scroll(self, collection_name, scroll_filter, limit, offset, with_payload, with_vectors):
+            return self._points, None
+
+    class FakeEngine:
+        pass
+
+    payloads = [
+        {"language": "en", "text": "Has text", "doc_id": "1", "is_speech_free": False},
+        {"language": "en", "text": "", "doc_id": "2", "is_speech_free": False},
+        {"language": "en", "text": "Speech-free", "doc_id": "3", "is_speech_free": True},
+        {"language": "ru", "text": "Русский", "doc_id": "4", "is_speech_free": False},
+        {"text": "No language field", "doc_id": "5", "is_speech_free": False},
+    ]
+
+    points = [FakePoint(p, _id=i) for i, p in enumerate(payloads, start=10)]
+    engine = FakeEngine()
+    engine.qdrant_client = FakeClient(points)
+    engine.config = type(
+        "C", (), {"qdrant": type("Q", (), {"collection_name": "test_collection"})()}
+    )()
+
+    expected = _apply_scroll_filter(payloads, "en")
+    result = _scroll_chunks(engine, "en", limit=100)
+
+    assert result == [{**p} for p in expected]
 
 
 # ---------------------------------------------------------------------------

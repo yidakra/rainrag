@@ -1099,7 +1099,7 @@ class Ingester:
         file_path: Path,
         language: str,
         video_id: str,
-        web_metadata: dict,
+        web_metadata: dict[str, Any],
         final_date: str | None,
         final_date_ts: float | None,
         duration: float | None,

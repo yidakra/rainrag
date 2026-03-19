@@ -69,7 +69,8 @@ def rouge_l(hypothesis: str, reference: str) -> float:
     if not _ROUGE_AVAILABLE or _rouge_scorer is None:
         return math.nan
     # Normalize both inputs to avoid treating whitespace-only strings as valid.
-    if not reference or not str(reference).strip() or not hypothesis or not str(hypothesis).strip():
+    # The typing of this API is strict: hypothesis/reference are str.
+    if not reference or not reference.strip() or not hypothesis or not hypothesis.strip():
         return math.nan
     scorer = _rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
     score = scorer.score(reference, hypothesis)

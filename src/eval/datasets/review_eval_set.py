@@ -45,7 +45,6 @@ Record = dict[str, Any]
 try:
     from rich.console import Console
     from rich.panel import Panel as RichPanel
-    # from rich.text import Text  # not used
 
     _console: Console | None = Console()
     _panel_cls: type[RichPanel] | None = RichPanel
@@ -273,12 +272,7 @@ def review_eval_set(
                 print("  Enter corrected reference answer (blank line to finish; :q to cancel):")
                 lines: list[str] = []
                 while True:
-                    try:
-                        ln = _prompt("  > ", raise_on_interrupt=True)
-                    except KeyboardInterrupt:
-                        print("  Edit cancelled")
-                        lines = []
-                        break
+                    ln = _prompt("  > ")
 
                     if ln == "":
                         break

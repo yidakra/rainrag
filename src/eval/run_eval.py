@@ -167,9 +167,9 @@ def ablation(
     ks = tuple(_parse_ints(top_ks, "top_ks"))
     cids = None
     if conditions:
-        # Validate conditions are integers so we fail fast with a clear message.
-        _parse_ints(conditions, "conditions")
-        cids = [c.strip() for c in conditions.split(",") if c.strip()]
+        # Parse conditions as integers (fail fast on bad values) and use parsed ids.
+        parsed_conditions = _parse_ints(conditions, "conditions")
+        cids = [str(cid) for cid in parsed_conditions]
 
     exp = ablation_experiment_cls(
         config_path=config,

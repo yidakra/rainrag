@@ -102,15 +102,27 @@ def _scroll_chunks(engine: Any, lang: str, limit: int) -> list[Record]:
     all_chunks: list[Record] = []
     offset = None
 
+    # Server-side filter to reduce data returned over the wire;
+    # keep a client-side safety guard as well.
+    scroll_filter = {
+        "must": [
+            {"key": "language", "match": {"value": lang}},
+            {"key": "is_speech_free", "match": {"value": False}},
+            # Ensure text field is present; emptiness is checked client-side.
+            {"key": "text", "is_null": False},
+        ]
+    }
+
     while True:
         results, next_offset = client.scroll(
             collection_name=collection,
-            scroll_filter=None,
+            scroll_filter=scroll_filter,
             limit=256,
             offset=offset,
             with_payload=True,
             with_vectors=False,
         )
+
         for point in results:
             point_obj: Any = point
             payload_obj: Any = point_obj.payload
@@ -118,7 +130,7 @@ def _scroll_chunks(engine: Any, lang: str, limit: int) -> list[Record]:
             if (
                 payload.get("language", "en") == lang
                 and payload.get("text", "")
-                and not payload.get("is_speech_free", False)  # skip metadata-only docs
+                and not payload.get("is_speech_free", False)
             ):
                 all_chunks.append({"doc_id": payload.get("doc_id", str(point_obj.id)), **payload})
                 if len(all_chunks) >= limit:
@@ -309,7 +321,7 @@ def create_eval_set(
 
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
+    with open(output_path, "w", encoding="utf-8", newline="\n") as f:
         for pair in pairs:
             f.write(json.dumps(pair, ensure_ascii=False) + "\n")
 
