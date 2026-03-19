@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -293,7 +294,8 @@ def test_apply_scroll_filter_matches_create_eval_set_scroll_chunks() -> None:
             return self._points, None
 
     class FakeEngine:
-        pass
+        qdrant_client: Any
+        config: Any
 
     payloads = [
         {"language": "en", "text": "Has text", "doc_id": "1", "is_speech_free": False},

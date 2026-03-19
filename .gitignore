@@ -222,18 +222,20 @@ eval/ablation_results*.csv
 eval/datasets/*_ablation.csv
 models/
 qdrant_storage/
-.DS_Store
-
 # Secret/key files (keep private & avoid accidental commits)
 # Keep template files (e.g. *.txt.example) under version control.
 # Actual secret files should be stored outside git or in a secure secrets store.
 credentials.json
-credential.key
 credentials.env
 secrets/credentials/*
-*.key
-*.pem
-*.secret
+secrets/*.key
+secrets/*.pem
+secrets/*.secret
+*_private.key
+*_private.pem
+secrets/*.secret
+*_private.key
+*_private.pem
 
 # Pyright local configuration
 .pyrightconfig.local.json

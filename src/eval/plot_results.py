@@ -389,7 +389,8 @@ def plot_robustness_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
     for _, row in runs.iterrows():
         lbl = _condition_label(row)
         mean_r5 = _metric_from_row(row, "recall@5")
-        if mean_r5 is None:
+        mean_n5 = _metric_from_row(row, "ndcg@5")
+        if mean_r5 is None or mean_n5 is None:
             continue
         # Skip rows where p10 is missing to keep mean/p10 alignment correct.
         row_missing_p10 = False

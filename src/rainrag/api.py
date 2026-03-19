@@ -43,7 +43,7 @@ def _create_query_timeout_counter() -> Counter:
         return Counter(name, "Number of query requests that timed out")
     except ValueError:
         logger.warning(
-            "Metric %r already registered in default registry; creating unregistered counter (won't be scraped).",
+            "Metric {!r} already registered in default registry; creating unregistered counter (won't be scraped).",
             name,
         )
         from prometheus_client import CollectorRegistry
