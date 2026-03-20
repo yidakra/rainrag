@@ -593,7 +593,7 @@ class TestEstimateQueryCost:
         )
         assert result["cost.total_usd_est"] >= 0.0
 
-    def test_reranker_calls_warns_but_not_included(self):
+    def test_reranker_calls_warns_and_includes_cost(self):
         with pytest.warns(UserWarning, match="reranker_calls > 0"):
             result = estimate_query_cost(
                 query="x",

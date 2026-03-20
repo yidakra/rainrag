@@ -623,71 +623,85 @@ async def query(request: QueryRequest):
                 detail="Server busy: too many concurrent queries. Please retry shortly.",
             ) from exc
 
-        ACTIVE_QUERIES.inc()
-        background_task = None
+        active_query_incremented = False
         try:
-            # Execute query in a worker thread so the event loop remains responsive
-            # (health checks/UI should not freeze while a long LLM call is running).
-            # Use module-level constant to avoid repeated environment lookups.
-            query_callable = query_engine.query
+            try:
+                ACTIVE_QUERIES.inc()
+                active_query_incremented = True
+            except Exception:
+                logger.exception("Failed to increment active query gauge")
+                raise
 
-            # ASGI unit tests often patch query_engine.query with Mock objects.
-            # Running a Mock via asyncio.to_thread can deadlock test-loop shutdown.
-            if _is_mock_like(query_callable):
-                result = query_callable(
-                    question=request.question,
-                    top_k=request.top_k,
-                    language=request.language,
-                    date_from=request.date_from,
-                    date_to=request.date_to,
-                )
-            else:
-                background_task = asyncio.create_task(
-                    asyncio.to_thread(
-                        query_callable,
+            background_task = None
+            try:
+                # Execute query in a worker thread so the event loop remains responsive
+                # (health checks/UI should not freeze while a long LLM call is running).
+                # Use module-level constant to avoid repeated environment lookups.
+                query_callable = query_engine.query
+
+                # ASGI unit tests often patch query_engine.query with Mock objects.
+                # Running a Mock via asyncio.to_thread can deadlock test-loop shutdown.
+                if _is_mock_like(query_callable):
+                    result = query_callable(
                         question=request.question,
                         top_k=request.top_k,
                         language=request.language,
                         date_from=request.date_from,
                         date_to=request.date_to,
                     )
-                )
-                try:
-                    result = await asyncio.wait_for(background_task, timeout=QUERY_TIMEOUT_SECONDS)
-                except asyncio.TimeoutError as exc:
-                    if background_task is not None and not background_task.done():
-                        background_task.cancel()
-                        try:
-                            await asyncio.wait_for(background_task, timeout=2.0)
-                        except Exception:
-                            logger.warning("Background query task did not stop after cancellation")
-
-                    try:
-                        QUERY_TIMEOUT_COUNTER.inc()
-                    except Exception:
-                        logger.exception("Failed to increment timeout metric")
-
-                    logger.warning(
-                        "Query timed out (question={!r}, top_k={}, language={}, timeout={})",
-                        request.question[:100],
-                        request.top_k,
-                        request.language,
-                        QUERY_TIMEOUT_SECONDS,
+                else:
+                    background_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            query_callable,
+                            question=request.question,
+                            top_k=request.top_k,
+                            language=request.language,
+                            date_from=request.date_from,
+                            date_to=request.date_to,
+                        )
                     )
-                    raise HTTPException(
-                        status_code=504,
-                        detail=(
-                            "Query timed out while generating answer. "
-                            "Please try a shorter or more specific question."
-                        ),
-                    ) from exc
+                    try:
+                        result = await asyncio.wait_for(
+                            background_task, timeout=QUERY_TIMEOUT_SECONDS
+                        )
+                    except asyncio.TimeoutError as exc:
+                        if background_task is not None and not background_task.done():
+                            background_task.cancel()
+                            try:
+                                await asyncio.wait_for(background_task, timeout=2.0)
+                            except Exception:
+                                logger.warning(
+                                    "Background query task did not stop after cancellation"
+                                )
+
+                        try:
+                            QUERY_TIMEOUT_COUNTER.inc()
+                        except Exception:
+                            logger.exception("Failed to increment timeout metric")
+
+                        logger.warning(
+                            "Query timed out (question={!r}, top_k={}, language={}, timeout={})",
+                            request.question[:100],
+                            request.top_k,
+                            request.language,
+                            QUERY_TIMEOUT_SECONDS,
+                        )
+                        raise HTTPException(
+                            status_code=504,
+                            detail=(
+                                "Query timed out while generating answer. "
+                                "Please try a shorter or more specific question."
+                            ),
+                        ) from exc
+            finally:
+                if active_query_incremented:
+                    try:
+                        ACTIVE_QUERIES.dec()
+                    except Exception:
+                        logger.exception("Failed to decrement active query gauge")
 
         finally:
             GLOBAL_QUERY_SEMAPHORE.release()
-            try:
-                ACTIVE_QUERIES.dec()
-            except Exception:
-                logger.exception("Failed to decrement active query gauge")
 
         # Format response with video and VTT URLs
         context_chunks = []

@@ -286,22 +286,27 @@ def review_eval_set(
             if key == "e":
                 print("  Enter corrected reference answer (blank line to finish; :q to cancel):")
                 lines: list[str] = []
+                edit_cancelled = False
                 while True:
                     try:
                         ln = _prompt("  > ", raise_on_interrupt=True)
                     except KeyboardInterrupt:
                         print("  Edit cancelled")
-                        lines = []
+                        edit_cancelled = True
                         break
 
                     if ln == "":
+                        if not lines:
+                            print("  Edit cancelled")
+                            edit_cancelled = True
                         break
                     if ln == ":q":
                         print("  Edit cancelled")
-                        lines = []
+                        edit_cancelled = True
                         break
                     lines.append(ln)
-                if lines:
+
+                if not edit_cancelled and lines:
                     record["reference_answer"] = "\n".join(lines)
                     edited = True
                     print(f"  Updated: {record['reference_answer'][:80]}")
@@ -309,7 +314,9 @@ def review_eval_set(
                     record["valid"] = True
                     record["reviewed"] = True
                     reviewed_count += 1
-                break
+                    break
+                # If edit was cancelled or no lines were entered, stay on the same record.
+                continue
 
             print("  Unknown key. Use a, e, s, d, or q.")
 

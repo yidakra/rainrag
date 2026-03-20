@@ -246,10 +246,7 @@ secrets/*.key
 secrets/*.pem
 secrets/*.secret
 # Specific per-API-key locations
-../google_api_key.txt
 secrets/google_api_key.txt
-*_private.key
-*_private.pem
 *_private.key
 *_private.pem
 

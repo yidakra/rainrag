@@ -163,9 +163,6 @@ class BaseExperiment(ABC):
 
         run_name = f"{condition['label']}_k{top_k}"
         tags = {"condition_id": condition["id"], "top_k": str(top_k)}
-
-        run_name = f"{condition['label']}_k{top_k}"
-        tags = {"condition_id": condition["id"], "top_k": str(top_k)}
         tags.update(condition.get("tags", {}))
 
         with mlflow_tracking.start_run(run_name=run_name, tags=tags):

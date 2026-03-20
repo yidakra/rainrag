@@ -83,7 +83,6 @@ _AUX_LLM_TOKENS_EST: float = 100.0
 # adjusted based on the specific reranker provider/implementation.
 _RERANKER_COST_PER_CALL_USD: float = 0.0005
 
-
 # ---------------------------------------------------------------------------
 # Core estimation functions
 # ---------------------------------------------------------------------------
