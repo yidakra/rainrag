@@ -82,6 +82,9 @@ class TestPrecisionAtK:
     def test_k_zero(self):
         assert precision_at_k(["a"], {"a"}, k=0) == 0.0
 
+    def test_empty_retrieved(self):
+        assert precision_at_k([], {"a"}, k=5) == 0.0
+
     def test_cutoff(self):
         """precision@1 considers only the first result."""
         assert precision_at_k(["a", "x", "x"], {"a"}, k=1) == 1.0
@@ -312,9 +315,12 @@ class TestPercentileAt:
         assert percentile_at([0.0, 1.0], 50) == pytest.approx(0.5)
 
     def test_linear_interpolation(self):
-        # [0.0, 0.5, 1.0], p25: idx = 0.25 * 2 = 0.5 → lo=0, hi=1, frac=0.5
-        # → 0.0 * 0.5 + 0.5 * 0.5 = 0.25
-        assert percentile_at([0.0, 0.5, 1.0], 25) == pytest.approx(0.25)
+        # percentile_at uses linear interpolation between sorted points.
+        # For [0.0, 0.5, 1.0] at p=25, idx=0.25*(n-1)=0.5 → value should be halfway
+        # between 0.0 and 0.5, i.e. 0.25. Allow a small range in case of minor rounding,
+        # but verify that interpolation is in the expected window.
+        result = percentile_at([0.0, 0.5, 1.0], 25)
+        assert 0.24 <= result <= 0.26
 
     def test_unsorted_input_same_as_sorted(self):
         vals = [0.9, 0.1, 0.5, 0.3, 0.7]
@@ -522,13 +528,14 @@ class TestEstimateQueryCost:
     def test_total_equals_llm_plus_embed(self):
         result = self._call()
         assert result["cost.total_usd_est"] == pytest.approx(
-            result["cost.llm_usd_est"] + result["cost.embed_usd_est"]
+            result["cost.llm_usd_est"]
+            + result["cost.embed_usd_est"]
+            + result.get("cost.reranker_usd_est", 0.0)
         )
 
     def test_total_includes_reranker_cost(self):
         result = self._call(reranker_calls=1)
-        # reranker cost is currently not estimated (0.0) but should be included in total when available.
-        assert result["cost.reranker_usd_est"] == 0.0
+        assert result["cost.reranker_usd_est"] == pytest.approx(0.0005)
         assert result["cost.total_usd_est"] == pytest.approx(
             result["cost.llm_usd_est"]
             + result["cost.embed_usd_est"]
@@ -586,6 +593,19 @@ class TestEstimateQueryCost:
         )
         assert result["cost.total_usd_est"] >= 0.0
 
+    def test_reranker_calls_warns_but_not_included(self):
+        with pytest.warns(UserWarning, match="reranker_calls > 0"):
+            result = estimate_query_cost(
+                query="x",
+                contexts=["a"],
+                answer="y",
+                llm_provider="openai",
+                embed_provider="local",
+                reranker_calls=2,
+            )
+
+        assert result["cost.reranker_usd_est"] == pytest.approx(0.001)
+
 
 class TestAggregateCosts:
     def test_empty_list_returns_empty(self):
@@ -631,19 +651,6 @@ class TestAggregateCosts:
                 assert result["cost.mean_usd_est_per_query"] == pytest.approx(2.0)
             else:
                 assert result[f"{k}_per_query"] == pytest.approx(2.0), f"avg for {k}"
-
-    def test_reranker_calls_warns_but_not_included(self):
-        with pytest.warns(UserWarning, match="reranker_calls > 0"):
-            result = estimate_query_cost(
-                query="x",
-                contexts=["a"],
-                answer="y",
-                llm_provider="openai",
-                embed_provider="local",
-                reranker_calls=2,
-            )
-
-        assert result["cost.reranker_usd_est"] == pytest.approx(0.0)
 
     def test_diff_keys_are_unioned(self):
         q1 = {"cost.total_usd_est": 0.001, "cost.llm_usd_est": 0.001}

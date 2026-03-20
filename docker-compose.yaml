@@ -69,9 +69,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 60s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
 
   # Streamlit frontend
   streamlit:
@@ -164,6 +165,9 @@ volumes:
 # If you want to override the secret file path, you can set the corresponding
 # *_API_KEY_FILE env var in an env file or via docker-compose override.
 secrets:
+  # Optional secrets: enable the ones you need for configured providers.
+  # If you don't want to use Mistral or Cohere, comment out the corresponding
+  # entries (or create placeholder files with `make secrets` / `./create-secrets.sh`).
   mistral_api_key:
     file: ./secrets/mistral_api_key.txt
   # openai_api_key:

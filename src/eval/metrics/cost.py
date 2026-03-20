@@ -147,7 +147,20 @@ def estimate_query_cost(
     output_tokens = chars_to_tokens(answer)
     embed_tokens = chars_to_tokens(query)  # one embedding call per query
 
-    # Unknown providers degrade gracefully to zero cost.
+    # Unknown providers degrade gracefully to zero cost but we warn to surface typos/misconfiguration.
+    if llm_provider not in LLM_INPUT_COST_PER_1M or llm_provider not in LLM_OUTPUT_COST_PER_1M:
+        warnings.warn(
+            f"Unknown llm_provider '{llm_provider}' in estimate_query_cost; using costs 0.0",
+            UserWarning,
+            stacklevel=2,
+        )
+    if embed_provider not in EMBED_COST_PER_1M:
+        warnings.warn(
+            f"Unknown embed_provider '{embed_provider}' in estimate_query_cost; using costs 0.0",
+            UserWarning,
+            stacklevel=2,
+        )
+
     llm_input_rate = LLM_INPUT_COST_PER_1M.get(llm_provider, 0.0)
     llm_output_rate = LLM_OUTPUT_COST_PER_1M.get(llm_provider, 0.0)
     embed_rate = EMBED_COST_PER_1M.get(embed_provider, 0.0)
@@ -166,13 +179,12 @@ def estimate_query_cost(
     llm_hyde_cost = aux_cost_per_call * llm_hyde_calls
 
     # Reranker cost is highly provider-specific and is not yet modeled in detail.
-    # Keep default cost at 0.0 (not included in total), but warn when reranker
-    # usage is present so callers are not misled by the existing parameter.
-    reranker_cost = 0.0
-    if reranker_calls > 0:
+    # Use configured constant so reranker usage contributes to total.
+    reranker_cost = reranker_calls * _RERANKER_COST_PER_CALL_USD
+    if reranker_calls > 0 and _RERANKER_COST_PER_CALL_USD > 0.0:
         warnings.warn(
-            "reranker_calls > 0 provided to estimate_query_cost, but reranker "
-            "cost is not currently included in estimate and is treated as 0.0",
+            "reranker_calls > 0 provided to estimate_query_cost; "
+            "reranker cost is estimated using _RERANKER_COST_PER_CALL_USD",
             UserWarning,
             stacklevel=2,
         )
@@ -211,7 +223,7 @@ def aggregate_costs(per_query_costs: list[dict[str, float]]) -> dict[str, float]
     totals["cost.aggregate_usd_est"] = totals.get("cost.total_usd_est", 0.0)
 
     n = len(per_query_costs)
-    averages = {f"{k}_per_query": v / n for k, v in totals.items()}
+    averages = {f"{k}_per_query": v / n for k, v in totals.items() if k != "cost.aggregate_usd_est"}
 
     # Use clear metric names and map to a single canonical per-query metric name.
     # Previously, both "cost.total_usd_est_per_query" and

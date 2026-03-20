@@ -101,14 +101,14 @@ def start_run(
 
 
 def log_params(params: dict[str, Any]) -> None:
-    """Log a flat dict of params. Filters NaN/None values."""
+    """Log a flat dict of params. Filters NaN/None/Infinity values."""
     if not _MLFLOW_AVAILABLE:
         return
     assert mlflow is not None
     clean = {
         k: v
         for k, v in params.items()
-        if v is not None and not (isinstance(v, float) and math.isnan(v))
+        if v is not None and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v)))
     }
     mlflow.log_params(clean)
 
@@ -211,10 +211,10 @@ def log_config_snapshot(config: Any, filename: str = "config_snapshot.yaml") -> 
     else:
         try:
             data = config.model_dump()
-        except Exception:  # AttributeError or other issues
+        except AttributeError:
             try:
                 data = config.dict()
-            except Exception:
+            except AttributeError:
                 # last resort: try to use __dict__ or just the object itself
                 data = getattr(config, "__dict__", config)
     with tempfile.TemporaryDirectory() as tmp:

@@ -54,7 +54,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-eval-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+          key: venv-eval-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock', '**/pyproject.toml') }}
           restore-keys: |
             venv-eval-${{ runner.os }}-${{ matrix.python-version }}-
 
@@ -74,15 +74,8 @@ jobs:
 
       - name: Run eval unit tests
         run: |
-          poetry run pytest \
-            tests/unit/test_eval_metrics.py \
-            tests/unit/test_eval_helpers.py \
-            tests/unit/test_query_two_stage.py \
-            tests/unit/test_run_eval_two_stage.py \
-            tests/unit/test_two_stage_sweep.py \
-            tests/unit/test_mlflow_tracking.py \
-            -v --tb=short \
-            --cov=eval \
+          poetry run pytest -m eval -v --tb=short \
+            --cov=rainrag_eval \
             --cov-report=xml:coverage-eval.xml \
             --cov-report=term-missing
 

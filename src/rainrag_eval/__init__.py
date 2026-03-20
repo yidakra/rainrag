@@ -20,4 +20,11 @@ from __future__ import annotations
 # Re-export everything from the old `eval` package for backward compatibility.
 # This shim is intentionally minimal; it is primarily to provide a less
 # confusing import name in user code.
+import eval as _eval
 from eval import *  # noqa: F401,F403
+
+
+if hasattr(_eval, "__all__"):
+    __all__ = list(_eval.__all__)
+else:
+    __all__ = [name for name in dir(_eval) if not name.startswith("_")]

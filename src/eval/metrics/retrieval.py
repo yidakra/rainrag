@@ -6,8 +6,12 @@ so they are fast and cheap to run on every experiment condition.
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Sequence
+
+
+logger = logging.getLogger(__name__)
 
 
 def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
@@ -72,12 +76,9 @@ def average_precision(retrieved: Sequence[str], relevant: set[str]) -> float:
 
 
 def percentile_at(values: list[float], p: float) -> float:
-    """p-th percentile of *values* using linear interpolation, 0 <= p <= 100.
-
-    The implementation handles `p=0` by returning the minimum value.  The
-    caller must still provide a value in the valid range; behavior for
-    out-of-range `p` is undefined.
-    """
+    """p-th percentile of *values* using linear interpolation, 0 <= p <= 100."""
+    if not (0.0 <= p <= 100.0):
+        raise ValueError("p must be between 0 and 100")
     if not values:
         return 0.0
     sorted_vals = sorted(values)
@@ -162,6 +163,15 @@ def aggregate_metrics(per_query: list[dict[str, float]]) -> dict[str, float]:
         vals = [d[k] for d in per_query if k in d]
         if not vals:
             continue
+
+        if len(vals) != len(per_query):
+            logger.warning(
+                "metric '%s' present in %d/%d queries; computing average over available values",
+                k,
+                len(vals),
+                len(per_query),
+            )
+
         agg[k] = sum(vals) / len(vals)
         agg[f"{k}_p10"] = percentile_at(vals, 10)
         agg[f"{k}_p25"] = percentile_at(vals, 25)

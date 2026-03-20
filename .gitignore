@@ -149,6 +149,20 @@ venv.bak/
 secrets/*.txt
 !secrets/*.txt.example
 
+# Explicitly ignore common top-level API key files referenced by templates.
+anthropic_api_key.txt
+cohere_api_key.txt
+google_api_key.txt
+mistral_api_key.txt
+openai_api_key.txt
+
+# Explicitly ignore in-case path references from templates (e.g. ../<filename>).
+**/anthropic_api_key.txt
+**/cohere_api_key.txt
+**/google_api_key.txt
+**/mistral_api_key.txt
+**/openai_api_key.txt
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -231,9 +245,11 @@ secrets/credentials/*
 secrets/*.key
 secrets/*.pem
 secrets/*.secret
+# Specific per-API-key locations
+../google_api_key.txt
+secrets/google_api_key.txt
 *_private.key
 *_private.pem
-secrets/*.secret
 *_private.key
 *_private.pem
 

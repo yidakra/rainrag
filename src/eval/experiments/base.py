@@ -8,14 +8,19 @@ running queries, computing metrics, logging to MLflow — lives here.
 from __future__ import annotations
 
 import copy
+import logging
 import math
 import statistics
 import time
+import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
 
 import eval.mlflow_tracking as mlflow_tracking
+
+
+logger = logging.getLogger(__name__)
 from eval.datasets.create_eval_set import load_eval_set
 from eval.metrics.answer_quality import answer_length, rouge_l
 from eval.metrics.carbon import track_emissions
@@ -36,8 +41,20 @@ def apply_overrides(config: Config, overrides: dict[str, Any]) -> Config:
     for key, value in overrides.items():
         parts = key.split(".")
         obj = cfg
-        for part in parts[:-1]:
-            obj = getattr(obj, part)
+        try:
+            for part in parts[:-1]:
+                obj = getattr(obj, part)
+        except (AttributeError, TypeError) as exc:
+            path = ".".join(parts[:-1])
+            raise ValueError(
+                f"Invalid override path '{key}': could not resolve '{path}' ({exc})"
+            ) from exc
+
+        if not hasattr(obj, parts[-1]):
+            raise ValueError(
+                f"Invalid override path '{key}': attribute '{parts[-1]}' does not exist on '{type(obj).__name__}'"
+            )
+
         setattr(obj, parts[-1], value)
     return cfg
 
@@ -115,19 +132,37 @@ class BaseExperiment(ABC):
         """
         cfg = apply_overrides(self.base_config, condition.get("overrides", {}))
         engine = RAGQueryEngine(cfg)
-        engine.initialize()
+        try:
+            engine.initialize()
 
-        # Determine language from dataset (mixed datasets run per-language)
-        langs = sorted({r.get("language", "en") for r in self.dataset})
+            # Determine language from dataset (mixed datasets run per-language)
+            langs = sorted({r.get("language", "en") for r in self.dataset})
 
-        all_results: list[dict] = []
-        with track_emissions(project_name=self.experiment_name) as carbon:
-            for lang in langs:
-                lang_records = [r for r in self.dataset if r.get("language", "en") == lang]
-                lang_results = self._run_dataset(engine, lang_records, top_k, lang)
-                all_results.extend(lang_results)
+            all_results: list[dict] = []
+            with track_emissions(project_name=self.experiment_name) as carbon:
+                for lang in langs:
+                    lang_records = [r for r in self.dataset if r.get("language", "en") == lang]
+                    lang_results = self._run_dataset(engine, lang_records, top_k, lang)
+                    all_results.extend(lang_results)
 
-        summary = self._build_summary(condition, cfg, top_k, all_results, carbon)
+            summary = self._build_summary(condition, cfg, top_k, all_results, carbon)
+        finally:
+            try:
+                if hasattr(engine, "shutdown"):
+                    engine.shutdown()
+                elif hasattr(engine, "close"):
+                    engine.close()
+                elif hasattr(engine, "dispose"):
+                    engine.dispose()
+                elif getattr(engine, "qdrant_client", None) is not None and hasattr(
+                    engine.qdrant_client, "close"
+                ):
+                    engine.qdrant_client.close()
+            except Exception as exc:
+                logger.warning("Failed to clean up RAGQueryEngine: %s", exc)
+
+        run_name = f"{condition['label']}_k{top_k}"
+        tags = {"condition_id": condition["id"], "top_k": str(top_k)}
 
         run_name = f"{condition['label']}_k{top_k}"
         tags = {"condition_id": condition["id"], "top_k": str(top_k)}
@@ -218,12 +253,22 @@ class BaseExperiment(ABC):
                 )
             except Exception as exc:
                 elapsed_ms = (time.perf_counter() - t_start) * 1000
+                tb = traceback.format_exc()
+                logger.error(
+                    "Error processing query %s (query_id=%s): %s\n%s",
+                    record.get("query", ""),
+                    record.get("query_id", ""),
+                    type(exc).__name__,
+                    tb,
+                )
                 results.append(
                     {
                         "query_id": record.get("query_id", ""),
-                        "query": record["query"],
+                        "query": record.get("query", ""),
                         "language": lang,
                         "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "traceback": tb,
                         "elapsed_ms": elapsed_ms,
                     }
                 )
@@ -286,32 +331,38 @@ class BaseExperiment(ABC):
         metrics["num_queries"] = float(len(valid))
         metrics["num_errors"] = float(len(all_results) - len(valid))
 
-        # Guard against missing two_stage fields (config may be partial/malformed)
+        # Guard against missing config sections (partial/malformed config)
         # by falling back to sensible defaults.
-        two_stage_merge_strategy = getattr(cfg.two_stage, "merge_strategy", "coverage")
-        two_stage_merge_rrf_k = getattr(cfg.two_stage, "merge_rrf_k", 60)
-        two_stage_prompt_doc_order = getattr(cfg.two_stage, "prompt_doc_order", "rank")
+        hybrid_search = getattr(cfg, "hybrid_search", None)
+        two_stage = getattr(cfg, "two_stage", None)
+        reranker = getattr(cfg, "reranker", None)
+        embedding = getattr(cfg, "embedding", None)
+        llm = getattr(cfg, "llm", None)
+
+        two_stage_merge_strategy = getattr(two_stage, "merge_strategy", "coverage")
+        two_stage_merge_rrf_k = getattr(two_stage, "merge_rrf_k", 60)
+        two_stage_prompt_doc_order = getattr(two_stage, "prompt_doc_order", "rank")
 
         params = {
             "condition_id": condition["id"],
             "condition_label": condition["label"],
             "top_k": top_k,
-            "hybrid_search.enabled": cfg.hybrid_search.enabled,
-            "hybrid_search.fusion_method": cfg.hybrid_search.fusion_method,
-            "hybrid_search.bm25_weight": cfg.hybrid_search.bm25_weight,
-            "two_stage.enabled": cfg.two_stage.enabled,
-            "two_stage.query_rewrite_enabled": cfg.two_stage.query_rewrite_enabled,
-            "two_stage.query_rewrite_variants": cfg.two_stage.query_rewrite_variants,
-            "two_stage.hyde_enabled": cfg.two_stage.hyde_enabled,
-            "two_stage.hyde_alpha": cfg.two_stage.hyde_alpha,
+            "hybrid_search.enabled": getattr(hybrid_search, "enabled", False),
+            "hybrid_search.fusion_method": getattr(hybrid_search, "fusion_method", "rrf"),
+            "hybrid_search.bm25_weight": getattr(hybrid_search, "bm25_weight", 0.0),
+            "two_stage.enabled": getattr(two_stage, "enabled", False),
+            "two_stage.query_rewrite_enabled": getattr(two_stage, "query_rewrite_enabled", False),
+            "two_stage.query_rewrite_variants": getattr(two_stage, "query_rewrite_variants", 0),
+            "two_stage.hyde_enabled": getattr(two_stage, "hyde_enabled", False),
+            "two_stage.hyde_alpha": getattr(two_stage, "hyde_alpha", 0.0),
             "two_stage.merge_strategy": two_stage_merge_strategy,
             "two_stage.merge_rrf_k": two_stage_merge_rrf_k,
             "two_stage.prompt_doc_order": two_stage_prompt_doc_order,
-            "reranker.enabled": cfg.reranker.enabled,
-            "reranker.top_n": cfg.reranker.top_n,
-            "reranker.min_retrieval_score": cfg.reranker.min_retrieval_score,
-            "embedding.provider": cfg.embedding.provider,
-            "llm.provider": cfg.llm.provider,
+            "reranker.enabled": getattr(reranker, "enabled", False),
+            "reranker.top_n": getattr(reranker, "top_n", 0),
+            "reranker.min_retrieval_score": getattr(reranker, "min_retrieval_score", 0.0),
+            "embedding.provider": getattr(embedding, "provider", ""),
+            "llm.provider": getattr(llm, "provider", ""),
             "dataset_path": self.dataset_path or "",
         }
 
@@ -348,8 +399,8 @@ class BaseExperiment(ABC):
             f"recall@5={m.get('recall@5', float('nan')):.3f} "
             f"{ndcg5_str} "
             f"mrr={m.get('mrr', float('nan')):.3f}"
-            f"{intent_str} "
-            f"rouge_l={m.get('rouge_l', float('nan')):.3f} "
+            f"{intent_str}"
+            f" rouge_l={m.get('rouge_l', float('nan')):.3f} "
             f"p50={m.get('latency_p50_ms', float('nan')):.0f}ms "
             f"{cost_str}"
         )
@@ -378,7 +429,10 @@ class BaseExperiment(ABC):
             # Fallback: plain CSV
             import csv
 
-            all_keys = list(results[0]["metrics"].keys())
+            all_keys_set = set()
+            for r in results:
+                all_keys_set.update(r.get("metrics", {}).keys())
+            all_keys = sorted(all_keys_set)
             header = ["condition_id", "label", "top_k"] + all_keys
             with open(output, "w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
@@ -389,6 +443,6 @@ class BaseExperiment(ABC):
                         r["condition_label"],
                         str(r["top_k"]),
                     ]
-                    csv_row += [r["metrics"].get(k, "") for k in all_keys]
+                    csv_row += [r.get("metrics", {}).get(k, "") for k in all_keys]
                     writer.writerow(csv_row)
             print(f"Results written to {output}")

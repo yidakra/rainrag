@@ -1518,11 +1518,9 @@ class Ingester:
             f"Ingestion complete! Processed {file_count} files into {doc_count} documents (chunking: {chunking_status})"
         )
         if self.invalid_vtt_count or self.speech_free_count:
+            # Use a single f-string to avoid implicit concatenation or mixed formatting styles
             logger.info(
-                "Ingestion summary: invalid_vtt={}, speech_free={} (indexed with metadata: {})",
-                self.invalid_vtt_count,
-                self.speech_free_count,
-                self.speech_free_with_metadata_count,
+                f"Ingestion summary: invalid_vtt={self.invalid_vtt_count}, speech_free={self.speech_free_count} (indexed with metadata: {self.speech_free_with_metadata_count})"
             )
         logger.info(f"Output saved to {output_path}")
 

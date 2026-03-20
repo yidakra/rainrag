@@ -80,12 +80,9 @@ def kwargs_helper():
 
 
 class TestDatasetRequired:
-    def test_missing_dataset_exits_nonzero(self):
+    def test_missing_dataset_reports_error(self):
         result = runner.invoke(app, ["two-stage"])
         assert result.exit_code != 0
-
-    def test_missing_dataset_error_message(self):
-        result = runner.invoke(app, ["two-stage"])
         # CliRunner defaults to mix_stderr=True, so errors appear in output.
         assert "dataset" in result.output.lower()
 
@@ -234,7 +231,8 @@ class TestMergeStrategiesFlag:
     def test_omitting_flag_gives_none(self):
         mock_exp = _mock_experiment()
         with patch(_PATCH, return_value=mock_exp) as mock_cls:
-            runner.invoke(app, ["two-stage", "--dataset", _DATASET])
+            result = runner.invoke(app, ["two-stage", "--dataset", _DATASET])
+        assert result.exit_code == 0, result.output
         _, kwargs = mock_cls.call_args
         assert kwargs["merge_strategies"] is None
 
@@ -259,7 +257,8 @@ class TestMergeRrfKsFlag:
     def test_omitting_flag_gives_none(self):
         mock_exp = _mock_experiment()
         with patch(_PATCH, return_value=mock_exp) as mock_cls:
-            runner.invoke(app, ["two-stage", "--dataset", _DATASET])
+            result = runner.invoke(app, ["two-stage", "--dataset", _DATASET])
+        assert result.exit_code == 0, result.output
         _, kwargs = mock_cls.call_args
         assert kwargs["merge_rrf_ks"] is None
 
@@ -274,10 +273,11 @@ class TestCsvOutput:
         mock_exp = _mock_experiment()
         out_path = tmp_path / "out.csv"
         with patch(_PATCH, return_value=mock_exp):
-            runner.invoke(
+            result = runner.invoke(
                 app,
                 ["two-stage", "--dataset", _DATASET, "--csv", str(out_path)],
             )
+        assert result.exit_code == 0, result.output
         mock_exp.results_to_csv.assert_called_once()
         call_args = mock_exp.results_to_csv.call_args
 
@@ -289,7 +289,8 @@ class TestCsvOutput:
     def test_no_csv_flag_does_not_call_results_to_csv(self):
         mock_exp = _mock_experiment()
         with patch(_PATCH, return_value=mock_exp):
-            runner.invoke(app, ["two-stage", "--dataset", _DATASET])
+            result = runner.invoke(app, ["two-stage", "--dataset", _DATASET])
+        assert result.exit_code == 0, result.output
         mock_exp.results_to_csv.assert_not_called()
 
 
@@ -349,7 +350,8 @@ class TestDocOrdersFlag:
     def test_omitting_flag_gives_none(self):
         mock_exp = _mock_experiment()
         with patch(_PATCH, return_value=mock_exp) as mock_cls:
-            runner.invoke(app, ["two-stage", "--dataset", _DATASET])
+            result = runner.invoke(app, ["two-stage", "--dataset", _DATASET])
+        assert result.exit_code == 0, result.output
         _, kwargs = mock_cls.call_args
         assert kwargs["doc_orders"] is None
 

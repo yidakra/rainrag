@@ -130,7 +130,7 @@ class Embedder:
         super().__init__()
         self.config = config
         self.cache = EmbeddingCache(config.paths.embeddings_cache)
-        self.model: Any = None
+        self.model: SentenceTransformer | None = None
         self.openai_client: Any = None
         self.mistral_client: Any = None
         self.genai_client: Any = None
@@ -448,15 +448,16 @@ class Embedder:
                         response = client.embeddings.create(model=model, inputs=batch_texts)
                         batch_embeddings = [item.embedding for item in response.data]
                     elif provider == "gemini":
-                        genai_types = getattr(self, "_genai_types", None)
-                        if genai_types is None:
+                        if self._genai_types is None:
                             raise RuntimeError(
                                 "Gemini client types not initialized. Ensure google-genai is installed."
                             )
                         result = self.genai_client.models.embed_content(
                             model=model,
                             contents=batch_texts,
-                            config=genai_types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
+                            config=self._genai_types.EmbedContentConfig(
+                                task_type="RETRIEVAL_DOCUMENT"
+                            ),
                         )
                         if result and result.embeddings:
                             batch_embeddings = []

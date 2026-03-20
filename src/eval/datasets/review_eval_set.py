@@ -100,6 +100,10 @@ def _print_record(record: Record, index: int, total: int, accepted: int, deleted
         )
         if record.get("source_path"):
             print(f"Source: {record['source_path']}")
+        beir_dataset = record.get("beir_dataset")
+        beir_query_id = record.get("beir_query_id")
+        if beir_dataset or beir_query_id:
+            print(f"BEIR: {beir_dataset or '—'}  Query ID: {beir_query_id or '—'}")
 
 
 def _prompt(msg: str = "", *, raise_on_interrupt: bool = False) -> str:
@@ -211,6 +215,31 @@ def review_eval_set(
         print(f"\nReviewing {inp.name} — {n_pending} pending of {total} total")
         print("Keys:  [a] Accept  [e] Edit  [s] Skip  [d] Delete  [q] Quit\n")
 
+    def _update_counters_for_valid(
+        record: Record,
+        new_valid: bool,
+        accepted: int,
+        deleted: int,
+    ) -> tuple[int, int]:
+        prev = record.get("valid")
+        if new_valid is True:
+            if prev is True:
+                pass
+            elif prev is False:
+                deleted -= 1
+                accepted += 1
+            else:
+                accepted += 1
+        else:
+            if prev is False:
+                pass
+            elif prev is True:
+                accepted -= 1
+                deleted += 1
+            else:
+                deleted += 1
+        return accepted, deleted
+
     reviewed_count = 0
     skipped = 0
     for seq, idx in enumerate(pending, 1):
@@ -236,28 +265,14 @@ def review_eval_set(
                 }
 
             if key == "a":
-                prev = record.get("valid")
-                if prev is True:
-                    pass
-                elif prev is False:
-                    deleted -= 1
-                    accepted += 1
-                else:
-                    accepted += 1
+                accepted, deleted = _update_counters_for_valid(record, True, accepted, deleted)
                 record["valid"] = True
                 record["reviewed"] = True
                 reviewed_count += 1
                 break
 
             if key == "d":
-                prev = record.get("valid")
-                if prev is False:
-                    pass
-                elif prev is True:
-                    accepted -= 1
-                    deleted += 1
-                else:
-                    deleted += 1
+                accepted, deleted = _update_counters_for_valid(record, False, accepted, deleted)
                 record["valid"] = False
                 record["reviewed"] = True
                 reviewed_count += 1
@@ -272,7 +287,12 @@ def review_eval_set(
                 print("  Enter corrected reference answer (blank line to finish; :q to cancel):")
                 lines: list[str] = []
                 while True:
-                    ln = _prompt("  > ")
+                    try:
+                        ln = _prompt("  > ", raise_on_interrupt=True)
+                    except KeyboardInterrupt:
+                        print("  Edit cancelled")
+                        lines = []
+                        break
 
                     if ln == "":
                         break
@@ -285,15 +305,7 @@ def review_eval_set(
                     record["reference_answer"] = "\n".join(lines)
                     edited = True
                     print(f"  Updated: {record['reference_answer'][:80]}")
-                    prev = record.get("valid")
-                    if prev is True:
-                        pass
-                    elif prev is False:
-                        if deleted > 0:
-                            deleted -= 1
-                        accepted += 1
-                    else:
-                        accepted += 1
+                    accepted, deleted = _update_counters_for_valid(record, True, accepted, deleted)
                     record["valid"] = True
                     record["reviewed"] = True
                     reviewed_count += 1

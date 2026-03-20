@@ -42,9 +42,10 @@ CLI reference
 from __future__ import annotations
 
 import math
+import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Any, cast
 
 # relative import so the module can be resolved when this file is run as
 # `python -m eval.plot_results`
@@ -63,15 +64,27 @@ def _get_typer():
     return _typer
 
 
-typer = _get_typer()
+def _echo(message: str, err: bool = False) -> None:
+    """Print an informational message or fallback to standard print if typer is unavailable."""
+    try:
+        typer = _get_typer()
+        typer.echo(message, err=err)
+    except SystemExit:
+        print(message, file=sys.stderr if err else sys.stdout)
+
+
 default_tracking_uri: Callable[[], str] = _default_tracking_uri
 
 
-app = typer.Typer(
-    name="plot-results",
-    help="Generate comparison charts from MLflow eval runs.",
-    add_completion=False,
-)
+def get_app() -> Any:
+    typer = _get_typer()
+    app = typer.Typer(
+        name="plot-results",
+        help="Generate comparison charts from MLflow eval runs.",
+        add_completion=False,
+    )
+    app.command()(main)
+    return app
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +113,7 @@ def _load_runs(
     for name in experiment_names:
         exp = mlflow.get_experiment_by_name(name)
         if exp is None:
-            typer.echo(f"[warn] Experiment '{name}' not found in {mlflow_uri}", err=True)
+            _echo(f"[warn] Experiment '{name}' not found in {mlflow_uri}", err=True)
             continue
         df = mlflow.search_runs(experiment_ids=[exp.experiment_id], output_format="pandas")
         df["_experiment"] = name
@@ -208,7 +221,7 @@ def plot_retrieval_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> No
         import matplotlib.pyplot as _plt
         import numpy as _np
     except ImportError as exc:
-        typer.echo(f"[warn] Skipping retrieval bar chart: {exc}", err=True)
+        _echo(f"[warn] Skipping retrieval bar chart: {exc}", err=True)
         return
 
     plt: Any = cast(Any, _plt)
@@ -229,7 +242,7 @@ def plot_retrieval_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> No
             ndcg5.append(n5)
 
     if not labels:
-        typer.echo("[warn] No recall@5 / ndcg@5 metrics found — skipping bar chart.", err=True)
+        _echo("[warn] No recall@5 / ndcg@5 metrics found — skipping bar chart.", err=True)
         return
 
     x = np.arange(len(labels))
@@ -250,7 +263,7 @@ def plot_retrieval_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> No
 
     out = output_dir / "retrieval_bars.png"
     fig.savefig(out, dpi=dpi)
-    typer.echo(f"Saved: {out}")
+    _echo(f"Saved: {out}")
     if show:
         plt.show()
     plt.close(fig)
@@ -267,7 +280,7 @@ def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) ->
         import matplotlib.pyplot as _plt
         import numpy as _np
     except ImportError as exc:
-        typer.echo(f"[warn] Skipping latency chart: {exc}", err=True)
+        _echo(f"[warn] Skipping latency chart: {exc}", err=True)
         return
 
     plt: Any = cast(Any, _plt)
@@ -282,7 +295,7 @@ def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) ->
     has_total = "metrics.latency_p50_ms" in runs.columns
 
     if not has_latency and not has_total:
-        typer.echo("[warn] No latency metrics found — skipping latency chart.", err=True)
+        _echo("[warn] No latency metrics found — skipping latency chart.", err=True)
         return
 
     labels: list[str] = []
@@ -291,10 +304,23 @@ def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) ->
 
     for _, row in runs.iterrows():
         lbl = _condition_label(row)
-        row_stages = {s: _safe_float(row.get(f"metrics.{s}_p50_ms")) or 0.0 for s in stages}
-        row_total = sum(row_stages.values())
+
+        # Preserve whether each per-stage run value was explicitly present/malformed
+        # vs. missing. Only fallback when all stage values are missing.
+        row_stages = {}
+        has_stage_values = False
+        for s in stages:
+            raw_value = row.get(f"metrics.{s}_p50_ms")
+            if raw_value is None:
+                row_stages[s] = 0.0
+            else:
+                safe_value = _safe_float(raw_value)
+                row_stages[s] = safe_value if safe_value is not None else 0.0
+                if safe_value is not None:
+                    has_stage_values = True
+
         fallback = False
-        if row_total == 0.0:
+        if not has_stage_values:
             # Fallback: use total p50 as a single block. Mark for special styling.
             total = _safe_float(row.get("metrics.latency_p50_ms")) or 0.0
             if total == 0.0:
@@ -308,7 +334,7 @@ def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) ->
             stage_values[s].append(row_stages[s])
 
     if not labels:
-        typer.echo("[warn] No valid latency data to plot.", err=True)
+        _echo("[warn] No valid latency data to plot.", err=True)
         return
 
     x = np.arange(len(labels))
@@ -350,7 +376,7 @@ def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) ->
 
     out = output_dir / "latency_breakdown.png"
     fig.savefig(out, dpi=dpi)
-    typer.echo(f"Saved: {out}")
+    _echo(f"Saved: {out}")
     if show:
         plt.show()
     plt.close(fig)
@@ -372,7 +398,7 @@ def plot_robustness_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
         import matplotlib.pyplot as _plt
         import numpy as _np
     except ImportError as exc:
-        typer.echo(f"[warn] Skipping robustness chart: {exc}", err=True)
+        _echo(f"[warn] Skipping robustness chart: {exc}", err=True)
         return
 
     plt: Any = cast(Any, _plt)
@@ -403,11 +429,13 @@ def plot_robustness_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
 
         labels.append(lbl)
         for mean_col, p10_col, _ in metrics:
-            data[mean_col].append(_metric_from_row(row, mean_col) or 0.0)
-            data[p10_col].append(_metric_from_row(row, p10_col) or 0.0)
+            # previous validation ensures both mean and p10 are present, so these
+            # should never be None; we keep direct values for clarity.
+            data[mean_col].append(_metric_from_row(row, mean_col))
+            data[p10_col].append(_metric_from_row(row, p10_col))
 
     if not labels:
-        typer.echo("[warn] No recall@5 metrics found — skipping robustness chart.", err=True)
+        _echo("[warn] No recall@5 metrics found — skipping robustness chart.", err=True)
         return
 
     n = len(labels)
@@ -439,7 +467,7 @@ def plot_robustness_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
 
     out = output_dir / "robustness_bars.png"
     fig.savefig(out, dpi=dpi)
-    typer.echo(f"Saved: {out}")
+    _echo(f"Saved: {out}")
     if show:
         plt.show()
     plt.close(fig)
@@ -455,7 +483,7 @@ def plot_cost_vs_quality(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
     try:
         import matplotlib.pyplot as _plt
     except ImportError as exc:
-        typer.echo(f"[warn] Skipping scatter chart: {exc}", err=True)
+        _echo(f"[warn] Skipping scatter chart: {exc}", err=True)
         return
 
     plt: Any = cast(Any, _plt)
@@ -487,7 +515,7 @@ def plot_cost_vs_quality(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
         plotted += 1
 
     if plotted == 0:
-        typer.echo("[warn] No cost + recall@5 pairs found — skipping scatter chart.", err=True)
+        _echo("[warn] No cost + recall@5 pairs found — skipping scatter chart.", err=True)
         plt.close(fig)
         return
 
@@ -504,7 +532,7 @@ def plot_cost_vs_quality(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
 
     out = output_dir / "cost_vs_quality.png"
     fig.savefig(out, dpi=dpi)
-    typer.echo(f"Saved: {out}")
+    _echo(f"Saved: {out}")
     if show:
         plt.show()
     plt.close(fig)
@@ -515,26 +543,14 @@ def plot_cost_vs_quality(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
 # ---------------------------------------------------------------------------
 
 
-@app.command()
 def main(
-    mlflow_uri: Annotated[
-        str | None, typer.Option("--mlflow-uri", help="MLflow tracking URI")
-    ] = None,
-    experiment: Annotated[
-        list[str] | None, typer.Option("--experiment", "-e", help="Experiment name (repeatable)")
-    ] = None,
-    filter_axis: Annotated[
-        str | None,
-        typer.Option("--filter-axis", help="Only include runs with this sweep_axis tag"),
-    ] = None,
-    top_k: Annotated[int, typer.Option("--top-k", help="Retrieval depth filter; 0 = all")] = 5,
-    output: Annotated[
-        str, typer.Option("--output", "-o", help="Output directory for PNGs")
-    ] = "plots",
-    show: Annotated[
-        bool, typer.Option("--show/--no-show", help="Display charts interactively")
-    ] = False,
-    dpi: Annotated[int, typer.Option("--dpi", help="PNG resolution")] = 150,
+    mlflow_uri: str | None = None,
+    experiment: list[str] | None = None,
+    filter_axis: str | None = None,
+    top_k: int = 5,
+    output: str = "plots",
+    show: bool = False,
+    dpi: int = 150,
 ) -> None:
     """Generate comparison charts from MLflow eval runs.
 
@@ -555,22 +571,22 @@ def main(
     output_dir = Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    typer.echo(f"Loading runs from: {resolved_mlflow_uri}")
+    _echo(f"Loading runs from: {resolved_mlflow_uri}")
     runs = load_runs(
         mlflow_uri=resolved_mlflow_uri,
         experiment_names=list(experiment),
         top_k_filter=top_k,
         sweep_axis_filter=filter_axis,
     )
-    typer.echo(f"Loaded {len(runs)} run(s) across {list(experiment)}")
+    _echo(f"Loaded {len(runs)} run(s) across {list(experiment)}")
 
     plot_retrieval_bars(runs, output_dir, show=show, dpi=dpi)
     plot_robustness_bars(runs, output_dir, show=show, dpi=dpi)
     plot_latency_breakdown(runs, output_dir, show=show, dpi=dpi)
     plot_cost_vs_quality(runs, output_dir, show=show, dpi=dpi)
 
-    typer.echo(f"\nAll charts written to: {output_dir}/")
+    _echo(f"\nAll charts written to: {output_dir}/")
 
 
 if __name__ == "__main__":
-    app()
+    get_app()()

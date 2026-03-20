@@ -175,6 +175,7 @@ python -m eval.run_eval ui
 mlflow ui --backend-store-uri "${XDG_STATE_HOME:-$HOME/.local/state}/rainrag/mlruns"
 # If using a tracking server, open its URL directly:
 # ${RAINRAG_MLFLOW_URI:-${MLFLOW_TRACKING_URI:-http://127.0.0.1:5000}}
+```
 
 Then open http://localhost:5000 in your browser.
 
@@ -243,7 +244,7 @@ Because query rewriting, HyDE, and reranking are optional, we log both a
 |---|---|
 | `cost.mean_usd_est_per_query` | Estimated mean USD cost per query across the evaluated queries |
 | `cost.aggregate_usd_est` | Run-wide total estimated cost across all queries |
-| `cost.total_usd_est` | Per-query total estimated cost (for the current query)
+| `cost.total_usd_est` | Per-query total estimated cost (for the current query) | 
 | `cost.llm_base_usd_est` | Estimated USD cost of the main answer-generation LLM call |
 | `cost.llm_rewrite_usd_est` | Estimated USD cost of query rewrite LLM calls |
 | `cost.llm_hyde_usd_est` | Estimated USD cost of HyDE LLM calls |

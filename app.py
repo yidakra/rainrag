@@ -1192,15 +1192,10 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         if len(vtt_languages) > 1:
                             lang_display = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
 
-                            def _format_vtt_lang(
-                                code: str, mapping: dict[str, str] = lang_display
-                            ) -> str:
-                                return mapping.get(code, code)
-
                             selected_vtt_lang = st.radio(
                                 get_text("vtt_language", lang),
                                 options=list(vtt_languages.keys()),
-                                format_func=_format_vtt_lang,
+                                format_func=lambda code, _ld=lang_display: _ld.get(code, code),
                                 horizontal=True,
                                 key=f"vtt_lang_{group_idx}",
                                 label_visibility="collapsed",

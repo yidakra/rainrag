@@ -591,10 +591,17 @@ docker-compose down
 # Create the directory and key files before running `docker-compose up`.
 #
 #   mkdir -p ./secrets
-#   make secrets
+#   make secrets   # or ./create-secrets.sh
 #
 # Then edit the generated files (e.g. `./secrets/mistral_api_key.txt`) and
 # populate them with your provider API keys.
+#
+# For missing keys
+#   - `./secrets/mistral_api_key.txt` and `./secrets/cohere_api_key.txt` are
+#     required for Mistral/Cohere provider use.
+#   - Either create and populate these files, or comment out the corresponding
+#     `mistral_api_key`/`cohere_api_key` secret section in `docker-compose.yaml`.
+#   - Other provider keys are optional and only needed if configured.
 #
 # Default providers (used out of the box):
 #   - Mistral (LLM)

@@ -3,7 +3,6 @@
 # asyncio not needed in these tests
 from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
 
 import anyio
 import httpx
@@ -60,7 +59,7 @@ class _SyncASGIClient:
         # Otherwise, run a fresh event loop (sync tests).
         try:
             in_async_task = anyio.get_current_task() is not None
-        except Exception:
+        except RuntimeError:
             in_async_task = False
 
         if not in_async_task:
@@ -95,163 +94,86 @@ def test_config_with_video(temp_dir: Path) -> Config:
     embeddings_dir = temp_dir / "embeddings"
     embeddings_dir.mkdir()
 
+    return _build_config(
+        archive_root=str(archive_dir),
+        docs_output=str(data_dir / "docs.jsonl"),
+        embeddings_cache=str(embeddings_dir),
+        video_root=str(archive_dir),
+        video_enabled=True,
+    )
+
+
+def _build_config(
+    archive_root: str,
+    docs_output: str = "./data/docs.jsonl",
+    embeddings_cache: str = "./embeddings",
+    video_root: str | None = None,
+    video_enabled: bool = True,
+) -> Config:
+    """Build a Config with shared defaults for tests."""
+    if video_root is None:
+        video_root = archive_root
+
     return Config(
         paths=PathsConfig(
-            archive_root=str(archive_dir),
-            docs_output=str(data_dir / "docs.jsonl"),
-            embeddings_cache=str(embeddings_dir),
-            video_root=str(archive_dir),
+            archive_root=archive_root,
+            docs_output=docs_output,
+            embeddings_cache=embeddings_cache,
+            video_root=video_root,
         ),
-        embedding=cast(
-            EmbeddingConfig,
-            {
-                "provider": "local",
-                "model_name": "sentence-transformers/all-MiniLM-L6-v2",
-                "batch_size": 8,
-                "max_seq_length": 128,
-                "device": "cpu",
-                "normalize_embeddings": True,
-            },
+        embedding=EmbeddingConfig(
+            provider="local",
+            model_name="test",
+            batch_size=8,
+            max_seq_length=128,
+            device="cpu",
+            normalize_embeddings=True,
         ),
-        qdrant=cast(
-            QdrantConfig,
-            {
-                "host": "localhost",
-                "port": 6333,
-                "collection_name": "test_collection",
-                "vector_size": 384,
-                "distance": "Cosine",
-                "recreate_collection": False,
-            },
+        qdrant=QdrantConfig(
+            host="localhost",
+            port=6333,
+            collection_name="test",
+            vector_size=384,
+            distance="Cosine",
+            recreate_collection=False,
         ),
-        llm=cast(
-            LLMConfig,
-            {
-                "provider": "mistral",
-            },
+        llm=LLMConfig(provider="mistral"),
+        mistral=MistralConfig(
+            api_key="test-key",
+            model_name="mistral-small-latest",
+            max_tokens=512,
+            temperature=0.3,
+            top_k=5,
         ),
-        mistral=cast(
-            MistralConfig,
-            {
-                "api_key": "test-key",
-                "model_name": "mistral-small-latest",
-                "max_tokens": 512,
-                "temperature": 0.3,
-                "top_k": 5,
-            },
+        openai=OpenAIConfig(
+            api_key="test-openai-key",
+            model_name="gpt-4o-mini",
+            embedding_model="text-embedding-3-small",
+            max_tokens=512,
+            temperature=0.3,
+            top_k=5,
         ),
-        openai=cast(
-            OpenAIConfig,
-            {
-                "api_key": "test-openai-key",
-                "model_name": "gpt-4o-mini",
-                "embedding_model": "text-embedding-3-small",
-                "max_tokens": 512,
-                "temperature": 0.3,
-                "top_k": 5,
-            },
+        processing=ProcessingConfig(
+            num_workers=2,
+            max_file_size=1048576,
+            min_text_length=10,
         ),
-        processing=cast(
-            ProcessingConfig,
-            {
-                "num_workers": 2,
-                "max_file_size": 1048576,
-                "min_text_length": 10,
-            },
+        logging=LoggingConfig(
+            level="ERROR",
+            format="{message}",
+            log_file="./test.log",
         ),
-        logging=cast(
-            LoggingConfig,
-            {
-                "level": "ERROR",
-                "format": "{message}",
-                "log_file": str(temp_dir / "test.log"),
-            },
-        ),
-        video=cast(
-            VideoConfig,
-            {
-                "enabled": True,
-                "extensions": [".mp4", ".mkv", ".webm"],
-                "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
-            },
+        video=VideoConfig(
+            enabled=video_enabled,
+            extensions=[".mp4", ".mkv", ".webm"],
+            vtt_extensions=[".vtt", ".en.vtt", ".ru.vtt"],
         ),
     )
 
 
 def make_test_config(archive_root: str, video_enabled: bool = True) -> Config:
     """Create a test Config matching the common defaults used in these tests."""
-
-    return Config(
-        paths=cast(
-            PathsConfig,
-            {
-                "archive_root": archive_root,
-                "docs_output": "./data/docs.jsonl",
-                "embeddings_cache": "./embeddings",
-                "video_root": archive_root,
-            },
-        ),
-        embedding=cast(
-            EmbeddingConfig,
-            {
-                "provider": "local",
-                "model_name": "test",
-                "batch_size": 8,
-                "max_seq_length": 128,
-                "device": "cpu",
-                "normalize_embeddings": True,
-            },
-        ),
-        qdrant=cast(
-            QdrantConfig,
-            {
-                "host": "localhost",
-                "port": 6333,
-                "collection_name": "test",
-                "vector_size": 384,
-                "distance": "Cosine",
-                "recreate_collection": False,
-            },
-        ),
-        llm=cast(LLMConfig, {"provider": "mistral"}),
-        mistral=cast(
-            MistralConfig,
-            {
-                "api_key": "test-key",
-                "model_name": "mistral-small-latest",
-                "max_tokens": 512,
-                "temperature": 0.3,
-                "top_k": 5,
-            },
-        ),
-        openai=cast(
-            OpenAIConfig,
-            {
-                "api_key": "test-openai-key",
-                "model_name": "gpt-4o-mini",
-                "embedding_model": "text-embedding-3-small",
-                "max_tokens": 512,
-                "temperature": 0.3,
-                "top_k": 5,
-            },
-        ),
-        processing=cast(
-            ProcessingConfig,
-            {"num_workers": 2, "max_file_size": 1048576, "min_text_length": 10},
-        ),
-        logging=cast(
-            LoggingConfig,
-            {"level": "ERROR", "format": "{message}", "log_file": "./test.log"},
-        ),
-        video=cast(
-            VideoConfig,
-            {
-                "enabled": video_enabled,
-                "extensions": [".mp4", ".mkv", ".webm"],
-                "vtt_extensions": [".vtt", ".en.vtt", ".ru.vtt"],
-            },
-        ),
-    )
+    return _build_config(archive_root, video_enabled=video_enabled)
 
 
 @pytest.fixture
@@ -330,21 +252,13 @@ def test_find_video_file_mkv(temp_dir: Path, archive_with_videos: Path):
 
 def test_find_video_file_not_found(temp_dir: Path, archive_with_videos: Path):
     """Test when video file doesn't exist."""
-    import rainrag.api as api_module
-
-    original_config = api_module.config
-
     test_cfg = make_test_config(str(archive_with_videos))
 
-    api_module.config = test_cfg
-
-    try:
+    with override_api_config(test_cfg):
         vtt_path = str(archive_with_videos / "test_videos" / "video3.vtt")
         video_file = find_video_file(vtt_path)
 
         assert video_file is None
-    finally:
-        api_module.config = original_config
 
 
 def test_api_root_endpoint(test_client):
@@ -361,15 +275,9 @@ def test_api_root_endpoint(test_client):
 
 def test_video_endpoint_security(test_client, temp_dir: Path, archive_with_videos: Path):
     """Test that video endpoint prevents path traversal attacks."""
-    import rainrag.api as api_module
-
-    original_config = api_module.config
-
     test_cfg = make_test_config(str(archive_with_videos))
 
-    api_module.config = test_cfg
-
-    try:
+    with override_api_config(test_cfg):
         # Try path traversal attack
         response = test_client.get("/video/../../../etc/passwd")
         assert response.status_code in [400, 403, 404]  # Should be rejected
@@ -377,26 +285,16 @@ def test_video_endpoint_security(test_client, temp_dir: Path, archive_with_video
         # Try another path traversal
         response = test_client.get("/video/../../sensitive_file.txt")
         assert response.status_code in [400, 403, 404]  # Should be rejected
-    finally:
-        api_module.config = original_config
 
 
 def test_vtt_endpoint_security(test_client, temp_dir: Path, archive_with_videos: Path):
     """Test that VTT endpoint prevents path traversal attacks."""
-    import rainrag.api as api_module
-
-    original_config = api_module.config
-
     test_cfg = make_test_config(str(archive_with_videos))
 
-    api_module.config = test_cfg
-
-    try:
+    with override_api_config(test_cfg):
         # Try path traversal attack
         response = test_client.get("/vtt/../../../etc/passwd")
         assert response.status_code in [400, 403, 404]  # Should be rejected
-    finally:
-        api_module.config = original_config
 
 
 def test_video_disabled(test_client, temp_dir: Path):
@@ -420,15 +318,9 @@ def test_video_disabled(test_client, temp_dir: Path):
 
 def test_find_video_file_multi_resolution(temp_dir: Path, archive_with_videos: Path):
     """Test finding highest resolution video file for VTT (prefers 1080p)."""
-    import rainrag.api as api_module
-
-    original_config = api_module.config
-
     test_cfg = make_test_config(str(archive_with_videos))
 
-    api_module.config = test_cfg
-
-    try:
+    with override_api_config(test_cfg):
         # Test with English VTT
         hash_name = "3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd"
         vtt_path_en = str(archive_with_videos / "test_videos" / f"{hash_name}.en.vtt")
@@ -445,8 +337,6 @@ def test_find_video_file_multi_resolution(temp_dir: Path, archive_with_videos: P
         assert video_file_ru is not None
         assert f"{hash_name}_1080p.mp4" in video_file_ru
         assert video_file_en == video_file_ru  # Same video for both languages
-    finally:
-        api_module.config = original_config
 
 
 def test_get_video_base_name_english():

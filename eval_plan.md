@@ -79,10 +79,14 @@ eval/
 Fields:
 - `relevant_doc_ids` — list of Qdrant payload `doc_id` values that are relevant
   (used for retrieval metrics without needing LLM)
-- `reference_answer` — ground-truth answer used for RAGAS Context Recall and
-  Answer Relevance. If null or empty, `context_recall` is skipped (RAGAS may still
-  compute other metrics such as answer relevancy, but `context_recall` is
-  unavailable for that record).
+- `reference_answer` — ground-truth answer used for RAGAS metrics.
+  `context_recall` requires this field; `answer_relevancy` and `faithfulness`
+  can be computed even when `reference_answer`/`ground_truth` is missing, but
+  their trusted evaluation may be weaker and is not recommended for final
+  reporting without a reference answer.
+  If null or empty, `context_recall` is skipped (RAGAS may still compute
+  other metrics such as `answer_relevancy` and `faithfulness`, but not
+  `context_recall` for that record).
 - `category` — `factual | temporal | entity | multilingual`
 - `temporal` — whether the query uses recency language ("latest", "recent")
 
@@ -96,9 +100,9 @@ Since there is no labelled corpus yet, we generate a synthetic eval set:
    reference answer for each chunk — the chunk itself becomes the single
    `relevant_doc_id`
 3. **Filter out** low-quality synthetic pairs with a second LLM pass
-4. **Manual review** of ≥20 queries per category before committing the JSONL
+4. **Manual review** of ≥20 queries per category per language (≥20 × 4 categories × 2 languages = ≥160 generated candidates), then select the best ~12–13 per category per language
 
-Target: 50 English + 50 Russian queries covering all four categories.
+Target: 50 English + 50 Russian queries covering all four categories (approximately 12–13 queries per category per language).
 
 ---
 
@@ -156,6 +160,8 @@ overrides. We run every condition against the full eval set and log to MLflow.
 | 06 | hybrid_rrf + rewrite + hyde   | RRF    | on        | on      | on   | off      |
 | 07 | hybrid_rrf + reranker         | RRF    | off       | —       | —    | on       |
 | 08 | full_pipeline                 | RRF    | on        | on      | on   | on       |
+
+*Note*: in this table, “—” indicates the parameter is not applicable for that condition (e.g., no two-stage module is active, so rewrite/hyde are N/A).
 
 Each condition × k ∈ {5, 10} × language ∈ {en, ru} = 32 MLflow runs.
 
@@ -230,7 +236,8 @@ For each query we log an itemized breakdown so you can compare strategies in det
 - `cost.llm_rewrite_usd_est` — estimated USD cost of query rewrite calls
 - `cost.llm_hyde_usd_est` — estimated USD cost of HyDE calls
 - `cost.reranker_usd_est` — estimated USD cost of reranker calls (set to 0 by default)
-- `cost.aggregate_usd_est` — run-wide total estimated cost (sum of `cost.total_usd_est` across all queries)
+- `cost.total_usd_est` — per-query total estimated cost (sum of `cost.embed_cost + cost.llm_base_cost + cost.llm_rewrite_cost + cost.llm_hyde_cost + cost.reranker_cost`)
+- `cost.aggregate_usd_est` — run-wide total estimated cost (sum of per-query `cost.total_usd_est` across all queries)
 - `cost.mean_usd_est_per_query` — average estimated cost per query (mean of per-query `cost.total_usd_est`)
 - `cost.total_usd_est_per_query` — legacy alias removed; avoid using this mix-style key
 
@@ -246,8 +253,12 @@ These can be used to tune or replace the cost model outside this suite.
 **Pricing assumptions**
 
 - Rates are defined in `eval/metrics/cost.py` as per-1M-token prices for each provider (input/output for LLMs and embeddings).
-- Token counts are estimated as `len(text) / 4` characters per token and rounded for reporting. This is an English-centric heuristic and can under- or over-estimate tokens for non‑Latin scripts (e.g., Russian); for accurate counts use the model's tokenizer when possible.
-- The system prompt is approximated as 200 tokens.
+- Token counts are estimated using provider tokenizers when available:
+  - OpenAI: `tiktoken` via provider-specific encoding (e.g., `gpt-4o-mini`)
+  - Other providers: use the same tokenizer the provider uses in production (or best matching heuristic)
+  - If tokenizer is unavailable, fallback to the existing approximation with a warning that script complexity may skew results.
+- The system prompt is tokenized by the same model tokenizer, or else approximated as 200 tokens (English) with non-Latin scripts potentially 50–100% higher.
+- This suite may expose a config flag like `use_tokenizer_for_cost_estimation` to enforce tokenizer-based counting for accurate comparisons.
 
 **Cost formula**
 
@@ -305,8 +316,7 @@ Fixes the best-performing ablation condition and sweeps providers.
 | claude       | openai             |
 | gemini       | gemini             |
 
-Runs all 4×4 = 16 combinations (minus invalid ones — Claude has no embeddings
-so falls back to local). Reports retrieval + answer quality + latency + cost.
+Runs 16 potential combinations; Claude does not support external embeddings, so any Claude run uses local embeddings (effectively collapsing Claude's 4 embedding-provider slots into 1), resulting in 13 actual distinct runs. Reports retrieval + answer quality + latency + cost.
 
 MLflow experiment name: `provider_comparison`.
 
@@ -343,7 +353,7 @@ python -m eval.run_eval create-dataset --output eval/datasets/eval_set_en.jsonl 
 python -m eval.run_eval ablation --dataset eval/datasets/eval_set_en.jsonl --mlflow-uri ./mlruns
 
 # Run provider comparison
-python -m eval.run_eval providers --dataset eval/datasets/eval_set_en.jsonl
+python -m eval.run_eval providers --dataset eval/datasets/eval_set_en.jsonl --mlflow-uri ./mlruns
 
 # Run latency profiling
 python -m eval.run_eval latency --conditions 01,06,08

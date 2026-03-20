@@ -1076,6 +1076,10 @@ class RAGQueryEngine:
             else:
                 effective_limit = top_k
 
+            if exclude_speech_free:
+                # Fetch extra candidates to ensure we can still return top_k on post-filter.
+                effective_limit = max(effective_limit * 3, top_k * 3)
+
             # 1. Vector search
             if date_from or date_to:
                 logger.info(
@@ -1672,6 +1676,7 @@ Question: {query}"""
             import numpy as np
 
             hyde_vector = self._generate_hyde_embedding(question, language)
+            embed_calls += 1
             alpha = self.config.two_stage.hyde_alpha
             blended = (1.0 - alpha) * np.array(primary_vector) + alpha * np.array(hyde_vector)
             norm = float(np.linalg.norm(blended))

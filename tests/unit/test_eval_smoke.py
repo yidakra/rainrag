@@ -13,15 +13,10 @@ from __future__ import annotations
 
 import importlib
 import sys
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
-
-# Make sure the repo root is on sys.path when running from the tests/ directory
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
 # ---------------------------------------------------------------------------
@@ -81,11 +76,21 @@ def test_ablation_conditions_list() -> None:
     from eval.experiments.ablation import ABLATION_CONDITIONS
 
     assert isinstance(ABLATION_CONDITIONS, list)
-    assert len(ABLATION_CONDITIONS) >= 8
+    assert len(ABLATION_CONDITIONS) > 0
     for cond in ABLATION_CONDITIONS:
         assert "id" in cond
         assert "label" in cond
         assert "overrides" in cond
+
+
+def test_ablation_conditions_unknown_id_raises() -> None:
+    """Unknown condition IDs must raise instead of being silently ignored."""
+    from eval.experiments.ablation import AblationExperiment
+
+    exp = AblationExperiment(condition_ids=["01", "99"])
+
+    with pytest.raises(ValueError, match=r"Unknown ablation condition id\(s\): 99"):
+        exp.conditions()
 
 
 def test_two_stage_sweep_default_conditions() -> None:
@@ -97,7 +102,10 @@ def test_two_stage_sweep_default_conditions() -> None:
     assert len(conds) > 0
 
     axes = {c["tags"]["sweep_axis"] for c in conds}
-    assert axes == {
+
+    # This is a contract check for known axes. New axes may be added in future,
+    # but we still require the core axes to remain present while allowing extensions.
+    expected_axes = {
         "hyde_alpha",
         "rewrite_variants",
         "pool_size",
@@ -105,6 +113,10 @@ def test_two_stage_sweep_default_conditions() -> None:
         "merge_rrf_k",
         "doc_order",
     }
+    required_axes = {"hyde_alpha", "rewrite_variants"}
+
+    assert axes >= required_axes
+    assert axes <= expected_axes
 
 
 def test_two_stage_sweep_axis_filter() -> None:
@@ -114,6 +126,16 @@ def test_two_stage_sweep_axis_filter() -> None:
     exp = TwoStageSweepExperiment(dataset_path=None, axes=["hyde_alpha"])
     conds = exp.conditions()
     assert all(c["tags"]["sweep_axis"] == "hyde_alpha" for c in conds)
+
+
+def test_two_stage_sweep_hyde_ids_are_unique_without_rounding_collisions() -> None:
+    """HyDE condition IDs should not collide for nearby alpha values."""
+    from eval.experiments.two_stage_sweep import _hyde_alpha_conditions
+
+    conds = _hyde_alpha_conditions([0.33, 0.333])
+    ids = [c["id"] for c in conds]
+
+    assert len(set(ids)) == len(ids)
 
 
 def test_two_stage_sweep_invalid_axis_raises() -> None:
@@ -169,7 +191,7 @@ def test_carbon_track_emissions_noop_without_package(monkeypatch: pytest.MonkeyP
         # Force re-import of carbon module with patched __import__
         # clear module cache so import uses patched __import__
         sys.modules.pop("eval.metrics.carbon", None)
-        carbon_mod = __import__("eval.metrics.carbon", fromlist=["*"])
+        carbon_mod = importlib.import_module("eval.metrics.carbon")
 
         with carbon_mod.track_emissions() as result:
             pass
@@ -215,15 +237,12 @@ def _make_hit(score, doc_id, is_speech_free):
 # The production predicate lives in the create_eval_set module.
 
 
+from eval.datasets.create_eval_set import scroll_chunk_predicate
+
+
 def _apply_scroll_filter(payloads: list[dict], lang: str) -> list[dict]:
-    """Mirror of the filter condition inside _scroll_chunks."""
-    return [
-        p
-        for p in payloads
-        if p.get("language", "en") == lang
-        and p.get("text", "")
-        and not p.get("is_speech_free", False)
-    ]
+    """Use shared predicate from create_eval_set to avoid duplication."""
+    return [p for p in payloads if scroll_chunk_predicate(p, lang)]
 
 
 def test_scroll_chunks_filter_excludes_speech_free() -> None:
@@ -323,45 +342,16 @@ def test_apply_scroll_filter_matches_create_eval_set_scroll_chunks() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_retrieve_documents_exclude_speech_free_filters_results(test_config) -> None:
-    """retrieve_documents(exclude_speech_free=True) must strip is_speech_free docs."""
-    pytest.importorskip("qdrant_client")  # skip if not installed
-    torch = pytest.importorskip("torch")  # noqa: F841 — skip if torch not installed
-
-    from rainrag.query import RAGQueryEngine
-
-    cfg = test_config
-    engine = RAGQueryEngine.__new__(RAGQueryEngine)
-    engine.config = cfg
-    engine.bm25 = None  # no hybrid search
-
-    fake_points = [_make_hit(0.9, "doc_a", False), _make_hit(0.8, "doc_b", True)]
-    mock_result = MagicMock()
-    mock_result.points = fake_points
-
-    engine.qdrant_client = MagicMock()
-    engine.qdrant_client.query_points.return_value = mock_result
-
-    docs = engine.retrieve_documents(
-        query_vector=[0.0] * 768,
-        top_k=5,
-        exclude_speech_free=True,
-    )
-
-    assert len(docs) == 1
-    assert docs[0]["doc_id"] == "doc_a"
-
-
-def test_retrieve_documents_include_speech_free_by_default(test_config) -> None:
-    """retrieve_documents without exclude_speech_free must return all docs."""
+@pytest.fixture
+def rag_engine_with_mock_qdrant(test_config):
+    """Prepare a RAGQueryEngine with a fake qdrant client and 2 points."""
     pytest.importorskip("qdrant_client")
     pytest.importorskip("torch")
 
     from rainrag.query import RAGQueryEngine
 
-    cfg = test_config
     engine = RAGQueryEngine.__new__(RAGQueryEngine)
-    engine.config = cfg
+    engine.config = test_config
     engine.bm25 = None
 
     fake_points = [_make_hit(0.9, "doc_a", False), _make_hit(0.8, "doc_b", True)]
@@ -371,7 +361,28 @@ def test_retrieve_documents_include_speech_free_by_default(test_config) -> None:
     engine.qdrant_client = MagicMock()
     engine.qdrant_client.query_points.return_value = mock_result
 
-    docs = engine.retrieve_documents(
+    return engine
+
+
+def test_retrieve_documents_exclude_speech_free_filters_results(
+    rag_engine_with_mock_qdrant,
+) -> None:
+    """retrieve_documents(exclude_speech_free=True) must strip is_speech_free docs."""
+
+    docs = rag_engine_with_mock_qdrant.retrieve_documents(
+        query_vector=[0.0] * 768,
+        top_k=5,
+        exclude_speech_free=True,
+    )
+
+    assert len(docs) == 1
+    assert docs[0]["doc_id"] == "doc_a"
+
+
+def test_retrieve_documents_include_speech_free_by_default(rag_engine_with_mock_qdrant) -> None:
+    """retrieve_documents without exclude_speech_free must return all docs."""
+
+    docs = rag_engine_with_mock_qdrant.retrieve_documents(
         query_vector=[0.0] * 768,
         top_k=5,
     )

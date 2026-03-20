@@ -262,6 +262,11 @@ def _embed_documents_local(
     """
 
     model = engine.embedding_model
+    if model is None:
+        raise ValueError(
+            "Embedding model is not configured: engine.embedding_model is None; "
+            "cannot call model.encode()."
+        )
     normalize = engine.config.embedding.normalize_embeddings
 
     # determine prefix: user-configured or auto-detect for E5-like models
@@ -297,14 +302,25 @@ def _embed_documents_api(
     Note: this is slow for large corpora and may not apply the correct
     document prefix. Use local embeddings for BEIR eval or keep
     max_corpus_docs small.
+
+    Prefer document-specific APIs (embed_document or embed_passage) when
+    available. For generic embed_query calls, prepend a document prefix to
+    avoid query-style embedding for passage models (e.g., E5).
     """
-    # TODO: Use a document-specific embedding method if available
-    # to ensure correct prefix handling for models like E5.
     embeddings: list[list[float]] = []
     for i, text in enumerate(texts):
         if i % 50 == 0 and i > 0:
             logger.info(f"  Embedded {i}/{len(texts)} documents ...")
-        embeddings.append(cast(list[float], engine.embed_query(text)))
+
+        if hasattr(engine, "embed_document"):
+            vector = engine.embed_document(text)
+        elif hasattr(engine, "embed_passage"):
+            vector = engine.embed_passage(text)
+        else:
+            # Fall back to query embedding but force a document-like prefix.
+            vector = engine.embed_query(f"passage: {text}")
+
+        embeddings.append(cast(list[float], vector))
         if delay_s > 0:
             time.sleep(delay_s)
     return embeddings
@@ -352,6 +368,8 @@ def _index_corpus_into_qdrant(
         collection_name: Qdrant collection to create/use.
         batch_size: Embedding batch size (for local models).
         recreate: Drop and recreate the collection if it already exists.
+        If recreate=False, the existing collection is reused based on point count only
+        (this assumes corpus stability; if the corpus content may change, set recreate=True).
     """
     from qdrant_client.models import Distance, PointStruct, VectorParams
 
@@ -379,8 +397,9 @@ def _index_corpus_into_qdrant(
                 client.delete_collection(collection_name)
             else:
                 if current_count == expected_size:
-                    logger.info(
-                        "Reusing existing collection '%s' (expected=%d, actual=%d).",
+                    logger.warning(
+                        "Reusing existing collection '%s' based on point count only (expected=%d, actual=%d). "
+                        "Corpus content may have changed; set recreate=True to force refresh.",
                         collection_name,
                         expected_size,
                         current_count,

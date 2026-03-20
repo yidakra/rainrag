@@ -68,7 +68,10 @@ def base_config():
 @pytest.fixture
 def two_stage_config(base_config):
     """Config with two-stage Stage 2a (query rewriting) enabled."""
-    cfg = base_config.copy(deep=False)
+    if hasattr(base_config, "model_copy"):
+        cfg = base_config.model_copy(deep=False)
+    else:
+        cfg = base_config.copy(deep=False)
     cfg.two_stage = TwoStageConfig(
         enabled=True,
         query_rewrite_enabled=True,
@@ -81,7 +84,10 @@ def two_stage_config(base_config):
 @pytest.fixture
 def hyde_config(base_config):
     """Config with two-stage Stage 2b (HyDE) enabled, rewriting disabled."""
-    cfg = base_config.copy(deep=False)
+    if hasattr(base_config, "model_copy"):
+        cfg = base_config.model_copy(deep=False)
+    else:
+        cfg = base_config.copy(deep=False)
     cfg.two_stage = TwoStageConfig(
         enabled=True,
         query_rewrite_enabled=False,
@@ -260,8 +266,8 @@ class TestRewriteQuery:
 
             engine._rewrite_query_for_retrieval("запрос", language="ru")
 
-        call_kwargs = mock_openai_client.chat.completions.create.call_args
-        prompt_text = call_kwargs[1]["messages"][0]["content"]
+        call = mock_openai_client.chat.completions.create.call_args
+        prompt_text = call.kwargs["messages"][0]["content"]
         assert "Перепиши" in prompt_text
 
     def test_rewrite_uses_configured_temperature(self, two_stage_config, mock_openai_client):
@@ -549,8 +555,6 @@ class TestMergeStrategies:
         # variant 0: [a(0.9), b(0.5)]
         # variant 1: [c(0.8), b(0.4)]
         # 'a' covers {0} only, 'c' covers {1} only, 'b' covers {0,1}
-        # Greedy step 1: 'b' covers 2 variants (best), but 'a' and 'c' also tie
-        # at new_coverage=1.  Tie goes to 'b' (score 0.5 — wait, 'a' is 0.9 > 'b' 0.5).
         # Actually: 'b' covers {0,1} → new_coverage=2; 'a' covers {0} → 1; 'c' covers {1} → 1
         # 'b' wins step 1.
         vdocs_a = [self._doc("a", 0.9, 1), self._doc("b", 0.5, 2)]
@@ -809,12 +813,12 @@ class TestOrderDocumentsForPrompt:
         result = engine._order_documents_for_prompt(docs, "book_end")
         assert [d["score"] for d in result] == [0.9, 0.7]
 
-    def test_single_doc_unchanged_for_any_order(self, engine):
-        for order in ("rank", "reversed", "book_end"):
-            docs = _make_docs([0.9])
-            result = engine._order_documents_for_prompt(docs, order)
-            assert len(result) == 1
-            assert result[0]["score"] == 0.9
+    @pytest.mark.parametrize("order", ["rank", "reversed", "book_end"])
+    def test_single_doc_unchanged_for_any_order(self, engine, order):
+        docs = _make_docs([0.9])
+        result = engine._order_documents_for_prompt(docs, order)
+        assert len(result) == 1
+        assert result[0]["score"] == 0.9
 
     def test_unknown_order_falls_back_to_rank(self, engine):
         docs = _make_docs([0.9, 0.7, 0.5])

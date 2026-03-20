@@ -289,13 +289,20 @@ class TwoStageConfig(BaseModel):
 
     enabled: bool = Field(
         default=False,
-        description="Enable two-stage retrieval pipeline",
+        description=(
+            "Enable two-stage retrieval pipeline. "
+            "Sub-features like query_rewrite_enabled and hyde_enabled are only respected when enabled=True. "
+            "Set enabled=True to activate the two-stage behavior; otherwise sub-feature keys are ignored."
+        ),
     )
 
     # Stage 2a: LLM query rewriting
     query_rewrite_enabled: bool = Field(
         default=True,
-        description="Rewrite query into transcript-register variants before retrieval",
+        description=(
+            "Rewrite query into transcript-register variants before retrieval. "
+            "This setting is ignored unless TwoStageConfig.enabled=True."
+        ),
     )
     query_rewrite_variants: int = Field(
         default=2,

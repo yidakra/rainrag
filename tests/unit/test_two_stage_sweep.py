@@ -229,6 +229,13 @@ class TestRewriteVariantsAxis:
         for cond, expected in zip(self._conditions(), REWRITE_VARIANTS, strict=True):
             assert cond["tags"]["rewrite_variants"] == str(expected)
 
+    def test_custom_variants(self):
+        custom = [1, 2, 3, 4]
+        conds = self._conditions(variants=custom)
+        for cond, expected in zip(conds, custom, strict=True):
+            assert cond["overrides"]["two_stage.query_rewrite_variants"] == expected
+            assert cond["tags"]["rewrite_variants"] == str(expected)
+
 
 # ---------------------------------------------------------------------------
 # Axis C – Pool size overrides
@@ -259,6 +266,14 @@ class TestPoolSizeAxis:
 
     def test_tag_records_multiplier(self):
         for cond, expected in zip(self._conditions(), POOL_SIZES, strict=True):
+            assert cond["tags"]["top_k_multiplier"] == str(expected)
+
+    def test_custom_pool_sizes(self):
+        custom = [2, 4, 6]
+        conds = self._conditions(pool_sizes=custom)
+        for cond, expected in zip(conds, custom, strict=True):
+            assert "hybrid_search.top_k_multiplier" in cond["overrides"]
+            assert cond["overrides"]["hybrid_search.top_k_multiplier"] == expected
             assert cond["tags"]["top_k_multiplier"] == str(expected)
 
 

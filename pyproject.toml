@@ -47,8 +47,8 @@ optional = true
 
 [tool.poetry.group.eval.dependencies]
 mlflow = "^2.14"
-ragas = "^0.1"         # lock to 0.1.x series to avoid accidental minor/major bumps
-rouge-score = "^0.1.2"
+ragas = "~0.1.0"         # lock to 0.1.x series to avoid accidental minor/major bumps
+rouge-score = "~0.1.2"    # lock to 0.1.x series for API compatibility
 pandas = "^2.0"
 datasets = "^2.14"   # Required by RAGAS for Dataset.from_list()
 codecarbon = "^2.3"  # Carbon footprint tracking for experiments
@@ -199,3 +199,6 @@ ignore_missing_imports = true
 [tool.bandit]
 exclude_dirs = ["tests/", "build/", "dist/", ".venv/"]
 skips = ["B101", "B601"]  # B101: assert_used (fine in tests), B601: paramiko (not used)
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

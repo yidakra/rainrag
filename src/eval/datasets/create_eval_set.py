@@ -36,6 +36,9 @@ from typing import Any, TypeAlias
 # module logger for warnings and debug
 logger = logging.getLogger(__name__)
 
+# Count of pairs accepted due to LLM filter errors (fallback accept-on-error policy).
+_accept_on_error_count = 0
+
 
 # Allow running as a script from repo root (only if the src/ directory exists).
 # Prefer installing the package in editable mode (pip install -e .) for reliable imports.
@@ -93,6 +96,15 @@ _FILTER_PROMPT = textwrap.dedent("""\
 """)
 
 
+def scroll_chunk_predicate(payload: Record, lang: str) -> bool:
+    """Return True if a payload should be included by _scroll_chunks."""
+    return (
+        payload.get("language", "en") == lang
+        and payload.get("text", "")
+        and not payload.get("is_speech_free", False)
+    )
+
+
 def _scroll_chunks(engine: Any, lang: str, limit: int) -> list[Record]:
     """Scroll through the Qdrant collection and return chunks matching *lang*."""
     client = engine.qdrant_client
@@ -127,11 +139,7 @@ def _scroll_chunks(engine: Any, lang: str, limit: int) -> list[Record]:
             point_obj: Any = point
             payload_obj: Any = point_obj.payload
             payload: Record = payload_obj if isinstance(payload_obj, dict) else {}
-            if (
-                payload.get("language", "en") == lang
-                and payload.get("text", "")
-                and not payload.get("is_speech_free", False)
-            ):
+            if scroll_chunk_predicate(payload, lang):
                 all_chunks.append({"doc_id": payload.get("doc_id", str(point_obj.id)), **payload})
                 if len(all_chunks) >= limit:
                     return all_chunks
@@ -252,6 +260,8 @@ def _filter_pair(engine: Any, pair: Record, chunk: Record) -> bool:
         # Log the failure so we can distinguish accept-on-error from a
         # genuine LLM "yes" verdict; include the prompt (truncated) and
         # some pair context for debugging.
+        global _accept_on_error_count
+        _accept_on_error_count += 1
         logger.warning(
             "LLM quality-filter call raised exception; accepting pair by default. "
             + "pair_query=%r prompt_head=%r",
@@ -330,6 +340,7 @@ def create_eval_set(
     # Category breakdown
     cats = Counter(p["category"] for p in pairs)
     print("Category distribution:", dict(cats))
+    print(f"Accepted on filter error: {_accept_on_error_count}")
 
 
 def load_eval_set(path: str) -> list[Record]:

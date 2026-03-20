@@ -27,6 +27,11 @@ class TestApplyOverrides:
         """Use the shared test_config fixture from conftest.py."""
         return test_config
 
+    @pytest.fixture
+    def minimal_config(self, base_config):
+        """Alias for base_config to support tests expecting minimal_config."""
+        return base_config
+
     def test_single_nested_override(self, base_config):
         from eval.experiments.base import apply_overrides
 
@@ -63,6 +68,48 @@ class TestApplyOverrides:
         result = apply_overrides(base_config, {"llm.provider": "openai"})
         assert result.llm.provider == "openai"
 
+    def test_apply_overrides_merge_strategy(self, minimal_config):
+        """The new merge_strategy field must be settable via apply_overrides."""
+        from eval.experiments.base import apply_overrides
+
+        result = apply_overrides(minimal_config, {"two_stage.merge_strategy": "diverse_rrf"})
+        assert result.two_stage.merge_strategy == "diverse_rrf"
+        assert minimal_config.two_stage.merge_strategy == "coverage"
+
+    def test_apply_overrides_merge_rrf_k(self, minimal_config):
+        """The new merge_rrf_k field must be settable via apply_overrides."""
+        from eval.experiments.base import apply_overrides
+
+        result = apply_overrides(minimal_config, {"two_stage.merge_rrf_k": 20})
+        assert result.two_stage.merge_rrf_k == 20
+        assert minimal_config.two_stage.merge_rrf_k == 60
+
+    def test_apply_overrides_prompt_doc_order(self, minimal_config):
+        """prompt_doc_order must be settable via apply_overrides (Axis F)."""
+        from eval.experiments.base import apply_overrides
+
+        result = apply_overrides(minimal_config, {"two_stage.prompt_doc_order": "book_end"})
+        assert result.two_stage.prompt_doc_order == "book_end"
+
+    def test_invalid_two_stage_enum_values(self):
+        """Assigning or constructing forbidden strings should trigger validation errors."""
+        from pydantic import ValidationError
+
+        from rainrag.config import TwoStageConfig
+
+        with pytest.raises(ValidationError):
+            TwoStageConfig(merge_strategy=cast(Any, "not_a_strategy"))
+        with pytest.raises(ValidationError):
+            TwoStageConfig(prompt_doc_order=cast(Any, "upside_down"))
+
+    def test_apply_overrides_min_retrieval_score(self, minimal_config):
+        """min_retrieval_score must be settable via apply_overrides."""
+        from eval.experiments.base import apply_overrides
+
+        result = apply_overrides(minimal_config, {"reranker.min_retrieval_score": 0.4})
+        assert result.reranker.min_retrieval_score == pytest.approx(0.4)
+        assert minimal_config.reranker.min_retrieval_score == pytest.approx(0.0)
+
     def test_empty_overrides_returns_equivalent_config(self, base_config):
         from eval.experiments.base import apply_overrides
 
@@ -71,6 +118,12 @@ class TestApplyOverrides:
         assert result is not base_config
         assert result.llm.provider == base_config.llm.provider
         assert result.hybrid_search.enabled == base_config.hybrid_search.enabled
+
+    def test_apply_overrides_invalid_path_raises(self, base_config):
+        from eval.experiments.base import apply_overrides
+
+        with pytest.raises(ValueError, match=r"Invalid override path 'nonexistent\.field'"):
+            apply_overrides(base_config, {"nonexistent.field": True})
 
     def test_boolean_false_override(self, base_config):
         import copy
@@ -163,6 +216,8 @@ class TestBEIRQRels:
 # _embed_documents_local prefix handling
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
+
+
 class TestEmbedDocumentsLocal:
     def make_engine(self, prefix="", model_name="", has_name_attr=True):
         from types import SimpleNamespace
@@ -569,50 +624,6 @@ class TestBuildSummary:
         assert "intent_coverage@5" in summary["metrics"], "intent_coverage@5 must be aggregated"
         assert summary["metrics"]["intent_coverage@5"] == pytest.approx(0.75)
         assert "intent_coverage@3" in summary["metrics"]
-
-    def test_apply_overrides_merge_strategy(self, minimal_config):
-        """The new merge_strategy field must be settable via apply_overrides."""
-        from eval.experiments.base import apply_overrides
-
-        result = apply_overrides(minimal_config, {"two_stage.merge_strategy": "diverse_rrf"})
-        assert result.two_stage.merge_strategy == "diverse_rrf"
-        # Original unchanged
-        assert minimal_config.two_stage.merge_strategy == "coverage"
-
-    def test_apply_overrides_merge_rrf_k(self, minimal_config):
-        """The new merge_rrf_k field must be settable via apply_overrides."""
-        from eval.experiments.base import apply_overrides
-
-        result = apply_overrides(minimal_config, {"two_stage.merge_rrf_k": 20})
-        assert result.two_stage.merge_rrf_k == 20
-        # Original unchanged
-        assert minimal_config.two_stage.merge_rrf_k == 60
-
-    def test_apply_overrides_prompt_doc_order(self, minimal_config):
-        """prompt_doc_order must be settable via apply_overrides (Axis F)."""
-        from eval.experiments.base import apply_overrides
-
-        result = apply_overrides(minimal_config, {"two_stage.prompt_doc_order": "book_end"})
-        assert result.two_stage.prompt_doc_order == "book_end"
-
-    def test_invalid_two_stage_enum_values(self):
-        """Assigning or constructing forbidden strings should trigger validation errors."""
-        from pydantic import ValidationError
-
-        from rainrag.config import TwoStageConfig
-
-        with pytest.raises(ValidationError):
-            TwoStageConfig(merge_strategy=cast(Any, "not_a_strategy"))
-        with pytest.raises(ValidationError):
-            TwoStageConfig(prompt_doc_order=cast(Any, "upside_down"))
-
-    def test_apply_overrides_min_retrieval_score(self, minimal_config):
-        """min_retrieval_score must be settable via apply_overrides."""
-        from eval.experiments.base import apply_overrides
-
-        result = apply_overrides(minimal_config, {"reranker.min_retrieval_score": 0.4})
-        assert result.reranker.min_retrieval_score == pytest.approx(0.4)
-        assert minimal_config.reranker.min_retrieval_score == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------

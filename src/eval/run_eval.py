@@ -116,10 +116,10 @@ def create_dataset(
     """Generate a synthetic eval dataset from the live Qdrant collection."""
     from eval.datasets.create_eval_set import create_eval_set
 
-    create_eval_set = cast(Any, create_eval_set)
+    create_eval_set_fn = cast(Any, create_eval_set)
 
     typer.echo(f"Creating {n} eval pairs (lang={lang}) → {output}")
-    create_eval_set(
+    create_eval_set_fn(
         config_path=config,
         lang=lang,
         n=n,
@@ -283,7 +283,23 @@ def latency(
         typer.echo("ERROR: --dataset is required for latency profiling.", err=True)
         raise typer.Exit(1)
 
-    cids = [c.strip() for c in conditions.split(",")]
+    cids = []
+    for c in conditions.split(","):
+        c = c.strip()
+        if c == "":
+            continue
+        try:
+            _ = int(c)
+        except ValueError:
+            typer.echo(
+                f"ERROR: invalid condition ID '{c}' in --conditions; must be an integer", err=True
+            )
+            raise typer.Exit(1)
+        cids.append(c)
+
+    if not cids:
+        typer.echo("ERROR: --conditions must include at least one integer condition ID", err=True)
+        raise typer.Exit(1)
 
     exp = latency_experiment_cls(
         config_path=config,
@@ -485,7 +501,29 @@ def beir(
     # Optional: run ablation against the BEIR eval set
     if run_ablation and records:
         typer.echo("\nRunning ablation experiment on BEIR eval set ...")
-        cids = [c.strip() for c in ablation_conditions.split(",")] if ablation_conditions else None
+
+        cids = None
+        if ablation_conditions:
+            cids = []
+            for c in ablation_conditions.split(","):
+                c = c.strip()
+                if c == "":
+                    continue
+                try:
+                    int(c)
+                except ValueError:
+                    typer.echo(
+                        f"ERROR: invalid condition ID '{c}' in --ablation-conditions; must be an integer",
+                        err=True,
+                    )
+                    raise typer.Exit(1)
+                cids.append(c)
+            if not cids:
+                typer.echo(
+                    "ERROR: --ablation-conditions must include at least one integer condition ID",
+                    err=True,
+                )
+                raise typer.Exit(1)
 
         # Write a temp config with the BEIR collection name override so
         # AblationExperiment can load it
@@ -709,8 +747,6 @@ def plot(
         typer.echo(f"ERROR: {exc}. Install with: pip install matplotlib mlflow", err=True)
         raise typer.Exit(1)
 
-    from pathlib import Path as _Path
-
     import eval.plot_results as _plot_results
 
     plot_mod: Any = cast(Any, _plot_results)
@@ -719,7 +755,7 @@ def plot(
     plot_latency_breakdown = plot_mod.plot_latency_breakdown
     plot_retrieval_bars = plot_mod.plot_retrieval_bars
 
-    output_dir = _Path(output)
+    output_dir = Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     typer.echo(f"Loading runs from: {mlflow_uri}")

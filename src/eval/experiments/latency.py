@@ -65,42 +65,25 @@ def _time_stage(fn, *args, **kwargs) -> tuple[Any, float]:
 def _profile_query(engine: RAGQueryEngine, record: dict, top_k: int) -> dict[str, float]:
     """Run a single query through the engine, timing each public stage.
 
-    The full pipeline is also timed end-to-end via engine.query() to capture
-    overhead from query rewriting, HyDE, temporal detection, etc.
+    The full pipeline is timed end-to-end via engine.query().
+
+    Staging-level timings from embed_query/retrieve_documents/rerank_documents/
+    generate_answer are not measured in this function because calling them
+    separately would duplicate work and double-count cost relative to the
+    actual query path. If engine.query() supports per-stage instrumentation
+    in the future, this function should be updated to read those values.
     """
     question = record["query"]
     lang = record.get("language", "en")
-    cfg = engine.config
 
-    # --- Full end-to-end timing (captures ALL stages including two-stage internals)
     _, t_total = _time_stage(engine.query, question=question, top_k=top_k, language=lang)
 
-    # --- Individual stage timings (separate calls, may differ slightly from
-    #     the internals of engine.query due to re-computation, but give a good
-    #     stage-level breakdown for profiling purposes)
-    query_vec, t_embed = _time_stage(engine.embed_query, question)
-
-    _, t_retrieve = _time_stage(
-        engine.retrieve_documents,
-        query_vec,
-        top_k * cfg.hybrid_search.top_k_multiplier if cfg.hybrid_search.enabled else top_k,
-        None,
-        None,
-        question,
-    )
-
-    # Reranker timing (only meaningful when enabled)
-    if cfg.reranker.enabled:
-        # Retrieve a fresh batch to rerank
-        docs = engine.retrieve_documents(query_vec, cfg.reranker.initial_k, None, None, question)
-        _, t_rerank = _time_stage(engine.rerank_documents, question, docs, top_k)
-    else:
-        t_rerank = 0.0
-
-    # Generation timing (build a minimal prompt for speed)
-    docs_for_prompt = engine.retrieve_documents(query_vec, top_k, None, None, question)
-    messages = engine.build_prompt(question, docs_for_prompt, lang)
-    _, t_generate = _time_stage(engine.generate_answer, messages, 0)
+    # These per-stage timings are not available without engine-side instrumentation.
+    # They are set to NaN to avoid misrepresenting separate re-computed measurements.
+    t_embed = float("nan")
+    t_retrieve = float("nan")
+    t_rerank = float("nan")
+    t_generate = float("nan")
 
     return {
         "t_embed_ms": t_embed,
@@ -169,12 +152,14 @@ class LatencyExperiment:
                 "t_generate_ms": [],
                 "t_total_ms": [],
             }
+            total_queries = 0
 
             print(
                 f"[{condition['id']}] {condition['label']} — profiling {len(records)} queries × {self.n_repeats} repeats ..."
             )
             for record in records:
                 for _ in range(self.n_repeats):
+                    total_queries += 1
                     try:
                         timings = _profile_query(engine, record, self.top_k)
                         for stage, ms in timings.items():

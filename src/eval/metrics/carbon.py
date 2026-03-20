@@ -161,9 +161,14 @@ def track_emissions(
                     if _dur is not None:
                         result.duration_s = float(_dur)
             except Exception:
-                # Never let tracking errors propagate into experiment code
+                # Never let tracking errors propagate into experiment code.
+                # Reset partial values to avoid inconsistent state.
+                result.emissions_kg = None
+                result.energy_kwh = None
+                result.cpu_power_w = None
+                result.duration_s = None
+                result.available = False
                 logger.debug(
                     "Error stopping EmissionsTracker; disabling carbon tracking.",
                     exc_info=True,
                 )
-                result.available = False

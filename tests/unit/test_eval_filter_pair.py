@@ -30,6 +30,10 @@ def test_filter_pair_accepts_on_error_and_logs(
     create_eval_set_mod = importlib.import_module("eval.datasets.create_eval_set")
     # Ensure the imported module is restored/removed by monkeypatch teardown.
     monkeypatch.setitem(sys.modules, "eval.datasets.create_eval_set", create_eval_set_mod)
+
+    # NOTE: this test intentionally targets the private helper _filter_pair
+    # in create_eval_set for fine-grained behavior coverage. If internal APIs
+    # are refactored, update this test to use the public contract instead.
     _filter_pair = create_eval_set_mod._filter_pair
 
     # create a dummy engine whose generate_answer will throw

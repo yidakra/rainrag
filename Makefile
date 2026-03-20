@@ -114,11 +114,12 @@ secrets: ## Create placeholder secret files with restrictive permissions for Doc
 	@mkdir -p secrets
 	@chmod 700 ./secrets
 	@for key in mistral_api_key openai_api_key anthropic_api_key google_api_key cohere_api_key; do \
-		touch ./secrets/$$key.txt; \
-		chmod 600 ./secrets/$$key.txt; \
+		if [ ! -f ./secrets/$$key.txt ]; then \
+			touch ./secrets/$$key.txt; \
+			chmod 600 ./secrets/$$key.txt; \
+		fi; \
 	done
-	@echo "Created placeholder files under ./secrets (chmod 600) with directory permissions chmod 700; edit them with your real API keys."
-
+	@echo "Created missing placeholder files under ./secrets (chmod 600) with directory permissions chmod 700; existing files were not touched."
 up: check-root check-qdrant-start api-start ## Start all services (Qdrant, API, Streamlit)
 
 check-root: ## Check if running as root and provide guidance

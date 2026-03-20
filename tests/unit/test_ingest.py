@@ -675,8 +675,11 @@ Hi
 
         assert docs == []
         assert ingester.speech_free_with_metadata_count == 0
-        # detector should still flag the file as speech-free even though it
-        # was skipped due to configuration
+        # Even though ingester.web_metadata_loader returns metadata for this file,
+        # test_config.web_metadata.ingest_speech_free is False, so ingester.process_file
+        # skips ingestion and keeps speech_free_with_metadata_count at 0.
+        # ingester.speech_free_count is still incremented to 1 because the file
+        # is recognized as speech-free.
         assert ingester.speech_free_count == 1
 
     def test_invalid_vtt_counter_not_incremented_for_empty_vtt(

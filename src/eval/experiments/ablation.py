@@ -155,4 +155,9 @@ class AblationExperiment(BaseExperiment):
     def conditions(self) -> list[dict[str, Any]]:
         if self._condition_ids is None:
             return ABLATION_CONDITIONS
+        valid_ids = {c["id"] for c in ABLATION_CONDITIONS}
+        missing = set(self._condition_ids) - valid_ids
+        if missing:
+            missing_ids = ", ".join(sorted(missing))
+            raise ValueError(f"Unknown ablation condition id(s): {missing_ids}")
         return [c for c in ABLATION_CONDITIONS if c["id"] in self._condition_ids]

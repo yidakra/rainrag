@@ -94,7 +94,7 @@ def _hyde_alpha_conditions(alphas: list[float]) -> list[dict[str, Any]]:
     """Conditions that sweep HyDE alpha with rewrite_variants and pool_size fixed."""
     return [
         {
-            "id": f"hyde-{alpha:.2f}".replace(".", ""),
+            "id": f"hyde-{alpha}".replace(".", "p"),
             "label": f"hyde_alpha={alpha}",
             "overrides": {
                 **_BASE_OVERRIDES,
@@ -308,6 +308,20 @@ class TwoStageSweepExperiment(BaseExperiment):
         )
         self._merge_rrf_ks = merge_rrf_ks if merge_rrf_ks is not None else MERGE_RRF_KS
         self._doc_orders = doc_orders if doc_orders is not None else DOC_ORDERS
+
+        # Require non-empty axis lists so conditions() has at least one value.
+        if not self._hyde_alphas:
+            raise ValueError("hyde_alphas must be a non-empty list")
+        if not self._rewrite_variants:
+            raise ValueError("rewrite_variants must be a non-empty list")
+        if not self._pool_sizes:
+            raise ValueError("pool_sizes must be a non-empty list")
+        if not self._merge_strategies:
+            raise ValueError("merge_strategies must be a non-empty list")
+        if not self._merge_rrf_ks:
+            raise ValueError("merge_rrf_ks must be a non-empty list")
+        if not self._doc_orders:
+            raise ValueError("doc_orders must be a non-empty list")
 
         # Validate provided sweep values
         for alpha in self._hyde_alphas:

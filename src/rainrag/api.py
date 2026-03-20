@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from loguru import logger
-from prometheus_client import Counter
+from prometheus_client import Counter, Gauge
 
 
 # Constants loaded once at import time (avoids repeated getenv calls per request)
@@ -19,11 +19,23 @@ try:
     QUERY_TIMEOUT_SECONDS: float = float(os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS", "240"))
 except (TypeError, ValueError) as exc:
     logger.warning(
-        "Invalid RAINRAG_QUERY_TIMEOUT_SECONDS=%r, using default 240.0: %s",
+        "Invalid RAINRAG_QUERY_TIMEOUT_SECONDS={!r}, using default 240.0: {}",
         os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS"),
         exc,
     )
     QUERY_TIMEOUT_SECONDS = 240.0
+
+try:
+    MAX_CONCURRENT_QUERIES: int = int(os.getenv("RAINRAG_MAX_CONCURRENT_QUERIES", "8"))
+except (TypeError, ValueError) as exc:
+    logger.warning(
+        "Invalid RAINRAG_MAX_CONCURRENT_QUERIES={!r}, using default 8: {}",
+        os.getenv("RAINRAG_MAX_CONCURRENT_QUERIES"),
+        exc,
+    )
+    MAX_CONCURRENT_QUERIES = 8
+
+GLOBAL_QUERY_SEMAPHORE: asyncio.Semaphore = asyncio.Semaphore(MAX_CONCURRENT_QUERIES)
 
 
 def _create_query_timeout_counter() -> Counter:
@@ -57,6 +69,26 @@ def _create_query_timeout_counter() -> Counter:
 # Ensure the counter isn't registered twice when the module is imported under
 # different package names (e.g. `rainrag.api` vs `src.rainrag.api`).
 QUERY_TIMEOUT_COUNTER: Counter = _create_query_timeout_counter()
+
+
+def _create_active_queries_gauge() -> Gauge:
+    """Create an active query gauge in a safe way for multiple module imports."""
+    name = "rainrag_active_queries"
+    try:
+        return Gauge(name, "Number of currently active query handlers")
+    except ValueError:
+        logger.warning(
+            "Metric {!r} already registered in default registry; creating unregistered gauge.",
+            name,
+        )
+        from prometheus_client import CollectorRegistry
+
+        return Gauge(
+            name, "Number of currently active query handlers", registry=CollectorRegistry()
+        )
+
+
+ACTIVE_QUERIES: Gauge = _create_active_queries_gauge()
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -577,11 +609,28 @@ async def query(request: QueryRequest):
     try:
         logger.info(f"Received query: {request.question[:100]}... (language: {request.language})")
 
-        # Execute query in a worker thread so the event loop remains responsive
-        # (health checks/UI should not freeze while a long LLM call is running).
-        # Use module-level constant to avoid repeated environment lookups.
-        query_callable = query_engine.query
+        # Concurrency control: bounded active query slots to avoid thread/task explosion.
         try:
+            await asyncio.wait_for(GLOBAL_QUERY_SEMAPHORE.acquire(), timeout=5.0)
+        except asyncio.TimeoutError as exc:
+            logger.warning(
+                "Too many concurrent queries (%d). Rejecting request (question=%r)",
+                MAX_CONCURRENT_QUERIES,
+                request.question[:100],
+            )
+            raise HTTPException(
+                status_code=429,
+                detail="Server busy: too many concurrent queries. Please retry shortly.",
+            ) from exc
+
+        ACTIVE_QUERIES.inc()
+        background_task = None
+        try:
+            # Execute query in a worker thread so the event loop remains responsive
+            # (health checks/UI should not freeze while a long LLM call is running).
+            # Use module-level constant to avoid repeated environment lookups.
+            query_callable = query_engine.query
+
             # ASGI unit tests often patch query_engine.query with Mock objects.
             # Running a Mock via asyncio.to_thread can deadlock test-loop shutdown.
             if _is_mock_like(query_callable):
@@ -593,7 +642,7 @@ async def query(request: QueryRequest):
                     date_to=request.date_to,
                 )
             else:
-                result = await asyncio.wait_for(
+                background_task = asyncio.create_task(
                     asyncio.to_thread(
                         query_callable,
                         question=request.question,
@@ -601,29 +650,44 @@ async def query(request: QueryRequest):
                         language=request.language,
                         date_from=request.date_from,
                         date_to=request.date_to,
-                    ),
-                    timeout=QUERY_TIMEOUT_SECONDS,
+                    )
                 )
-        except asyncio.TimeoutError as exc:
-            # metric increment and warning log; background thread will keep running
+                try:
+                    result = await asyncio.wait_for(background_task, timeout=QUERY_TIMEOUT_SECONDS)
+                except asyncio.TimeoutError as exc:
+                    if background_task is not None and not background_task.done():
+                        background_task.cancel()
+                        try:
+                            await asyncio.wait_for(background_task, timeout=2.0)
+                        except Exception:
+                            logger.warning("Background query task did not stop after cancellation")
+
+                    try:
+                        QUERY_TIMEOUT_COUNTER.inc()
+                    except Exception:
+                        logger.exception("Failed to increment timeout metric")
+
+                    logger.warning(
+                        "Query timed out (question={!r}, top_k={}, language={}, timeout={})",
+                        request.question[:100],
+                        request.top_k,
+                        request.language,
+                        QUERY_TIMEOUT_SECONDS,
+                    )
+                    raise HTTPException(
+                        status_code=504,
+                        detail=(
+                            "Query timed out while generating answer. "
+                            "Please try a shorter or more specific question."
+                        ),
+                    ) from exc
+
+        finally:
+            GLOBAL_QUERY_SEMAPHORE.release()
             try:
-                QUERY_TIMEOUT_COUNTER.inc()
+                ACTIVE_QUERIES.dec()
             except Exception:
-                logger.exception("Failed to increment timeout metric")
-            logger.warning(
-                "Query timed out (question={!r}, top_k={}, language={}, timeout={})",
-                request.question[:100],
-                request.top_k,
-                request.language,
-                QUERY_TIMEOUT_SECONDS,
-            )
-            raise HTTPException(
-                status_code=504,
-                detail=(
-                    "Query timed out while generating answer. "
-                    "Please try a shorter or more specific question."
-                ),
-            ) from exc
+                logger.exception("Failed to decrement active query gauge")
 
         # Format response with video and VTT URLs
         context_chunks = []

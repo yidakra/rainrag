@@ -279,9 +279,11 @@ class TestTwoStageConfig:
             TwoStageConfig(query_rewrite_variants=0)
         with pytest.raises(ValidationError):
             TwoStageConfig(query_rewrite_variants=6)
-        # boundary values should be accepted
-        TwoStageConfig(query_rewrite_variants=1)
-        TwoStageConfig(query_rewrite_variants=5)
+        # boundary values should be accepted and preserved (not silently clamped)
+        cfg_low = TwoStageConfig(query_rewrite_variants=1)
+        cfg_high = TwoStageConfig(query_rewrite_variants=5)
+        assert cfg_low.query_rewrite_variants == 1
+        assert cfg_high.query_rewrite_variants == 5
 
     def test_two_stage_config_rewrite_temperature_bounds(self) -> None:
         """Test that query_rewrite_temperature is bounded to [0, 2]."""
@@ -289,9 +291,11 @@ class TestTwoStageConfig:
             TwoStageConfig(query_rewrite_temperature=-0.1)
         with pytest.raises(ValidationError):
             TwoStageConfig(query_rewrite_temperature=2.1)
-        # Boundary values should be valid
-        TwoStageConfig(query_rewrite_temperature=0.0)
-        TwoStageConfig(query_rewrite_temperature=2.0)
+        # Boundary values should be valid and preserved
+        cfg_low = TwoStageConfig(query_rewrite_temperature=0.0)
+        cfg_high = TwoStageConfig(query_rewrite_temperature=2.0)
+        assert cfg_low.query_rewrite_temperature == 0.0
+        assert cfg_high.query_rewrite_temperature == 2.0
 
     def test_two_stage_config_hyde_temperature_bounds(self) -> None:
         """Test that hyde_temperature is bounded to [0, 2]."""
@@ -299,6 +303,11 @@ class TestTwoStageConfig:
             TwoStageConfig(hyde_temperature=-0.1)
         with pytest.raises(ValidationError):
             TwoStageConfig(hyde_temperature=2.1)
+        # Boundary values should be valid and preserved
+        cfg_low = TwoStageConfig(hyde_temperature=0.0)
+        cfg_high = TwoStageConfig(hyde_temperature=2.0)
+        assert cfg_low.hyde_temperature == 0.0
+        assert cfg_high.hyde_temperature == 2.0
         # Boundary values should be valid
         TwoStageConfig(hyde_temperature=0.0)
         TwoStageConfig(hyde_temperature=2.0)

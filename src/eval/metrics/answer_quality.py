@@ -21,6 +21,7 @@ _answer_relevancy: Any | None = None
 _context_precision: Any | None = None
 _context_recall: Any | None = None
 _faithfulness: Any | None = None
+_ROUGE_L_SCORER: Any | None = None
 _rouge_available = False
 _ragas_available = False
 
@@ -29,6 +30,7 @@ try:
     from rouge_score import rouge_scorer
 
     _rouge_scorer = rouge_scorer
+    _ROUGE_L_SCORER = _rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
     _rouge_available = True
 except ImportError:
     _rouge_available = False
@@ -66,14 +68,13 @@ except ImportError:  # pragma: no cover
 
 def rouge_l(hypothesis: str, reference: str) -> float:
     """ROUGE-L F1 between generated answer and reference answer."""
-    if not _ROUGE_AVAILABLE or _rouge_scorer is None:
+    if not _ROUGE_AVAILABLE or _rouge_scorer is None or _ROUGE_L_SCORER is None:
         return math.nan
     # Normalize both inputs to avoid treating whitespace-only strings as valid.
     # The typing of this API is strict: hypothesis/reference are str.
     if not reference or not reference.strip() or not hypothesis or not hypothesis.strip():
         return math.nan
-    scorer = _rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
-    score = scorer.score(reference, hypothesis)
+    score = _ROUGE_L_SCORER.score(reference, hypothesis)
     return score["rougeL"].fmeasure
 
 
@@ -94,11 +95,16 @@ def compute_ragas_metrics(
     """
     if not _RAGAS_AVAILABLE or datasets is None:
         return {"ragas.available": 0.0}
-    assert _faithfulness is not None
-    assert _answer_relevancy is not None
-    assert _context_precision is not None
-    assert _context_recall is not None
-    assert _ragas_evaluate is not None
+    if _faithfulness is None:
+        raise RuntimeError("_faithfulness is required but is None")
+    if _answer_relevancy is None:
+        raise RuntimeError("_answer_relevancy is required but is None")
+    if _context_precision is None:
+        raise RuntimeError("_context_precision is required but is None")
+    if _context_recall is None:
+        raise RuntimeError("_context_recall is required but is None")
+    if _ragas_evaluate is None:
+        raise RuntimeError("_ragas_evaluate is required but is None")
 
     rows: list[dict[str, Any]] = []
     malformed = 0
