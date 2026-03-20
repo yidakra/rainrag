@@ -75,9 +75,13 @@ SYSTEM_PROMPT_TOKEN_ESTIMATE: float = 200.0
 # Auxiliary call cost estimators
 # ---------------------------------------------------------------------------
 
-# Estimated tokens consumed by an auxiliary LLM call (e.g., query rewrite or HyDE).
-# These are heuristics; actual prompt/output lengths will vary.
-_AUX_LLM_TOKENS_EST: float = 100.0
+# Estimated tokens consumed by query rewrite calls (input + output).
+_AUX_LLM_REWRITE_INPUT_TOKENS_EST: float = 60.0
+_AUX_LLM_REWRITE_OUTPUT_TOKENS_EST: float = 40.0
+
+# Estimated tokens consumed by HyDE calls (input + output).
+_AUX_LLM_HYDE_INPUT_TOKENS_EST: float = 40.0
+_AUX_LLM_HYDE_OUTPUT_TOKENS_EST: float = 60.0
 
 # Estimated cost per reranker API call. This is a rough placeholder and can be
 # adjusted based on the specific reranker provider/implementation.
@@ -171,11 +175,18 @@ def estimate_query_cost(
     # Base LLM cost is the cost for the final answer generation call.
     llm_base_cost = input_cost + output_cost
 
-    # Additional LLM calls (rewrite, HyDE) are estimated using a modest fixed
-    # token budget per call rather than reusing the full main-call cost.
-    aux_cost_per_call = (_AUX_LLM_TOKENS_EST / 1_000_000) * (llm_input_rate + llm_output_rate)
-    llm_rewrite_cost = aux_cost_per_call * llm_query_rewrite_calls
-    llm_hyde_cost = aux_cost_per_call * llm_hyde_calls
+    # Additional LLM calls (rewrite, HyDE) are estimated with separate input
+    # and output token estimates per path, instead of a single aggregate token
+    # value that assumes input/output parity.
+    rewrite_cost_per_call = (_AUX_LLM_REWRITE_INPUT_TOKENS_EST / 1_000_000) * llm_input_rate + (
+        _AUX_LLM_REWRITE_OUTPUT_TOKENS_EST / 1_000_000
+    ) * llm_output_rate
+    hyde_cost_per_call = (_AUX_LLM_HYDE_INPUT_TOKENS_EST / 1_000_000) * llm_input_rate + (
+        _AUX_LLM_HYDE_OUTPUT_TOKENS_EST / 1_000_000
+    ) * llm_output_rate
+
+    llm_rewrite_cost = rewrite_cost_per_call * llm_query_rewrite_calls
+    llm_hyde_cost = hyde_cost_per_call * llm_hyde_calls
 
     # Reranker cost is highly provider-specific and is not yet modeled in detail.
     # Use configured constant so reranker usage contributes to total.

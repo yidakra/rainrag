@@ -4,7 +4,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import torch
@@ -18,6 +18,9 @@ try:
     from sentence_transformers import SentenceTransformer
 except ImportError:
     SentenceTransformer = None
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer as SentenceTransformerType
 
 
 class EmbeddingCache:
@@ -130,7 +133,7 @@ class Embedder:
         super().__init__()
         self.config = config
         self.cache = EmbeddingCache(config.paths.embeddings_cache)
-        self.model: SentenceTransformer | None = None
+        self.model: SentenceTransformerType | None = None
         self.openai_client: Any = None
         self.mistral_client: Any = None
         self.genai_client: Any = None

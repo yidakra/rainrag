@@ -163,11 +163,21 @@ def log_dict_as_artifact(data: Any, filename: str) -> None:
     if not _MLFLOW_AVAILABLE:
         return
     assert mlflow is not None
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / filename
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        mlflow.log_artifact(str(path))
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / filename
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            mlflow.log_artifact(str(path))
+    except (TypeError, ValueError) as exc:
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "Failed to serialize data in log_dict_as_artifact(%r): %s",
+            filename,
+            exc,
+        )
+        return
 
 
 def log_jsonl_as_artifact(rows: list[Any], filename: str) -> None:
@@ -175,12 +185,22 @@ def log_jsonl_as_artifact(rows: list[Any], filename: str) -> None:
     if not _MLFLOW_AVAILABLE:
         return
     assert mlflow is not None
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / filename
-        with open(path, "w", encoding="utf-8") as f:
-            for row in rows:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        mlflow.log_artifact(str(path))
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / filename
+            with open(path, "w", encoding="utf-8") as f:
+                for row in rows:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            mlflow.log_artifact(str(path))
+    except (TypeError, ValueError) as exc:
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "Failed to serialize rows in log_jsonl_as_artifact(%r): %s",
+            filename,
+            exc,
+        )
+        return
 
 
 def log_config_snapshot(config: Any, filename: str = "config_snapshot.yaml") -> None:

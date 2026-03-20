@@ -17,6 +17,8 @@ without changing the underlying implementation.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 # Re-export everything from the old `eval` package for backward compatibility.
 # This shim is intentionally minimal; it is primarily to provide a less
 # confusing import name in user code.
@@ -24,7 +26,8 @@ import eval as _eval
 from eval import *  # noqa: F401,F403
 
 
-if hasattr(_eval, "__all__"):
-    __all__ = list(_eval.__all__)
+eval_all = cast(Any, getattr(_eval, "__all__", None))
+if eval_all is not None:
+    __all__ = list(eval_all)
 else:
     __all__ = [name for name in dir(_eval) if not name.startswith("_")]

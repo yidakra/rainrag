@@ -17,7 +17,7 @@ and you want to avoid overload or accidental full reindex.
 mlflow server \
   --host 127.0.0.1 \
   --port 5000 \
-  --backend-store-uri $PWD/mlruns \  
+  --backend-store-uri $PWD/mlruns \
   --default-artifact-root file://$PWD/mlruns
 
 # Or set an explicit path if not running from repo root:

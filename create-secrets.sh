@@ -9,11 +9,11 @@ for key in mistral_api_key cohere_api_key openai_api_key anthropic_api_key googl
   file="$dir/${key}.txt"
   if [ ! -f "$file" ]; then
     echo "# Placeholder for $key. Replace with your real API key." > "$file"
-    chmod 600 "$file"
     echo "Created: $file"
   else
     echo "Exists:  $file"
   fi
+  chmod 600 "$file"
 done
 
 echo "Done. Edit secrets/*.txt with your real API keys (do not commit)."

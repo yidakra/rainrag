@@ -36,7 +36,6 @@ from typing import Any, TypeAlias
 # module logger for warnings and debug
 logger = logging.getLogger(__name__)
 
-# Count of pairs accepted due to LLM filter errors (fallback accept-on-error policy).
 _accept_on_error_count = 0
 
 
@@ -290,6 +289,8 @@ def create_eval_set(
         seed: Random seed for reproducibility.
         skip_filter: Skip the LLM quality-filter pass (faster but noisier).
     """
+    global _accept_on_error_count
+    _accept_on_error_count = 0
     random.seed(seed)
     print(f"Loading config from {config_path} ...")
     config: Any = load_config(config_path)

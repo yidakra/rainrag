@@ -35,7 +35,15 @@ except (TypeError, ValueError) as exc:
     )
     MAX_CONCURRENT_QUERIES = 8
 
-GLOBAL_QUERY_SEMAPHORE: asyncio.Semaphore = asyncio.Semaphore(MAX_CONCURRENT_QUERIES)
+# Lazy semaphore to avoid creating asyncio.Semaphore at import time in Python 3.10+
+_global_query_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_query_semaphore() -> asyncio.Semaphore:
+    global _global_query_semaphore
+    if _global_query_semaphore is None:
+        _global_query_semaphore = asyncio.Semaphore(MAX_CONCURRENT_QUERIES)
+    return _global_query_semaphore
 
 
 def _create_query_timeout_counter() -> Counter:
@@ -611,7 +619,7 @@ async def query(request: QueryRequest):
 
         # Concurrency control: bounded active query slots to avoid thread/task explosion.
         try:
-            await asyncio.wait_for(GLOBAL_QUERY_SEMAPHORE.acquire(), timeout=5.0)
+            await asyncio.wait_for(_get_query_semaphore().acquire(), timeout=5.0)
         except asyncio.TimeoutError as exc:
             logger.warning(
                 "Too many concurrent queries (%d). Rejecting request (question=%r)",
@@ -701,7 +709,7 @@ async def query(request: QueryRequest):
                         logger.exception("Failed to decrement active query gauge")
 
         finally:
-            GLOBAL_QUERY_SEMAPHORE.release()
+            _get_query_semaphore().release()
 
         # Format response with video and VTT URLs
         context_chunks = []

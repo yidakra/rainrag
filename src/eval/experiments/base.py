@@ -146,32 +146,25 @@ class BaseExperiment(ABC):
                     all_results.extend(lang_results)
 
             summary = self._build_summary(condition, cfg, top_k, all_results, carbon)
+
+            run_name = f"{condition['label']}_k{top_k}"
+            tags = {"condition_id": condition["id"], "top_k": str(top_k)}
+            tags.update(condition.get("tags", {}))
+
+            with mlflow_tracking.start_run(run_name=run_name, tags=tags):
+                mlflow_tracking.log_params(summary["params"])
+                mlflow_tracking.log_metrics(summary["metrics"])
+                mlflow_tracking.log_config_snapshot(cfg)
+                mlflow_tracking.log_jsonl_as_artifact(all_results, "per_query_results.jsonl")
+
+            return summary
         finally:
             try:
-                if hasattr(engine, "shutdown"):
-                    engine.shutdown()
-                elif hasattr(engine, "close"):
-                    engine.close()
-                elif hasattr(engine, "dispose"):
-                    engine.dispose()
-                elif getattr(engine, "qdrant_client", None) is not None and hasattr(
-                    engine.qdrant_client, "close"
-                ):
-                    engine.qdrant_client.close()
+                client = engine.qdrant_client
+                if client is not None and hasattr(client, "close"):
+                    client.close()
             except Exception as exc:
                 logger.warning("Failed to clean up RAGQueryEngine: %s", exc)
-
-        run_name = f"{condition['label']}_k{top_k}"
-        tags = {"condition_id": condition["id"], "top_k": str(top_k)}
-        tags.update(condition.get("tags", {}))
-
-        with mlflow_tracking.start_run(run_name=run_name, tags=tags):
-            mlflow_tracking.log_params(summary["params"])
-            mlflow_tracking.log_metrics(summary["metrics"])
-            mlflow_tracking.log_config_snapshot(cfg)
-            mlflow_tracking.log_jsonl_as_artifact(all_results, "per_query_results.jsonl")
-
-        return summary
 
     def _run_dataset(
         self,

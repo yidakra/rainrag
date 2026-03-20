@@ -237,11 +237,20 @@ def _make_hit(score, doc_id, is_speech_free):
 # The production predicate lives in the create_eval_set module.
 
 
-from eval.datasets.create_eval_set import scroll_chunk_predicate
-
-
 def _apply_scroll_filter(payloads: list[dict], lang: str) -> list[dict]:
     """Use shared predicate from create_eval_set to avoid duplication."""
+    try:
+        from eval.datasets.create_eval_set import scroll_chunk_predicate
+    except ImportError as exc:
+        missing_optional = {"torch", "sentence_transformers", "qdrant_client"}
+        missing_name = getattr(exc, "name", None)
+        if missing_name in missing_optional:
+            pytest.skip(
+                f"Skipping _apply_scroll_filter due to missing optional dependency "
+                f"{missing_name!r}: {exc}"
+            )
+        raise
+
     return [p for p in payloads if scroll_chunk_predicate(p, lang)]
 
 

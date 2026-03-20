@@ -126,7 +126,7 @@ def _load_runs(
 
     # Filter by top_k parameter
     if top_k_filter > 0 and "params.top_k" in runs.columns:
-        runs = runs[runs["params.top_k"].astype(str) == str(top_k_filter)]
+        runs = runs[pd.to_numeric(runs["params.top_k"], errors="coerce") == top_k_filter]
 
     # Filter by sweep axis tag
     if sweep_axis_filter and "tags.sweep_axis" in runs.columns:
@@ -429,10 +429,12 @@ def plot_robustness_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
 
         labels.append(lbl)
         for mean_col, p10_col, _ in metrics:
-            # previous validation ensures both mean and p10 are present, so these
-            # should never be None; we keep direct values for clarity.
-            data[mean_col].append(_metric_from_row(row, mean_col))
-            data[p10_col].append(_metric_from_row(row, p10_col))
+            mean_value = _metric_from_row(row, mean_col)
+            p10_value = _metric_from_row(row, p10_col)
+            assert mean_value is not None
+            assert p10_value is not None
+            data[mean_col].append(mean_value)
+            data[p10_col].append(p10_value)
 
     if not labels:
         _echo("[warn] No recall@5 metrics found — skipping robustness chart.", err=True)

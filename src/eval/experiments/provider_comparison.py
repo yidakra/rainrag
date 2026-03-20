@@ -52,7 +52,7 @@ _EMBED_MODELS: dict[str, tuple[str, int]] = {
     "local": ("intfloat/multilingual-e5-large", 1024),
     "mistral": ("mistral-embed", 1024),
     "openai": ("text-embedding-3-large", 3072),
-    "gemini": ("models/text-embedding-004", 3072),  # Gemini embeddings are 3072-dimensional
+    "gemini": ("models/text-embedding-004", 768),  # Gemini embeddings are 768-dimensional
 }
 
 

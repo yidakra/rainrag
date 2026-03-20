@@ -200,5 +200,3 @@ ignore_missing_imports = true
 exclude_dirs = ["tests/", "build/", "dist/", ".venv/"]
 skips = ["B101", "B601"]  # B101: assert_used (fine in tests), B601: paramiko (not used)
 
-[tool.pytest.ini_options]
-pythonpath = ["."]

@@ -44,7 +44,8 @@ eval/
 ├── metrics/
 │   ├── __init__.py
 │   ├── retrieval.py                # Recall@k, Precision@k, MRR, NDCG@k
-│   └── answer_quality.py          # RAGAS wrapper (faithfulness, relevance, etc.)
+│   ├── answer_quality.py          # RAGAS wrapper (faithfulness, relevance, etc.)
+│   └── cost.py                    # Cost estimation (provider rates, token counting)
 │
 ├── experiments/
 │   ├── __init__.py
@@ -199,6 +200,7 @@ mlflow.log_metrics({
     "recall@10": 0.89,
     "precision@3": 0.61,
     "precision@5": 0.52,
+    "precision@10": 0.45,
     "mrr": 0.68,
     "ndcg@3": 0.69,
     "ndcg@5": 0.74,
@@ -273,7 +275,16 @@ embed_cost = (embed_tokens / 1_000_000) * embed_rate
 llm_base_cost = input_cost + output_cost
 
 # Auxiliary LLM call cost (e.g., query rewrite / HyDE)
-aux_cost_per_call = (aux_tokens / 1_000_000) * (llm_input_rate + llm_output_rate)
+# Use separate input/output token estimates instead of assuming parity.
+aux_input_tokens = ...  # estimated query rewrite/HyDE prompt tokens
+aux_output_tokens = ...  # estimated query rewrite/HyDE response tokens
+aux_cost_per_call = (
+    (aux_input_tokens / 1_000_000) * llm_input_rate
+    + (aux_output_tokens / 1_000_000) * llm_output_rate
+)
+# If rewrite and HyDE tokens differ, compute per-path costs accordingly:
+# llm_rewrite_cost = (aux_rewrite_input_tokens / 1_000_000) * llm_input_rate + (aux_rewrite_output_tokens / 1_000_000) * llm_output_rate
+# llm_hyde_cost = (aux_hyde_input_tokens / 1_000_000) * llm_input_rate + (aux_hyde_output_tokens / 1_000_000) * llm_output_rate
 llm_rewrite_cost = aux_cost_per_call * num_rewrite_calls
 llm_hyde_cost = aux_cost_per_call * num_hyde_calls
 
@@ -371,7 +382,7 @@ mlflow ui --backend-store-uri ./mlruns
 [project.optional-dependencies]
 eval = [
     "mlflow>=2.14",
-    "ragas>=0.1",
+    "ragas>=0.1,<0.2",  # pin to the 0.1.x series for known API compatibility
     "rouge-score>=0.1.2",
     "pandas>=2.0",          # For result aggregation
 ]
