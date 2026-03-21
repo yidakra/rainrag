@@ -20,6 +20,7 @@ import contextlib
 import logging
 from collections.abc import Generator
 from dataclasses import dataclass
+from typing import Any
 
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ def track_emissions(
         return
 
     result = CarbonResult(available=True)
-    tracker = None
+    tracker: Any | None = None
     started = False
 
     # Creation and startup of the tracker can fail for a variety of reasons

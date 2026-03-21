@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import math
-import numbers
 from collections.abc import Sequence
 
 
@@ -35,7 +34,7 @@ def precision_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> floa
 
     Special-case: if k == 0, this function returns 0.0.
     """
-    if not isinstance(k, numbers.Integral) or k < 0:
+    if k < 0:
         raise ValueError("k must be a non-negative integer")
     if k == 0:
         return 0.0
@@ -57,7 +56,7 @@ def mrr(retrieved: Sequence[str], relevant: set[str]) -> float:
 
 def ndcg_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     """Normalized Discounted Cumulative Gain at k (binary relevance)."""
-    if not isinstance(k, numbers.Integral) or k < 0:
+    if k < 0:
         raise ValueError("k must be a non-negative integer")
 
     retrieved_k = list(retrieved[:k])
@@ -80,8 +79,10 @@ def average_precision(retrieved: Sequence[str], relevant: set[str]) -> float:
 
     num_hits = 0
     precision_sum = 0.0
+    seen: set[str] = set()
     for i, doc_id in enumerate(retrieved, 1):
-        if doc_id in relevant:
+        if doc_id in relevant and doc_id not in seen:
+            seen.add(doc_id)
             num_hits += 1
             precision_sum += num_hits / i
 
@@ -121,7 +122,7 @@ def intent_coverage_at_k(
     Returns:
         Score in [0, 1]; 1.0 means every variant has a relevant doc in its top-k.
     """
-    if not isinstance(k, numbers.Integral) or k < 0:
+    if k < 0:
         raise ValueError("k must be a non-negative integer")
     if k == 0:
         return 0.0

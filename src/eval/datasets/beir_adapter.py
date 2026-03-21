@@ -379,10 +379,12 @@ def _embed_corpus(
     texts = [(docs[did]["title"] + " " + docs[did]["text"]).strip() for did in doc_ids]
 
     document_prefix = ""
-    if hasattr(engine, "config") and hasattr(engine.config, "embedding"):
-        document_prefix = getattr(engine.config.embedding, "prefix", "") or ""
+    embedding_cfg = getattr(getattr(engine, "config", None), "embedding", None)
+    if embedding_cfg is not None:
+        document_prefix = getattr(embedding_cfg, "prefix", "") or ""
 
-    if engine.config.embedding.provider == "local":
+    provider = getattr(embedding_cfg, "provider", None) if embedding_cfg else None
+    if provider == "local":
         if engine.embedding_model is not None:
             logger.info(f"Batch-encoding {len(texts)} documents with local model ...")
             vectors = _embed_documents_local(engine, texts, batch_size=batch_size)
@@ -743,8 +745,13 @@ class BEIRAdapter:
         # Always include the caller-requested cut-off while preserving the
         # standard dashboard cut-offs.
         ks = tuple(sorted({top_k, 3, 5, 10}))
+        cjk_languages = {"zh", "ja", "ko", "zh-cn", "zh-tw", "ja-jp", "ko-kr"}
         for qid, qtext in self._queries.queries.items():
-            qtokens = re.findall(r"\w+", qtext.lower())
+            if self.language.lower() in cjk_languages:
+                qtokens = list(re.sub(r"\s+", "", qtext))
+            else:
+                qtokens = re.findall(r"\w+", qtext.lower())
+
             raw_scores_any: Any = bm25.get_scores(qtokens)
             scores = [float(s) for s in cast(list[float], raw_scores_any)]
             # Select top_k elements with O(n log k) complexity, preserving the

@@ -110,7 +110,10 @@ def log_params(params: dict[str, Any]) -> None:
         for k, v in params.items()
         if v is not None and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v)))
     }
-    mlflow.log_params(clean)
+    try:
+        mlflow.log_params(clean)
+    except Exception as exc:
+        _logger.warning("Failed to log params to MLflow: %s", exc, exc_info=True)
 
 
 # module-level logger for warnings
@@ -155,7 +158,10 @@ def log_metrics(metrics: dict[str, float | int | None], step: int | None = None)
 
         clean[safe_key] = float(value)
 
-    mlflow.log_metrics(clean, step=step)
+    try:
+        mlflow.log_metrics(clean, step=step)
+    except Exception as exc:
+        _logger.warning("Failed to log metrics to MLflow: %s", exc, exc_info=True)
 
 
 def log_dict_as_artifact(data: Any, filename: str) -> None:
@@ -164,12 +170,27 @@ def log_dict_as_artifact(data: Any, filename: str) -> None:
         return
     assert mlflow is not None
 
+    if Path(filename).is_absolute():
+        raise ValueError("`filename` must be a relative path")
+
+    safe_name = Path(filename).name
+    if not safe_name or safe_name in {"", ".", ".."}:
+        raise ValueError("`filename` must include a valid basename")
+
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / filename
+            path = Path(tmp) / safe_name
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            mlflow.log_artifact(str(path))
+            try:
+                mlflow.log_artifact(str(path))
+            except Exception as exc:
+                _logger.warning(
+                    "Failed to log artifact %r to MLflow: %s",
+                    safe_name,
+                    exc,
+                    exc_info=True,
+                )
     except (TypeError, ValueError) as exc:
         _logger.warning(
             "Failed to serialize data in log_dict_as_artifact(%r): %s",
@@ -185,13 +206,28 @@ def log_jsonl_as_artifact(rows: list[Any], filename: str) -> None:
         return
     assert mlflow is not None
 
+    if Path(filename).is_absolute():
+        raise ValueError("`filename` must be a relative path")
+
+    safe_name = Path(filename).name
+    if not safe_name or safe_name in {"", ".", ".."}:
+        raise ValueError("`filename` must include a valid basename")
+
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / filename
+            path = Path(tmp) / safe_name
             with open(path, "w", encoding="utf-8") as f:
                 for row in rows:
                     f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            mlflow.log_artifact(str(path))
+            try:
+                mlflow.log_artifact(str(path))
+            except Exception as exc:
+                _logger.warning(
+                    "Failed to log artifact %r to MLflow: %s",
+                    safe_name,
+                    exc,
+                    exc_info=True,
+                )
     except (TypeError, ValueError) as exc:
         _logger.warning(
             "Failed to serialize rows in log_jsonl_as_artifact(%r): %s",

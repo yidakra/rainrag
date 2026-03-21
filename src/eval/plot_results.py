@@ -201,7 +201,7 @@ def _load_runs(
     if sweep_axis_filter and "tags.sweep_axis" in runs.columns:
         runs = runs[runs["tags.sweep_axis"] == sweep_axis_filter]
 
-    if runs.empty:
+    if len(runs) == 0:
         raise SystemExit("No runs match the filters.  Adjust --top-k or --filter-axis.")
 
     return runs

@@ -10,7 +10,7 @@ chmod 700 "$dir"
 
 # Ensure secrets/ is ignored in git to avoid committing API key placeholders
 if [ -f .gitignore ]; then
-  if ! grep -qx "^secrets/\$" .gitignore; then
+  if ! grep -qx "^secrets/$" .gitignore; then
     echo "secrets/" >> .gitignore
     echo "Updated .gitignore with secrets/"
   fi

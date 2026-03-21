@@ -89,6 +89,26 @@ def _parse_floats(value: str, name: str) -> list[float]:
         raise typer.Exit(1)
 
 
+def _parse_strs(value: str, name: str) -> list[str]:
+    """Parse a comma-separated list of strings with optional leading zeros."""
+    values = [v.strip() for v in value.split(",") if v.strip()]
+    if not values:
+        typer.echo(
+            f"ERROR: Invalid {name!r}; expected comma-separated IDs, got: {value!r}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if not all(val.isdigit() for val in values):
+        typer.echo(
+            f"ERROR: Invalid {name!r}; expected numeric IDs, got: {value!r}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    return values
+
+
 # ── Shared options ──────────────────────────────────────────────────────────
 
 _CONFIG = Annotated[str, typer.Option("--config", "-c", help="Path to config.yaml")]
@@ -167,9 +187,8 @@ def ablation(
     ks = tuple(_parse_ints(top_ks, "top_ks"))
     cids = None
     if conditions:
-        # Parse conditions as integers (fail fast on bad values) and use parsed ids.
-        parsed_conditions = _parse_ints(conditions, "conditions")
-        cids = [str(cid) for cid in parsed_conditions]
+        # Parse conditions as strings to preserve leading zeros (e.g. "01").
+        cids = _parse_strs(conditions, "conditions")
 
     exp = ablation_experiment_cls(
         config_path=config,
@@ -498,12 +517,12 @@ def beir(
 
         cids = None
         if ablation_conditions:
-            cids = _parse_ints(ablation_conditions, "--ablation-conditions")
+            cids = _parse_strs(ablation_conditions, "--ablation-conditions")
             # Note: The option is --conditions but we label it --ablation-conditions
             # for clarity in the error message context
             if not cids:
                 typer.echo(
-                    "ERROR: --conditions must include at least one integer condition ID",
+                    "ERROR: --conditions must include at least one numeric condition ID",
                     err=True,
                 )
                 raise typer.Exit(1)

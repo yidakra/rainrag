@@ -309,7 +309,7 @@ class TestAxesDECombined:
         --axes merge_strategy,merge_rrf_k should forward all correctly."""
         mock_exp = _mock_experiment()
         with patch(_PATCH, return_value=mock_exp) as mock_cls:
-            runner.invoke(
+            result = runner.invoke(
                 app,
                 [
                     "two-stage",
@@ -323,6 +323,7 @@ class TestAxesDECombined:
                     "20,60",
                 ],
             )
+        assert result.exit_code == 0, result.output
         _, kwargs = mock_cls.call_args
         assert set(kwargs["axes"]) == {"merge_strategy", "merge_rrf_k"}
         assert kwargs["merge_strategies"] == ["coverage", "diverse_rrf"]
@@ -370,7 +371,7 @@ class TestAxisFAlone:
         """--axes doc_order with --doc-orders forwarded correctly."""
         mock_exp = _mock_experiment()
         with patch(_PATCH, return_value=mock_exp) as mock_cls:
-            runner.invoke(
+            result = runner.invoke(
                 app,
                 [
                     "two-stage",
@@ -382,6 +383,7 @@ class TestAxisFAlone:
                     "rank,book_end",
                 ],
             )
+        assert result.exit_code == 0, result.output
         _, kwargs = mock_cls.call_args
         assert kwargs["axes"] == ["doc_order"]
         assert kwargs["doc_orders"] == ["rank", "book_end"]

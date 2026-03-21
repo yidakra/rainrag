@@ -40,7 +40,7 @@ from typing import Any, cast
 import eval.mlflow_tracking as mlflow_tracking
 from eval.datasets.create_eval_set import load_eval_set
 from eval.experiments.ablation import ABLATION_CONDITIONS
-from eval.experiments.base import apply_overrides
+from eval.experiments.base import BaseExperiment, apply_overrides
 from rainrag.config import load_config
 from rainrag.query import RAGQueryEngine
 
@@ -98,7 +98,7 @@ def _profile_query(engine: RAGQueryEngine, record: dict, top_k: int) -> dict[str
     }
 
 
-class LatencyExperiment:
+class LatencyExperiment(BaseExperiment):
     """Profile per-stage latency for selected ablation conditions.
 
     Args:

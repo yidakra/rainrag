@@ -90,7 +90,7 @@ jobs:
             --cov-report=term-missing
 
       - name: Upload eval coverage
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v4
         if: matrix.python-version == '3.11'
         with:
           use_oidc: true

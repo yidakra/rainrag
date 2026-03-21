@@ -219,13 +219,15 @@ class Embedder:
             # Use package version to determine whether sentence-transformers supports model_kwargs
             try:
                 from importlib import metadata as importlib_metadata
-            except ImportError:
-                import importlib_metadata
 
-            try:
                 st_version = importlib_metadata.version("sentence-transformers")
             except Exception:
-                st_version = None
+                try:
+                    import importlib_metadata as importlib_metadata_backport
+
+                    st_version = importlib_metadata_backport.version("sentence-transformers")
+                except Exception:
+                    st_version = None
 
             try:
                 from packaging.version import Version

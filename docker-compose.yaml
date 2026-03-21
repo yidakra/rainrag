@@ -138,7 +138,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  qdrant_storage:
   redis_data:
 
 # API provider secrets (optional; only required for the providers you plan

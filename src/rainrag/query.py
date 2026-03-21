@@ -210,8 +210,8 @@ class RAGQueryEngine:
 
                     model_cls_any = _SentenceTransformer
 
+                model_cls = cast(Any, model_cls_any)
                 try:
-                    model_cls = cast(Any, model_cls_any)
                     self.embedding_model = model_cls(
                         self.config.embedding.model_name,
                         device=device,
