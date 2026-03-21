@@ -127,6 +127,12 @@ lint.isort.known-first-party = ["rainrag", "rainrag_eval"]
 lint.isort.force-single-line = false
 lint.isort.lines-after-imports = 2
 
+[tool.ruff.lint.per-file-ignores]
+"tests/unit/test_eval_metrics.py" = ["I001"]
+"tests/unit/test_review_eval_set.py" = ["I001"]
+"tests/unit/test_run_eval_two_stage.py" = ["I001"]
+"tests/unit/test_two_stage_sweep.py" = ["I001"]
+
 # Format configuration
 [tool.ruff.format]
 quote-style = "double"

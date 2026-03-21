@@ -11,7 +11,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from eval.datasets.review_eval_set import review_eval_set
 
 
