@@ -2,7 +2,7 @@ name: Eval Suite Tests
 
 'on':
   push:
-    branches: [main, develop, claude/**]
+    branches: [main, develop]
     paths:
       - "eval/**"
       - "src/rainrag_eval/**"
@@ -91,7 +91,7 @@ jobs:
 
       - name: Upload eval coverage
         uses: codecov/codecov-action@v4
-        if: matrix.python-version == '3.11'
+        if: github.event_name == 'pull_request' && matrix.python-version == '3.11'
         continue-on-error: true
         with:
           use_oidc: true
