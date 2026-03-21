@@ -21,7 +21,7 @@ _answer_relevancy: Any | None = None
 _context_precision: Any | None = None
 _context_recall: Any | None = None
 _faithfulness: Any | None = None
-_ROUGE_L_SCORER: Any | None = None
+_rouge_l_scorer: Any | None = None
 _rouge_available = False
 _ragas_available = False
 
@@ -30,7 +30,7 @@ try:
     from rouge_score import rouge_scorer
 
     _rouge_scorer = rouge_scorer
-    _ROUGE_L_SCORER = _rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
+    _rouge_l_scorer = _rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
     _rouge_available = True
 except ImportError:
     _rouge_available = False
@@ -68,13 +68,13 @@ except ImportError:  # pragma: no cover
 
 def rouge_l(hypothesis: str, reference: str) -> float:
     """ROUGE-L F1 between generated answer and reference answer."""
-    if not _ROUGE_AVAILABLE or _rouge_scorer is None or _ROUGE_L_SCORER is None:
+    if not _ROUGE_AVAILABLE or _rouge_scorer is None or _rouge_l_scorer is None:
         return math.nan
     # Normalize both inputs to avoid treating whitespace-only strings as valid.
     # The typing of this API is strict: hypothesis/reference are str.
     if not reference or not reference.strip() or not hypothesis or not hypothesis.strip():
         return math.nan
-    score = _ROUGE_L_SCORER.score(reference, hypothesis)
+    score = _rouge_l_scorer.score(reference, hypothesis)
     return score["rougeL"].fmeasure
 
 

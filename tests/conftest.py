@@ -1,15 +1,11 @@
 """Pytest configuration and fixtures."""
 
-import sys
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
 
-
-# Ensure test suite can import the package from the repo root.
-# This mirrors what individual tests previously did with sys.path.insert.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
+# The package import path is configured via pytest.ini (pythonpath = src).
+# Avoid runtime sys.path mutation to keep tests non-invasive and deterministic.
 import pytest
 
 from rainrag.config import Config

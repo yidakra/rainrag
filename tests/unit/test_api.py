@@ -58,7 +58,8 @@ class _SyncASGIClient:
         # we don't attempt to create a new event loop from within an existing one.
         # Otherwise, run a fresh event loop (sync tests).
         try:
-            in_async_task = anyio.get_current_task() is not None
+            anyio.get_current_task()
+            in_async_task = True
         except RuntimeError:
             in_async_task = False
 

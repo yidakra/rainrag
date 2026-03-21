@@ -246,8 +246,7 @@ def _apply_scroll_filter(payloads: list[dict], lang: str) -> list[dict]:
         missing_name = getattr(exc, "name", None)
         if missing_name in missing_optional:
             pytest.skip(
-                f"Skipping _apply_scroll_filter due to missing optional dependency "
-                f"{missing_name!r}: {exc}"
+                f"Skipping _apply_scroll_filter due to missing optional dependency {missing_name!r}: {exc}"
             )
         raise
 
@@ -311,11 +310,13 @@ def test_apply_scroll_filter_matches_create_eval_set_scroll_chunks() -> None:
 
     class FakePoint:
         def __init__(self, payload, _id=None):
+            super().__init__()
             self.payload = payload
             self.id = _id
 
     class FakeClient:
         def __init__(self, points):
+            super().__init__()
             self._points = points
 
         def scroll(self, collection_name, scroll_filter, limit, offset, with_payload, with_vectors):
@@ -324,6 +325,11 @@ def test_apply_scroll_filter_matches_create_eval_set_scroll_chunks() -> None:
     class FakeEngine:
         qdrant_client: Any
         config: Any
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.qdrant_client = None
+            self.config = None
 
     payloads = [
         {"language": "en", "text": "Has text", "doc_id": "1", "is_speech_free": False},

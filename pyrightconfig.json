@@ -4,7 +4,7 @@
     "venv": "rainrag-Gf6KsqoE-py3.12",
     "include": ["src", "eval", "tests", "app.py"],
     "exclude": [],
-    "extraPaths": [".", "src"],
+    "extraPaths": ["src"],
     "reportMissingImports": "warning",
     "reportMissingTypeStubs": "none",
     "reportImportCycles": "warning",

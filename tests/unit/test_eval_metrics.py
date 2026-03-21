@@ -6,6 +6,7 @@ entirely in-process with deterministic inputs and expected outputs.
 
 from __future__ import annotations
 
+import importlib.util
 import math
 
 import pytest
@@ -322,10 +323,9 @@ class TestPercentileAt:
     def test_linear_interpolation(self):
         # percentile_at uses linear interpolation between sorted points.
         # For [0.0, 0.5, 1.0] at p=25, idx=0.25*(n-1)=0.5 → value should be halfway
-        # between 0.0 and 0.5, i.e. 0.25. Allow a small range in case of minor rounding,
-        # but verify that interpolation is in the expected window.
+        # between 0.0 and 0.5, i.e. 0.25.
         result = percentile_at([0.0, 0.5, 1.0], 25)
-        assert 0.24 <= result <= 0.26
+        assert result == pytest.approx(0.25, rel=0, abs=0.01)
 
     def test_unsorted_input_same_as_sorted(self):
         vals = [0.9, 0.1, 0.5, 0.3, 0.7]
@@ -407,9 +407,7 @@ class TestRougeL:
 
     @pytest.fixture(autouse=True)
     def _skip_if_no_rouge(self):
-        try:
-            import rouge_score  # noqa: F401
-        except ImportError:
+        if importlib.util.find_spec("rouge_score") is None:
             pytest.skip("rouge-score not installed")
 
     def test_identical_strings(self):
@@ -636,7 +634,7 @@ class TestAggregateCosts:
         assert result["cost.aggregate_usd_est"] == pytest.approx(0.0011)
         assert result["cost.mean_usd_est_per_query"] == pytest.approx(0.0011)
 
-    def test_averages_two_queries(self):
+    def test_aggregates_two_queries(self):
         q1 = {"cost.total_usd_est": 0.002}
         q2 = {"cost.total_usd_est": 0.004}
         result = aggregate_costs([q1, q2])

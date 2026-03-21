@@ -193,8 +193,7 @@ def estimate_query_cost(
     reranker_cost = reranker_calls * _RERANKER_COST_PER_CALL_USD
     if reranker_calls > 0 and _RERANKER_COST_PER_CALL_USD > 0.0:
         warnings.warn(
-            "reranker_calls > 0 provided to estimate_query_cost; "
-            "reranker cost is estimated using _RERANKER_COST_PER_CALL_USD",
+            "reranker_calls > 0 provided to estimate_query_cost; reranker cost is estimated using _RERANKER_COST_PER_CALL_USD",
             UserWarning,
             stacklevel=2,
         )

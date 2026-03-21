@@ -45,7 +45,7 @@ import math
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 import pandas as pd
 
@@ -92,44 +92,58 @@ def get_app() -> Any:
     )
 
     @app.command()
-    def main(
-        mlflow_uri: str | None = typer.Option(
-            None,
-            "--mlflow-uri",
-            help="MLflow tracking URI (default: user state dir)",
-        ),
-        experiment: list[str] | None = typer.Option(  # noqa: B008
-            None,
-            "--experiment",
-            "-e",
-            help="Experiment name to load (repeatable for multi-experiment overlay)",
-            show_default=False,
-        ),
-        filter_axis: str | None = typer.Option(
-            None,
-            "--filter-axis",
-            help="Only include runs whose sweep_axis tag equals this value",
-        ),
-        top_k: int = typer.Option(
-            5,
-            "--top-k",
-            help="Retrieval depth filter; 0 = all",
-        ),
-        output: str = typer.Option(
-            "plots",
-            "--output",
-            help="Directory for PNG output",
-        ),
-        show: bool = typer.Option(
-            False,
-            "--show",
-            help="Display charts interactively with matplotlib",
-        ),
-        dpi: int = typer.Option(
-            150,
-            "--dpi",
-            help="Output PNG resolution",
-        ),
+    def main(  # pyright: ignore[reportUnusedFunction]
+        mlflow_uri: Annotated[
+            str | None,
+            typer.Option(
+                "--mlflow-uri",
+                help="MLflow tracking URI (default: user state dir)",
+            ),
+        ] = None,
+        experiment: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--experiment",
+                "-e",
+                help="Experiment name to load (repeatable for multi-experiment overlay)",
+                show_default=False,
+            ),
+        ] = None,
+        filter_axis: Annotated[
+            str | None,
+            typer.Option(
+                "--filter-axis",
+                help="Only include runs whose sweep_axis tag equals this value",
+            ),
+        ] = None,
+        top_k: Annotated[
+            int,
+            typer.Option(
+                "--top-k",
+                help="Retrieval depth filter; 0 = all",
+            ),
+        ] = 5,
+        output: Annotated[
+            str,
+            typer.Option(
+                "--output",
+                help="Directory for PNG output",
+            ),
+        ] = "plots",
+        show: Annotated[
+            bool,
+            typer.Option(
+                "--show",
+                help="Display charts interactively with matplotlib",
+            ),
+        ] = False,
+        dpi: Annotated[
+            int,
+            typer.Option(
+                "--dpi",
+                help="Output PNG resolution",
+            ),
+        ] = 150,
     ) -> None:
         _main(
             mlflow_uri=mlflow_uri,

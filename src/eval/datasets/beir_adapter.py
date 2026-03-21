@@ -289,8 +289,7 @@ def _embed_documents_local(
     model = engine.embedding_model
     if model is None:
         raise ValueError(
-            "Embedding model is not configured: engine.embedding_model is None; "
-            "cannot call model.encode()."
+            "Embedding model is not configured: engine.embedding_model is None; cannot call model.encode()."
         )
     normalize = engine.config.embedding.normalize_embeddings
 
@@ -411,8 +410,7 @@ def _index_corpus_into_qdrant(
                 current_count = client.count(collection_name).count
             except Exception as exc:  # pragma: no cover
                 logger.warning(
-                    "Unable to determine point count for existing collection '%s': %s. "
-                    "Recreating collection to avoid stale data.",
+                    "Unable to determine point count for existing collection '%s': %s. Recreating collection to avoid stale data.",
                     collection_name,
                     exc,
                 )
@@ -420,16 +418,14 @@ def _index_corpus_into_qdrant(
             else:
                 if current_count == expected_size:
                     logger.warning(
-                        "Reusing existing collection '%s' based on point count only (expected=%d, actual=%d). "
-                        "Corpus content may have changed; set recreate=True to force refresh.",
+                        "Reusing existing collection '%s' based on point count only (expected=%d, actual=%d). Corpus content may have changed; set recreate=True to force refresh.",
                         collection_name,
                         expected_size,
                         current_count,
                     )
                     return
                 logger.warning(
-                    "Existing collection '%s' has %d points but expected %d. "
-                    "Recreating collection to avoid stale data.",
+                    "Existing collection '%s' has %d points but expected %d. Recreating collection to avoid stale data.",
                     collection_name,
                     current_count,
                     expected_size,
@@ -532,6 +528,7 @@ class BEIRAdapter:
         collection_suffix: str | None = None,
         language: str = "en",
     ) -> None:
+        super().__init__()
         self.name = name
         self.qrels_split = qrels_split
         self.collection_name = f"beir_{collection_suffix or name}"

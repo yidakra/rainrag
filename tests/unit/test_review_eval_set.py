@@ -42,8 +42,7 @@ def test_review_eval_set_editing_invalid_pending_record_does_not_decrement_below
             value = inputs[idx]
         except IndexError as exc:
             raise RuntimeError(
-                f"No more fake inputs available for prompt {prompt!r} (index={idx}) "
-                f"— remaining inputs: {inputs!r}"
+                f"No more fake inputs available for prompt {prompt!r} (index={idx}) — remaining inputs: {inputs!r}"
             ) from exc
         idx += 1
         return value
@@ -58,8 +57,15 @@ def test_review_eval_set_editing_invalid_pending_record_does_not_decrement_below
 
     # Verify the record on disk was updated and marked valid.
     with open(input_path, encoding="utf-8") as f:
-        updated = json.loads(f.read().strip())
+        updated = None
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            updated = json.loads(line)
+            break
 
+    assert updated is not None, "No JSONL record found in output file"
     assert updated["valid"] is True
     assert updated["reference_answer"] == "new answer"
     assert updated["reviewed"] is True

@@ -249,15 +249,19 @@ class TestTwoStageConfig:
             enabled=True,
             query_rewrite_enabled=True,
             query_rewrite_variants=3,
+            query_rewrite_temperature=1.2,
             hyde_enabled=True,
             hyde_alpha=0.7,
+            hyde_temperature=1.1,
         )
 
         assert config.enabled is True
         assert config.query_rewrite_enabled is True
         assert config.query_rewrite_variants == 3
+        assert config.query_rewrite_temperature == 1.2
         assert config.hyde_enabled is True
         assert config.hyde_alpha == 0.7
+        assert config.hyde_temperature == 1.1
 
     def test_two_stage_config_alpha_bounds(self) -> None:
         """Test that hyde_alpha is bounded to [0, 1]."""

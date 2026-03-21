@@ -357,14 +357,12 @@ def load_eval_set(path: str) -> list[Record]:
             except json.JSONDecodeError as exc:
                 preview = line if len(line) <= 200 else line[:200] + "..."
                 raise ValueError(
-                    f"Failed to parse JSON in {path} at line {line_number}: {exc}. "
-                    f"Offending line (truncated): {preview}"
+                    f"Failed to parse JSON in {path} at line {line_number}: {exc}. Offending line (truncated): {preview}"
                 ) from exc
             except Exception as exc:
                 preview = line if len(line) <= 200 else line[:200] + "..."
                 raise ValueError(
-                    f"Error processing line {line_number} in {path}: {exc}. "
-                    f"Offending line (truncated): {preview}"
+                    f"Error processing line {line_number} in {path}: {exc}. Offending line (truncated): {preview}"
                 ) from exc
     return records
 

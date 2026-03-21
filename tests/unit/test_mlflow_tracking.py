@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
+from dataclasses import dataclass
 
 import eval.mlflow_tracking as mlflow_tracking
 
 
+@dataclass
 class _FakeMlflow:
-    def __init__(self) -> None:
-        self.logged: dict[str, float] | None = None
-        self.step: int | None = None
+    logged: dict[str, float] | None = None
+    step: int | None = None
 
     def log_metrics(self, metrics: dict[str, float], step: int | None = None) -> None:
         self.logged = metrics
@@ -62,7 +64,7 @@ class TestMlflowTracking:
         assert fake.logged == {"ok_at_1": 1.0}
         assert fake.step is None
 
-    def test_log_metrics_empty_metrics_logs_nothing(self, monkeypatch) -> None:
+    def test_log_metrics_empty_metrics_logs_empty_dict(self, monkeypatch) -> None:
         fake = _FakeMlflow()
         monkeypatch.setattr(mlflow_tracking, "mlflow", fake)
         monkeypatch.setattr(mlflow_tracking, "_MLFLOW_AVAILABLE", True)
@@ -100,7 +102,7 @@ class TestMlflowTracking:
         monkeypatch.setattr(mlflow_tracking, "mlflow", fake)
         monkeypatch.setattr(mlflow_tracking, "_MLFLOW_AVAILABLE", True)
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level(logging.WARNING):
             # This test relies on deterministic insertion order for collision handling;
             # Python dict preserves insertion order, but we make it explicit here.
             mlflow_tracking.log_metrics(

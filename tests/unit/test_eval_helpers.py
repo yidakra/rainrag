@@ -9,6 +9,7 @@ No external services required.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -363,9 +364,7 @@ class TestBEIRAdapter:
         """With a tiny corpus where the query perfectly matches the doc, BM25 should rank it first."""
         from eval.datasets.beir_adapter import BEIRAdapter, BEIRCorpus, BEIRQRels, BEIRQueries
 
-        try:
-            from rank_bm25 import BM25Okapi  # noqa: F401
-        except ImportError:
+        if importlib.util.find_spec("rank_bm25") is None:
             pytest.skip("rank-bm25 not installed")
 
         adapter = BEIRAdapter("test")
@@ -387,9 +386,7 @@ class TestBEIRAdapter:
         """eval_bm25_baseline must return the standard retrieval metric keys."""
         from eval.datasets.beir_adapter import BEIRAdapter, BEIRCorpus, BEIRQRels, BEIRQueries
 
-        try:
-            from rank_bm25 import BM25Okapi  # noqa: F401
-        except ImportError:
+        if importlib.util.find_spec("rank_bm25") is None:
             pytest.skip("rank-bm25 not installed")
 
         adapter = BEIRAdapter("test")

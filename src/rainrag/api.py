@@ -15,25 +15,29 @@ from prometheus_client import Counter, Gauge
 # Constants loaded once at import time (avoids repeated getenv calls per request)
 # Guard against invalid env values (float() would otherwise raise and prevent
 # the module from importing).
+_query_timeout_raw = os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS", "240")
 try:
-    QUERY_TIMEOUT_SECONDS: float = float(os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS", "240"))
+    _query_timeout_seconds = float(_query_timeout_raw)
 except (TypeError, ValueError) as exc:
     logger.warning(
         "Invalid RAINRAG_QUERY_TIMEOUT_SECONDS={!r}, using default 240.0: {}",
-        os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS"),
+        _query_timeout_raw,
         exc,
     )
-    QUERY_TIMEOUT_SECONDS = 240.0
+    _query_timeout_seconds = 240.0
+QUERY_TIMEOUT_SECONDS: float = _query_timeout_seconds
 
+_max_concurrent_queries_raw = os.getenv("RAINRAG_MAX_CONCURRENT_QUERIES", "8")
 try:
-    MAX_CONCURRENT_QUERIES: int = int(os.getenv("RAINRAG_MAX_CONCURRENT_QUERIES", "8"))
+    _max_concurrent_queries = int(_max_concurrent_queries_raw)
 except (TypeError, ValueError) as exc:
     logger.warning(
         "Invalid RAINRAG_MAX_CONCURRENT_QUERIES={!r}, using default 8: {}",
-        os.getenv("RAINRAG_MAX_CONCURRENT_QUERIES"),
+        _max_concurrent_queries_raw,
         exc,
     )
-    MAX_CONCURRENT_QUERIES = 8
+    _max_concurrent_queries = 8
+MAX_CONCURRENT_QUERIES: int = _max_concurrent_queries
 
 # Lazy semaphore to avoid creating asyncio.Semaphore at import time in Python 3.10+
 _global_query_semaphore: asyncio.Semaphore | None = None
@@ -672,7 +676,7 @@ async def query(request: QueryRequest):
                             background_task, timeout=QUERY_TIMEOUT_SECONDS
                         )
                     except asyncio.TimeoutError as exc:
-                        if background_task is not None and not background_task.done():
+                        if not background_task.done():
                             background_task.cancel()
                             try:
                                 await asyncio.wait_for(background_task, timeout=2.0)

@@ -33,6 +33,7 @@ class EmbeddingCache:
         Args:
             cache_dir: Path to the cache directory
         """
+        super().__init__()
         self.cache_dir = Path(cache_dir)
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -204,8 +205,8 @@ class Embedder:
 
             model_cls_any = _SentenceTransformer
 
+        model_cls = cast(Any, model_cls_any)
         try:
-            model_cls = cast(Any, model_cls_any)
             self.model = model_cls(
                 self.config.embedding.model_name,
                 device=device,
@@ -215,7 +216,7 @@ class Embedder:
             message = str(exc).lower()
             if "unexpected" in message or "model_kwargs" in message:
                 # Older sentence-transformers versions do not support model_kwargs
-                self.model = cast(Any, model_cls)(
+                self.model = model_cls(
                     self.config.embedding.model_name,
                     device=device,
                 )

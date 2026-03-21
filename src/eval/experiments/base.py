@@ -78,6 +78,7 @@ class BaseExperiment(ABC):
         experiment_name: str = "rainrag_eval",
         top_ks: tuple[int, ...] = (5, 10),
     ) -> None:
+        super().__init__()
         self.config_path = config_path
         self.dataset_path = dataset_path
         self.mlflow_uri = mlflow_uri or mlflow_tracking.default_tracking_uri()

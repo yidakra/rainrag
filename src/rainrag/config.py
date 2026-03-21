@@ -550,39 +550,19 @@ def load_config(config_path: str = "config.yaml") -> Config:
             return value
         return None
 
-    # Override Mistral API key from environment variable if set
-    mistral_api_key = _get_secret_or_env("MISTRAL_API_KEY")
-    if mistral_api_key:
-        if "mistral" not in config_data:
-            config_data["mistral"] = {}
-        config_data["mistral"]["api_key"] = mistral_api_key
+    providers = [
+        ("MISTRAL_API_KEY", "mistral", "api_key"),
+        ("OPENAI_API_KEY", "openai", "api_key"),
+        ("ANTHROPIC_API_KEY", "claude", "api_key"),
+        ("GOOGLE_API_KEY", "gemini", "api_key"),
+        ("COHERE_API_KEY", "cohere", "api_key"),
+    ]
 
-    # Override OpenAI API key from environment variable if set
-    openai_api_key = _get_secret_or_env("OPENAI_API_KEY")
-    if openai_api_key:
-        if "openai" not in config_data:
-            config_data["openai"] = {}
-        config_data["openai"]["api_key"] = openai_api_key
-
-    # Override Anthropic API key from environment variable if set
-    anthropic_api_key = _get_secret_or_env("ANTHROPIC_API_KEY")
-    if anthropic_api_key:
-        if "claude" not in config_data:
-            config_data["claude"] = {}
-        config_data["claude"]["api_key"] = anthropic_api_key
-
-    # Override Google API key from environment variable if set
-    google_api_key = _get_secret_or_env("GOOGLE_API_KEY")
-    if google_api_key:
-        if "gemini" not in config_data:
-            config_data["gemini"] = {}
-        config_data["gemini"]["api_key"] = google_api_key
-
-    # Override Cohere API key from environment variable if set
-    cohere_api_key = _get_secret_or_env("COHERE_API_KEY")
-    if cohere_api_key:
-        if "cohere" not in config_data:
-            config_data["cohere"] = {}
-        config_data["cohere"]["api_key"] = cohere_api_key
+    for env_name, section, key in providers:
+        value = _get_secret_or_env(env_name)
+        if value:
+            if section not in config_data:
+                config_data[section] = {}
+            config_data[section][key] = value
 
     return Config(**config_data)

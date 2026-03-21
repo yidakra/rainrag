@@ -115,6 +115,7 @@ class LatencyExperiment:
         n_repeats: int = 3,
         top_k: int = 5,
     ) -> None:
+        super().__init__()
         self.config_path = config_path
         self.dataset_path = dataset_path
         self.mlflow_uri = mlflow_uri or mlflow_tracking.default_tracking_uri()
@@ -209,9 +210,7 @@ class LatencyExperiment:
             rerank_p50 = metrics.get("rerank_p50_ms", float("nan"))
             generate_p50 = metrics.get("generate_p50_ms", float("nan"))
             print(
-                f"  total p50={total_p50:.0f}ms p95={total_p95:.0f}ms | "
-                f"embed={embed_p50:.0f} retrieve={retrieve_p50:.0f} "
-                f"rerank={rerank_p50:.0f} generate={generate_p50:.0f}"
+                f"  total p50={total_p50:.0f}ms p95={total_p95:.0f}ms | embed={embed_p50:.0f} retrieve={retrieve_p50:.0f} rerank={rerank_p50:.0f} generate={generate_p50:.0f}"
             )
 
         return results

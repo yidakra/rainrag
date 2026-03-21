@@ -111,8 +111,7 @@ api-start: ## Start API and Streamlit services
 	@$(MAKE) streamlit-bg
 
 secrets: ## Create placeholder secret files with restrictive permissions for Docker Compose
-	@mkdir -p secrets
-	@chmod 700 ./secrets
+	@install -d -m 700 secrets
 	@for key in mistral_api_key openai_api_key anthropic_api_key google_api_key cohere_api_key; do \
 		if [ ! -f ./secrets/$$key.txt ]; then \
 			touch ./secrets/$$key.txt; \

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Ensure files created in this script are owner-only by default
+umask 077
+
 dir=./secrets
 mkdir -p "$dir"
 chmod 700 "$dir"

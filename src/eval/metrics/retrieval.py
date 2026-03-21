@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     """Fraction of relevant docs found in the top-k results."""
-    if not isinstance(k, int) or k < 0:
+    if k < 0:
         raise ValueError("k must be a non-negative integer")
     if not relevant:
         return 0.0
@@ -25,8 +25,16 @@ def recall_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
 
 
 def precision_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
-    """Fraction of top-k results that are relevant."""
-    if not isinstance(k, int) or k < 0:
+    """Precision@k with fixed denominator semantics.
+
+    This returns the fraction of the top-k retrieved results that are relevant.
+    The denominator is always *k* (not min(k, len(retrieved))). This means
+    that if fewer than k items are returned, the score is penalized for missing
+    items.
+
+    Special-case: if k == 0, this function returns 0.0.
+    """
+    if k < 0:
         raise ValueError("k must be a non-negative integer")
     if k == 0:
         return 0.0
@@ -48,7 +56,7 @@ def mrr(retrieved: Sequence[str], relevant: set[str]) -> float:
 
 def ndcg_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     """Normalized Discounted Cumulative Gain at k (binary relevance)."""
-    if not isinstance(k, int) or k < 0:
+    if k < 0:
         raise ValueError("k must be a non-negative integer")
 
     retrieved_k = list(retrieved[:k])
@@ -112,11 +120,11 @@ def intent_coverage_at_k(
     Returns:
         Score in [0, 1]; 1.0 means every variant has a relevant doc in its top-k.
     """
-    if not variant_retrieved_ids or not relevant:
-        return 0.0
-    if not isinstance(k, int) or k < 0:
+    if k < 0:
         raise ValueError("k must be a non-negative integer")
     if k == 0:
+        return 0.0
+    if not variant_retrieved_ids or not relevant:
         return 0.0
     covered = sum(1 for ids in variant_retrieved_ids if set(ids[:k]) & relevant)
     return covered / len(variant_retrieved_ids)

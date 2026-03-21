@@ -1841,6 +1841,7 @@ If runtime works but the editor shows missing imports, ensure the editor uses th
 
 - Recommended: use an in-project venv (`.venv`) and point your editor/type-checker at it.
 - This repo includes `pyrightconfig.json` and `.vscode/settings.json` to help Cursor/VS Code pick up `.venv`.
+- Ensure local Python builds/install use `poetry install` or `pip install -e .` from repo root so runtime imports match type checker lookup (package root is `src/`).
 
 ## Roadmap
 

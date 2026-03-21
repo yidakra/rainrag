@@ -294,8 +294,7 @@ class TwoStageSweepExperiment(BaseExperiment):
 
         if not self._axes:
             raise ValueError(
-                "At least one axis must be selected for sweep; "
-                "your axes list is empty. See conditions() usage."
+                "At least one axis must be selected for sweep; your axes list is empty. See conditions() usage."
             )
 
         self._hyde_alphas = hyde_alphas if hyde_alphas is not None else HYDE_ALPHAS
@@ -325,7 +324,7 @@ class TwoStageSweepExperiment(BaseExperiment):
 
         # Validate provided sweep values
         for alpha in self._hyde_alphas:
-            if not isinstance(alpha, int | float) or isinstance(alpha, bool):
+            if isinstance(alpha, bool):
                 raise ValueError(
                     f"hyde_alphas must be numeric (int/float); got {alpha!r} ({type(alpha).__name__})"
                 )
@@ -333,7 +332,7 @@ class TwoStageSweepExperiment(BaseExperiment):
                 raise ValueError(f"hyde_alphas must be between 0 and 1 (inclusive); got {alpha!r}")
 
         for n in self._rewrite_variants:
-            if not isinstance(n, int) or isinstance(n, bool):
+            if isinstance(n, bool):
                 raise ValueError(
                     f"rewrite_variants must be integers > 0; got {n!r} ({type(n).__name__})"
                 )
@@ -341,7 +340,7 @@ class TwoStageSweepExperiment(BaseExperiment):
                 raise ValueError(f"rewrite_variants must be > 0; got {n}")
 
         for m in self._pool_sizes:
-            if not isinstance(m, int) or isinstance(m, bool):
+            if isinstance(m, bool):
                 raise ValueError(f"pool_sizes must be integers > 0; got {m!r} ({type(m).__name__})")
             if m <= 0:
                 raise ValueError(f"pool_sizes must be > 0; got {m}")
@@ -353,7 +352,7 @@ class TwoStageSweepExperiment(BaseExperiment):
                 )
 
         for k in self._merge_rrf_ks:
-            if not isinstance(k, int) or isinstance(k, bool):
+            if isinstance(k, bool):
                 raise ValueError(
                     f"merge_rrf_ks must be integers > 0; got {k!r} ({type(k).__name__})"
                 )

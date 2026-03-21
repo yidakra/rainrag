@@ -171,8 +171,7 @@ def log_dict_as_artifact(data: Any, filename: str) -> None:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             mlflow.log_artifact(str(path))
     except (TypeError, ValueError) as exc:
-        logger = logging.getLogger(__name__)
-        logger.warning(
+        _logger.warning(
             "Failed to serialize data in log_dict_as_artifact(%r): %s",
             filename,
             exc,
@@ -194,8 +193,7 @@ def log_jsonl_as_artifact(rows: list[Any], filename: str) -> None:
                     f.write(json.dumps(row, ensure_ascii=False) + "\n")
             mlflow.log_artifact(str(path))
     except (TypeError, ValueError) as exc:
-        logger = logging.getLogger(__name__)
-        logger.warning(
+        _logger.warning(
             "Failed to serialize rows in log_jsonl_as_artifact(%r): %s",
             filename,
             exc,
@@ -243,8 +241,12 @@ def log_config_snapshot(config: Any, filename: str = "config_snapshot.yaml") -> 
             with open(path, "w", encoding="utf-8") as f:
                 yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
             mlflow.log_artifact(str(path))
-        except Exception:
-            _logger.warning("Failed to log config snapshot: data not YAML-serializable")
+        except Exception as exc:
+            _logger.exception(
+                "Failed to log config snapshot: %s",
+                exc,
+                exc_info=True,
+            )
 
 
 def get_run_url() -> str | None:
