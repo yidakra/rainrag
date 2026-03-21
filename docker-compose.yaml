@@ -43,8 +43,8 @@ services:
     environment:
       - RAINRAG_CONFIG=/app/config.yaml
       - RAINRAG_AUTH_TOKEN=${RAINRAG_AUTH_TOKEN:-}
-      - MISTRAL_API_KEY_FILE=/run/secrets/mistral_api_key
-      - COHERE_API_KEY_FILE=/run/secrets/cohere_api_key
+      - MISTRAL_API_KEY_FILE=/run/secrets/mistral_api_key  # Optional: create secret file (./secrets/mistral_api_key.txt) or use external Docker secret
+      - COHERE_API_KEY_FILE=/run/secrets/cohere_api_key  # Optional: create secret file (./secrets/cohere_api_key.txt) or use external Docker secret
       # Optional providers (uncomment + create secret file if using):
       # - OPENAI_API_KEY_FILE=/run/secrets/openai_api_key
       # - ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key
@@ -107,8 +107,8 @@ services:
     env_file:
       - .env
     environment:
-      - MISTRAL_API_KEY_FILE=/run/secrets/mistral_api_key
-      - COHERE_API_KEY_FILE=/run/secrets/cohere_api_key
+      - MISTRAL_API_KEY_FILE=/run/secrets/mistral_api_key  # Optional: create secret file (./secrets/mistral_api_key.txt) or use external Docker secret
+      - COHERE_API_KEY_FILE=/run/secrets/cohere_api_key  # Optional: create secret file (./secrets/cohere_api_key.txt) or use external Docker secret
       # Optional providers (uncomment + create secret file if using):
       # - OPENAI_API_KEY_FILE=/run/secrets/openai_api_key
       # - ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_api_key

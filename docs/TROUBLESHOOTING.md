@@ -204,7 +204,7 @@ qdrant:
 embedding:
   provider: "gemini"
 qdrant:
-  vector_size: 768  # ✅
+  vector_size: 3072  # ✅
 ```
 
 **If you changed embedding providers**:

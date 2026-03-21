@@ -154,8 +154,10 @@ def _save(records: list[Record], path: Path) -> None:
 
 def _load_records(path: Path) -> list[Record]:
     """Load JSONL records from *path*, skipping blank lines and non-dict entries."""
-    if not path.exists() or not path.is_file():
+    if not path.exists():
         raise FileNotFoundError(f"file not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"path is not a file: {path}")
 
     records: list[Record] = []
     with open(path, encoding="utf-8") as f:

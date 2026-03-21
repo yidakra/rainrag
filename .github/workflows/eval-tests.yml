@@ -1,6 +1,6 @@
 name: Eval Suite Tests
 
-on:
+'on':
   push:
     branches: [main, develop, claude/**]
     paths:
@@ -30,6 +30,9 @@ jobs:
   eval-unit-tests:
     name: Eval unit tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -76,8 +79,13 @@ jobs:
 
       - name: Run eval unit tests
         run: |
-          poetry run pytest -m eval -v --tb=short \
-            --cov=rainrag_eval \
+          poetry run pytest -v --tb=short \
+            tests/unit/test_eval_*.py \
+            tests/unit/test_query_two_stage.py \
+            tests/unit/test_run_eval_two_stage.py \
+            tests/unit/test_two_stage_sweep.py \
+            tests/unit/test_mlflow_tracking.py \
+            --cov=src/eval \
             --cov-report=xml:coverage-eval.xml \
             --cov-report=term-missing
 
@@ -85,7 +93,7 @@ jobs:
         uses: codecov/codecov-action@v5
         if: matrix.python-version == '3.11'
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          use_oidc: true
           files: ./coverage-eval.xml
           flags: eval
           fail_ci_if_error: false

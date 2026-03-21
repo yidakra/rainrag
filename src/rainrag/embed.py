@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 """Embedding generation module using multilingual-e5-large."""
 
 import json

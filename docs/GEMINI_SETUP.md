@@ -66,7 +66,7 @@ gemini:
   temperature: 0.3
 
 qdrant:
-  vector_size: 768  # Gemini embeddings are 768-dimensional
+  vector_size: 3072  # Gemini embeddings are 3072-dimensional
 ```
 
 ### For LLM Only (with other embedding provider)
@@ -133,7 +133,7 @@ gemini:
   temperature: 0.3
 
 qdrant:
-  vector_size: 768  # For Gemini embeddings
+  vector_size: 3072  # For Gemini embeddings
 ```
 
 ### Gemini LLM + Local Embeddings (Free Embeddings)

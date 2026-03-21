@@ -67,7 +67,8 @@ def kwargs_helper():
     def _fn(extra: list[str]) -> dict:
         mock_exp = _mock_experiment()
         with patch(_PATCH, return_value=mock_exp) as mock_cls:
-            runner.invoke(app, ["two-stage", "--dataset", _DATASET] + extra)
+            result = runner.invoke(app, ["two-stage", "--dataset", _DATASET] + extra)
+        assert result.exit_code == 0, result.output
         _, kwargs = mock_cls.call_args
         return kwargs
 

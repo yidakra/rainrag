@@ -66,8 +66,8 @@ These are data-refresh operations, not evaluation operations.
 
 ```bash
 poetry install --with eval
-# or, without Poetry:
-pip install -e ".[eval]"
+# Optional fallback (if your environment is configured for PEP 621 extras):
+# pip install -e ".[eval]"
 ```
 
 ### 2. Generate a synthetic eval dataset

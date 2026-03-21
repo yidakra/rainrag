@@ -622,8 +622,10 @@ async def query(request: QueryRequest):
         logger.info(f"Received query: {request.question[:100]}... (language: {request.language})")
 
         # Concurrency control: bounded active query slots to avoid thread/task explosion.
+        acquired = False
         try:
             await asyncio.wait_for(_get_query_semaphore().acquire(), timeout=5.0)
+            acquired = True
         except asyncio.TimeoutError as exc:
             logger.warning(
                 "Too many concurrent queries (%d). Rejecting request (question=%r)",
@@ -714,7 +716,8 @@ async def query(request: QueryRequest):
                         logger.exception("Failed to decrement active query gauge")
 
         finally:
-            _get_query_semaphore().release()
+            if acquired:
+                _get_query_semaphore().release()
 
         # Format response with video and VTT URLs
         context_chunks = []

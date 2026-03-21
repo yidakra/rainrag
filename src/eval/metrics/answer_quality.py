@@ -115,6 +115,8 @@ def compute_ragas_metrics(
 
             contexts_raw = r.get("contexts", [])
             if isinstance(contexts_raw, str):
+                if not contexts_raw.strip():
+                    raise ValueError("contexts string must be non-empty")
                 contexts: list[str] = [contexts_raw]
             elif isinstance(contexts_raw, list):
                 contexts = [str(c) for c in contexts_raw]
@@ -123,6 +125,8 @@ def compute_ragas_metrics(
 
             if not contexts:
                 raise ValueError("contexts must be a non-empty list or non-empty string")
+            if not any(c.strip() for c in contexts):
+                raise ValueError("contexts must contain at least one non-empty string")
 
             ground_truth = str(r.get("ground_truth", ""))
             has_ground_truth = bool(ground_truth and ground_truth.strip())

@@ -218,8 +218,8 @@ def estimate_query_cost(
 def aggregate_costs(per_query_costs: list[dict[str, float]]) -> dict[str, float]:
     """Sum token counts and costs across all queries, add per-query averages.
 
-    Returns keys like ``cost.total_usd_est`` (per-query total) and
-    ``cost.aggregate_usd_est`` (run-wide total), plus ``cost.mean_usd_est_per_query``
+    Returns keys like ``cost.total_usd_est`` (run-wide sum of all per-query totals),
+    ``cost.aggregate_usd_est`` (alias for run-wide total), plus ``cost.mean_usd_est_per_query``
     (average per-query cost across all records).
     """
     if not per_query_costs:

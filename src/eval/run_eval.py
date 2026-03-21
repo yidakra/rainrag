@@ -499,9 +499,11 @@ def beir(
         cids = None
         if ablation_conditions:
             cids = _parse_ints(ablation_conditions, "--ablation-conditions")
+            # Note: The option is --conditions but we label it --ablation-conditions
+            # for clarity in the error message context
             if not cids:
                 typer.echo(
-                    "ERROR: --ablation-conditions must include at least one integer condition ID",
+                    "ERROR: --conditions must include at least one integer condition ID",
                     err=True,
                 )
                 raise typer.Exit(1)
