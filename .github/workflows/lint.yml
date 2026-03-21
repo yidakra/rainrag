@@ -22,7 +22,7 @@ jobs:
           cache: 'pip'
 
       - name: Install Ruff directly
-        run: pip install ruff==0.1.15
+        run: pip install ruff==0.5.7
 
       - name: Run Ruff linter
         run: ruff check src/ tests/

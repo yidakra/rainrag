@@ -1,5 +1,6 @@
 """Pytest configuration and fixtures."""
 
+import os
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
@@ -9,6 +10,21 @@ from pathlib import Path
 import pytest
 
 from rainrag.config import Config
+
+
+def _configure_tempdir() -> None:
+    """Ensure tempfile has a writable location even when /tmp is full."""
+    preferred_tmp = Path("/dev/shm/rainrag-pytest")
+    try:
+        preferred_tmp.mkdir(parents=True, exist_ok=True)
+        tempfile.tempdir = str(preferred_tmp)
+        os.environ["TMPDIR"] = str(preferred_tmp)
+    except OSError:
+        # Keep default behavior when /dev/shm is unavailable.
+        pass
+
+
+_configure_tempdir()
 
 
 @pytest.fixture(autouse=True)

@@ -13,6 +13,7 @@ Tests cover:
 from __future__ import annotations
 
 import pytest
+
 from eval.experiments.two_stage_sweep import (
     _DEFAULT_HYDE_ALPHA,
     _DEFAULT_MERGE_RRF_K,
