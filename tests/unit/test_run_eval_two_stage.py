@@ -21,10 +21,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from typer.testing import CliRunner
-
 from eval.mlflow_tracking import default_tracking_uri
 from eval.run_eval import app
+from typer.testing import CliRunner
 
 
 runner = CliRunner()
