@@ -1,5 +1,6 @@
 """Configuration management for RainRAG."""
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -7,6 +8,9 @@ from typing import Any, Literal, cast
 import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+
+_logger = logging.getLogger(__name__)
 
 
 class PathsConfig(BaseModel):
@@ -39,6 +43,10 @@ class EmbeddingConfig(BaseModel):
         description="Device selection: 'auto' (default), 'cuda', 'cuda:0', 'mps', or 'cpu'",
     )
     normalize_embeddings: bool = Field(default=True)
+    prefix: str = Field(
+        default="",
+        description="Optional string prepended to texts before embedding (e.g. 'passage: ' for E5 models)",
+    )
     max_retries: int = Field(
         default=3,
         ge=1,
@@ -54,6 +62,11 @@ class QdrantConfig(BaseModel):
 
     host: str = Field(default="localhost")
     port: int = Field(default=6333)
+    timeout: int = Field(
+        default=180,
+        ge=1,
+        description="HTTP timeout in seconds for Qdrant requests",
+    )
     collection_name: str = Field(default="broadcast_transcripts")
     vector_size: int = Field(default=1024)
     distance: str = Field(default="Cosine")
@@ -256,6 +269,120 @@ class RerankerConfig(BaseModel):
     initial_k: int = Field(
         default=20, description="Number of candidates to retrieve before reranking"
     )
+    min_retrieval_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Minimum score threshold for documents passed to the LLM. "
+            "Documents scoring below this value are dropped before prompt assembly, "
+            "even if they rank within top_k. "
+            "Motivated by Cuconasu et al. (SIGIR 2024): high-scoring-but-irrelevant "
+            "documents harm LLM accuracy more than no documents at all. "
+            "Set to 0.0 (default) to disable filtering."
+        ),
+    )
+
+
+class TwoStageConfig(BaseModel):
+    """Configuration for modern two-stage retrieval (query rewrite + HyDE fusion)."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable two-stage retrieval pipeline. "
+            "Sub-features like query_rewrite_enabled and hyde_enabled are only respected when enabled=True. "
+            "Set enabled=True to activate the two-stage behavior; otherwise sub-feature keys are ignored."
+        ),
+    )
+
+    # Stage 2a: LLM query rewriting
+    query_rewrite_enabled: bool = Field(
+        default=True,
+        description=(
+            "Rewrite query into transcript-register variants before retrieval. "
+            "This setting is ignored unless TwoStageConfig.enabled=True."
+        ),
+    )
+    query_rewrite_variants: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description="Number of rewritten variants to generate (original is always included)",
+    )
+    query_rewrite_temperature: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "Temperature for the query-rewriting LLM call. "
+            "Higher values produce more diverse paraphrases. "
+            "Kept separate from answer-generation temperature, which should stay at 0 "
+            "for deterministic, source-grounded journalist output."
+        ),
+    )
+
+    # Stage 2b: HyDE (Hypothetical Document Embedding)
+    hyde_enabled: bool = Field(
+        default=False,
+        description="Generate a hypothetical transcript passage and blend its embedding with the query embedding",
+    )
+    hyde_alpha: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Interpolation weight for HyDE embedding (0=raw query only, 1=HyDE only)",
+    )
+    hyde_temperature: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "Temperature for the HyDE hypothetical-document generation call. "
+            "Higher values produce more varied hypothetical passages, improving embedding coverage. "
+            "Kept separate from answer-generation temperature, which should stay at 0 "
+            "for deterministic, source-grounded journalist output."
+        ),
+    )
+
+    # Multi-variant merge strategy (applied when query_rewrite_enabled and >1 variant)
+    merge_strategy: Literal["coverage", "diverse_rrf"] = Field(
+        default="coverage",
+        description=(
+            "Strategy for merging results from multiple query variants. "
+            "'coverage' uses a greedy set-cover selection (VRisker-style) that "
+            "maximises the number of variants with at least one selected document, "
+            "preventing majority-intent documents from drowning out minority readings. "
+            "'diverse_rrf' uses multi-source RRF with a concave diversity weight "
+            "(1/sqrt(variant_count)) that gives diminishing returns to consensus "
+            "documents and upweights candidates unique to under-served variants."
+        ),
+    )
+    merge_rrf_k: int = Field(
+        default=60,
+        ge=1,
+        description=(
+            "RRF constant k used by the 'diverse_rrf' merge strategy. "
+            "Standard literature default is 60 (tuned for two-source fusion). "
+            "Smaller values (e.g. 20–40) amplify rank differences more aggressively "
+            "and may help when variant result lists are short (top_k ≤ 5)."
+        ),
+    )
+
+    # Prompt document ordering (Axis F)
+    prompt_doc_order: Literal["rank", "reversed", "book_end"] = Field(
+        default="rank",
+        description=(
+            "Order in which retrieved documents are presented in the LLM prompt. "
+            "'rank' (default) places the highest-scoring document first and lowest last. "
+            "'reversed' places the lowest-scoring document first and highest last, "
+            "exploiting recency bias in LLMs (primary position effect). "
+            "'book_end' places the two highest-scoring documents at the start and end "
+            "of the context window with lower-scoring documents in the middle, "
+            "combating the 'lost in the middle' attention deficit identified by "
+            "Liu et al. (2023) and further motivated by Cuconasu et al. (SIGIR 2024)."
+        ),
+    )
 
 
 class WebMetadataConfig(BaseModel):
@@ -290,6 +417,10 @@ class WebMetadataConfig(BaseModel):
         default=False,
         description="If True, only ingest videos that have corresponding web metadata; if False, ingest all videos with empty web fields when metadata is missing",
     )
+    ingest_speech_free: bool = Field(
+        default=True,
+        description="If True, create a metadata-only document for speech-free videos (empty VTT, no subtitle cues) when web metadata is available; if False, skip them entirely",
+    )
 
 
 class Config(BaseModel):
@@ -307,6 +438,7 @@ class Config(BaseModel):
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     hybrid_search: HybridSearchConfig = Field(default_factory=HybridSearchConfig)
+    two_stage: TwoStageConfig = Field(default_factory=TwoStageConfig)
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
@@ -394,39 +526,43 @@ def load_config(config_path: str = "config.yaml") -> Config:
     with open(config_file) as f:
         config_data = cast(dict[str, Any], yaml.safe_load(f))
 
-    # Override Mistral API key from environment variable if set
-    mistral_api_key = os.getenv("MISTRAL_API_KEY")
-    if mistral_api_key:
-        if "mistral" not in config_data:
-            config_data["mistral"] = {}
-        config_data["mistral"]["api_key"] = mistral_api_key
+    def _get_secret_or_env(env_name: str) -> str | None:
+        """Read secret from <ENV>_FILE path first, then fallback to <ENV>."""
+        file_var = f"{env_name}_FILE"
+        secret_file = os.getenv(file_var)
+        if secret_file:
+            try:
+                value = Path(secret_file).read_text(encoding="utf-8").strip()
+                if value:
+                    return value
+            except OSError as exc:
+                # If the secret file cannot be read, log the issue and fall back to the
+                # environment variable. We don't want this to crash the program.
+                _logger.debug(
+                    "Failed to read %s from %s: %s",
+                    file_var,
+                    secret_file,
+                    exc,
+                )
 
-    # Override OpenAI API key from environment variable if set
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if openai_api_key:
-        if "openai" not in config_data:
-            config_data["openai"] = {}
-        config_data["openai"]["api_key"] = openai_api_key
+        value = os.getenv(env_name)
+        if value:
+            return value
+        return None
 
-    # Override Anthropic API key from environment variable if set
-    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-    if anthropic_api_key:
-        if "claude" not in config_data:
-            config_data["claude"] = {}
-        config_data["claude"]["api_key"] = anthropic_api_key
+    providers = [
+        ("MISTRAL_API_KEY", "mistral", "api_key"),
+        ("OPENAI_API_KEY", "openai", "api_key"),
+        ("ANTHROPIC_API_KEY", "claude", "api_key"),
+        ("GOOGLE_API_KEY", "gemini", "api_key"),
+        ("COHERE_API_KEY", "cohere", "api_key"),
+    ]
 
-    # Override Google API key from environment variable if set
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    if google_api_key:
-        if "gemini" not in config_data:
-            config_data["gemini"] = {}
-        config_data["gemini"]["api_key"] = google_api_key
-
-    # Override Cohere API key from environment variable if set
-    cohere_api_key = os.getenv("COHERE_API_KEY")
-    if cohere_api_key:
-        if "cohere" not in config_data:
-            config_data["cohere"] = {}
-        config_data["cohere"]["api_key"] = cohere_api_key
+    for env_name, section, key in providers:
+        value = _get_secret_or_env(env_name)
+        if value:
+            if section not in config_data:
+                config_data[section] = {}
+            config_data[section][key] = value
 
     return Config(**config_data)

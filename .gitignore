@@ -45,6 +45,7 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+coverage-eval.xml
 *.cover
 *.py.cover
 .hypothesis/
@@ -144,6 +145,18 @@ ENV/
 env.bak/
 venv.bak/
 
+# Secrets (API keys used by docker-compose)
+# Keep actual key files out of version control; use the *.txt.example templates.
+secrets/*.txt
+!secrets/*.txt.example
+
+# Explicitly ignore recursive API key file locations referenced by templates (e.g. top-level or ../path).
+**/anthropic_api_key.txt
+**/cohere_api_key.txt
+**/google_api_key.txt
+**/mistral_api_key.txt
+**/openai_api_key.txt
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -186,7 +199,7 @@ cython_debug/
 #  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
 #  and can be added to the global gitignore or merged into this file. However, if you prefer,
 #  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+.vscode/
 
 # Ruff stuff:
 .ruff_cache/
@@ -210,11 +223,25 @@ __marimo__/
 data/
 embeddings/
 logs/
+mlruns/
 *.jsonl
 *.npy
+eval/ablation_results*.csv
+eval/datasets/*_ablation.csv
 models/
 qdrant_storage/
-.DS_Store
+# Secret/key files (keep private & avoid accidental commits)
+# Keep template files (e.g. *.txt.example) under version control.
+# Actual secret files should be stored outside git or in a secure secrets store.
+credentials.json
+credentials.env
+secrets/credentials/*
+secrets/*.key
+secrets/*.pem
+secrets/*.secret
+# Specific per-API-key locations
+*_private.key
+*_private.pem
 
 # Pyright local configuration
 .pyrightconfig.local.json

@@ -5,7 +5,7 @@ import html
 import json
 import re
 import subprocess
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +46,9 @@ class Document(BaseModel):
     web_date_ts: float | None = None  # Timestamp from web metadata
     web_description: str | None = None  # Description from web metadata
     web_url: str | None = None  # URL from web metadata
+
+    # Speech-free flag
+    is_speech_free: bool = False  # True when VTT had no cues (silent video); text is metadata-only
 
 
 class VTTCue(BaseModel):
@@ -253,15 +256,19 @@ class VTTParser:
                 logger.debug(f"File {file_path} does not appear to be a valid VTT file")
                 return None
 
+            # Valid VTT but no speech cues (silent/music-only video)
+            if not cues:
+                return ("", None, None)
+
             # Extract text and timecodes from cues
             text_parts = [cue.text for cue in cues if cue.text]
             full_text = " ".join(text_parts)
 
             # Get first and last timecodes
-            start_time = cues[0].start_time if cues else None
-            end_time = cues[-1].end_time if cues else None
+            start_time = cues[0].start_time
+            end_time = cues[-1].end_time
 
-            return (full_text, start_time, end_time) if full_text else None
+            return (full_text, start_time, end_time)
 
         except Exception as e:
             logger.error(f"Error parsing {file_path}: {e}")
@@ -308,15 +315,21 @@ class VTTParser:
         return cue
 
     @classmethod
-    def _parse_vtt_lines_to_cues(cls, lines: list[str]) -> list[VTTCue] | None:
-        """
-        Parse VTT file lines into individual cues with timestamps.
+    def _parse_vtt_lines_to_cues(cls, lines: Sequence[str]) -> list[VTTCue] | None:
+        """Parse VTT file lines into cues.
+
+        _parse_vtt_lines_to_cues takes `lines: Sequence[str]` from a VTT file and
+        returns a list of `VTTCue` objects when parsing succeeds.
+        The returned list may be empty for valid speech-free VTT (header-only
+        content with no cues). Returns `None` only when parsing fails, e.g.
+        missing `WEBVTT` header or malformed input.
 
         Args:
-            lines: List of lines from a VTT file
+            lines: Sequence of lines from a VTT file
 
         Returns:
-            List of VTTCue objects or None if parsing fails
+            list[VTTCue]: parsed cues (possibly empty for speech-free VTT)
+            None: parsing failure
         """
         # VTT files should start with "WEBVTT"
         if not lines or not lines[0].strip().startswith("WEBVTT"):
@@ -363,18 +376,29 @@ class VTTParser:
             if cue:
                 cues.append(cue)
 
-        return cues if cues else None
+        return cues
 
     @classmethod
     def parse_vtt_to_cues(cls, file_path: Path) -> list[VTTCue] | None:
         """
         Parse a VTT file into individual cues with timestamps.
 
+        This method wraps `_parse_vtt_lines_to_cues` and returns a list of
+        `VTTCue` objects when the file is valid. For a speech-free but
+        otherwise valid VTT file, the returned list may be empty. Returns
+        `None` only when parsing fails (e.g. missing `WEBVTT` header or other
+        invalid format issue).
+
         Args:
             file_path: Path to the VTT file
 
         Returns:
-            List of VTTCue objects or None if parsing fails
+            list[VTTCue]: parsed cues (possibly empty for valid no-cue files)
+            None: parsing failure
+
+        Note:
+            Callers should handle the empty-list case as valid no-speech content,
+            and `None` as parse failure.
         """
         try:
             with open(file_path, encoding="utf-8") as f:
@@ -887,12 +911,9 @@ class WebMetadataLoader:
         preview_text = self._clean_html_text(raw_metadata.get("preview_text", ""))
         detail_text = self._clean_html_text(raw_metadata.get("detail_text", ""))
 
-        # Skip if detail_text is empty after cleaning
-        if not detail_text:
-            logger.debug(f"Skipping video with empty detail_text: {title}")
-            return {}
-
-        # Combine preview and detail text for description
+        # Combine preview and detail text for description.
+        # detail_text may be empty for speech-free videos that only carry a title;
+        # that is still useful metadata so we do not skip here.
         description_parts = []
         if preview_text:
             description_parts.append(preview_text)
@@ -900,6 +921,13 @@ class WebMetadataLoader:
             description_parts.append(detail_text)
 
         description = " ".join(description_parts) if description_parts else None
+
+        # Skip only when there is genuinely nothing to index
+        if not title and not description:
+            logger.debug(
+                f"Skipping video with no usable metadata content: title={title!r} description={description!r}"
+            )
+            return {}
 
         # Parse date
         web_date = None
@@ -995,7 +1023,8 @@ class Ingester:
         self.config = config
         self.parser = VTTParser()
         self.invalid_vtt_count = 0
-        self.no_cues_count = 0
+        self.speech_free_count = 0  # valid VTT with no cues (silent video)
+        self.speech_free_with_metadata_count = 0  # subset that had web metadata → indexed
 
         # Initialize web metadata loader with validation
         if config.web_metadata.enabled:
@@ -1082,6 +1111,71 @@ class Ingester:
 
             yield vtt_file
 
+    def _make_speech_free_doc(
+        self,
+        file_path: Path,
+        language: str,
+        video_id: str,
+        web_metadata: dict[str, Any],
+        final_date: str | None,
+        final_date_ts: float | None,
+        duration: float | None,
+    ) -> Document | None:
+        """Create a metadata-only document for a speech-free (silent) video.
+
+        Called when the VTT file is structurally valid but contains no subtitle
+        cues (e.g. a music video or a video with no speech).  If
+        ``web_metadata.ingest_speech_free`` is False, or if ``web_metadata`` is
+        empty, returns None and the video is skipped entirely.
+
+        The document text is built from the available web metadata fields
+        (title + description).  ``is_speech_free`` is set to True so callers
+        can filter these documents out of transcript-only queries.
+        """
+        if not self.config.web_metadata.ingest_speech_free:
+            return None
+        if not web_metadata:
+            return None
+
+        # Build text from web metadata
+        parts: list[str] = []
+        web_title = web_metadata.get("web_title") or ""
+        web_desc = web_metadata.get("web_description") or ""
+        if web_title:
+            parts.append(web_title)
+        if web_desc:
+            parts.append(web_desc)
+
+        text = "\n\n".join(parts).strip()
+        if len(text) < self.config.processing.min_text_length:
+            return None
+
+        doc_id = self.parser.generate_id(file_path)
+        return Document(
+            id=doc_id,
+            path=str(file_path.absolute()),
+            language=language,
+            text=text,
+            length=len(text),
+            date=final_date,
+            date_ts=final_date_ts,
+            duration_seconds=duration,
+            start_time=None,
+            end_time=None,
+            video_id=video_id,
+            is_chunk=False,
+            chunk_index=None,
+            total_chunks=None,
+            start_time_seconds=None,
+            end_time_seconds=None,
+            web_title=web_metadata.get("web_title"),
+            web_date=web_metadata.get("web_date"),
+            web_date_ts=web_metadata.get("web_date_ts"),
+            web_description=web_metadata.get("web_description"),
+            web_url=web_metadata.get("web_url"),
+            is_speech_free=True,
+        )
+
     def process_file(self, file_path: Path) -> list[Document]:
         """
         Process a single VTT file, optionally chunking it.
@@ -1150,14 +1244,18 @@ class Ingester:
                 return []
 
             if not cues:
-                self.no_cues_count += 1
-                if self.no_cues_count % 1000 == 0:
-                    logger.warning(
-                        "VTT files with no cues so far: "
-                        + f"{self.no_cues_count} (latest: {file_path})"
+                # Valid VTT structure but no subtitle cues — silent/music-only video
+                self.speech_free_count += 1
+                doc = self._make_speech_free_doc(
+                    file_path, language, video_id, web_metadata, final_date, final_date_ts, duration
+                )
+                if doc:
+                    self.speech_free_with_metadata_count += 1
+                    logger.debug(
+                        f"Created metadata-only document for speech-free video: {file_path}"
                     )
-                else:
-                    logger.debug(f"No cues extracted from {file_path}")
+                    return [doc]
+                logger.debug(f"Skipping speech-free video (no usable web metadata): {file_path}")
                 return []
 
             # Get max tokens based on embedding model
@@ -1267,11 +1365,29 @@ class Ingester:
             # Chunking disabled - process as single document (legacy behavior)
             result = self.parser.parse_vtt_with_timecodes(file_path)
 
-            if not result:
-                logger.warning(f"No text extracted from {file_path}")
+            if result is None:
+                # Truly invalid VTT (missing WEBVTT header or unreadable)
+                self.invalid_vtt_count += 1
+                logger.debug(f"Invalid VTT file: {file_path}")
                 return []
 
             text, start_time, end_time = result
+
+            if not text:
+                # Valid VTT structure but no speech cues (silent/music-only video)
+                self.speech_free_count += 1
+                doc = self._make_speech_free_doc(
+                    file_path, language, video_id, web_metadata, final_date, final_date_ts, duration
+                )
+                if doc:
+                    self.speech_free_with_metadata_count += 1
+                    logger.debug(
+                        f"Created metadata-only document for speech-free video: {file_path}"
+                    )
+                    return [doc]
+                logger.debug(f"Skipping speech-free video (no usable web metadata): {file_path}")
+                return []
+
             text = self._append_web_metadata(text, web_metadata)
 
             # Check minimum text length
@@ -1418,9 +1534,9 @@ class Ingester:
         logger.info(
             f"Ingestion complete! Processed {file_count} files into {doc_count} documents (chunking: {chunking_status})"
         )
-        if self.invalid_vtt_count or self.no_cues_count:
+        if self.invalid_vtt_count or self.speech_free_count:
             logger.info(
-                f"Ingestion summary: invalid_vtt={self.invalid_vtt_count}, no_cues={self.no_cues_count}"
+                f"Ingestion summary: invalid_vtt={self.invalid_vtt_count}, speech_free={self.speech_free_count} (indexed with metadata: {self.speech_free_with_metadata_count})"
             )
         logger.info(f"Output saved to {output_path}")
 

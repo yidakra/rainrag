@@ -1,20 +1,27 @@
 """Query interface for RainRAG using Mistral/OpenAI/Claude/Gemini API and Qdrant."""
 
 import importlib
+import math as _math
 import re
 from datetime import datetime, timedelta
 from typing import Any, cast
 
 import cohere
+import numpy as np
 import torch
 from anthropic import Anthropic
-from google import genai  # type: ignore[import]
-from google.genai import types  # type: ignore[import]
+from google import genai
+from google.genai import types
 from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
-from sentence_transformers import SentenceTransformer  # type: ignore[import]
+
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
 
 from rainrag.config import Config
 
@@ -90,7 +97,7 @@ class RAGQueryEngine:
         """
         super().__init__()
         self.config = config
-        self.embedding_model: SentenceTransformer | None = None
+        self.embedding_model: Any = None
         self.qdrant_client: QdrantClient | None = None
 
         # BM25 for hybrid search
@@ -197,8 +204,14 @@ class RAGQueryEngine:
             logger.info(f"Loading local embedding model: {self.config.embedding.model_name}")
             try:
                 device = _resolve_device(self.config.embedding.device)
+                model_cls_any = SentenceTransformer
+                if model_cls_any is None:
+                    from sentence_transformers import SentenceTransformer as _SentenceTransformer
+
+                    model_cls_any = _SentenceTransformer
+
+                model_cls = cast(Any, model_cls_any)
                 try:
-                    model_cls = cast(Any, SentenceTransformer)
                     self.embedding_model = model_cls(
                         self.config.embedding.model_name,
                         device=device,
@@ -206,7 +219,7 @@ class RAGQueryEngine:
                     )
                 except TypeError:
                     # Older sentence-transformers versions don't accept model_kwargs
-                    self.embedding_model = SentenceTransformer(
+                    self.embedding_model = model_cls(
                         self.config.embedding.model_name,
                         device=device,
                     )
@@ -243,7 +256,7 @@ class RAGQueryEngine:
             port=self.config.qdrant.port,
             prefer_grpc=False,
             api_key=None,  # No authentication for local Qdrant
-            timeout=60,
+            timeout=self.config.qdrant.timeout,
         )
 
         # Test connection
@@ -314,6 +327,7 @@ class RAGQueryEngine:
                         "web_date_ts": payload.get("web_date_ts"),
                         "web_description": payload.get("web_description"),
                         "web_url": payload.get("web_url"),
+                        "is_speech_free": payload.get("is_speech_free", False),
                     }
                     self.bm25_corpus.append(doc)
 
@@ -343,13 +357,16 @@ class RAGQueryEngine:
         else:
             logger.warning("No documents found for BM25 indexing")
 
-    def _search_bm25(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    def _search_bm25(
+        self, query: str, top_k: int, exclude_speech_free: bool = False
+    ) -> list[dict[str, Any]]:
         """
         Search using BM25 keyword matching.
 
         Args:
             query: Search query
             top_k: Number of documents to retrieve
+            exclude_speech_free: When True, speech-free documents are skipped.
 
         Returns:
             List of documents with BM25 scores
@@ -363,16 +380,21 @@ class RAGQueryEngine:
         # Get BM25 scores for all documents
         scores = self.bm25.get_scores(query_tokens)
 
-        # Get top-k indices
-        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+        # Sort all indices by descending score; collect top_k non-excluded docs
+        sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
 
-        # Build result list
         results = []
-        for rank, idx in enumerate(top_indices, 1):
+        rank = 1
+        for idx in sorted_indices:
+            if exclude_speech_free and self.bm25_corpus[idx].get("is_speech_free", False):
+                continue
             doc = self.bm25_corpus[idx].copy()
             doc["rank"] = rank
             doc["score"] = float(scores[idx])
             results.append(doc)
+            rank += 1
+            if len(results) >= top_k:
+                break
 
         return results
 
@@ -491,6 +513,121 @@ class RAGQueryEngine:
             doc["rank"] = rank
             doc["score"] = combined_scores[doc_id]
             doc["fusion_method"] = "weighted"
+            results.append(doc)
+
+        return results
+
+    def _merge_variants_coverage(
+        self,
+        all_variant_docs: list[list[dict[str, Any]]],
+        retrieval_k: int,
+    ) -> list[dict[str, Any]]:
+        """Greedy coverage-maximising merge inspired by VRisker (Takehi et al., WSDM 2026).
+
+        Selects documents one at a time, each time preferring the candidate that
+        covers the most *new* query variants (i.e. variants not yet represented in
+        the selected set), breaking ties by raw retrieval score.  This prevents the
+        majority-intent documents from crowding out candidates that uniquely satisfy
+        a minority reading of the query.
+
+        Args:
+            all_variant_docs: Per-variant retrieval results (one list per variant).
+            retrieval_k: Maximum number of documents to return.
+
+        Returns:
+            Ordered list of selected documents (best-coverage first).
+        """
+        # Map each doc_id to the set of variant indices it appears in, and
+        # track the highest score seen across all variants for tiebreaking.
+        coverage: dict[str, set[int]] = {}
+        best_doc: dict[str, dict[str, Any]] = {}
+
+        for i, variant_docs in enumerate(all_variant_docs):
+            for doc in variant_docs:
+                doc_id = doc["doc_id"]
+                coverage.setdefault(doc_id, set()).add(i)
+                # Keep the highest-score copy for a given doc_id so duplicate
+                # documents surfaced by multiple variants preserve their best
+                # retrieval score in the merged output.
+                if doc_id not in best_doc or doc["score"] > best_doc[doc_id]["score"]:
+                    best_doc[doc_id] = doc
+
+        selected: list[dict[str, Any]] = []
+        covered_variants: set[int] = set()
+        remaining = set(best_doc.keys())
+
+        while remaining and len(selected) < retrieval_k:
+            # Primary key: new variants this doc would cover.
+            # Secondary key: raw score (higher is better).
+            best_id = max(
+                remaining,
+                key=lambda did: (
+                    len(coverage.get(did, set()) - covered_variants),
+                    best_doc[did]["score"],
+                ),
+            )
+            selected.append(best_doc[best_id])
+            covered_variants |= coverage.get(best_id, set())
+            remaining.remove(best_id)
+
+        return selected
+
+    @staticmethod
+    def _merge_variants_diverse_rrf(
+        all_variant_docs: list[list[dict[str, Any]]],
+        retrieval_k: int,
+        rrf_k: int = 60,
+    ) -> list[dict[str, Any]]:
+        """Multi-source RRF with concave diversity weighting across query variants.
+
+        Each query variant is treated as a separate ranker in RRF.  A document that
+        appears in many variants receives a *lower* per-appearance weight
+        (diversity_weight = 1 / sqrt(variant_count)), giving diminishing returns to
+        consensus documents and upweighting candidates that are unique to an
+        under-served variant.  This implements the concave utility function from the
+        VRisk framework (Takehi et al., WSDM 2026).
+
+        Args:
+            all_variant_docs: Per-variant retrieval results (one list per variant).
+            retrieval_k: Maximum number of documents to return.
+            rrf_k: RRF constant (default 60, standard from literature).
+
+        Returns:
+            Ordered list of documents scored by diversity-weighted RRF.
+        """
+
+        # Count how many variants each doc appears in (for diversity weighting).
+        variant_count: dict[str, int] = {}
+        best_doc: dict[str, dict[str, Any]] = {}
+
+        for variant_docs in all_variant_docs:
+            for doc in variant_docs:
+                doc_id = doc["doc_id"]
+                variant_count[doc_id] = variant_count.get(doc_id, 0) + 1
+                # Prefer the first-seen document for a given doc_id to avoid
+                # comparing raw scores across variants (different scales).
+                if doc_id not in best_doc:
+                    best_doc[doc_id] = doc
+
+        # Compute diversity-weighted RRF score.
+        # diversity_weight = 1/sqrt(variant_count) → consensus docs penalised,
+        # minority-variant docs relatively upweighted.
+        rrf_scores: dict[str, float] = {}
+        for variant_docs in all_variant_docs:
+            for doc in variant_docs:
+                doc_id = doc["doc_id"]
+                rank = doc["rank"]
+                dw = 1.0 / _math.sqrt(variant_count[doc_id])
+                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + dw / (rrf_k + rank)
+
+        sorted_ids = sorted(rrf_scores, key=lambda d: rrf_scores[d], reverse=True)
+
+        results: list[dict[str, Any]] = []
+        for rank, doc_id in enumerate(sorted_ids[:retrieval_k], 1):
+            doc = best_doc[doc_id].copy()
+            doc["rank"] = rank
+            doc["score"] = rrf_scores[doc_id]
+            doc["fusion_method"] = "diverse_rrf"
             results.append(doc)
 
         return results
@@ -709,6 +846,103 @@ class RAGQueryEngine:
             logger.error(f"Error finding related chunks: {e}")
             return []
 
+    def _rewrite_query_for_retrieval(self, query: str, language: str = "en") -> list[str]:
+        """
+        Stage 2a: Rewrite the user query into transcript-register variants.
+
+        Broadcast transcripts use informal spoken language; user queries tend to be
+        formal or terse.  This method uses the already-initialised LLM to generate
+        paraphrases that close that register gap, improving both vector and BM25 recall.
+
+        Args:
+            query: Original user query
+            language: Language code ("en" or "ru") for prompt language
+
+        Returns:
+            List starting with the original query followed by rewritten variants.
+        """
+        n = self.config.two_stage.query_rewrite_variants
+
+        if language == "ru":
+            prompt = (
+                f"Перепиши следующий поисковый запрос {n} разными способами, "
+                "чтобы он лучше совпадал с разговорной речью из видеотранскриптов новостей. "
+                "Используй простые, разговорные формулировки, как в реальных репортажах. "
+                f"Верни ровно {n} варианта — каждый на отдельной строке, без нумерации и пояснений.\n\n"
+                f"Запрос: {query}"
+            )
+        else:
+            prompt = (
+                f"Rewrite the following search query in {n} different ways "
+                "so that it better matches spoken language found in broadcast news transcripts. "
+                "Use informal, conversational phrasing similar to how reporters speak on air. "
+                f"Return exactly {n} variants — one per line, no numbering or explanation.\n\n"
+                f"Query: {query}"
+            )
+
+        logger.info(f"[Two-Stage] Rewriting query into {n} transcript-register variants...")
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            raw = self.generate_answer(
+                messages,
+                temperature=self.config.two_stage.query_rewrite_temperature,
+            )
+            variants = [line.strip() for line in raw.splitlines() if line.strip()][:n]
+            logger.debug(f"[Two-Stage] Query variants: {variants}")
+        except Exception as e:
+            logger.warning(f"[Two-Stage] Query rewrite failed, using original only: {e}")
+            variants = []
+
+        return [query] + variants
+
+    def _generate_hyde_embedding(self, query: str, language: str = "en") -> list[float]:
+        """
+        Stage 2b: Hypothetical Document Embedding (HyDE).
+
+        Generates a hypothetical broadcast transcript excerpt that would answer the
+        query, then embeds it.  The caller blends this with the raw query embedding
+        using hyde_alpha as the interpolation weight, analogous to Zhai & Lafferty's
+        Stage 2 query-model interpolation.
+
+        Args:
+            query: Original user query
+            language: Language code ("en" or "ru")
+
+        Returns:
+            Embedding vector for the hypothetical document.
+        """
+        if language == "ru":
+            prompt = (
+                "Напиши короткий отрывок (3–5 предложений) из репортажа или "
+                "новостного видеотранскрипта, который напрямую отвечает на следующий вопрос. "
+                "Используй разговорный стиль, характерный для телевизионных новостей. "
+                "Возвращай только текст отрывка, без заголовков и пояснений.\n\n"
+                f"Вопрос: {query}"
+            )
+        else:
+            prompt = (
+                "Write a short passage (3–5 sentences) from a broadcast news video transcript "
+                "that directly answers the following question. "
+                "Use informal spoken language typical of on-air reporting. "
+                "Return only the passage text, no headings or explanation.\n\n"
+                f"Question: {query}"
+            )
+
+        logger.info("[Two-Stage] Generating HyDE hypothetical document...")
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            hypothetical_doc = self.generate_answer(
+                messages,
+                temperature=self.config.two_stage.hyde_temperature,
+            )
+            logger.debug(f"[Two-Stage] HyDE passage: {hypothetical_doc[:120]}...")
+            return self.embed_query(hypothetical_doc)
+        except Exception as e:
+            logger.warning(
+                f"[Two-Stage] HyDE generation failed, falling back to query embedding: {e}"
+            )
+            return self.embed_query(query)
+
     def embed_query(self, query: str) -> list[float]:
         """
         Embed the query text using configured provider.
@@ -757,10 +991,10 @@ class RAGQueryEngine:
             logger.debug(f"Embedding query using OpenAI API: {query[:100]}...")
             try:
                 assert self.openai_client is not None, "OpenAI client not initialized"
-                response = self.openai_client.embeddings.create(
+                openai_response = self.openai_client.embeddings.create(
                     model=self.config.openai.embedding_model, input=query
                 )
-                return response.data[0].embedding
+                return openai_response.data[0].embedding
             except Exception as e:
                 logger.error(f"Failed to generate embeddings with OpenAI API: {e}")
                 raise RuntimeError(f"OpenAI embeddings API error: {e}") from e
@@ -796,6 +1030,7 @@ class RAGQueryEngine:
         date_from: str | None = None,
         date_to: str | None = None,
         query_text: str | None = None,
+        exclude_speech_free: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Retrieve the most relevant documents from Qdrant.
@@ -808,6 +1043,8 @@ class RAGQueryEngine:
             date_from: Filter results from this date (YYYY-MM-DD)
             date_to: Filter results up to this date (YYYY-MM-DD)
             query_text: Original query text (needed for BM25 in hybrid search)
+            exclude_speech_free: When True, speech-free (no-transcript) documents
+                are removed from results before ranking and truncation.
 
         Returns:
             List of retrieved documents with metadata
@@ -839,6 +1076,14 @@ class RAGQueryEngine:
                 effective_limit = top_k * 3
             else:
                 effective_limit = top_k
+
+            if exclude_speech_free:
+                # Fetch extra candidates to ensure we can still return top_k on post-filter.
+                if use_hybrid:
+                    extra_multiplier = max(3, self.config.hybrid_search.top_k_multiplier)
+                else:
+                    extra_multiplier = 3
+                effective_limit = max(effective_limit, top_k * extra_multiplier)
 
             # 1. Vector search
             if date_from or date_to:
@@ -881,6 +1126,7 @@ class RAGQueryEngine:
                     "web_date_ts": hit_payload.get("web_date_ts"),
                     "web_description": hit_payload.get("web_description"),
                     "web_url": hit_payload.get("web_url"),
+                    "is_speech_free": hit_payload.get("is_speech_free", False),
                 }
                 vector_documents.append(doc)
                 logger.debug(f"[Vector] Rank {idx + 1}: Score={hit.score:.4f}, Path={doc['path']}")
@@ -888,7 +1134,9 @@ class RAGQueryEngine:
             # 2. Hybrid search: combine with BM25 if enabled
             if use_hybrid and query_text:
                 logger.info("Performing BM25 search...")
-                bm25_documents = self._search_bm25(query_text, effective_limit)
+                bm25_documents = self._search_bm25(
+                    query_text, effective_limit, exclude_speech_free=exclude_speech_free
+                )
                 logger.info(f"Retrieved {len(bm25_documents)} BM25 results")
 
                 # Fuse scores
@@ -907,6 +1155,14 @@ class RAGQueryEngine:
                 logger.info(f"Hybrid search produced {len(documents)} fused results")
             else:
                 documents = vector_documents
+
+            # Remove speech-free docs if caller does not want them
+            if exclude_speech_free:
+                before = len(documents)
+                documents = [d for d in documents if not d.get("is_speech_free", False)]
+                logger.info(
+                    f"Excluded {before - len(documents)} speech-free documents (exclude_speech_free=True)"
+                )
 
             # Apply date filtering client-side if requested
             if date_from or date_to:
@@ -959,6 +1215,62 @@ class RAGQueryEngine:
         except Exception as e:
             logger.error(f"Failed to retrieve documents: {e}")
             raise
+
+    def _apply_score_threshold(
+        self, documents: list[dict[str, Any]], threshold: float
+    ) -> list[dict[str, Any]]:
+        """Drop documents whose score falls below *threshold*.
+
+        Motivated by Cuconasu et al. (SIGIR 2024): near-miss documents that
+        score highly from retrieval but are not truly relevant hurt LLM answer
+        quality more than simply having fewer documents.  A threshold of 0.0
+        (the default) is a no-op.
+        """
+        if threshold <= 0.0:
+            return documents
+        return [d for d in documents if d.get("score", 0.0) >= threshold]
+
+    def _order_documents_for_prompt(
+        self, documents: list[dict[str, Any]], order: str
+    ) -> list[dict[str, Any]]:
+        """Re-order *documents* for prompt assembly according to *order*.
+
+        Args:
+            documents: Documents in current rank order (best first).
+            order: One of ``"rank"`` (no change), ``"reversed"`` (worst first,
+                best last — exploits LLM recency bias), or ``"book_end"``
+                (best document first, second-best last, remainder in the
+                middle — combats 'lost in the middle' attention drop).
+
+        Returns:
+            Re-ordered list.  The ``rank`` field is updated so that
+            ``[Document N]`` labels in the prompt reflect the new positions.
+        """
+        if order == "rank" or len(documents) <= 1:
+            return documents
+
+        if order == "reversed":
+            ordered = list(reversed(documents))
+        elif order == "book_end":
+            if len(documents) == 2:
+                ordered = list(documents)  # already book-ended, but copy to avoid input mutation
+            else:
+                first = documents[0]
+                second_best = documents[1]
+                # Keep all remaining documents (including the original last) in order,
+                # but remove the second-best from its original position.
+                remaining = documents[2:]
+                ordered = [first] + remaining + [second_best]
+        else:
+            logger.warning("Unknown prompt_doc_order %r; falling back to 'rank'", order)
+            return documents
+
+        # Re-number so [Document N] labels match the new positions
+        for i, doc in enumerate(ordered, start=1):
+            doc = dict(doc)
+            doc["rank"] = i
+            ordered[i - 1] = doc
+        return ordered
 
     def rerank_documents(
         self, query: str, documents: list[dict[str, Any]], top_n: int
@@ -1036,8 +1348,11 @@ class RAGQueryEngine:
                 text = text[:max_chars_per_doc].rstrip() + "..."
 
             # Document header
+            is_speech_free = doc.get("is_speech_free", False)
             doc_header = f"[Document {doc['rank']}]"
-            if doc.get("is_chunk"):
+            if is_speech_free:
+                doc_header += " [No transcript — description only]"
+            elif doc.get("is_chunk"):
                 doc_header += (
                     f" [Chunk {doc.get('chunk_index', 0) + 1}/{doc.get('total_chunks', 1)}]"
                 )
@@ -1054,11 +1369,13 @@ class RAGQueryEngine:
                 secs = int(doc["duration_seconds"] % 60)
                 context_parts.append(f"Duration: {mins}:{secs:02d}")
 
-            # Include timecodes if available
-            if doc.get("start_time") and doc.get("end_time"):
+            # Include timecodes only for transcript documents
+            if not is_speech_free and doc.get("start_time") and doc.get("end_time"):
                 context_parts.append(f"Timecodes: {doc['start_time']} - {doc['end_time']}")
 
-            context_parts.append(f"Text: {text}")
+            # Label the text block so the LLM knows what it is reading
+            text_label = "Description" if is_speech_free else "Text"
+            context_parts.append(f"{text_label}: {text}")
             context_parts.append("")  # Empty line between documents
 
         context = "\n".join(context_parts)
@@ -1074,6 +1391,7 @@ class RAGQueryEngine:
 - Если несколько видео релевантны, перечислите каждое с датой и описанием
 - Делайте хорошее, развернутое "Описание" для каждого релевантного видео
 - Объясните, почему материал может быть полезен для текущего сюжета
+- Некоторые видео могут быть помечены как "[No transcript — description only]" — это означает, что в видео нет речи (музыка, тишина). Для таких видео используйте только поле "Description", не ссылайтесь на тайм-коды
 
 Если дата отсутствует, укажите это. Если материал не найден — скажите прямо, не выдумывайте.""",
             "en": """You are an assistant for journalists and editors, helping them find video footage from a news archive. CRITICAL: You MUST answer ONLY in English.
@@ -1085,6 +1403,7 @@ ALL VIDEOS ARE ARCHIVAL RECORDINGS, not current news. Response rules:
 - If multiple videos are relevant, list each with date and description
 - Provide rich, detailed descriptions explaining the content of each video
 - Explain why the footage might be useful for the current story
+- Some videos may be marked "[No transcript — description only]" — these contain no speech (music, silence, etc.). For these, rely only on the "Description" field and do not reference timecodes
 
 If date is missing, note this. If no relevant footage is found, say so clearly — do not fabricate.""",
         }
@@ -1104,12 +1423,18 @@ Question: {query}"""
             {"role": "user", "content": user_message},
         ]
 
-    def generate_answer(self, messages: list[dict[str, str]]) -> str:
+    def generate_answer(
+        self, messages: list[dict[str, str]], temperature: float | None = None
+    ) -> str:
         """
         Generate an answer using configured LLM provider.
 
         Args:
             messages: List of message dictionaries for the chat
+            temperature: Override the provider's configured temperature. Pass a value
+                here when you need a different temperature for an intermediate step
+                (e.g. query rewriting) while keeping the main answer at the configured
+                temperature (typically 0 for deterministic journalist output).
 
         Returns:
             The generated answer text
@@ -1121,19 +1446,21 @@ Question: {query}"""
             logger.info("Generating answer using Mistral API...")
             try:
                 assert self.mistral_client is not None, "Mistral client not initialized"
-                response = self.mistral_client.chat.complete(  # type: ignore[assignment]
+                mistral_response: Any = self.mistral_client.chat.complete(
                     model=self.config.mistral.model_name,
-                    messages=messages,  # type: ignore[arg-type]
+                    messages=cast(Any, messages),
                     max_tokens=self.config.mistral.max_tokens,
-                    temperature=self.config.mistral.temperature,
+                    temperature=temperature
+                    if temperature is not None
+                    else self.config.mistral.temperature,
                 )
                 if (
-                    response
-                    and response.choices
-                    and len(response.choices) > 0
-                    and response.choices[0].message
+                    mistral_response
+                    and mistral_response.choices
+                    and len(mistral_response.choices) > 0
+                    and mistral_response.choices[0].message
                 ):
-                    content = response.choices[0].message.content
+                    content = mistral_response.choices[0].message.content
                     if isinstance(content, str):
                         answer = content.strip()
                     elif isinstance(content, list) and content:
@@ -1153,24 +1480,26 @@ Question: {query}"""
             logger.info("Generating answer using OpenAI API...")
             try:
                 assert self.openai_client is not None, "OpenAI client not initialized"
-                response = self.openai_client.chat.completions.create(  # type: ignore[assignment]
+                openai_response: Any = self.openai_client.chat.completions.create(
                     model=self.config.openai.model_name,
-                    messages=messages,  # type: ignore[arg-type]
+                    messages=cast(Any, messages),
                     max_tokens=self.config.openai.max_tokens,
-                    temperature=self.config.openai.temperature,
+                    temperature=temperature
+                    if temperature is not None
+                    else self.config.openai.temperature,
                 )
                 if (
-                    response
-                    and response.choices
-                    and len(response.choices) > 0
-                    and response.choices[0].message
+                    openai_response
+                    and openai_response.choices
+                    and len(openai_response.choices) > 0
+                    and openai_response.choices[0].message
                 ):
-                    content = response.choices[0].message.content
+                    content = openai_response.choices[0].message.content
                     if isinstance(content, str):
                         answer = content.strip()
-                    elif isinstance(content, list) and content:  # type: ignore[unreachable]
+                    elif isinstance(content, list) and content:
                         # Handle list of content chunks (if OpenAI API returns list)
-                        answer = "".join(str(chunk) for chunk in content).strip()  # type: ignore[union-attr]
+                        answer = "".join(str(chunk) for chunk in content).strip()
                     else:
                         raise RuntimeError("OpenAI API returned invalid content format")
                 else:
@@ -1194,15 +1523,17 @@ Question: {query}"""
                     else:
                         claude_messages.append(msg)
 
-                response = self.claude_client.messages.create(  # type: ignore[assignment]
+                claude_response: Any = self.claude_client.messages.create(
                     model=self.config.claude.model_name,
                     max_tokens=self.config.claude.max_tokens,
-                    temperature=self.config.claude.temperature,
+                    temperature=temperature
+                    if temperature is not None
+                    else self.config.claude.temperature,
                     system=system_message,
-                    messages=claude_messages,  # type: ignore[arg-type]
+                    messages=cast(Any, claude_messages),
                 )
-                if response and response.content and len(response.content) > 0:
-                    content_block = response.content[0]
+                if claude_response and claude_response.content and len(claude_response.content) > 0:
+                    content_block = claude_response.content[0]
                     # Check if it's a text block with text attribute
                     try:
                         text_content = getattr(content_block, "text", None)
@@ -1260,7 +1591,9 @@ Question: {query}"""
                     contents=contents,
                     config=types.GenerateContentConfig(
                         max_output_tokens=self.config.gemini.max_tokens,
-                        temperature=self.config.gemini.temperature,
+                        temperature=temperature
+                        if temperature is not None
+                        else self.config.gemini.temperature,
                     ),
                 )
                 if response and response.text:
@@ -1283,6 +1616,7 @@ Question: {query}"""
         language: str = "en",
         date_from: str | None = None,
         date_to: str | None = None,
+        exclude_speech_free: bool = False,
     ) -> dict[str, Any]:
         """
         Execute the complete query pipeline.
@@ -1293,6 +1627,8 @@ Question: {query}"""
             language: Language code for response (e.g., "en", "ru")
             date_from: Filter results from this date (YYYY-MM-DD)
             date_to: Filter results up to this date (YYYY-MM-DD)
+            exclude_speech_free: When True, videos with no transcript are excluded
+                from retrieval results entirely.
 
         Returns:
             Dictionary containing the answer and metadata
@@ -1330,39 +1666,142 @@ Question: {query}"""
                     f"Detected temporal query ('{temporal_context['time_sensitivity']}'), applying date filter: {date_from} to {date_to}"
                 )
 
-        # Step 1: Embed the query
-        query_vector = self.embed_query(question)
+        # Step 1: Build query variants (Stage 2a: LLM query rewriting)
+        two_stage_enabled = self.config.two_stage.enabled
+        if two_stage_enabled and self.config.two_stage.query_rewrite_enabled:
+            query_variants = self._rewrite_query_for_retrieval(question, language)
+        else:
+            query_variants = [question]
 
-        # Step 2: Retrieve relevant documents with optional date filter
-        # If reranking is enabled, retrieve more candidates
+        # Step 2: Embed primary query, then optionally blend with HyDE (Stage 2b)
+        primary_vector = self.embed_query(question)
+        embed_calls = 1
+
+        if two_stage_enabled and self.config.two_stage.hyde_enabled:
+            hyde_vector = self._generate_hyde_embedding(question, language)
+            embed_calls += 1
+            alpha = self.config.two_stage.hyde_alpha
+            blended = (1.0 - alpha) * np.array(primary_vector) + alpha * np.array(hyde_vector)
+            norm = float(np.linalg.norm(blended))
+            if norm > 0:
+                blended = blended / norm
+            primary_vector = blended.tolist()
+            logger.info(f"[Two-Stage] HyDE blend applied (alpha={alpha})")
+
+        # Step 3: Retrieve relevant documents with optional date filter.
+        # If reranking is enabled, retrieve more candidates initially.
         retrieval_k = self.config.reranker.initial_k if self.config.reranker.enabled else top_k
         assert isinstance(retrieval_k, int)
 
-        documents = self.retrieve_documents(
-            query_vector, retrieval_k, date_from=date_from, date_to=date_to, query_text=question
-        )
+        # Per-variant retrieval result ID lists for downstream intent-coverage eval.
+        variant_retrieved_ids: list[list[str]] = []
 
-        # Step 2.5: Apply time-decay boosting if temporal context detected
+        if two_stage_enabled and len(query_variants) > 1:
+            # Retrieve for each variant.  The primary_vector (possibly HyDE-blended)
+            # is reused for the original query via index-based check.
+            all_variant_docs: list[list[dict[str, Any]]] = []
+            for i, variant in enumerate(query_variants):
+                if i == 0:
+                    variant_vector = primary_vector
+                else:
+                    variant_vector = self.embed_query(variant)
+                    embed_calls += 1
+                variant_docs = self.retrieve_documents(
+                    variant_vector,
+                    retrieval_k,
+                    date_from=date_from,
+                    date_to=date_to,
+                    query_text=variant,
+                    exclude_speech_free=exclude_speech_free,
+                )
+                all_variant_docs.append(variant_docs)
+                variant_retrieved_ids.append([d["doc_id"] for d in variant_docs])
+
+            # Merge using the configured strategy.
+            merge_strategy = self.config.two_stage.merge_strategy
+            if merge_strategy == "diverse_rrf":
+                documents = self._merge_variants_diverse_rrf(
+                    all_variant_docs,
+                    retrieval_k,
+                    rrf_k=self.config.two_stage.merge_rrf_k,
+                )
+            else:
+                # Default: greedy coverage-maximising merge (VRisker-style)
+                documents = self._merge_variants_coverage(all_variant_docs, retrieval_k)
+
+            # Re-number ranks after merge
+            for idx, doc in enumerate(documents):
+                doc["rank"] = idx + 1
+            logger.info(
+                f"[Two-Stage] Merged {len(documents)} unique docs from {len(query_variants)} query variants (strategy={merge_strategy})"
+            )
+        else:
+            documents = self.retrieve_documents(
+                primary_vector,
+                retrieval_k,
+                date_from=date_from,
+                date_to=date_to,
+                query_text=question,
+                exclude_speech_free=exclude_speech_free,
+            )
+            variant_retrieved_ids = [[d["doc_id"] for d in documents]]
+
+        # Step 4: Apply time-decay boosting if temporal context detected
         if temporal_context and temporal_context["has_temporal"]:
             documents = self._apply_time_decay_boost(
                 documents, time_sensitivity=temporal_context["time_sensitivity"]
             )
 
-        # Step 3: Rerank if enabled
+        # Step 5: Rerank if enabled
         if self.config.reranker.enabled and documents:
             documents = self.rerank_documents(question, documents, top_n=top_k)
 
-        # Step 4: Build the messages with language specification
+        # Step 5b: Drop documents below the minimum score threshold
+        min_score = self.config.reranker.min_retrieval_score
+        if min_score > 0.0:
+            before = len(documents)
+            documents = self._apply_score_threshold(documents, min_score)
+            if len(documents) < before:
+                logger.info(
+                    "Score threshold %.3f dropped %d/%d documents",
+                    min_score,
+                    before - len(documents),
+                    before,
+                )
+
+        # Step 5c: Re-order documents for prompt assembly
+        doc_order = self.config.two_stage.prompt_doc_order
+        documents = self._order_documents_for_prompt(documents, doc_order)
+
+        # Step 6: Build the messages with language specification
         messages = self.build_prompt(question, documents, language=language)
 
-        # Step 5: Generate the answer
+        # Step 7: Generate the answer
         answer = self.generate_answer(messages)
+
+        # Track API call counts for transparency (cost estimates currently
+        # only include the main answer generation + embedding). These counts
+        # enable downstream cost calculations in the MLflow metrics.
+        llm_query_rewrite_calls = (
+            1 if two_stage_enabled and self.config.two_stage.query_rewrite_enabled else 0
+        )
+        llm_hyde_calls = 1 if two_stage_enabled and self.config.two_stage.hyde_enabled else 0
+        llm_calls = 1 + llm_query_rewrite_calls + llm_hyde_calls
+
+        reranker_calls = 1 if self.config.reranker.enabled and bool(documents) else 0
 
         return {
             "question": question,
             "answer": answer,
             "retrieved_documents": documents,
             "num_documents": len(documents),
+            "query_variants": query_variants,
+            "variant_retrieved_ids": variant_retrieved_ids,
+            "cost.llm_calls_count": llm_calls,
+            "cost.llm_query_rewrite_calls": llm_query_rewrite_calls,
+            "cost.llm_hyde_calls": llm_hyde_calls,
+            "cost.embed_calls_count": embed_calls,
+            "cost.reranker_calls_count": reranker_calls,
         }
 
 

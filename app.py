@@ -123,7 +123,7 @@ try:
         decode_responses=True,
     )
     # Test connection
-    redis_client.ping()  # type: ignore
+    redis_client.ping()
     logger.info("Connected to Redis for session storage")
 except redis.ConnectionError as e:
     logger.error(f"Failed to connect to Redis: {e}")
@@ -385,7 +385,7 @@ def redis_get_failed_attempts(identifier: str) -> dict[str, Any]:
         return {"count": 0, "lockout_until": None}
 
     key = _get_lockout_key(identifier)
-    data = cast(dict[str, Any], redis_client.hgetall(key))  # type: ignore
+    data = cast(dict[str, str], redis_client.hgetall(key))
 
     if not data:
         return {"count": 0, "lockout_until": None}
@@ -427,7 +427,7 @@ def redis_set_failed_attempts(identifier: str, count: int, lockout_until: dateti
         # Remove TTL if no lockout
         redis_client.persist(key)
 
-    redis_client.hset(key, mapping=data)  # type: ignore
+    redis_client.hset(key, mapping=data)
 
 
 def redis_incr_failed_attempts(identifier: str) -> int:
@@ -444,7 +444,7 @@ def redis_incr_failed_attempts(identifier: str) -> int:
         return 0
 
     key = _get_lockout_key(identifier)
-    count = cast(int, redis_client.hincrby(key, "count", 1))  # type: ignore
+    count = cast(int, redis_client.hincrby(key, "count", 1))
     return count
 
 
@@ -537,7 +537,6 @@ def check_authentication() -> bool:
         st.error(get_text("auth_set_password", lang))
         st.error(get_text("auth_use_script", lang))
         st.stop()
-        return False
 
     # Check if user is already authenticated and session is valid
     if st.session_state.get("authenticated", False):
@@ -548,7 +547,6 @@ def check_authentication() -> bool:
             st.warning(get_text("session_expired_warning", st.session_state.get("language", "ru")))
             time.sleep(1)
             st.rerun()
-            return False
 
         # Update activity timestamp
         update_session_activity()
@@ -569,7 +567,6 @@ def check_authentication() -> bool:
         )
         time.sleep(1)
         st.stop()
-        return False
 
     # Show login form
     st.title(get_text("auth_title", lang))
@@ -617,7 +614,6 @@ def check_authentication() -> bool:
                 st.success(get_text("auth_success", lang))
                 time.sleep(0.5)
                 st.rerun()
-                return True
             else:
                 # Failed authentication
                 record_failed_attempt()
@@ -1195,10 +1191,11 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         # Language selector for VTT
                         if len(vtt_languages) > 1:
                             lang_display = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
+
                             selected_vtt_lang = st.radio(
                                 get_text("vtt_language", lang),
                                 options=list(vtt_languages.keys()),
-                                format_func=lambda x, ld=lang_display: ld.get(x, x),
+                                format_func=lambda code, ld=lang_display: ld.get(code, code),
                                 horizontal=True,
                                 key=f"vtt_lang_{group_idx}",
                                 label_visibility="collapsed",
@@ -1330,9 +1327,17 @@ def render_sidebar(lang: str):
             with st.expander(get_text("date_filter_label", lang), expanded=False):
                 min_date, max_date = get_archive_date_range()
                 # Clamp stored dates to available range (if known)
-                if min_date and st.session_state.date_from and st.session_state.date_from < min_date:
+                if (
+                    min_date
+                    and st.session_state.date_from
+                    and st.session_state.date_from < min_date
+                ):
                     st.session_state.date_from = min_date
-                if max_date and st.session_state.date_from and st.session_state.date_from > max_date:
+                if (
+                    max_date
+                    and st.session_state.date_from
+                    and st.session_state.date_from > max_date
+                ):
                     st.session_state.date_from = max_date
                 if min_date and st.session_state.date_to and st.session_state.date_to < min_date:
                     st.session_state.date_to = min_date

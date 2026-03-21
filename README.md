@@ -174,6 +174,9 @@ export ANTHROPIC_API_KEY=your_claude_key
 
 # Google Gemini
 export GOOGLE_API_KEY=your_gemini_key
+
+# Cohere (reranker)
+export COHERE_API_KEY=your_cohere_key
 ```
 
 Or add them to your `.env` file:
@@ -201,6 +204,9 @@ paths:
 embedding:
   provider: "mistral"  # Options: "local", "mistral", "openai", "gemini"
   model_name: "intfloat/multilingual-e5-large"
+  # Optional prefix added to texts before embedding (e.g. "passage: " for E5).
+  # Leave empty to auto-detect from the model name.
+  prefix: ""
   device: "cuda"  # or "cpu" (only used with local provider)
   batch_size: 32
 
@@ -245,6 +251,35 @@ gemini:
 ```
 
 **See [docs/PROVIDER_COMPARISON.md](docs/PROVIDER_COMPARISON.md) for help choosing the right provider for your needs.**
+
+### Two-Stage Retrieval
+
+RainRAG implements two-stage retrieval (Zhai & Lafferty, [SIGIR 2002](https://dl.acm.org/doi/10.1145/564376.564386)) to improve recall on broadcast-transcript corpora, where user queries are typically formal or terse but the source material is informal spoken language.
+
+**Stage 1 – Corpus smoothing**: handled by `hybrid_search` (BM25 + vector).
+
+**Stage 2 – Query-side smoothing**: configured under `two_stage` in `config.yaml`.
+
+```yaml
+two_stage:
+  enabled: true          # Master switch
+
+  # 2a – LLM query rewriting
+  # Rewrites the user query into transcript-register variants before retrieval.
+  # Addresses vocabulary mismatch between formal queries and spoken transcripts.
+  query_rewrite_enabled: true
+  query_rewrite_variants: 2        # Rewrites generated; original is always included (3 total)
+  query_rewrite_temperature: 0.7   # Higher → more diverse paraphrases
+
+  # 2b – HyDE (Hypothetical Document Embedding)
+  # Generates a hypothetical transcript passage and blends its embedding with the query.
+  # More expensive (1 extra LLM call + 1 embed). Enable for highest recall.
+  hyde_enabled: false
+  hyde_alpha: 0.5        # 0.0 = raw query only, 1.0 = HyDE only
+  hyde_temperature: 0.7  # Higher → more varied hypothetical passages
+```
+
+**Temperature design note:** `query_rewrite_temperature` and `hyde_temperature` are intentionally separate from the provider `temperature` setting used for final answer generation. Answer generation uses a low temperature (e.g., 0.3) for deterministic, source-grounded journalist output. The rewrite and HyDE calls use a higher temperature (default 0.7) to produce meaningfully diverse paraphrases and hypothetical passages — which is the whole point of these techniques.
 
 ### Choosing an Embedding Provider
 
@@ -553,6 +588,42 @@ docker-compose logs -f
 
 # Stop services
 docker-compose down
+
+#
+# NOTE: The compose file expects a `./secrets` directory containing API key files.
+# Create the directory and key files before running `docker-compose up`.
+#
+#   mkdir -p ./secrets
+#   make secrets   # or ./create-secrets.sh
+#
+# Then edit the generated files (e.g. `./secrets/mistral_api_key.txt`) and
+# populate them with your provider API keys.
+#
+# For missing keys
+#   - `./secrets/mistral_api_key.txt` and `./secrets/cohere_api_key.txt` are
+#     required for Mistral/Cohere provider use.
+#   - Either create and populate these files, or comment out the corresponding
+#     `mistral_api_key`/`cohere_api_key` secret section in `docker-compose.yaml`.
+#   - Other provider keys are optional and only needed if configured.
+#
+# Default providers (used out of the box):
+#   - Mistral (LLM)
+#   - Cohere (reranking)
+#
+# Optional providers (only needed if you configure them in `config.yaml`):
+#   - OpenAI (GPT / embeddings)
+#   - Anthropic (Claude)
+#   - Google Gemini
+#
+# For safety, keep the secrets directory out of source control:
+#   - The repo includes `secrets/*.txt.example` templates you can copy
+#   - Your real secret files should be named `*.txt` and are ignored by git
+#
+# Recommended permissions (production):
+#   chmod 600 ./secrets/*.txt
+#
+# Docker Compose mounts these as secrets and sets corresponding
+# *_API_KEY_FILE environment variables in the containers.
 ```
 
 ### Network Access Configuration
@@ -838,6 +909,14 @@ docker run --rm --gpus all \
   -v $(pwd)/embeddings:/data/embeddings \
   --network host \
   rainrag:gpu pipeline
+
+# If you need to supply API keys or other secrets with a standalone
+# `docker run` invocation, you can mount a local directory of key files
+# and then set the corresponding *_API_KEY_FILE environment variables
+# (for example, `-v $(pwd)/secrets:/run/secrets:ro` plus
+# `-e OPENAI_API_KEY_FILE=/run/secrets/openai_api_key.txt`). See
+# `docker-compose.yaml` for the Compose-based pattern which automatically
+# exposes `./secrets/*.txt` as Docker secrets.
 ```
 
 ## Kubernetes Deployment with Helm
@@ -1765,6 +1844,7 @@ If runtime works but the editor shows missing imports, ensure the editor uses th
 
 - Recommended: use an in-project venv (`.venv`) and point your editor/type-checker at it.
 - This repo includes `pyrightconfig.json` and `.vscode/settings.json` to help Cursor/VS Code pick up `.venv`.
+- Ensure local Python builds/install use `poetry install` or `pip install -e .` from repo root so runtime imports match type checker lookup (package root is `src/`).
 
 ## Roadmap
 

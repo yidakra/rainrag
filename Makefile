@@ -1,4 +1,4 @@
-.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop api streamlit up down api-bg streamlit-bg mcp mcp-http mcp-inspector backup-embeddings-r2 restore-embeddings-r2 backup-qdrant-r2 restore-qdrant-r2
+.PHONY: help install clean test test-unit test-integration test-cov format lint docker-build docker-push helm-install helm-uninstall qdrant-start qdrant-stop api streamlit up down api-bg streamlit-bg mcp mcp-http mcp-inspector secrets backup-embeddings-r2 restore-embeddings-r2 backup-qdrant-r2 restore-qdrant-r2
 
 # Enable BuildKit for all Docker operations
 export DOCKER_BUILDKIT=1
@@ -110,6 +110,15 @@ api-start: ## Start API and Streamlit services
 	@$(MAKE) api-bg
 	@$(MAKE) streamlit-bg
 
+secrets: ## Create placeholder secret files with restrictive permissions for Docker Compose
+	@install -d -m 700 secrets
+	@for key in mistral_api_key openai_api_key anthropic_api_key google_api_key cohere_api_key; do \
+		if [ ! -f ./secrets/$$key.txt ]; then \
+			touch ./secrets/$$key.txt; \
+			chmod 600 ./secrets/$$key.txt; \
+		fi; \
+	done
+	@echo "Created missing placeholder files under ./secrets (chmod 600) with directory permissions chmod 700; existing files were not touched."
 up: check-root check-qdrant-start api-start ## Start all services (Qdrant, API, Streamlit)
 
 check-root: ## Check if running as root and provide guidance

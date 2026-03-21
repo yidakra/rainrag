@@ -208,7 +208,7 @@ class TestPipeline:
 
             # Embedding should process all documents
             embedder = Embedder(test_config)
-            embeddings, documents = embedder.embed(force_regenerate=True)
+            _, documents = embedder.embed(force_regenerate=True)
 
             # Note: The JSONL file is overwritten on each ingestion,
             # so it contains 2 documents (from the second run)

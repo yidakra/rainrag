@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Local-first RAG pipeline for VTT subtitle processing"
 authors = ["RainRAG Team"]
 readme = "README.md"
-packages = [{include = "rainrag", from = "src"}]
+packages = [
+    {include = "rainrag", from = "src"},
+    {include = "rainrag_eval", from = "src"},
+]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.14"
@@ -24,6 +27,7 @@ mistralai = "^1.0.0"
 streamlit = "^1.31.0"
 fastapi = "^0.115.0"
 uvicorn = {extras = ["standard"], version = "^0.31.1"}
+prometheus-client = "^0.21.1"
 httpx = "^0.27.0"
 python-dotenv = "^1.2.1"
 openai = "^2.8.1"
@@ -39,6 +43,18 @@ argon2-cffi = "^23.1.0"
 # Redis for server-side session storage
 redis = "^5.0.0"
 
+[tool.poetry.group.eval]
+optional = true
+
+[tool.poetry.group.eval.dependencies]
+mlflow = "^2.14"
+ragas = "~0.1.0"         # lock to 0.1.x series to avoid accidental minor/major bumps
+rouge-score = "~0.1.2"    # lock to 0.1.x series for API compatibility
+pandas = "^2.0"
+datasets = "^2.14"   # Required by RAGAS for Dataset.from_list()
+codecarbon = "^2.3"  # Carbon footprint tracking for experiments
+matplotlib = "^3.7"  # Results dashboard charts
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.3"
 pytest-cov = "^4.1.0"
@@ -52,6 +68,7 @@ bandit = "^1.9.1"
 
 [tool.poetry.scripts]
 rainrag = "rainrag.cli:app"
+rainrag-eval = "rainrag_eval.run_eval:app"
 
 [build-system]
 requires = ["poetry-core"]
@@ -106,9 +123,15 @@ lint.fixable = ["ALL"]
 lint.unfixable = []
 
 # Configure isort
-lint.isort.known-first-party = ["rainrag"]
+lint.isort.known-first-party = ["rainrag", "rainrag_eval"]
 lint.isort.force-single-line = false
 lint.isort.lines-after-imports = 2
+
+[tool.ruff.lint.per-file-ignores]
+"tests/unit/test_eval_metrics.py" = ["I001"]
+"tests/unit/test_review_eval_set.py" = ["I001"]
+"tests/unit/test_run_eval_two_stage.py" = ["I001"]
+"tests/unit/test_two_stage_sweep.py" = ["I001"]
 
 # Format configuration
 [tool.ruff.format]
@@ -149,6 +172,24 @@ exclude = [
 [[tool.mypy.overrides]]
 module = [
     "numpy.*",
+    "pandas",
+    "pandas.*",
+    "datasets",
+    "datasets.*",
+    "ragas",
+    "ragas.*",
+    "rouge_score",
+    "rouge_score.*",
+    "codecarbon",
+    "codecarbon.*",
+    "mlflow",
+    "mlflow.*",
+    "matplotlib",
+    "matplotlib.*",
+    "rank_bm25",
+    "rank_bm25.*",
+    "rich",
+    "rich.*",
     "sentence_transformers.*",
     "tqdm.*",
     "qdrant_client.*",

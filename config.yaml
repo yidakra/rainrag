@@ -8,7 +8,7 @@ paths:
   # Output directory for parsed documents
   docs_output: "./data/docs.jsonl"
   # Directory for cached embeddings
-  embeddings_cache: "/embeddings"
+  embeddings_cache: "./embeddings"
   # Root directory containing video files (defaults to archive_root if not specified)
   video_root: "/mnt/vod/srv/storage/transcoded"
 
@@ -27,6 +27,7 @@ embedding:
 qdrant:
   host: "localhost"
   port: 6333
+  timeout: 180
   collection_name: "broadcast_transcripts"
   vector_size: 1024  # Must match the embedding model's output dimension:
                      #   - intfloat/multilingual-e5-large: 1024
@@ -93,6 +94,7 @@ reranker:
   provider: "cohere"
   top_n: 5  # Number of documents to return after reranking
   initial_k: 20  # Number of candidates to retrieve before reranking
+  min_retrieval_score: 0.0  # Minimum document score (0-1) to include in prompt (0 disables)
 
 # Chunking configuration
 chunking:
@@ -104,12 +106,43 @@ chunking:
   token_buffer: 50  # Buffer to account for special tokens
 
 # Hybrid search configuration (Vector + BM25)
+# Provides Stage 1 corpus smoothing (BM25 IDF ≈ Dirichlet prior) when enabled
 hybrid_search:
   enabled: false  # Enable hybrid search combining vector similarity and BM25 keyword matching
   bm25_weight: 0.3  # Weight for BM25 scores (0.0-1.0, vector weight = 1 - bm25_weight)
   top_k_multiplier: 3  # Retrieve top_k * multiplier documents before reranking
   fusion_method: "rrf"  # Score fusion method: 'rrf' (Reciprocal Rank Fusion) or 'weighted'
   rrf_k: 60  # RRF constant (standard value from literature)
+
+# Two-stage retrieval configuration (Zhai & Lafferty, SIGIR 2002)
+# Stage 1 (corpus smoothing) is handled by hybrid_search.enabled above.
+# Stage 2 (query-side smoothing) is configured here.
+two_stage:
+  enabled: false  # Master switch for Stage 2 query-side smoothing
+
+  # Stage 2a: LLM query rewriting
+  # Rewrites the user query into transcript-register variants before retrieval.
+  # Addresses vocabulary mismatch between formal queries and spoken transcripts.
+  query_rewrite_enabled: true
+  query_rewrite_variants: 2  # Number of rewrites (original always included, so 3 total)
+  # Higher temperature → more diverse paraphrases. Keep separate from answer temperature (0).
+  query_rewrite_temperature: 0.7
+
+  # Stage 2b: HyDE (Hypothetical Document Embedding)
+  # Generates a hypothetical transcript passage and blends its embedding with the query.
+  # More expensive (1 extra LLM call + 1 embed). Enable for highest recall.
+  hyde_enabled: false
+  hyde_alpha: 0.5      # Blend weight: 0.0 = raw query only, 1.0 = HyDE only
+  # Higher temperature → more varied hypothetical passages, improving embedding coverage.
+  # Keep separate from answer temperature (0) for deterministic journalist output.
+  hyde_temperature: 0.7
+
+  # Multi-variant merge strategy (applied when query_rewrite_enabled and >1 variant)
+  merge_strategy: "coverage"  # coverage | diverse_rrf
+  merge_rrf_k: 60  # RRF constant used by 'diverse_rrf' merge strategy
+
+  # Prompt document ordering (Axis F)
+  prompt_doc_order: "rank"  # rank | reversed | book_end
 
 # Processing configuration
 processing:

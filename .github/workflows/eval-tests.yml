@@ -1,0 +1,100 @@
+name: Eval Suite Tests
+
+'on':
+  push:
+    branches: [main, develop]
+    paths:
+      - "eval/**"
+      - "src/rainrag_eval/**"
+      - "tests/unit/test_eval_*.py"
+      - "tests/unit/test_query_two_stage.py"
+      - "tests/unit/test_run_eval_two_stage.py"
+      - "tests/unit/test_two_stage_sweep.py"
+      - "tests/unit/test_mlflow_tracking.py"
+      - "pyproject.toml"
+      - ".github/workflows/eval-tests.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "eval/**"
+      - "src/rainrag_eval/**"
+      - "tests/unit/test_eval_*.py"
+      - "tests/unit/test_query_two_stage.py"
+      - "tests/unit/test_run_eval_two_stage.py"
+      - "tests/unit/test_two_stage_sweep.py"
+      - "tests/unit/test_mlflow_tracking.py"
+      - "pyproject.toml"
+      - ".github/workflows/eval-tests.yml"
+
+jobs:
+  eval-unit-tests:
+    name: Eval unit tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.8.0
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Load cached venv
+        id: cached-poetry-dependencies
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-eval-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock', '**/pyproject.toml') }}
+          restore-keys: |
+            venv-eval-${{ runner.os }}-${{ matrix.python-version }}-
+
+      - name: Install dependencies (main + eval group)
+        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+        run: |
+          poetry install --no-interaction --no-root --with eval
+          poetry cache clear pypi --all
+
+      - name: Install project
+        run: poetry install --no-interaction --with eval
+
+      - name: Smoke test
+        run: |
+          poetry run pytest \
+            tests/unit/test_eval_smoke.py
+
+      - name: Run eval unit tests
+        run: |
+          poetry run pytest -v --tb=short \
+            tests/unit/test_eval_*.py \
+            tests/unit/test_query_two_stage.py \
+            tests/unit/test_run_eval_two_stage.py \
+            tests/unit/test_two_stage_sweep.py \
+            tests/unit/test_mlflow_tracking.py \
+            --cov=src/eval \
+            --cov-report=xml:coverage-eval.xml \
+            --cov-report=term-missing
+
+      - name: Upload eval coverage
+        uses: codecov/codecov-action@v4
+        if: github.event_name == 'pull_request' && matrix.python-version == '3.11'
+        continue-on-error: true
+        with:
+          use_oidc: true
+          files: ./coverage-eval.xml
+          flags: eval
+          fail_ci_if_error: false
