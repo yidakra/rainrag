@@ -1195,7 +1195,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                             selected_vtt_lang = st.radio(
                                 get_text("vtt_language", lang),
                                 options=list(vtt_languages.keys()),
-                                format_func=lambda code, _ld=lang_display: _ld.get(code, code),
+                                format_func=lambda code, ld=lang_display: ld.get(code, code),
                                 horizontal=True,
                                 key=f"vtt_lang_{group_idx}",
                                 label_visibility="collapsed",

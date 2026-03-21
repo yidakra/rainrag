@@ -638,7 +638,6 @@ async def query(request: QueryRequest):
                 active_query_incremented = True
             except Exception:
                 logger.exception("Failed to increment active query gauge")
-                raise
 
             background_task = None
             try:

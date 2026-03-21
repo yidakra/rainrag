@@ -308,9 +308,6 @@ class TestTwoStageConfig:
         cfg_high = TwoStageConfig(hyde_temperature=2.0)
         assert cfg_low.hyde_temperature == 0.0
         assert cfg_high.hyde_temperature == 2.0
-        # Boundary values should be valid
-        TwoStageConfig(hyde_temperature=0.0)
-        TwoStageConfig(hyde_temperature=2.0)
 
 
 class TestMCPConfig:

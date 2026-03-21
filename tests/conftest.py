@@ -1,8 +1,14 @@
 """Pytest configuration and fixtures."""
 
+import sys
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
+
+
+# Ensure test suite can import the package from the repo root.
+# This mirrors what individual tests previously did with sys.path.insert.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 

@@ -35,7 +35,11 @@ def precision_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> floa
 
 
 def mrr(retrieved: Sequence[str], relevant: set[str]) -> float:
-    """Mean Reciprocal Rank — reciprocal of the rank of the first relevant doc."""
+    """Reciprocal Rank — reciprocal of the rank of the first relevant document for a single query.
+
+    This function returns RR for a single query. Mean Reciprocal Rank (MRR) across multiple
+    queries should be computed externally (e.g. in `aggregate_metrics`).
+    """
     for i, doc_id in enumerate(retrieved, 1):
         if doc_id in relevant:
             return 1.0 / i
@@ -110,8 +114,10 @@ def intent_coverage_at_k(
     """
     if not variant_retrieved_ids or not relevant:
         return 0.0
-    if not isinstance(k, int) or k <= 0:
-        raise ValueError("k must be a positive integer")
+    if not isinstance(k, int) or k < 0:
+        raise ValueError("k must be a non-negative integer")
+    if k == 0:
+        return 0.0
     covered = sum(1 for ids in variant_retrieved_ids if set(ids[:k]) & relevant)
     return covered / len(variant_retrieved_ids)
 

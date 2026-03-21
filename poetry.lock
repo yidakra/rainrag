@@ -406,14 +406,14 @@ files = [
 
 [[package]]
 name = "attrs"
-version = "25.4.0"
+version = "26.1.0"
 description = "Classes Without Boilerplate"
 optional = false
 python-versions = ">=3.9"
 groups = ["main", "eval"]
 files = [
-    {file = "attrs-25.4.0-py3-none-any.whl", hash = "sha256:adcf7e2a1fb3b36ac48d97835bb6d8ade15b8dcce26aba8bf1d14847b57a3373"},
-    {file = "attrs-25.4.0.tar.gz", hash = "sha256:16d5969b87f0859ef33a48b35d55ac1be6e42ae49d5e853b597db70c35c57e11"},
+    {file = "attrs-26.1.0-py3-none-any.whl", hash = "sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309"},
+    {file = "attrs-26.1.0.tar.gz", hash = "sha256:d03ceb89cb322a8fd706d4fb91940737b6642aa36998fe130a9bc96c985eff32"},
 ]
 
 [[package]]
@@ -1303,14 +1303,14 @@ tests = ["pytest", "pytest-cov", "pytest-xdist"]
 
 [[package]]
 name = "databricks-sdk"
-version = "0.101.0"
+version = "0.102.0"
 description = "Databricks SDK for Python (Beta)"
 optional = false
 python-versions = ">=3.7"
 groups = ["eval"]
 files = [
-    {file = "databricks_sdk-0.101.0-py3-none-any.whl", hash = "sha256:30b6ecb261aad34c3f9c3dbc84197f1daebe0857c5c89aa1581b96a012b05e36"},
-    {file = "databricks_sdk-0.101.0.tar.gz", hash = "sha256:e643f416892edcfd255e1072f7c96a563f2e44730663b624b2129c3f9636188e"},
+    {file = "databricks_sdk-0.102.0-py3-none-any.whl", hash = "sha256:75d1253276ee8f3dd5e7b00d62594b7051838435e618f74a8570a6dbd723ec12"},
+    {file = "databricks_sdk-0.102.0.tar.gz", hash = "sha256:8fa5f82317ee27cc46323c6e2543d2cfefb4468653f92ba558271043c6f72fb9"},
 ]
 
 [package.dependencies]
@@ -2748,14 +2748,14 @@ dev = ["poethepoet", "pytest (>=8.0)", "pytest-benchmark[histogram] (>=4.0)", "p
 
 [[package]]
 name = "jsonpointer"
-version = "3.0.0"
-description = "Identify specific nodes in a JSON document (RFC 6901)"
+version = "3.1.0"
+description = "Identify specific nodes in a JSON document (RFC 6901) "
 optional = false
-python-versions = ">=3.7"
+python-versions = ">=3.10"
 groups = ["eval"]
 files = [
-    {file = "jsonpointer-3.0.0-py2.py3-none-any.whl", hash = "sha256:13e088adc14fca8b6aa8177c044e12701e6ad4b28ff10e65f2267a90109c9942"},
-    {file = "jsonpointer-3.0.0.tar.gz", hash = "sha256:2b2d729f2091522d61c3b31f82e11870f60b68f43fbc705cb76bf4b832af59ef"},
+    {file = "jsonpointer-3.1.0-py3-none-any.whl", hash = "sha256:f82aa0f745001f169b96473348370b43c3f581446889c41c807bab1db11c8e7b"},
+    {file = "jsonpointer-3.1.0.tar.gz", hash = "sha256:f9b39abd59ba8c1de8a4ff16141605d2a8dacc4dd6cf399672cf237bfe47c211"},
 ]
 
 [[package]]
@@ -2981,15 +2981,15 @@ xai = ["langchain-xai"]
 
 [[package]]
 name = "langchain"
-version = "1.2.12"
+version = "1.2.13"
 description = "Building applications with LLMs through composability"
 optional = false
 python-versions = "<4.0.0,>=3.10.0"
 groups = ["eval"]
 markers = "python_version <= \"3.12\""
 files = [
-    {file = "langchain-1.2.12-py3-none-any.whl", hash = "sha256:60eff184b8f92c2610f5a4c9a97ad339a891adb01901e83e4df8e6c9c69cf852"},
-    {file = "langchain-1.2.12.tar.gz", hash = "sha256:ed705b5b293799f7e3e394387f398a1b71707542758283206c8c21415759d991"},
+    {file = "langchain-1.2.13-py3-none-any.whl", hash = "sha256:37d4526ac4b0cdd3d7706a6366124c30dc0771bf5340865b37cdc99d5e5ad9b1"},
+    {file = "langchain-1.2.13.tar.gz", hash = "sha256:d566ef67c8287e7f2e2df3c99bf3953a6beefd2a75a97fe56ecce905e21f3ef4"},
 ]
 
 [package.dependencies]
@@ -3001,6 +3001,7 @@ pydantic = ">=2.7.4,<3.0.0"
 anthropic = ["langchain-anthropic"]
 aws = ["langchain-aws"]
 azure-ai = ["langchain-azure-ai"]
+baseten = ["langchain-baseten (>=0.2.0)"]
 community = ["langchain-community"]
 deepseek = ["langchain-deepseek"]
 fireworks = ["langchain-fireworks"]
@@ -3133,15 +3134,15 @@ uuid-utils = ">=0.12.0,<1.0"
 
 [[package]]
 name = "langchain-core"
-version = "1.2.19"
+version = "1.2.20"
 description = "Building applications with LLMs through composability"
 optional = false
 python-versions = "<4.0.0,>=3.10.0"
 groups = ["eval"]
 markers = "python_version <= \"3.12\""
 files = [
-    {file = "langchain_core-1.2.19-py3-none-any.whl", hash = "sha256:6e74cb0fb443a8046ee298c05c99b67abe54cc57fcbc6d1cd3b0f2485ee47574"},
-    {file = "langchain_core-1.2.19.tar.gz", hash = "sha256:87fa82c3eb4cc3d7a65f574cb447b5df09ec2131c8c2a0a02d4737ad02685438"},
+    {file = "langchain_core-1.2.20-py3-none-any.whl", hash = "sha256:b65ff678f3c3dc1f1b4d03a3af5ee3b8d51f9be5181d74eb53c6c11cd9dd5e68"},
+    {file = "langchain_core-1.2.20.tar.gz", hash = "sha256:c7ac8b976039b5832abb989fef058b88c270594ba331efc79e835df046e7dc44"},
 ]
 
 [package.dependencies]
@@ -3224,15 +3225,15 @@ langchain-core = ">=1.2.13,<2.0.0"
 
 [[package]]
 name = "langgraph"
-version = "1.1.2"
+version = "1.1.3"
 description = "Building stateful, multi-actor applications with LLMs"
 optional = false
 python-versions = ">=3.10"
 groups = ["eval"]
 markers = "python_version <= \"3.12\""
 files = [
-    {file = "langgraph-1.1.2-py3-none-any.whl", hash = "sha256:5fd43c839ec2b5af564e9ae2d2d4f22ce0a006a0b58e800cc4e8de4dd9cbb643"},
-    {file = "langgraph-1.1.2.tar.gz", hash = "sha256:c4385ce349823a590891b3f6b1c46b54f51d0134164056866e95034985f047c9"},
+    {file = "langgraph-1.1.3-py3-none-any.whl", hash = "sha256:57cd6964ebab41cbd211f222293a2352404e55f8b2312cecde05e8753739b546"},
+    {file = "langgraph-1.1.3.tar.gz", hash = "sha256:ee496c297a9c93b38d8560be15cbb918110f49077d83abd14976cb13ac3b3370"},
 ]
 
 [package.dependencies]
@@ -3279,15 +3280,15 @@ langgraph-checkpoint = ">=2.1.0,<5.0.0"
 
 [[package]]
 name = "langgraph-sdk"
-version = "0.3.11"
+version = "0.3.12"
 description = "SDK for interacting with LangGraph API"
 optional = false
 python-versions = ">=3.10"
 groups = ["eval"]
 markers = "python_version <= \"3.12\""
 files = [
-    {file = "langgraph_sdk-0.3.11-py3-none-any.whl", hash = "sha256:18905fd6248ade98b0995d859a98672d57c811fbfffc0d63d1c107a512351b26"},
-    {file = "langgraph_sdk-0.3.11.tar.gz", hash = "sha256:3640134835d89d2c7c8bb7de73bd10673d4b282db3ff0e2fdaf1cee9e50cb1eb"},
+    {file = "langgraph_sdk-0.3.12-py3-none-any.whl", hash = "sha256:44323804965d6ec2a07127b3cf08a0428ea6deaeb172c2d478d5cd25540e3327"},
+    {file = "langgraph_sdk-0.3.12.tar.gz", hash = "sha256:c9c9ec22b3c0fcd352e2b8f32a815164f69446b8648ca22606329f4ff4c59a71"},
 ]
 
 [package.dependencies]
@@ -3324,15 +3325,15 @@ pytest = ["pytest (>=7.0.0)", "rich (>=13.9.4,<14.0.0)"]
 
 [[package]]
 name = "langsmith"
-version = "0.7.20"
+version = "0.7.22"
 description = "Client library to connect to the LangSmith Observability and Evaluation Platform."
 optional = false
 python-versions = ">=3.10"
 groups = ["eval"]
 markers = "python_version <= \"3.12\""
 files = [
-    {file = "langsmith-0.7.20-py3-none-any.whl", hash = "sha256:0162faf791ea48d69009a12a3da917468556b99cf5d5fcacbb8cda064262e118"},
-    {file = "langsmith-0.7.20.tar.gz", hash = "sha256:fa983a74f75648ee0e80d3f9751162b6f9a438896d5f9bdb6cba9abda451e234"},
+    {file = "langsmith-0.7.22-py3-none-any.whl", hash = "sha256:6e9d5148314d74e86748cb9d3898632cad0320c9323d95f70f969e5bc078eee4"},
+    {file = "langsmith-0.7.22.tar.gz", hash = "sha256:35bfe795d648b069958280760564632fd28ebc9921c04f3e209c0db6a6c7dc04"},
 ]
 
 [package.dependencies]
@@ -4506,14 +4507,14 @@ files = [
 
 [[package]]
 name = "nvidia-ml-py"
-version = "13.590.48"
+version = "13.595.45"
 description = "Python Bindings for the NVIDIA Management Library"
 optional = false
 python-versions = "*"
 groups = ["eval"]
 files = [
-    {file = "nvidia_ml_py-13.590.48-py3-none-any.whl", hash = "sha256:fd43d30ee9cd0b7940f5f9f9220b68d42722975e3992b6c21d14144c48760e43"},
-    {file = "nvidia_ml_py-13.590.48.tar.gz", hash = "sha256:8184d1be52914ac7f0991cd1c0d946c65dc88a840c754cd12c274b77b88760dd"},
+    {file = "nvidia_ml_py-13.595.45-py3-none-any.whl", hash = "sha256:b65a7977f503d56154b14d683710125ef93594adb63fbf7e559336e3318f1376"},
+    {file = "nvidia_ml_py-13.595.45.tar.gz", hash = "sha256:c9f34897fe0441ff35bc8f35baf80f830a20b0f4e6ce71e0a325bc0e66acf079"},
 ]
 
 [[package]]
@@ -5286,22 +5287,22 @@ files = [
 
 [[package]]
 name = "protobuf"
-version = "6.33.5"
+version = "6.33.6"
 description = ""
 optional = false
 python-versions = ">=3.9"
 groups = ["main", "eval"]
 files = [
-    {file = "protobuf-6.33.5-cp310-abi3-win32.whl", hash = "sha256:d71b040839446bac0f4d162e758bea99c8251161dae9d0983a3b88dee345153b"},
-    {file = "protobuf-6.33.5-cp310-abi3-win_amd64.whl", hash = "sha256:3093804752167bcab3998bec9f1048baae6e29505adaf1afd14a37bddede533c"},
-    {file = "protobuf-6.33.5-cp39-abi3-macosx_10_9_universal2.whl", hash = "sha256:a5cb85982d95d906df1e2210e58f8e4f1e3cdc088e52c921a041f9c9a0386de5"},
-    {file = "protobuf-6.33.5-cp39-abi3-manylinux2014_aarch64.whl", hash = "sha256:9b71e0281f36f179d00cbcb119cb19dec4d14a81393e5ea220f64b286173e190"},
-    {file = "protobuf-6.33.5-cp39-abi3-manylinux2014_s390x.whl", hash = "sha256:8afa18e1d6d20af15b417e728e9f60f3aa108ee76f23c3b2c07a2c3b546d3afd"},
-    {file = "protobuf-6.33.5-cp39-abi3-manylinux2014_x86_64.whl", hash = "sha256:cbf16ba3350fb7b889fca858fb215967792dc125b35c7976ca4818bee3521cf0"},
-    {file = "protobuf-6.33.5-cp39-cp39-win32.whl", hash = "sha256:a3157e62729aafb8df6da2c03aa5c0937c7266c626ce11a278b6eb7963c4e37c"},
-    {file = "protobuf-6.33.5-cp39-cp39-win_amd64.whl", hash = "sha256:8f04fa32763dcdb4973d537d6b54e615cc61108c7cb38fe59310c3192d29510a"},
-    {file = "protobuf-6.33.5-py3-none-any.whl", hash = "sha256:69915a973dd0f60f31a08b8318b73eab2bd6a392c79184b3612226b0a3f8ec02"},
-    {file = "protobuf-6.33.5.tar.gz", hash = "sha256:6ddcac2a081f8b7b9642c09406bc6a4290128fce5f471cddd165960bb9119e5c"},
+    {file = "protobuf-6.33.6-cp310-abi3-win32.whl", hash = "sha256:7d29d9b65f8afef196f8334e80d6bc1d5d4adedb449971fefd3723824e6e77d3"},
+    {file = "protobuf-6.33.6-cp310-abi3-win_amd64.whl", hash = "sha256:0cd27b587afca21b7cfa59a74dcbd48a50f0a6400cfb59391340ad729d91d326"},
+    {file = "protobuf-6.33.6-cp39-abi3-macosx_10_9_universal2.whl", hash = "sha256:9720e6961b251bde64edfdab7d500725a2af5280f3f4c87e57c0208376aa8c3a"},
+    {file = "protobuf-6.33.6-cp39-abi3-manylinux2014_aarch64.whl", hash = "sha256:e2afbae9b8e1825e3529f88d514754e094278bb95eadc0e199751cdd9a2e82a2"},
+    {file = "protobuf-6.33.6-cp39-abi3-manylinux2014_s390x.whl", hash = "sha256:c96c37eec15086b79762ed265d59ab204dabc53056e3443e702d2681f4b39ce3"},
+    {file = "protobuf-6.33.6-cp39-abi3-manylinux2014_x86_64.whl", hash = "sha256:e9db7e292e0ab79dd108d7f1a94fe31601ce1ee3f7b79e0692043423020b0593"},
+    {file = "protobuf-6.33.6-cp39-cp39-win32.whl", hash = "sha256:bd56799fb262994b2c2faa1799693c95cc2e22c62f56fb43af311cae45d26f0e"},
+    {file = "protobuf-6.33.6-cp39-cp39-win_amd64.whl", hash = "sha256:f443a394af5ed23672bc6c486be138628fbe5c651ccbc536873d7da23d1868cf"},
+    {file = "protobuf-6.33.6-py3-none-any.whl", hash = "sha256:77179e006c476e69bf8e8ce866640091ec42e1beb80b213c3900006ecfba6901"},
+    {file = "protobuf-6.33.6.tar.gz", hash = "sha256:a6768d25248312c297558af96a9f9c929e8c4cee0659cb07e780731095f38135"},
 ]
 
 [[package]]
@@ -5804,14 +5805,14 @@ six = ">=1.5"
 
 [[package]]
 name = "python-discovery"
-version = "1.1.3"
+version = "1.2.0"
 description = "Python interpreter discovery"
 optional = false
 python-versions = ">=3.8"
 groups = ["dev"]
 files = [
-    {file = "python_discovery-1.1.3-py3-none-any.whl", hash = "sha256:90e795f0121bc84572e737c9aa9966311b9fde44ffb88a5953b3ec9b31c6945e"},
-    {file = "python_discovery-1.1.3.tar.gz", hash = "sha256:7acca36e818cd88e9b2ba03e045ad7e93e1713e29c6bbfba5d90202310b7baa5"},
+    {file = "python_discovery-1.2.0-py3-none-any.whl", hash = "sha256:1e108f1bbe2ed0ef089823d28805d5ad32be8e734b86a5f212bf89b71c266e4a"},
+    {file = "python_discovery-1.2.0.tar.gz", hash = "sha256:7d33e350704818b09e3da2bd419d37e21e7c30db6e0977bb438916e06b41b5b1"},
 ]
 
 [package.dependencies]

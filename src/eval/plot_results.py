@@ -83,7 +83,57 @@ def get_app() -> Any:
         help="Generate comparison charts from MLflow eval runs.",
         add_completion=False,
     )
-    app.command()(main)
+
+    @app.command()
+    def main(
+        mlflow_uri: str | None = typer.Option(
+            None,
+            "--mlflow-uri",
+            help="MLflow tracking URI (default: user state dir)",
+        ),
+        experiment: list[str] | None = typer.Option(  # noqa: B008
+            None,
+            "--experiment",
+            "-e",
+            help="Experiment name to load (repeatable for multi-experiment overlay)",
+            show_default=False,
+        ),
+        filter_axis: str | None = typer.Option(
+            None,
+            "--filter-axis",
+            help="Only include runs whose sweep_axis tag equals this value",
+        ),
+        top_k: int = typer.Option(
+            5,
+            "--top-k",
+            help="Retrieval depth filter; 0 = all",
+        ),
+        output: str = typer.Option(
+            "plots",
+            "--output",
+            help="Directory for PNG output",
+        ),
+        show: bool = typer.Option(
+            False,
+            "--show",
+            help="Display charts interactively with matplotlib",
+        ),
+        dpi: int = typer.Option(
+            150,
+            "--dpi",
+            help="Output PNG resolution",
+        ),
+    ) -> None:
+        _main(
+            mlflow_uri=mlflow_uri,
+            experiment=experiment,
+            filter_axis=filter_axis,
+            top_k=top_k,
+            output=output,
+            show=show,
+            dpi=dpi,
+        )
+
     return app
 
 
@@ -545,7 +595,7 @@ def plot_cost_vs_quality(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
 # ---------------------------------------------------------------------------
 
 
-def main(
+def _main(
     mlflow_uri: str | None = None,
     experiment: list[str] | None = None,
     filter_axis: str | None = None,
@@ -588,6 +638,27 @@ def main(
     plot_cost_vs_quality(runs, output_dir, show=show, dpi=dpi)
 
     _echo(f"\nAll charts written to: {output_dir}/")
+
+
+def main(
+    mlflow_uri: str | None = None,
+    experiment: list[str] | None = None,
+    filter_axis: str | None = None,
+    top_k: int = 5,
+    output: str = "plots",
+    show: bool = False,
+    dpi: int = 150,
+) -> None:
+    """Backward-compatible public entrypoint."""
+    _main(
+        mlflow_uri=mlflow_uri,
+        experiment=experiment,
+        filter_axis=filter_axis,
+        top_k=top_k,
+        output=output,
+        show=show,
+        dpi=dpi,
+    )
 
 
 if __name__ == "__main__":

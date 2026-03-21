@@ -69,10 +69,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 60s
-      timeout: 15s
-      retries: 10
-      start_period: 60s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   # Streamlit frontend
   streamlit:
@@ -168,6 +168,14 @@ secrets:
   # Optional secrets: enable the ones you need for configured providers.
   # If you don't want to use Mistral or Cohere, comment out the corresponding
   # entries (or create placeholder files with `make secrets` / `./create-secrets.sh`).
+  #
+  # NOTE: also remove or comment out service-level `secrets:` entries in every
+  # service that doesn't use these providers (e.g., `api` service has `secrets:`
+  # somewhere under its definition). Keep the top-level names `mistral_api_key`
+  # and `cohere_api_key` in sync, or switch to an optional pattern like:
+  #   - external: true
+  # for optional secrets, or use YAML anchors/aliases to deduplicate across
+  # multiple services.
   mistral_api_key:
     file: ./secrets/mistral_api_key.txt
   # openai_api_key:

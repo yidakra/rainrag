@@ -5,6 +5,7 @@ on:
     branches: [main, develop, claude/**]
     paths:
       - "eval/**"
+      - "src/rainrag_eval/**"
       - "tests/unit/test_eval_*.py"
       - "tests/unit/test_query_two_stage.py"
       - "tests/unit/test_run_eval_two_stage.py"
@@ -16,6 +17,7 @@ on:
     branches: [main, develop]
     paths:
       - "eval/**"
+      - "src/rainrag_eval/**"
       - "tests/unit/test_eval_*.py"
       - "tests/unit/test_query_two_stage.py"
       - "tests/unit/test_run_eval_two_stage.py"

@@ -62,3 +62,4 @@ def test_review_eval_set_editing_invalid_pending_record_does_not_decrement_below
 
     assert updated["valid"] is True
     assert updated["reference_answer"] == "new answer"
+    assert updated["reviewed"] is True

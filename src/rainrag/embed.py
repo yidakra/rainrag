@@ -133,6 +133,8 @@ class Embedder:
         super().__init__()
         self.config = config
         self.cache = EmbeddingCache(config.paths.embeddings_cache)
+        # SentenceTransformerType exists only within TYPE_CHECKING at runtime,
+        # so keep this as a string forward reference to avoid NameError.
         self.model: SentenceTransformerType | None = None
         self.openai_client: Any = None
         self.mistral_client: Any = None
@@ -213,7 +215,7 @@ class Embedder:
             message = str(exc).lower()
             if "unexpected" in message or "model_kwargs" in message:
                 # Older sentence-transformers versions do not support model_kwargs
-                self.model = cast(Any, model_cls_any)(
+                self.model = cast(Any, model_cls)(
                     self.config.embedding.model_name,
                     device=device,
                 )
