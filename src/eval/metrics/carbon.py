@@ -138,9 +138,11 @@ def track_emissions(
         # `tracker is not None` check was causing a static type warning.
         if started:
             # `started` only becomes True after tracker is created and started,
-            # so it must be non-None here.  This assertion helps static type
-            # checkers reason about `tracker`.
-            assert tracker is not None
+            # so `tracker` should be non-None here. Use runtime guard instead of
+            # assert to retain behavior with Python -O optimizations.
+            if tracker is None:
+                raise RuntimeError("tracker is None but started is True")
+
             try:
                 emissions_kg = tracker.stop()
                 if emissions_kg is not None:

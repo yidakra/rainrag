@@ -185,18 +185,6 @@ def archive_with_videos(temp_dir: Path, sample_vtt_en: str) -> Path:
     # Create VTT without video
     (test_dir / "video3.vtt").write_text(sample_vtt_en)
 
-    # Create multi-resolution video setup (like the actual archive)
-    hash_name = "3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd"
-    (test_dir / f"{hash_name}.en.vtt").write_text(sample_vtt_en)
-    (test_dir / f"{hash_name}.ru.vtt").write_text(sample_vtt_en)
-
-    # Create multiple resolution video files
-    (test_dir / f"{hash_name}_1080p.mp4").write_bytes(b"1080p video")
-    (test_dir / f"{hash_name}_720p.mp4").write_bytes(b"720p video")
-    (test_dir / f"{hash_name}_480p.mp4").write_bytes(b"480p video")
-    (test_dir / f"{hash_name}_360p.mp4").write_bytes(b"360p video")
-    (test_dir / f"{hash_name}_180p.mp4").write_bytes(b"180p video")
-
     return archive_dir
 
 

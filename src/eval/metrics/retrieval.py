@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+import numbers
 from collections.abc import Sequence
 
 
@@ -34,7 +35,7 @@ def precision_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> floa
 
     Special-case: if k == 0, this function returns 0.0.
     """
-    if k < 0:
+    if not isinstance(k, numbers.Integral) or k < 0:
         raise ValueError("k must be a non-negative integer")
     if k == 0:
         return 0.0
@@ -56,7 +57,7 @@ def mrr(retrieved: Sequence[str], relevant: set[str]) -> float:
 
 def ndcg_at_k(retrieved: Sequence[str], relevant: set[str], k: int) -> float:
     """Normalized Discounted Cumulative Gain at k (binary relevance)."""
-    if k < 0:
+    if not isinstance(k, numbers.Integral) or k < 0:
         raise ValueError("k must be a non-negative integer")
 
     retrieved_k = list(retrieved[:k])
@@ -120,7 +121,7 @@ def intent_coverage_at_k(
     Returns:
         Score in [0, 1]; 1.0 means every variant has a relevant doc in its top-k.
     """
-    if k < 0:
+    if not isinstance(k, numbers.Integral) or k < 0:
         raise ValueError("k must be a non-negative integer")
     if k == 0:
         return 0.0

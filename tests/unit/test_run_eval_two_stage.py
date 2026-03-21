@@ -282,6 +282,9 @@ class TestCsvOutput:
         mock_exp.results_to_csv.assert_called_once()
         call_args = mock_exp.results_to_csv.call_args
 
+        # Defensive handling for differing mock call styles: the method may be invoked
+        # with keyword args or positional args depending on call site/mocking.
+        # Verify path equals str(out_path) in either case (kwargs["path"] or args[1]).
         if call_args.kwargs:
             assert call_args.kwargs.get("path") == str(out_path)
         else:

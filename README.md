@@ -174,6 +174,9 @@ export ANTHROPIC_API_KEY=your_claude_key
 
 # Google Gemini
 export GOOGLE_API_KEY=your_gemini_key
+
+# Cohere (reranker)
+export COHERE_API_KEY=your_cohere_key
 ```
 
 Or add them to your `.env` file:

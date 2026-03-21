@@ -538,7 +538,8 @@ class TestEstimateQueryCost:
 
     def test_total_includes_reranker_cost(self):
         reranker_calls = 1
-        result = self._call(reranker_calls=reranker_calls)
+        with pytest.warns(UserWarning, match="reranker_calls > 0"):
+            result = self._call(reranker_calls=reranker_calls)
         expected_reranker_cost = reranker_calls * _RERANKER_COST_PER_CALL_USD
         assert result["cost.reranker_usd_est"] == pytest.approx(expected_reranker_cost)
         assert result["cost.total_usd_est"] == pytest.approx(

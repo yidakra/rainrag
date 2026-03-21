@@ -177,6 +177,17 @@ class TestBEIRCorpus:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def experiment():
+    from eval.experiments.base import BaseExperiment
+
+    class _Exp(BaseExperiment):
+        def conditions(self):
+            return []
+
+    return _Exp(dataset_path=None)
+
+
 class TestBEIRQRels:
     @pytest.fixture
     def qrels(self):
@@ -190,7 +201,7 @@ class TestBEIRQRels:
             }
         )
 
-    def test_relevant_default_min_score(self, qrels):
+    def test_relevant_with_min_score_one(self, qrels):
         result = qrels.relevant_doc_ids("q1", min_score=1)
         assert set(result) == {"d1", "d2"}
 
@@ -456,15 +467,8 @@ class TestBuildSummary:
             r["rouge_l"] = rouge_l
         return r
 
-    def test_cost_metrics_in_summary(self, minimal_condition, minimal_config):
-        from eval.experiments.base import BaseExperiment
-
-        # Patch abstract method so we can instantiate
-        class _Exp(BaseExperiment):
-            def conditions(self):
-                return []
-
-        exp = _Exp(dataset_path=None)
+    def test_cost_metrics_in_summary(self, minimal_condition, minimal_config, experiment):
+        exp = experiment
         results = [self._make_valid_result("q1", cost_total_usd=0.002)]
         summary = exp._build_summary(
             minimal_condition, minimal_config, top_k=5, all_results=results
@@ -477,14 +481,8 @@ class TestBuildSummary:
         assert "cost.mean_usd_est_per_query" in summary["metrics"]
         assert summary["metrics"]["cost.mean_usd_est_per_query"] == pytest.approx(0.002)
 
-    def test_latency_percentiles(self, minimal_condition, minimal_config):
-        from eval.experiments.base import BaseExperiment
-
-        class _Exp(BaseExperiment):
-            def conditions(self):
-                return []
-
-        exp = _Exp(dataset_path=None)
+    def test_latency_percentiles(self, minimal_condition, minimal_config, experiment):
+        exp = experiment
         # Two results with known latencies so we can predict p50
         results = [
             self._make_valid_result("q1", elapsed_ms=100.0),

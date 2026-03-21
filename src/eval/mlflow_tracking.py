@@ -218,9 +218,7 @@ def log_config_snapshot(config: Any, filename: str = "config_snapshot.yaml") -> 
     try:
         import yaml
     except ImportError as exc:
-        logging.getLogger(__name__).warning(
-            "YAML package not installed, config snapshot will not be logged: %s", exc
-        )
+        _logger.warning("YAML package not installed, config snapshot will not be logged: %s", exc)
         return
     # prepare serializable data
     data: Any

@@ -41,7 +41,7 @@ class EmbeddingCache:
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         except PermissionError:
-            fallback_dir = Path("./embeddings")
+            fallback_dir = Path.home() / ".cache" / "rainrag" / "embeddings"
             logger.warning(
                 "Embedding cache path {!r} is not writable; falling back to {!r}",
                 str(self.cache_dir),
@@ -216,16 +216,45 @@ class Embedder:
                 model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
             )
         except TypeError as exc:
-            message = str(exc).lower()
-            if "unexpected" in message or "model_kwargs" in message:
-                # Older sentence-transformers versions do not support model_kwargs
+            # Use package version to determine whether sentence-transformers supports model_kwargs
+            try:
+                from importlib import metadata as importlib_metadata
+            except ImportError:
+                import importlib_metadata
+
+            try:
+                st_version = importlib_metadata.version("sentence-transformers")
+            except Exception:
+                st_version = None
+
+            try:
+                from packaging.version import Version
+
+                parsed_version = Version(st_version) if st_version is not None else None
+                cutoff_version = Version("2.2.0")
+            except Exception:
+                parsed_version = None
+                cutoff_version = None
+
+            if (
+                parsed_version is not None
+                and cutoff_version is not None
+                and parsed_version < cutoff_version
+            ):
+                logger.warning(
+                    "sentence-transformers %s does not support model_kwargs; using legacy constructor for model '%s'",
+                    st_version,
+                    self.config.embedding.model_name,
+                )
                 self.model = model_cls(
                     self.config.embedding.model_name,
                     device=device,
                 )
             else:
                 logger.error(
-                    "sentence-transformers model construction failed: %s",
+                    "sentence-transformers model construction failed for %s (version=%s): %s",
+                    self.config.embedding.model_name,
+                    st_version,
                     exc,
                 )
                 raise

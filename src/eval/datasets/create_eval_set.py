@@ -245,7 +245,12 @@ def _generate_pair(engine: Any, chunk: Record, lang: str) -> Record | None:
     }
 
 
-def _filter_pair(engine: Any, pair: Record, chunk: Record) -> bool:
+def _filter_pair(
+    engine: Any,
+    pair: Record,
+    chunk: Record,
+    reject_on_filter_error: bool = False,
+) -> bool:
     """Ask the LLM to quality-gate the generated pair. Returns True if accepted."""
     prompt = _FILTER_PROMPT.format(
         question=pair["query"],
@@ -259,6 +264,16 @@ def _filter_pair(engine: Any, pair: Record, chunk: Record) -> bool:
         # Log the failure so we can distinguish accept-on-error from a
         # genuine LLM "yes" verdict; include the prompt (truncated) and
         # some pair context for debugging.
+        if reject_on_filter_error:
+            logger.error(
+                "LLM quality-filter call raised exception; rejecting pair by default. "
+                + "pair_query=%r prompt_head=%r",
+                pair.get("query"),
+                prompt[:500],
+                exc_info=True,
+            )
+            return False
+
         global _accept_on_error_count
         _accept_on_error_count += 1
         logger.warning(
@@ -278,6 +293,7 @@ def create_eval_set(
     output: str,
     seed: int = 42,
     skip_filter: bool = False,
+    reject_on_filter_error: bool = False,
 ) -> None:
     """Main entry point for dataset creation.
 
@@ -302,8 +318,7 @@ def create_eval_set(
     print(f"  Found {len(all_chunks)} chunks.")
 
     if not all_chunks:
-        print("ERROR: no chunks found. Check Qdrant connection and language filter.")
-        sys.exit(1)
+        raise RuntimeError("no chunks found. Check Qdrant connection and language filter.")
 
     # Sample 2× target to allow for filter failures
     candidates = _stratified_sample(all_chunks, n * 2)
@@ -321,7 +336,12 @@ def create_eval_set(
         if pair is None:
             print("skipped (generation failed)")
             continue
-        if not skip_filter and not _filter_pair(engine, pair, chunk):
+        if not skip_filter and not _filter_pair(
+            engine,
+            pair,
+            chunk,
+            reject_on_filter_error=reject_on_filter_error,
+        ):
             print("skipped (quality filter)")
             continue
         pair["query_id"] = f"{lang}_{len(pairs)+1:03d}"
@@ -377,11 +397,15 @@ if __name__ == "__main__":
     parser.add_argument("--skip-filter", action="store_true", help="Skip LLM quality filter")
     args = parser.parse_args()
 
-    create_eval_set(
-        config_path=args.config,
-        lang=args.lang,
-        n=args.n,
-        output=args.output,
-        seed=args.seed,
-        skip_filter=args.skip_filter,
-    )
+    try:
+        create_eval_set(
+            config_path=args.config,
+            lang=args.lang,
+            n=args.n,
+            output=args.output,
+            seed=args.seed,
+            skip_filter=args.skip_filter,
+        )
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)

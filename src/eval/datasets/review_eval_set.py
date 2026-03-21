@@ -429,7 +429,13 @@ def review_stats(input_path: str) -> dict[str, int]:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Human review of eval JSONL files.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Human review of eval JSONL files. "
+            "If no subcommand is given, the first unknown argument is treated as the input path "
+            "and the 'review' subcommand is used by default."
+        )
+    )
     sub = parser.add_subparsers(dest="cmd")
 
     review_p = sub.add_parser("review", help="Start interactive review session.")
@@ -448,9 +454,9 @@ if __name__ == "__main__":
 
     args, unknown = parser.parse_known_args()
 
-    # If no subcommand was provided, treat the first unknown arg as the input path
-    # for the default "review" action, preserving any flags passed via the
-    # review subparser (e.g. --output, --all).
+    # Fallback behavior: when args.cmd is None, the CLI defaults to the
+    # review subcommand. `unknown` is parsed with review_p, and then args.cmd
+    # is set to 'review' so downstream logic uses review behavior.
     if args.cmd is None:
         try:
             review_args = review_p.parse_args(unknown)

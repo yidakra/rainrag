@@ -65,13 +65,17 @@ def base_config():
     )
 
 
+def copy_config_deep(base_config):
+    """Deep copy a Pydantic-based config irrespective of API version."""
+    if hasattr(base_config, "model_copy"):
+        return base_config.model_copy(deep=True)
+    return base_config.copy(deep=True)
+
+
 @pytest.fixture
 def two_stage_config(base_config):
     """Config with two-stage Stage 2a (query rewriting) enabled."""
-    if hasattr(base_config, "model_copy"):
-        cfg = base_config.model_copy(deep=True)
-    else:
-        cfg = base_config.copy(deep=True)
+    cfg = copy_config_deep(base_config)
     cfg.two_stage = TwoStageConfig(
         enabled=True,
         query_rewrite_enabled=True,
@@ -84,10 +88,7 @@ def two_stage_config(base_config):
 @pytest.fixture
 def hyde_config(base_config):
     """Config with two-stage Stage 2b (HyDE) enabled, rewriting disabled."""
-    if hasattr(base_config, "model_copy"):
-        cfg = base_config.model_copy(deep=True)
-    else:
-        cfg = base_config.copy(deep=True)
+    cfg = copy_config_deep(base_config)
     cfg.two_stage = TwoStageConfig(
         enabled=True,
         query_rewrite_enabled=False,
@@ -285,8 +286,8 @@ class TestRewriteQuery:
 
             engine._rewrite_query_for_retrieval("query", language="en")
 
-        call_kwargs = mock_openai_client.chat.completions.create.call_args
-        assert call_kwargs[1]["temperature"] == 0.9
+        call_kwargs = mock_openai_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["temperature"] == 0.9
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +545,8 @@ class TestMergeStrategies:
     def engine(self):
         return RAGQueryEngine.__new__(RAGQueryEngine)
 
-    def _doc(self, doc_id: str, score: float, rank: int = 1) -> dict:
+    @staticmethod
+    def _doc(doc_id: str, score: float, rank: int = 1) -> dict:
         return {"doc_id": doc_id, "score": score, "rank": rank}
 
     # --- _merge_variants_coverage ---

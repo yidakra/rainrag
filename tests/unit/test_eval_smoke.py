@@ -175,21 +175,12 @@ def test_carbon_result_as_metrics_full() -> None:
 
 def test_carbon_track_emissions_noop_without_package(monkeypatch: pytest.MonkeyPatch) -> None:
     """track_emissions must yield an unavailable CarbonResult when codecarbon is missing."""
-    import builtins
-
-    real_import = builtins.__import__
-
-    def _mock_import(name, *args, **kwargs):
-        if name == "codecarbon":
-            raise ImportError("codecarbon not installed")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", _mock_import)
-
     orig = sys.modules.get("eval.metrics.carbon")
+
+    # Simulate missing codecarbon by injecting a placeholder None into sys.modules.
+    monkeypatch.setitem(sys.modules, "codecarbon", None)
+
     try:
-        # Force re-import of carbon module with patched __import__
-        # clear module cache so import uses patched __import__
         sys.modules.pop("eval.metrics.carbon", None)
         carbon_mod = importlib.import_module("eval.metrics.carbon")
 
@@ -358,15 +349,23 @@ def test_apply_scroll_filter_matches_create_eval_set_scroll_chunks() -> None:
 
 
 @pytest.fixture
-def rag_engine_with_mock_qdrant(test_config):
+def rag_engine_with_mock_qdrant(test_config, monkeypatch):
     """Prepare a RAGQueryEngine with a fake qdrant client and 2 points."""
     pytest.importorskip("qdrant_client")
     pytest.importorskip("torch")
 
+    from rainrag import query as query_module
     from rainrag.query import RAGQueryEngine
 
-    engine = RAGQueryEngine.__new__(RAGQueryEngine)
-    engine.config = test_config
+    # Prevent network calls during engine initialization by stubbing external clients.
+    monkeypatch.setattr(query_module, "Mistral", lambda api_key: None)
+    monkeypatch.setattr(query_module, "OpenAI", lambda api_key: None)
+    monkeypatch.setattr(query_module, "Anthropic", lambda api_key: None)
+    monkeypatch.setattr(
+        query_module, "genai", type("G", (), {"Client": staticmethod(lambda api_key: None)})()
+    )
+
+    engine = RAGQueryEngine(test_config)
     engine.bm25 = None
 
     fake_points = [_make_hit(0.9, "doc_a", False), _make_hit(0.8, "doc_b", True)]
@@ -384,8 +383,9 @@ def test_retrieve_documents_exclude_speech_free_filters_results(
 ) -> None:
     """retrieve_documents(exclude_speech_free=True) must strip is_speech_free docs."""
 
+    embedding_dim = rag_engine_with_mock_qdrant.config.qdrant.vector_size
     docs = rag_engine_with_mock_qdrant.retrieve_documents(
-        query_vector=[0.0] * 768,
+        query_vector=[0.0] * embedding_dim,
         top_k=5,
         exclude_speech_free=True,
     )
@@ -397,8 +397,9 @@ def test_retrieve_documents_exclude_speech_free_filters_results(
 def test_retrieve_documents_include_speech_free_by_default(rag_engine_with_mock_qdrant) -> None:
     """retrieve_documents without exclude_speech_free must return all docs."""
 
+    embedding_dim = rag_engine_with_mock_qdrant.config.qdrant.vector_size
     docs = rag_engine_with_mock_qdrant.retrieve_documents(
-        query_vector=[0.0] * 768,
+        query_vector=[0.0] * embedding_dim,
         top_k=5,
     )
 

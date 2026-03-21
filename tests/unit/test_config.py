@@ -276,6 +276,18 @@ class TestTwoStageConfig:
         assert cfg_low.hyde_alpha == 0
         assert cfg_high.hyde_alpha == 1
 
+    def test_two_stage_config_hyde_disabled_but_alpha_set(self) -> None:
+        """Ensure model accepts hyde_alpha when hyde_enabled is False."""
+        cfg = TwoStageConfig(hyde_enabled=False, hyde_alpha=0.5)
+        assert cfg.hyde_enabled is False
+        assert cfg.hyde_alpha == 0.5
+
+    def test_two_stage_config_rewrite_disabled_but_variants_set(self) -> None:
+        """Ensure model accepts query_rewrite_variants when query_rewrite_enabled is False."""
+        cfg = TwoStageConfig(query_rewrite_enabled=False, query_rewrite_variants=2)
+        assert cfg.query_rewrite_enabled is False
+        assert cfg.query_rewrite_variants == 2
+
     def test_two_stage_config_variants_bounds(self) -> None:
         """Test that query_rewrite_variants is bounded to [1, 5]."""
         # values outside range should raise

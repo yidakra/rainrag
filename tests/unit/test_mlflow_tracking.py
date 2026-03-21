@@ -64,7 +64,9 @@ class TestMlflowTracking:
         assert fake.logged == {"ok_at_1": 1.0}
         assert fake.step is None
 
-    def test_log_metrics_empty_metrics_logs_empty_dict(self, monkeypatch) -> None:
+    def test_log_metrics_with_empty_dict_calls_mlflow_and_records_empty_dict(
+        self, monkeypatch
+    ) -> None:
         fake = _FakeMlflow()
         monkeypatch.setattr(mlflow_tracking, "mlflow", fake)
         monkeypatch.setattr(mlflow_tracking, "_MLFLOW_AVAILABLE", True)
