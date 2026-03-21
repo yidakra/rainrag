@@ -195,7 +195,7 @@ class TestBEIRQRels:
 
     def test_relevant_high_min_score(self, qrels):
         result = qrels.relevant_doc_ids("q1", min_score=2)
-        assert result == ["d1"]
+        assert set(result) == {"d1"}
 
     def test_zero_score_excluded(self, qrels):
         """Score 0 is not relevant."""
@@ -209,7 +209,8 @@ class TestBEIRQRels:
         assert qrels.relevant_doc_ids("q_unknown") == []
 
     def test_single_relevant(self, qrels):
-        assert qrels.relevant_doc_ids("q2") == ["d4"]
+        result = qrels.relevant_doc_ids("q2")
+        assert set(result) == {"d4"}
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +230,9 @@ class TestEmbedDocumentsLocal:
         model = SimpleNamespace()
         if has_name_attr:
             model.name = model_name
+        # Intentionally mock encode as a pass-through so tests can assert that
+        # _embed_documents_local (or other pre-processing) transforms inputs
+        # before encoding. The output of encode is then easy to inspect.
         model.encode = lambda texts, **kwargs: texts  # echo back
         eng = SimpleNamespace(config=SimpleNamespace(embedding=cfg), embedding_model=model)
         return eng

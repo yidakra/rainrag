@@ -47,6 +47,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
+import pandas as pd
+
 # relative import so the module can be resolved when this file is run as
 # `python -m eval.plot_results`
 from .mlflow_tracking import (
@@ -66,10 +68,15 @@ def _get_typer():
 
 def _echo(message: str, err: bool = False) -> None:
     """Print an informational message or fallback to standard print if typer is unavailable."""
+    typer = None
     try:
         typer = _get_typer()
-        typer.echo(message, err=err)
     except SystemExit:
+        typer = None
+
+    if typer:
+        typer.echo(message, err=err)
+    else:
         print(message, file=sys.stderr if err else sys.stdout)
 
 
@@ -210,7 +217,7 @@ def _condition_label(row: Any) -> str:
     """Best human-readable label for a run row."""
     for col in ("params.condition_label", "tags.mlflow.runName", "run_id"):
         val = row.get(col)
-        if val and not (isinstance(val, float) and math.isnan(val)):
+        if val is not None and not pd.isna(val):
             return str(val)
     return "unknown"
 

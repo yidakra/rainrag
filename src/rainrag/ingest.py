@@ -316,14 +316,20 @@ class VTTParser:
 
     @classmethod
     def _parse_vtt_lines_to_cues(cls, lines: Sequence[str]) -> list[VTTCue] | None:
-        """
-        Parse VTT file lines into individual cues with timestamps.
+        """Parse VTT file lines into cues.
+
+        _parse_vtt_lines_to_cues takes `lines: Sequence[str]` from a VTT file and
+        returns a list of `VTTCue` objects when parsing succeeds.
+        The returned list may be empty for valid speech-free VTT (header-only
+        content with no cues). Returns `None` only when parsing fails, e.g.
+        missing `WEBVTT` header or malformed input.
 
         Args:
             lines: Sequence of lines from a VTT file
 
         Returns:
-            List of VTTCue objects or None if parsing fails
+            list[VTTCue]: parsed cues (possibly empty for speech-free VTT)
+            None: parsing failure
         """
         # VTT files should start with "WEBVTT"
         if not lines or not lines[0].strip().startswith("WEBVTT"):
@@ -377,11 +383,22 @@ class VTTParser:
         """
         Parse a VTT file into individual cues with timestamps.
 
+        This method wraps `_parse_vtt_lines_to_cues` and returns a list of
+        `VTTCue` objects when the file is valid. For a speech-free but
+        otherwise valid VTT file, the returned list may be empty. Returns
+        `None` only when parsing fails (e.g. missing `WEBVTT` header or other
+        invalid format issue).
+
         Args:
             file_path: Path to the VTT file
 
         Returns:
-            List of VTTCue objects or None if parsing fails
+            list[VTTCue]: parsed cues (possibly empty for valid no-cue files)
+            None: parsing failure
+
+        Note:
+            Callers should handle the empty-list case as valid no-speech content,
+            and `None` as parse failure.
         """
         try:
             with open(file_path, encoding="utf-8") as f:

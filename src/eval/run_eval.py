@@ -283,19 +283,7 @@ def latency(
         typer.echo("ERROR: --dataset is required for latency profiling.", err=True)
         raise typer.Exit(1)
 
-    cids = []
-    for c in conditions.split(","):
-        c = c.strip()
-        if c == "":
-            continue
-        try:
-            _ = int(c)
-        except ValueError:
-            typer.echo(
-                f"ERROR: invalid condition ID '{c}' in --conditions; must be an integer", err=True
-            )
-            raise typer.Exit(1)
-        cids.append(c)
+    cids = _parse_ints(conditions, "--conditions")
 
     if not cids:
         typer.echo("ERROR: --conditions must include at least one integer condition ID", err=True)
@@ -480,18 +468,24 @@ def beir(
         except Exception as exc:
             typer.echo(f"  [warn] BM25 baseline failed: {exc}")
 
-    # Load config + engine for indexing
+    # Load config + engine for indexing (only initialize when needed)
     base_config = load_config_fn(config)
 
+    engine = None
     if not skip_index:
         typer.echo(f"\nIndexing corpus into Qdrant collection '{adapter.collection_name}' ...")
         engine = rag_query_engine_cls(base_config)
         engine.initialize()
         adapter.index_corpus(engine, batch_size=batch_size, recreate=True)
     else:
-        typer.echo(f"\nSkipping index (assuming '{adapter.collection_name}' already exists).")
-        engine = rag_query_engine_cls(base_config)
-        engine.initialize()
+        if run_ablation:
+            typer.echo(
+                f"\nSkipping index (assuming '{adapter.collection_name}' already exists), but initializing engine for ablation checks."
+            )
+            engine = rag_query_engine_cls(base_config)
+            engine.initialize()
+        else:
+            typer.echo(f"\nSkipping index (assuming '{adapter.collection_name}' already exists).")
 
     # Generate eval JSONL
     typer.echo(f"\nGenerating eval JSONL → {resolved_output} ...")
@@ -504,20 +498,7 @@ def beir(
 
         cids = None
         if ablation_conditions:
-            cids = []
-            for c in ablation_conditions.split(","):
-                c = c.strip()
-                if c == "":
-                    continue
-                try:
-                    int(c)
-                except ValueError:
-                    typer.echo(
-                        f"ERROR: invalid condition ID '{c}' in --ablation-conditions; must be an integer",
-                        err=True,
-                    )
-                    raise typer.Exit(1)
-                cids.append(c)
+            cids = _parse_ints(ablation_conditions, "--ablation-conditions")
             if not cids:
                 typer.echo(
                     "ERROR: --ablation-conditions must include at least one integer condition ID",

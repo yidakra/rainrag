@@ -11,7 +11,12 @@ import math
 import pytest
 
 from eval.metrics.answer_quality import answer_length, rouge_l
-from eval.metrics.cost import aggregate_costs, chars_to_tokens, estimate_query_cost
+from eval.metrics.cost import (
+    _RERANKER_COST_PER_CALL_USD,
+    aggregate_costs,
+    chars_to_tokens,
+    estimate_query_cost,
+)
 from eval.metrics.retrieval import (
     aggregate_metrics,
     average_precision,
@@ -534,8 +539,10 @@ class TestEstimateQueryCost:
         )
 
     def test_total_includes_reranker_cost(self):
-        result = self._call(reranker_calls=1)
-        assert result["cost.reranker_usd_est"] == pytest.approx(0.0005)
+        reranker_calls = 1
+        result = self._call(reranker_calls=reranker_calls)
+        expected_reranker_cost = reranker_calls * _RERANKER_COST_PER_CALL_USD
+        assert result["cost.reranker_usd_est"] == pytest.approx(expected_reranker_cost)
         assert result["cost.total_usd_est"] == pytest.approx(
             result["cost.llm_usd_est"]
             + result["cost.embed_usd_est"]
@@ -594,6 +601,7 @@ class TestEstimateQueryCost:
         assert result["cost.total_usd_est"] >= 0.0
 
     def test_reranker_calls_warns_and_includes_cost(self):
+        reranker_calls = 2
         with pytest.warns(UserWarning, match="reranker_calls > 0"):
             result = estimate_query_cost(
                 query="x",
@@ -601,10 +609,16 @@ class TestEstimateQueryCost:
                 answer="y",
                 llm_provider="openai",
                 embed_provider="local",
-                reranker_calls=2,
+                reranker_calls=reranker_calls,
             )
 
-        assert result["cost.reranker_usd_est"] == pytest.approx(0.001)
+        expected_reranker_cost = reranker_calls * _RERANKER_COST_PER_CALL_USD
+        assert result["cost.reranker_usd_est"] == pytest.approx(expected_reranker_cost)
+        assert result["cost.total_usd_est"] == pytest.approx(
+            result["cost.llm_usd_est"]
+            + result["cost.embed_usd_est"]
+            + result["cost.reranker_usd_est"]
+        )
 
 
 class TestAggregateCosts:

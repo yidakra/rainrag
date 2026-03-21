@@ -47,6 +47,11 @@ _BASE_OVERRIDE_KEYS = {
 
 def _make_exp(**kwargs) -> TwoStageSweepExperiment:
     """Construct experiment bypassing BaseExperiment.__init__ file loading."""
+    # NOTE: this helper intentionally bypasses the public constructor and sets
+    # private state fields (_axes, _hyde_alphas, etc.) directly. It depends on
+    # TwoStageSweepExperiment implementation details (including _ALL_AXES). If
+    # the class initializer changes, update this helper or replace it with a
+    # true constructor-based integration test that exercises the public API.
     exp = TwoStageSweepExperiment.__new__(TwoStageSweepExperiment)
     # Replicate just the attribute assignments made by TwoStageSweepExperiment.__init__
     # without calling super().__init__ (which requires a real config file).

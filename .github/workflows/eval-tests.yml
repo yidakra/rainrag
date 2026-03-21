@@ -11,8 +11,8 @@ on:
       - "tests/unit/test_run_eval_two_stage.py"
       - "tests/unit/test_two_stage_sweep.py"
       - "tests/unit/test_mlflow_tracking.py"
-      - ".github/workflows/eval-tests.yml"
       - "pyproject.toml"
+      - ".github/workflows/eval-tests.yml"
   pull_request:
     branches: [main, develop]
     paths:

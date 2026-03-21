@@ -35,6 +35,9 @@ def _create_fake_loader(
     return _FakeLoader(web_dir)
 
 
+_EMPTY_VTT = "WEBVTT\n\n"  # Valid header-only VTT (no cues)
+
+
 class TestVTTParser:
     """Tests for VTT parser."""
 
@@ -106,6 +109,22 @@ class TestVTTParser:
         text = VTTParser.parse_vtt(vtt_file)
 
         assert text is None
+
+    def test_empty_vtt_parse_to_cues_returns_empty_list(self, temp_dir: Path) -> None:
+        """parse_vtt_to_cues must return [] (not None) for a header-only VTT."""
+        vtt_path = temp_dir / "empty.vtt"
+        vtt_path.write_text(_EMPTY_VTT)
+
+        result = VTTParser.parse_vtt_to_cues(vtt_path)
+        assert result == []
+
+    def test_empty_vtt_parse_with_timecodes_returns_empty_string(self, temp_dir: Path) -> None:
+        """parse_vtt_with_timecodes must return ('', None, None) for a header-only VTT."""
+        vtt_file = temp_dir / "silent.vtt"
+        vtt_file.write_text(_EMPTY_VTT)
+
+        result = VTTParser.parse_vtt_with_timecodes(vtt_file)
+        assert result == ("", None, None)
 
     def test_clean_text_normalizes_whitespace(self) -> None:
         """Test that whitespace is normalized."""
@@ -549,29 +568,12 @@ Hi
     # Speech-free (empty VTT) handling
     # ------------------------------------------------------------------
 
-    _EMPTY_VTT = "WEBVTT\n\n"  # Valid header, zero cues
-
-    def test_empty_vtt_parse_to_cues_returns_empty_list(self, temp_dir: Path) -> None:
-        """parse_vtt_to_cues must return [] (not None) for a header-only VTT."""
-        vtt_path = temp_dir / "empty.vtt"
-        vtt_path.write_text(self._EMPTY_VTT)
-
-        result = VTTParser.parse_vtt_to_cues(vtt_path)
-        assert result == []
-
-    def test_empty_vtt_parse_with_timecodes_returns_empty_string(self, temp_dir: Path) -> None:
-        """parse_vtt_with_timecodes must return ('', None, None) for a header-only VTT."""
-        vtt_file = temp_dir / "silent.vtt"
-        vtt_file.write_text(self._EMPTY_VTT)
-        result = VTTParser.parse_vtt_with_timecodes(vtt_file)
-        assert result == ("", None, None)
-
     def test_empty_vtt_without_web_metadata_skipped(
         self, test_config: Config, temp_dir: Path
     ) -> None:
         """Speech-free video with no web metadata must be skipped (no documents)."""
         vtt_file = temp_dir / "silent.vtt"
-        vtt_file.write_text(self._EMPTY_VTT)
+        vtt_file.write_text(_EMPTY_VTT)
 
         test_config.chunking.enabled = False
         test_config.web_metadata.enabled = False
@@ -587,7 +589,7 @@ Hi
     ) -> None:
         """Speech-free video skipped in chunking mode when no metadata available."""
         vtt_file = temp_dir / "silent.vtt"
-        vtt_file.write_text(self._EMPTY_VTT)
+        vtt_file.write_text(_EMPTY_VTT)
 
         test_config.chunking.enabled = True
         test_config.web_metadata.enabled = False
@@ -604,7 +606,7 @@ Hi
         """Speech-free video with web metadata must produce a metadata-only document."""
 
         vtt_file = temp_dir / "silent.vtt"
-        vtt_file.write_text(self._EMPTY_VTT)
+        vtt_file.write_text(_EMPTY_VTT)
 
         # Set up web metadata directory with a file matching the vtt filename hash
         web_dir = temp_dir / "web_metadata"
@@ -649,7 +651,7 @@ Hi
     ) -> None:
         """When ingest_speech_free=False, speech-free videos must be skipped."""
         vtt_file = temp_dir / "silent.vtt"
-        vtt_file.write_text(self._EMPTY_VTT)
+        vtt_file.write_text(_EMPTY_VTT)
 
         test_config.chunking.enabled = False
         test_config.web_metadata.enabled = True
@@ -687,7 +689,7 @@ Hi
     ) -> None:
         """A speech-free VTT must increment speech_free_count, not invalid_vtt_count."""
         vtt_file = temp_dir / "silent.vtt"
-        vtt_file.write_text(self._EMPTY_VTT)
+        vtt_file.write_text(_EMPTY_VTT)
 
         test_config.chunking.enabled = False
         test_config.web_metadata.enabled = False
@@ -737,7 +739,7 @@ Hi
         # Add an empty VTT into the archive
         silent_dir = archive_with_vtt_files / "silent"
         silent_dir.mkdir()
-        (silent_dir / "silent_en.vtt").write_text("WEBVTT\n\n")
+        (silent_dir / "silent_en.vtt").write_text(_EMPTY_VTT)
 
         test_config.paths.archive_root = str(archive_with_vtt_files)
         test_config.chunking.enabled = False
@@ -764,7 +766,7 @@ Hi
         # Add an empty VTT whose filename encodes a fake hash
         silent_dir = archive_with_vtt_files / "silent"
         silent_dir.mkdir()
-        (silent_dir / "silent_en.vtt").write_text("WEBVTT\n\n")
+        (silent_dir / "silent_en.vtt").write_text(_EMPTY_VTT)
 
         test_config.paths.archive_root = str(archive_with_vtt_files)
         test_config.chunking.enabled = False

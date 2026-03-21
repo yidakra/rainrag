@@ -149,14 +149,7 @@ venv.bak/
 secrets/*.txt
 !secrets/*.txt.example
 
-# Explicitly ignore common top-level API key files referenced by templates.
-anthropic_api_key.txt
-cohere_api_key.txt
-google_api_key.txt
-mistral_api_key.txt
-openai_api_key.txt
-
-# Explicitly ignore in-case path references from templates (e.g. ../<filename>).
+# Explicitly ignore recursive API key file locations referenced by templates (e.g. top-level or ../path).
 **/anthropic_api_key.txt
 **/cohere_api_key.txt
 **/google_api_key.txt
@@ -246,7 +239,6 @@ secrets/*.key
 secrets/*.pem
 secrets/*.secret
 # Specific per-API-key locations
-secrets/google_api_key.txt
 *_private.key
 *_private.pem
 

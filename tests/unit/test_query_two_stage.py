@@ -69,9 +69,9 @@ def base_config():
 def two_stage_config(base_config):
     """Config with two-stage Stage 2a (query rewriting) enabled."""
     if hasattr(base_config, "model_copy"):
-        cfg = base_config.model_copy(deep=False)
+        cfg = base_config.model_copy(deep=True)
     else:
-        cfg = base_config.copy(deep=False)
+        cfg = base_config.copy(deep=True)
     cfg.two_stage = TwoStageConfig(
         enabled=True,
         query_rewrite_enabled=True,
@@ -85,9 +85,9 @@ def two_stage_config(base_config):
 def hyde_config(base_config):
     """Config with two-stage Stage 2b (HyDE) enabled, rewriting disabled."""
     if hasattr(base_config, "model_copy"):
-        cfg = base_config.model_copy(deep=False)
+        cfg = base_config.model_copy(deep=True)
     else:
-        cfg = base_config.copy(deep=False)
+        cfg = base_config.copy(deep=True)
     cfg.two_stage = TwoStageConfig(
         enabled=True,
         query_rewrite_enabled=False,
@@ -337,8 +337,8 @@ class TestHydeEmbedding:
 
             engine._generate_hyde_embedding("flood damage", language="en")
 
-        call_kwargs = mock_openai_client.chat.completions.create.call_args
-        assert call_kwargs[1]["temperature"] == 0.9
+        call_kwargs = mock_openai_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["temperature"] == 0.9
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +827,10 @@ class TestOrderDocumentsForPrompt:
 
     def test_rank_order_returns_same_references(self, engine):
         """'rank' should not copy or mutate documents."""
+        # In this implementation, `_order_documents_for_prompt('rank')`
+        # returns the original list object to avoid unnecessary allocation.
+        # Keeping reference identity is an intentional optimization and
+        # part of the contract tested here.
         docs = _make_docs([0.9, 0.5])
         result = engine._order_documents_for_prompt(docs, "rank")
         assert result is docs

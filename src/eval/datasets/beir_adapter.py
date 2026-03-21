@@ -43,14 +43,16 @@ CLI (via run_eval.py)::
 
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
-from importlib import import_module
 from pathlib import Path
 from typing import Any, cast
+
+from eval.metrics.retrieval import aggregate_metrics, compute_all_metrics
 
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,31 @@ def _new_queries_dict() -> dict[str, str]:
 def _new_qrels_dict() -> dict[str, dict[str, int]]:
     """Typed default factory for BEIR qrels."""
     return {}
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Safely convert a value to int, with fallback for malformed inputs."""
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return default
+        try:
+            return int(s)
+        except ValueError:
+            try:
+                return int(float(s))
+            except (ValueError, TypeError):
+                return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
 
 
 def _rows_from_dataset(dataset: Any) -> list[dict[str, Any]]:
@@ -219,9 +246,7 @@ def _load_from_hf(
         if did not in corpus_doc_ids:
             continue
         score_raw = row.get("score", 0)
-        if score_raw is None:
-            score_raw = 0
-        score = int(score_raw)
+        score = _safe_int(score_raw, default=0)
         qrels.qrels.setdefault(qid, {})[did] = score
 
     # --- Queries (only those that appear in qrels)
@@ -273,11 +298,7 @@ def _embed_documents_local(
     prefix = engine.config.embedding.prefix or ""
     if not prefix:
         # try to infer from model name if available
-        name = ""
-        if model is not None and hasattr(model, "name"):
-            name = model.name or ""
-        else:
-            name = engine.config.embedding.model_name or ""
+        name = getattr(model, "name", "") or engine.config.embedding.model_name or ""
         if "e5" in name.lower():
             prefix = "passage: "
 
@@ -359,6 +380,7 @@ def _index_corpus_into_qdrant(
     batch_size: int = 64,
     recreate: bool = True,
     upsert_batch: int | None = None,
+    language: str = "en",
 ) -> None:
     """Create a Qdrant collection and upsert all corpus documents.
 
@@ -470,7 +492,7 @@ def _index_corpus_into_qdrant(
                         "doc_id": doc_id,
                         "text": text,
                         "title": doc.get("title", ""),
-                        "language": "en",
+                        "language": language,
                     },
                 )
             )
@@ -508,10 +530,12 @@ class BEIRAdapter:
         name: str,
         qrels_split: str = "test",
         collection_suffix: str | None = None,
+        language: str = "en",
     ) -> None:
         self.name = name
         self.qrels_split = qrels_split
         self.collection_name = f"beir_{collection_suffix or name}"
+        self.language = language
 
         self._corpus: BEIRCorpus | None = None
         self._queries: BEIRQueries | None = None
@@ -573,6 +597,7 @@ class BEIRAdapter:
             batch_size=batch_size,
             recreate=recreate,
             upsert_batch=None,
+            language=self.language,
         )
         return self
 
@@ -612,7 +637,7 @@ class BEIRAdapter:
                 {
                     "query_id": f"beir_{self.name}_{i:04d}",
                     "query": qtext,
-                    "language": "en",
+                    "language": self.language,
                     "relevant_doc_ids": rel_ids,
                     "reference_answer": "",
                     "category": "factual",
@@ -658,10 +683,6 @@ class BEIRAdapter:
         except ImportError as exc:
             raise ImportError("rank-bm25 is required: pip install rank-bm25") from exc
 
-        retrieval_mod = cast(Any, import_module("eval.metrics.retrieval"))
-        aggregate_metrics = retrieval_mod.aggregate_metrics
-        compute_all_metrics = retrieval_mod.compute_all_metrics
-
         doc_ids = list(self._corpus.docs.keys())
         # Ensure whitespace normalization matches _embed_corpus
         texts = [
@@ -680,11 +701,14 @@ class BEIRAdapter:
             qtokens = re.findall(r"\w+", qtext.lower())
             raw_scores_any: Any = bm25.get_scores(qtokens)
             scores = [float(s) for s in cast(list[float], raw_scores_any)]
-            top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+            # Select top_k elements with O(n log k) complexity, preserving the
+            # highest-to-lowest score ordering.
+            top_entries = heapq.nlargest(top_k, enumerate(scores), key=lambda item: item[1])
+            top_indices = [idx for idx, _ in top_entries]
             retrieved = [doc_ids[i] for i in top_indices]
             relevant = self._qrels.relevant_doc_ids(qid)
             if relevant:
-                metrics = cast(dict[str, float], compute_all_metrics(retrieved, relevant, ks=ks))
+                metrics = compute_all_metrics(retrieved, relevant, ks=ks)
                 per_query.append(metrics)
 
         agg = aggregate_metrics(per_query)

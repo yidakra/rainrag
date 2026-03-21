@@ -242,7 +242,4 @@ def aggregate_costs(per_query_costs: list[dict[str, float]]) -> dict[str, float]
     if "cost.total_usd_est_per_query" in averages:
         averages["cost.mean_usd_est_per_query"] = averages.pop("cost.total_usd_est_per_query")
 
-    # Explicitly remove any remaining legacy key to avoid duplicate semantics.
-    averages.pop("cost.total_usd_est_per_query", None)
-
     return {**totals, **averages}

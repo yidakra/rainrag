@@ -676,9 +676,11 @@ async def query(request: QueryRequest):
                             background_task.cancel()
                             try:
                                 await asyncio.wait_for(background_task, timeout=2.0)
-                            except Exception:
+                            except (asyncio.TimeoutError, asyncio.CancelledError) as cancel_exc:
                                 logger.warning(
-                                    "Background query task did not stop after cancellation"
+                                    "Background query task did not stop after cancellation (%s: %s)",
+                                    type(cancel_exc).__name__,
+                                    cancel_exc,
                                 )
 
                         try:

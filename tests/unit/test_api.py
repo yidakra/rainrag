@@ -82,27 +82,6 @@ def test_client():
     return _SyncASGIClient(app)
 
 
-@pytest.fixture
-def test_config_with_video(temp_dir: Path) -> Config:
-    """Create a test configuration with video settings."""
-    archive_dir = temp_dir / "archive"
-    archive_dir.mkdir()
-
-    data_dir = temp_dir / "data"
-    data_dir.mkdir()
-
-    embeddings_dir = temp_dir / "embeddings"
-    embeddings_dir.mkdir()
-
-    return _build_config(
-        archive_root=str(archive_dir),
-        docs_output=str(data_dir / "docs.jsonl"),
-        embeddings_cache=str(embeddings_dir),
-        video_root=str(archive_dir),
-        video_enabled=True,
-    )
-
-
 def _build_config(
     archive_root: str,
     docs_output: str = "./data/docs.jsonl",
@@ -299,21 +278,13 @@ def test_vtt_endpoint_security(test_client, temp_dir: Path, archive_with_videos:
 
 def test_video_disabled(test_client, temp_dir: Path):
     """Test video serving when disabled in config."""
-    import rainrag.api as api_module
-
-    original_config = api_module.config
-
     test_cfg = make_test_config(str(temp_dir), video_enabled=False)
 
-    api_module.config = test_cfg
-
-    try:
+    with override_api_config(test_cfg):
         # use the shared fixture client
         response = test_client.get("/video/test.mp4")
         assert response.status_code == 404
         assert "disabled" in response.json()["detail"].lower()
-    finally:
-        api_module.config = original_config
 
 
 def test_find_video_file_multi_resolution(temp_dir: Path, archive_with_videos: Path):

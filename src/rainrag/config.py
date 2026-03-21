@@ -285,7 +285,7 @@ class RerankerConfig(BaseModel):
 
 
 class TwoStageConfig(BaseModel):
-    """Configuration for two-stage retrieval (Zhai & Lafferty, SIGIR 2002)."""
+    """Configuration for modern two-stage retrieval (query rewrite + HyDE fusion)."""
 
     enabled: bool = Field(
         default=False,

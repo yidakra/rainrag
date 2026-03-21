@@ -348,10 +348,24 @@ def load_eval_set(path: str) -> list[Record]:
     """Load an eval JSONL file into a list of record dicts."""
     records: list[Record] = []
     with open(path, encoding="utf-8") as f:
-        for line in f:
+        for line_number, line in enumerate(f, start=1):
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            try:
                 records.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                preview = line if len(line) <= 200 else line[:200] + "..."
+                raise ValueError(
+                    f"Failed to parse JSON in {path} at line {line_number}: {exc}. "
+                    f"Offending line (truncated): {preview}"
+                ) from exc
+            except Exception as exc:
+                preview = line if len(line) <= 200 else line[:200] + "..."
+                raise ValueError(
+                    f"Error processing line {line_number} in {path}: {exc}. "
+                    f"Offending line (truncated): {preview}"
+                ) from exc
     return records
 
 

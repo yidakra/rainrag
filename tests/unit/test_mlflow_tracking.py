@@ -67,6 +67,11 @@ class TestMlflowTracking:
         monkeypatch.setattr(mlflow_tracking, "mlflow", fake)
         monkeypatch.setattr(mlflow_tracking, "_MLFLOW_AVAILABLE", True)
 
+        # This intentionally tests the designed behavior of mlflow_tracking.log_metrics:
+        # even with an empty payload, it should make the mlflow.log_metrics call
+        # (via _FakeMlflow) and record an empty dict (fake.logged == {}) instead of
+        # skipping the call or returning None. The assertions below anchor this behavior
+        # to _FakeMlflow.logged and _FakeMlflow.step.
         mlflow_tracking.log_metrics({})
 
         assert fake.logged == {}

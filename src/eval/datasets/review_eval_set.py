@@ -27,11 +27,15 @@ After review, run experiments only on accepted records:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
+
+
+logger = logging.getLogger(__name__)
 
 
 # simple alias for the JSONL records so we can give them a proper type
@@ -79,10 +83,10 @@ def _print_record(record: Record, index: int, total: int, accepted: int, deleted
         )
         if record.get("source_path"):
             body += f"[bold]Source:[/] {record['source_path']}\n"
-        if record.get("beir_dataset"):
-            body += (
-                f"[bold]BEIR:[/] {record['beir_dataset']}  query_id={record.get('beir_query_id')}\n"
-            )
+        beir_dataset = record.get("beir_dataset")
+        beir_query_id = record.get("beir_query_id")
+        if beir_dataset or beir_query_id:
+            body += f"[bold]BEIR:[/] {beir_dataset or '—'}  query_id={beir_query_id or '—'}\n"
         _console.print()
         _console.rule(header)
         _console.print(_panel_cls(body.strip(), expand=False))
@@ -148,6 +152,41 @@ def _save(records: list[Record], path: Path) -> None:
         raise
 
 
+def _load_records(path: Path) -> list[Record]:
+    """Load JSONL records from *path*, skipping blank lines and non-dict entries."""
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"file not found: {path}")
+
+    records: list[Record] = []
+    with open(path, encoding="utf-8") as f:
+        for idx, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                loaded = json.loads(line)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "Skipping invalid JSON line at %s:%d: %r (%s)",
+                    path,
+                    idx,
+                    line,
+                    exc,
+                )
+                continue
+
+            if isinstance(loaded, dict):
+                records.append(cast(Record, loaded))
+            else:
+                logger.warning(
+                    "Skipping non-dict JSONL record at %s:%d: %r",
+                    path,
+                    idx,
+                    loaded,
+                )
+    return records
+
+
 # ---------------------------------------------------------------------------
 # Main review loop
 # ---------------------------------------------------------------------------
@@ -177,20 +216,7 @@ def review_eval_set(
     out = Path(output_path) if output_path else inp
 
     # Load all records
-    records: list[Record] = []
-    try:
-        with open(inp, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                loaded = json.loads(line)
-                if isinstance(loaded, dict):
-                    records.append(cast(Record, loaded))
-    except FileNotFoundError:
-        # If the file disappears between the existence check and open(), provide
-        # a consistent, user-friendly error message.
-        raise FileNotFoundError(f"file not found: {inp}")
+    records: list[Record] = _load_records(inp)
 
     total = len(records)
     if total == 0:
@@ -351,22 +377,10 @@ def filter_valid(input_path: str, output_path: str) -> int:
         Number of records written.
     """
     inp = Path(input_path)
-    if not inp.exists() or not inp.is_file():
-        # match review_eval_set's behavior for missing input files
-        raise FileNotFoundError(f"file not found: {inp}")
+    records = _load_records(inp)
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-
-    records: list[Record] = []
-    with open(inp, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            loaded = json.loads(line)
-            if isinstance(loaded, dict):
-                records.append(cast(Record, loaded))
 
     valid = [r for r in records if r.get("valid") is True]
     _save(valid, out)
@@ -378,18 +392,7 @@ def filter_valid(input_path: str, output_path: str) -> int:
 def review_stats(input_path: str) -> dict[str, int]:
     """Print a quick summary of review progress without starting a session."""
     inp = Path(input_path)
-    if not inp.exists() or not inp.is_file():
-        # match review_eval_set/filter_valid behavior for missing input files
-        raise FileNotFoundError(f"file not found: {inp}")
-
-    records: list[Record] = []
-    with open(inp, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                loaded = json.loads(line)
-                if isinstance(loaded, dict):
-                    records.append(cast(Record, loaded))
+    records = _load_records(inp)
 
     total = len(records)
     reviewed = sum(1 for r in records if r.get("reviewed"))
