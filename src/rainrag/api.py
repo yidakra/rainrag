@@ -794,16 +794,12 @@ class RelatedChunksResponse(BaseModel):
 
 
 @app.post("/related-chunks", response_model=RelatedChunksResponse)
-async def get_related_chunks(
-    request: RelatedChunksRequest,
-    authorized: Annotated[bool, Header()] = True,
-):
+async def get_related_chunks(request: RelatedChunksRequest):
     """
     Find chunks related to a given chunk based on vector similarity.
 
     Args:
         request: Related chunks request containing chunk_id and parameters
-        authorized: Authorization check result (injected by dependency)
 
     Returns:
         List of related chunks with similarity scores

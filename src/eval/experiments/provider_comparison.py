@@ -57,10 +57,16 @@ _EMBED_MODELS: dict[str, tuple[str, int]] = {
 
 
 def _build_conditions() -> list[dict[str, Any]]:
+    # Claude has no embeddings API; ensure this is explicit and cannot regress.
+    assert "claude" not in _EMBED_PROVIDERS, "_EMBED_PROVIDERS must not include 'claude'"
+
     conditions = []
     cid = 0
     for llm in _LLM_PROVIDERS:
         for emb in _EMBED_PROVIDERS:
+            if emb == "claude":
+                # Claude is not a valid embedding provider; skip rather than indexing _EMBED_MODELS.
+                continue
             cid += 1
             embed_model, vector_size = _EMBED_MODELS[emb]
             overrides: dict[str, Any] = {

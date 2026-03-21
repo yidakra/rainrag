@@ -172,12 +172,10 @@ def _load_runs(
     """Load MLflow runs for the given experiments, returning a pandas DataFrame."""
     try:
         import mlflow as _mlflow
-        import pandas as _pd
     except ImportError as exc:
-        raise SystemExit(f"ERROR: {exc}. Install with: pip install mlflow pandas") from exc
+        raise SystemExit(f"ERROR: {exc}. Install with: pip install mlflow") from exc
 
     mlflow: Any = cast(Any, _mlflow)
-    pd: Any = cast(Any, _pd)
 
     mlflow.set_tracking_uri(mlflow_uri)
     frames: list[Any] = []
@@ -426,11 +424,13 @@ def plot_latency_breakdown(runs: Any, output_dir: Path, show: bool, dpi: int) ->
 
     ax.bar(x, generate_norm, bottom=bottom, label="generate", color=colors[-1])
     bottom += generate_norm
+
+    fallback_label = "generate (fallback)" if np.any(generate_fb) else "_nolegend_"
     ax.bar(
         x,
         generate_fb,
         bottom=bottom,
-        label="generate (fallback)",
+        label=fallback_label,
         color=colors[-1],
         hatch="//",
         edgecolor="black",
@@ -502,8 +502,14 @@ def plot_robustness_bars(runs: Any, output_dir: Path, show: bool, dpi: int) -> N
         for mean_col, p10_col, _ in metrics:
             mean_value = _metric_from_row(row, mean_col)
             p10_value = _metric_from_row(row, p10_col)
-            assert mean_value is not None
-            assert p10_value is not None
+            if mean_value is None:
+                raise ValueError(
+                    f"Unexpected missing metric '{mean_col}' for row '{lbl}' while building robustness bars"
+                )
+            if p10_value is None:
+                raise ValueError(
+                    f"Unexpected missing metric '{p10_col}' for row '{lbl}' while building robustness bars"
+                )
             data[mean_col].append(mean_value)
             data[p10_col].append(p10_value)
 

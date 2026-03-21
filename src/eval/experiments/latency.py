@@ -56,7 +56,11 @@ def _percentile(data: list[float], p: float) -> float:
 
 
 def _time_stage(fn, *args, **kwargs) -> tuple[Any, float]:
-    """Call *fn* and return (result, elapsed_ms)."""
+    """Call *fn* and return (result, elapsed_ms).
+
+    Reserved for future per-stage instrumentation when engine exposes per-stage
+    hooks. Currently only used for total end-to-end timing in _profile_query.
+    """
     t = time.perf_counter()
     result = fn(*args, **kwargs)
     return result, (time.perf_counter() - t) * 1000
@@ -166,7 +170,8 @@ class LatencyExperiment:
                         for stage, ms in timings.items():
                             stage_times[stage].append(ms)
                     except Exception as exc:
-                        print(f"  [warn] Query failed: {exc}")
+                        record_id = record.get("id") or record.get("query") or repr(record)
+                        print(f"  [warn] Query failed for {record_id}: {exc}")
 
             # Aggregate
             metrics: dict[str, float] = {}

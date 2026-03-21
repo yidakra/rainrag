@@ -291,13 +291,18 @@ def _embed_documents_local(
         raise ValueError(
             "Embedding model is not configured: engine.embedding_model is None; cannot call model.encode()."
         )
-    normalize = engine.config.embedding.normalize_embeddings
+
+    # Defensive access for embedding config fields
+    embedding_cfg = getattr(engine.config, "embedding", None)
+    normalize = getattr(embedding_cfg, "normalize_embeddings", False)
+    prefix = getattr(embedding_cfg, "prefix", "") or ""
 
     # determine prefix: user-configured or auto-detect for E5-like models
-    prefix = engine.config.embedding.prefix or ""
     if not prefix:
         # try to infer from model name if available
-        name = getattr(model, "name", "") or engine.config.embedding.model_name or ""
+        model_name = getattr(model, "name", "") or ""
+        config_model_name = getattr(embedding_cfg, "model_name", "") or ""
+        name = model_name or config_model_name
         if "e5" in name.lower():
             prefix = "passage: "
 
@@ -316,6 +321,7 @@ def _embed_documents_api(
     engine: Any,
     texts: list[str],
     delay_s: float = 0.05,
+    document_prefix: str | None = None,
 ) -> list[list[float]]:
     """Embed documents via an API provider.
 
@@ -324,10 +330,26 @@ def _embed_documents_api(
     max_corpus_docs small.
 
     Prefer document-specific APIs (embed_document or embed_passage) when
-    available. For generic embed_query calls, prepend a document prefix to
-    avoid query-style embedding for passage models (e.g., E5).
+    available. For generic embed_query calls, respect an explicit
+    *document_prefix* (e.g. "passage: ") and otherwise use engine
+    configuration / heuristics.
     """
     embeddings: list[list[float]] = []
+
+    if document_prefix is None:
+        document_prefix = ""
+        if hasattr(engine, "config") and hasattr(engine.config, "embedding"):
+            document_prefix = getattr(engine.config.embedding, "prefix", "") or ""
+
+    # Infer a safe fallback prefix for known models if no prefix provided.
+    if not document_prefix:
+        model_name = ""
+        model = getattr(engine, "embedding_model", None)
+        if model is not None:
+            model_name = getattr(model, "name", "") or ""
+        if "e5" in model_name.lower():
+            document_prefix = "passage: "
+
     for i, text in enumerate(texts):
         if i % 50 == 0 and i > 0:
             logger.info(f"  Embedded {i}/{len(texts)} documents ...")
@@ -337,8 +359,8 @@ def _embed_documents_api(
         elif hasattr(engine, "embed_passage"):
             vector = engine.embed_passage(text)
         else:
-            # Fall back to query embedding but force a document-like prefix.
-            vector = engine.embed_query(f"passage: {text}")
+            final_text = f"{document_prefix}{text}" if document_prefix else text
+            vector = engine.embed_query(final_text)
 
         embeddings.append(cast(list[float], vector))
         if delay_s > 0:
@@ -356,12 +378,31 @@ def _embed_corpus(
     # Normalize whitespace consistently with _index_corpus_into_qdrant
     texts = [(docs[did]["title"] + " " + docs[did]["text"]).strip() for did in doc_ids]
 
-    if engine.config.embedding.provider == "local" and engine.embedding_model is not None:
-        logger.info(f"Batch-encoding {len(texts)} documents with local model ...")
-        vectors = _embed_documents_local(engine, texts, batch_size=batch_size)
+    document_prefix = ""
+    if hasattr(engine, "config") and hasattr(engine.config, "embedding"):
+        document_prefix = getattr(engine.config.embedding, "prefix", "") or ""
+
+    if engine.config.embedding.provider == "local":
+        if engine.embedding_model is not None:
+            logger.info(f"Batch-encoding {len(texts)} documents with local model ...")
+            vectors = _embed_documents_local(engine, texts, batch_size=batch_size)
+        else:
+            logger.warning(
+                "Local embedding provider configured, but engine.embedding_model is None; "
+                + "falling back to API embedding provider to avoid failure."
+            )
+            vectors = _embed_documents_api(
+                engine,
+                texts,
+                document_prefix=document_prefix,
+            )
     else:
         logger.info(f"Embedding {len(texts)} documents via API (this may be slow) ...")
-        vectors = _embed_documents_api(engine, texts)
+        vectors = _embed_documents_api(
+            engine,
+            texts,
+            document_prefix=document_prefix,
+        )
 
     # zip with strict=True to raise if lengths differ (mismatch indicates bug)
     return dict(zip(doc_ids, vectors, strict=True))
@@ -686,7 +727,15 @@ class BEIRAdapter:
             (self._corpus.docs[did]["title"] + " " + self._corpus.docs[did]["text"]).strip()
             for did in doc_ids
         ]
-        tokenized = [re.findall(r"\w+", t.lower()) for t in texts]
+
+        # Currently we use a simple regex-based tokenizer for non-CJK scripts.
+        # For Chinese/Japanese/Korean corpora, split on characters to avoid missing
+        # tokenization coverage for ideographic scripts.
+        if self.language.lower() in {"zh", "ja", "ko", "zh-cn", "zh-tw", "ja-jp", "ko-kr"}:
+            tokenized = [list(re.sub(r"\s+", "", t)) for t in texts]
+        else:
+            tokenized = [re.findall(r"\w+", t.lower()) for t in texts]
+
         # instantiate BM25 on the tokenized corpus
         bm25: Any = BM25Okapi(tokenized)
 

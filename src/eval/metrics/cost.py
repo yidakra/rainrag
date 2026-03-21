@@ -201,9 +201,9 @@ def estimate_query_cost(
     total_cost = embed_cost + llm_base_cost + llm_rewrite_cost + llm_hyde_cost + reranker_cost
 
     return {
-        "cost.input_tokens_est": round(input_tokens),
-        "cost.output_tokens_est": round(output_tokens),
-        "cost.embed_tokens_est": round(embed_tokens),
+        "cost.input_tokens_est": int(round(input_tokens)),
+        "cost.output_tokens_est": int(round(output_tokens)),
+        "cost.embed_tokens_est": int(round(embed_tokens)),
         "cost.llm_base_usd_est": llm_base_cost,
         "cost.llm_rewrite_usd_est": llm_rewrite_cost,
         "cost.llm_hyde_usd_est": llm_hyde_cost,
@@ -229,7 +229,12 @@ def aggregate_costs(per_query_costs: list[dict[str, float]]) -> dict[str, float]
     # or additional keys in individual query records.
     keys = {k for d in per_query_costs for k in d}
     totals = {k: sum(d.get(k, 0.0) for d in per_query_costs) for k in keys}
-    totals["cost.aggregate_usd_est"] = totals.get("cost.total_usd_est", 0.0)
+
+    # Backward compatibility alias:
+    # - prefer existing cost.aggregate_usd_est if injected by callers
+    # - otherwise use cost.total_usd_est as the canonical run-wide total
+    if "cost.aggregate_usd_est" not in totals:
+        totals["cost.aggregate_usd_est"] = totals.get("cost.total_usd_est", 0.0)
 
     n = len(per_query_costs)
     averages = {f"{k}_per_query": v / n for k, v in totals.items() if k != "cost.aggregate_usd_est"}

@@ -19,6 +19,9 @@ from unittest.mock import MagicMock
 import pytest
 
 
+pytestmark = pytest.mark.eval
+
+
 # ---------------------------------------------------------------------------
 # Modules that must always be importable (no optional deps)
 # ---------------------------------------------------------------------------

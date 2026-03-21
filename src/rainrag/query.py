@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, cast
 
 import cohere
+import numpy as np
 import torch
 from anthropic import Anthropic
 from google import genai
@@ -218,7 +219,7 @@ class RAGQueryEngine:
                     )
                 except TypeError:
                     # Older sentence-transformers versions don't accept model_kwargs
-                    self.embedding_model = cast(Any, model_cls_any)(
+                    self.embedding_model = model_cls(
                         self.config.embedding.model_name,
                         device=device,
                     )
@@ -1078,7 +1079,11 @@ class RAGQueryEngine:
 
             if exclude_speech_free:
                 # Fetch extra candidates to ensure we can still return top_k on post-filter.
-                effective_limit = max(effective_limit * 3, top_k * 3)
+                if use_hybrid:
+                    extra_multiplier = max(3, self.config.hybrid_search.top_k_multiplier)
+                else:
+                    extra_multiplier = 3
+                effective_limit = max(effective_limit, top_k * extra_multiplier)
 
             # 1. Vector search
             if date_from or date_to:
@@ -1673,8 +1678,6 @@ Question: {query}"""
         embed_calls = 1
 
         if two_stage_enabled and self.config.two_stage.hyde_enabled:
-            import numpy as np
-
             hyde_vector = self._generate_hyde_embedding(question, language)
             embed_calls += 1
             alpha = self.config.two_stage.hyde_alpha
