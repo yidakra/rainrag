@@ -29,7 +29,7 @@ def _subprocess_env() -> dict[str, str]:
 
 
 def _rainrag_mcp_cmd(*args: str) -> list[str]:
-    return ["poetry", "run", "python", "-m", "rainrag.cli", "mcp", *args]
+    return ["uv", "run", "python", "-m", "rainrag.cli", "mcp", *args]
 
 
 def _strip_ansi(text: str) -> str:

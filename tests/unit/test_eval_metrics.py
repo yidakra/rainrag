@@ -655,7 +655,7 @@ class TestAggregateCosts:
             "cost.embed_usd_est",
             "cost.total_usd_est",
         ]
-        queries = [{k: 1.0 for k in keys}, {k: 3.0 for k in keys}]
+        queries = [dict.fromkeys(keys, 1.0), dict.fromkeys(keys, 3.0)]
         result = aggregate_costs(queries)
         for k in keys:
             assert result[k] == pytest.approx(4.0), f"total for {k}"

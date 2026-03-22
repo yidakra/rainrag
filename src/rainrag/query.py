@@ -233,7 +233,7 @@ class RAGQueryEngine:
                     f"\n\nTo fix this:"
                     f"\n1. Connect to the internet"
                     f"\n2. Run: python scripts/download_models.py"
-                    f"\n3. Or run: poetry run python scripts/download_models.py"
+                    f"\n3. Or run: uv run python scripts/download_models.py"
                     f"\n\nOriginal error: {e}"
                 )
                 logger.error(error_msg)
@@ -350,7 +350,7 @@ class RAGQueryEngine:
                 bm25_okapi = bm25_module.BM25Okapi
             except ModuleNotFoundError as exc:
                 raise RuntimeError(
-                    "rank-bm25 is required for BM25 search. Install with `poetry install` or `pip install rank-bm25`."
+                    "rank-bm25 is required for BM25 search. Install with `uv sync` or `pip install rank-bm25`."
                 ) from exc
             self.bm25 = bm25_okapi(self.bm25_tokenized_corpus)
             logger.info(f"BM25 index built with {len(self.bm25_corpus)} documents")

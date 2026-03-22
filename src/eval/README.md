@@ -65,7 +65,7 @@ These are data-refresh operations, not evaluation operations.
 ### 1. Install eval dependencies
 
 ```bash
-poetry install --with eval
+uv sync --extra eval
 # Optional fallback (if your environment is configured for PEP 621 extras):
 # pip install -e ".[eval]"
 ```

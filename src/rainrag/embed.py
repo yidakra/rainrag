@@ -471,7 +471,7 @@ class Embedder:
             batch_texts = texts[i : i + batch_size]
             if show_progress:
                 logger.info(
-                    f"Processing batch {i//batch_size + 1}/{(len(texts) + batch_size - 1)//batch_size}"
+                    f"Processing batch {i // batch_size + 1}/{(len(texts) + batch_size - 1) // batch_size}"
                 )
 
             # Retry logic for transient failures

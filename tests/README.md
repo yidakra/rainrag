@@ -27,8 +27,8 @@ tests/
 # Run all tests
 make test
 
-# Or with poetry
-poetry run pytest
+# Or with uv
+uv run pytest
 ```
 
 ### Unit Tests Only
@@ -38,7 +38,7 @@ poetry run pytest
 make test-unit
 
 # Or with pytest
-poetry run pytest tests/unit
+uv run pytest tests/unit
 ```
 
 ### Integration Tests Only
@@ -48,7 +48,7 @@ poetry run pytest tests/unit
 make test-integration
 
 # Or with pytest
-poetry run pytest tests/integration
+uv run pytest tests/integration
 ```
 
 ### With Coverage
@@ -65,20 +65,20 @@ open htmlcov/index.html
 
 ```bash
 # Run tests from a specific file
-poetry run pytest tests/unit/test_ingest.py
+uv run pytest tests/unit/test_ingest.py
 
 # Run a specific test
-poetry run pytest tests/unit/test_ingest.py::TestVTTParser::test_parse_vtt_basic
+uv run pytest tests/unit/test_ingest.py::TestVTTParser::test_parse_vtt_basic
 ```
 
 ### Verbose Output
 
 ```bash
 # Run with verbose output
-poetry run pytest -v
+uv run pytest -v
 
 # Run with very verbose output (show all test names)
-poetry run pytest -vv
+uv run pytest -vv
 ```
 
 ## Test Coverage
@@ -236,7 +236,7 @@ Tests are automatically run on:
 
 2. **Reinstall dependencies**:
    ```bash
-   poetry install
+   uv sync
    ```
 
 3. **Check Python version**:
@@ -246,16 +246,12 @@ Tests are automatically run on:
 
 ### Import Errors
 
-Make sure you're running tests with poetry:
+Make sure you're running tests with uv:
 ```bash
-poetry run pytest
+uv run pytest
 ```
 
-Or activate the virtual environment:
-```bash
-poetry shell
-pytest
-```
+`uv run` is the recommended approach and automatically uses the project environment.
 
 ### Slow Tests
 
@@ -266,7 +262,7 @@ make test-unit
 
 Skip integration tests:
 ```bash
-poetry run pytest -m "not integration"
+uv run pytest -m "not integration"
 ```
 
 ## Coverage Goals
