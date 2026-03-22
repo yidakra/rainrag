@@ -283,9 +283,7 @@ class QdrantIndexer:
         # Upsert new/modified points
         if to_upsert:
             logger.info(f"Upserting {len(to_upsert)} new/modified points...")
-            for i in tqdm(
-                range(0, len(to_upsert), batch_size), desc="Incremental upsert"
-            ):
+            for i in tqdm(range(0, len(to_upsert), batch_size), desc="Incremental upsert"):
                 batch = to_upsert[i : i + batch_size]
                 batch_points = [
                     models.PointStruct(
@@ -368,14 +366,10 @@ class QdrantIndexer:
 
         # Swap alias atomically
         logger.info(f"Swapping alias '{alias_name}' to staging collection '{staging_name}'")
-        alias_ops: list[
-            models.DeleteAliasOperation | models.CreateAliasOperation
-        ] = []
+        alias_ops: list[models.DeleteAliasOperation | models.CreateAliasOperation] = []
         if old_collection_name:
             alias_ops.append(
-                models.DeleteAliasOperation(
-                    delete_alias=models.DeleteAlias(alias_name=alias_name)
-                )
+                models.DeleteAliasOperation(delete_alias=models.DeleteAlias(alias_name=alias_name))
             )
         alias_ops.append(
             models.CreateAliasOperation(
@@ -478,9 +472,7 @@ class QdrantIndexer:
 
         # Load embeddings (will use cache if available)
         logger.info("Loading embeddings")
-        embeddings, documents = run_embedding(
-            config_path="config.yaml", incremental=incremental
-        )
+        embeddings, documents = run_embedding(config_path="config.yaml", incremental=incremental)
 
         # Choose indexing strategy
         if self.config.incremental.alias_swap:

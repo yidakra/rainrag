@@ -1793,7 +1793,9 @@ class Ingester:
             f"{unchanged_count} unchanged + {doc_count - unchanged_count} new/modified documents = {doc_count} total"
         )
         if deleted_doc_ids:
-            logger.info(f"Removed {len(deleted_doc_ids)} documents from {len(deleted_keys)} deleted files")
+            logger.info(
+                f"Removed {len(deleted_doc_ids)} documents from {len(deleted_keys)} deleted files"
+            )
 
         return doc_count
 

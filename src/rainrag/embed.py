@@ -576,9 +576,7 @@ class Embedder:
 
         return embeddings, documents
 
-    def _embed_incremental(
-        self, documents: list[Document]
-    ) -> tuple[np.ndarray, list[Document]]:
+    def _embed_incremental(self, documents: list[Document]) -> tuple[np.ndarray, list[Document]]:
         """Incrementally embed documents — reuse cached embeddings for unchanged content.
 
         Builds a content_hash -> embedding lookup from the existing cache.
@@ -620,10 +618,7 @@ class Embedder:
                 to_embed.append(doc)
                 to_embed_indices.append(i)
 
-        logger.info(
-            f"Incremental embedding: {cached_count} cached, "
-            f"{len(to_embed)} to embed"
-        )
+        logger.info(f"Incremental embedding: {cached_count} cached, " f"{len(to_embed)} to embed")
 
         if to_embed:
             # Load model and embed only the new/changed documents
