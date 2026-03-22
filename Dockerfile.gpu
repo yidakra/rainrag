@@ -1,5 +1,5 @@
 # Build stage
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime as builder
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime AS builder
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -8,20 +8,25 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Poetry
-RUN pip install --no-cache-dir poetry==1.7.1
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Set working directory
 WORKDIR /app
 
-# Copy Poetry configuration
-COPY pyproject.toml poetry.lock* ./
+# Copy dependency files
+COPY pyproject.toml uv.lock ./
 
-# Configure Poetry to not create a virtual environment
-RUN poetry config virtualenvs.create false
+# Install dependencies (no dev, no project itself yet)
+RUN uv sync --frozen --no-dev --no-install-project
 
-# Install dependencies
-RUN poetry install --without dev --no-interaction --no-ansi
+# Copy application code
+COPY src/ /app/src/
+COPY config.yaml /app/config.yaml
+COPY README.md /app/README.md
+
+# Install the project itself
+RUN uv sync --frozen --no-dev
 
 # Runtime stage
 FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
@@ -29,24 +34,21 @@ FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 # Set working directory
 WORKDIR /app
 
-# Copy installed packages from builder
-COPY --from=builder /opt/conda/lib/python3.10/site-packages /opt/conda/lib/python3.10/site-packages
-COPY --from=builder /opt/conda/bin /opt/conda/bin
+# Copy virtual environment from builder
+COPY --from=builder /app/.venv /app/.venv
 
-# Copy application code
+# Copy application code and config
 COPY src/ /app/src/
 COPY config.yaml /app/config.yaml
 COPY README.md /app/README.md
+COPY pyproject.toml /app/
 
 # Create necessary directories
 RUN mkdir -p /data/archive /data/rainrag /data/embeddings /data/logs
 
-# Set Python path
+# Use the venv Python
+ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH=/app/src
-
-# Install the package
-COPY pyproject.toml /app/
-RUN pip install .
 
 # Set the entrypoint
 ENTRYPOINT ["rainrag"]

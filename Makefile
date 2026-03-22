@@ -9,8 +9,8 @@ help: ## Show this help message
 	@echo 'Available targets:'
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-install: ## Install dependencies with Poetry
-	poetry install
+install: ## Install dependencies with uv
+	uv sync
 
 clean: ## Clean up generated files and caches
 	rm -rf data/*.jsonl
@@ -21,25 +21,25 @@ clean: ## Clean up generated files and caches
 	find . -type f -name '*.pyc' -delete
 
 test: ## Run all tests
-	poetry run pytest
+	uv run pytest
 
 test-unit: ## Run unit tests only
-	poetry run pytest tests/unit -v
+	uv run pytest tests/unit -v
 
 test-integration: ## Run integration tests only
-	poetry run pytest tests/integration -v
+	uv run pytest tests/integration -v
 
 test-cov: ## Run tests with coverage report
-	poetry run pytest --cov=src/rainrag --cov-report=html --cov-report=term
+	uv run pytest --cov=src/rainrag --cov-report=html --cov-report=term
 	@echo "Coverage report generated in htmlcov/index.html"
 
 format: ## Format code with black
-	poetry run black src/
-	poetry run ruff check --fix src/
+	uv run black src/
+	uv run ruff check --fix src/
 
 lint: ## Run linters
-	poetry run ruff check src/
-	poetry run mypy src/
+	uv run ruff check src/
+	uv run mypy src/
 
 # Docker commands
 docker-build: ## Build Docker image
@@ -88,12 +88,12 @@ qdrant-logs: ## View Qdrant logs
 api: ## Start FastAPI backend server
 	@echo "Starting FastAPI backend at http://localhost:8001"
 	@echo "API docs: http://localhost:8001/docs"
-	poetry run python -m uvicorn rainrag.api:app --host 0.0.0.0 --port 8001 --reload
+	uv run python -m uvicorn rainrag.api:app --host 0.0.0.0 --port 8001 --reload
 
 streamlit: ## Start Streamlit frontend
 	@echo "Starting Streamlit frontend at http://localhost:7860"
 	@echo "Note: Make sure API is running (make api) or set RAINRAG_API_URL"
-	poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860
+	uv run streamlit run app.py --server.address 0.0.0.0 --server.port 7860
 
 check-qdrant-start: ## Check and start Qdrant if needed
 	@if curl -s http://localhost:6333/readyz > /dev/null 2>&1; then \
@@ -177,7 +177,7 @@ down: qdrant-stop ## Stop all services
 
 api-bg: ## Start API in background
 	@cd $(CURDIR) && set -a && [ -f .env ] && . ./.env || true && set +a && \
-		PATH="$$HOME/.local/bin:$$PATH" poetry run python -m uvicorn rainrag.api:app --host 0.0.0.0 --port 8001 > /tmp/rainrag-api.log 2>&1 &
+		PATH="$$HOME/.local/bin:$$PATH" uv run python -m uvicorn rainrag.api:app --host 0.0.0.0 --port 8001 > /tmp/rainrag-api.log 2>&1 &
 	@echo "Waiting for API to be ready..."
 	@for i in $$(seq 1 30); do \
 		if curl -s http://localhost:8001/health > /dev/null 2>&1; then \
@@ -198,7 +198,7 @@ api-bg: ## Start API in background
 
 streamlit-bg: ## Start Streamlit in background
 	@cd $(CURDIR) && set -a && [ -f .env ] && . ./.env || true && set +a && \
-		PATH="$$HOME/.local/bin:$$PATH" poetry run streamlit run app.py --server.address 0.0.0.0 --server.port 7860 > /tmp/rainrag-streamlit.log 2>&1 &
+		PATH="$$HOME/.local/bin:$$PATH" uv run streamlit run app.py --server.address 0.0.0.0 --server.port 7860 > /tmp/rainrag-streamlit.log 2>&1 &
 	@sleep 3
 	@if pgrep -f "streamlit run app.py" > /dev/null; then \
 		echo "Streamlit started in background (logs: /tmp/rainrag-streamlit.log)"; \
@@ -212,23 +212,23 @@ streamlit-bg: ## Start Streamlit in background
 download-models: ## Download and cache required models (requires internet)
 	@echo "Downloading embedding models..."
 	@echo "This requires internet access and may take several minutes"
-	poetry run python scripts/download_models.py
+	uv run python scripts/download_models.py
 
 # CLI shortcuts
 ingest: ## Run ingestion pipeline
-	poetry run rainrag ingest
+	uv run rainrag ingest
 
 embed: ## Run embedding generation
-	poetry run rainrag embed
+	uv run rainrag embed
 
 index: ## Run indexing pipeline
-	poetry run rainrag index
+	uv run rainrag index
 
 pipeline: ## Run full pipeline
-	poetry run rainrag pipeline
+	uv run rainrag pipeline
 
 info: ## Show system info
-	poetry run rainrag info
+	uv run rainrag info
 
 # Backup/restore helpers
 backup-embeddings-r2: ## Backup embeddings directory to Cloudflare R2
@@ -247,12 +247,12 @@ restore-qdrant-r2: check-qdrant-start ## Restore Qdrant collection snapshot from
 mcp: ## Run MCP server (default stdio transport for Claude Desktop/Cursor)
 	@echo "Starting MCP server with stdio transport..."
 	@echo "Connect from Claude Desktop or Cursor"
-	poetry run rainrag mcp
+	uv run rainrag mcp
 
 mcp-http: ## Run MCP server with HTTP transport
 	@echo "Starting MCP server at http://localhost:8000/mcp"
 	@echo "Use for remote connections or ChatGPT integration"
-	poetry run rainrag mcp --transport streamable-http --port 8000
+	uv run rainrag mcp --transport streamable-http --port 8000
 
 mcp-inspector: ## Run MCP server with inspector for testing
 	@echo "=== MCP Inspector Setup ==="
@@ -267,7 +267,7 @@ mcp-inspector: ## Run MCP server with inspector for testing
 	@echo ""
 	@echo "4. Connect to: http://localhost:8000/mcp"
 	@echo ""
-	poetry run rainrag mcp --transport streamable-http --port 8000
+	uv run rainrag mcp --transport streamable-http --port 8000
 
 # Helm commands
 helm-install: ## Install Helm chart
@@ -288,7 +288,7 @@ helm-template: ## Show rendered Helm templates
 # Development setup
 setup-dev: install qdrant-start ## Set up development environment
 	@echo "Development environment ready!"
-	@echo "Run 'poetry shell' to activate the virtual environment"
+	@echo "Run 'uv run' to execute commands in the virtual environment"
 	@echo "Run 'make pipeline' to test the full pipeline"
 
 # Cleanup everything
