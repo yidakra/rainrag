@@ -71,6 +71,21 @@ class QdrantConfig(BaseModel):
     vector_size: int = Field(default=1024)
     distance: str = Field(default="Cosine")
     recreate_collection: bool = Field(default=False)
+    scroll_batch_size: int = Field(
+        default=500,
+        ge=1,
+        description="Number of points to fetch per scroll request for incremental indexing",
+    )
+    max_scroll_iterations: int = Field(
+        default=1000,
+        ge=1,
+        description="Maximum number of client.scroll iterations during incremental indexing",
+    )
+    max_scroll_duration: int = Field(
+        default=300,
+        ge=1,
+        description="Maximum duration in seconds for incremental scroll loop before aborting",
+    )
 
 
 class MistralConfig(BaseModel):

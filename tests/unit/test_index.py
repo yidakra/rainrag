@@ -355,8 +355,26 @@ class TestQdrantIndexer:
         stats = indexer.index_documents_incremental(embeddings, documents, batch_size=50)
 
         assert stats == {"total": 2, "upserted": 1, "deleted": 1, "unchanged": 1}
+
+        # Verify delete call arguments (old_doc removed)
         mock_client.delete.assert_called_once()
+        delete_call = mock_client.delete.call_args
+        assert delete_call.kwargs["collection_name"] == test_config.qdrant.collection_name
+        delete_selector = delete_call.kwargs["points_selector"]
+        assert hasattr(delete_selector, "points")
+        assert delete_selector.points == [doc_id_to_uuid(old_doc_id)]
+
+        # Verify upsert call arguments (doc2 inserted)
         mock_client.upsert.assert_called_once()
+        upsert_call = mock_client.upsert.call_args
+        assert upsert_call.kwargs["collection_name"] == test_config.qdrant.collection_name
+        upsert_points = upsert_call.kwargs["points"]
+        assert len(upsert_points) == 1
+        point_struct = upsert_points[0]
+        assert point_struct.id == doc_id_to_uuid("doc2")
+        assert np.allclose(np.array(point_struct.vector, dtype=np.float32), embeddings[1])
+        assert point_struct.payload["doc_id"] == "doc2"
+        assert point_struct.payload["content_hash"] == "h2"
 
     @patch("rainrag.index.run_embedding")
     @patch("rainrag.index.QdrantClient")
@@ -384,16 +402,26 @@ class TestQdrantIndexer:
         ]
         mock_run_embedding.return_value = (embeddings, documents)
 
-        test_config.incremental.alias_swap = True
-        indexer = QdrantIndexer(test_config)
+        # Store original value to restore after test
+        original_alias_swap = test_config.incremental.alias_swap
+        try:
+            test_config.incremental.alias_swap = True
+            indexer = QdrantIndexer(test_config)
 
-        indexer.connect = MagicMock()
-        indexer.create_collection = MagicMock()
-        indexer.index_with_alias_swap = MagicMock(return_value=2)
-        indexer.get_collection_info = MagicMock(return_value={})
+            indexer.connect = MagicMock()
+            indexer.create_collection = MagicMock()
+            indexer.index_with_alias_swap = MagicMock(return_value=2)
+            indexer.get_collection_info = MagicMock(return_value={})
 
-        count = indexer.index(recreate=False, incremental=True)
+            count = indexer.index(recreate=False, incremental=True)
 
-        assert count == 2
-        indexer.create_collection.assert_not_called()
-        indexer.index_with_alias_swap.assert_called_once_with(embeddings, documents)
+            assert count == 2
+            indexer.index_with_alias_swap.assert_called_once()
+            call_args = indexer.index_with_alias_swap.call_args
+            np.testing.assert_array_equal(call_args[0][0], embeddings)
+            assert call_args[0][1] == documents
+            indexer.create_collection.assert_not_called()
+            indexer.index_with_alias_swap.assert_called_once_with(embeddings, documents)
+        finally:
+            # Restore original value to avoid test pollution
+            test_config.incremental.alias_swap = original_alias_swap

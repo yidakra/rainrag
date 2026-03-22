@@ -49,15 +49,17 @@ def _build_payload(doc: Document) -> dict:
 class QdrantIndexer:
     """Indexer for Qdrant vector database."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, config_path: str = "config.yaml"):
         """
         Initialize the Qdrant indexer.
 
         Args:
             config: Configuration object
+            config_path: Path to config file used to create the indexer
         """
         super().__init__()
         self.config = config
+        self.config_path = config_path
         self.client: QdrantClient | None = None
 
     def connect(self) -> None:
@@ -222,24 +224,69 @@ class QdrantIndexer:
 
         # Scroll existing points to get their content_hashes
         existing_hashes: dict[str, str | None] = {}  # point_id -> content_hash
-        logger.info("Scrolling existing collection for change detection...")
+
+        # Use collection info to make the loop observable and bounded
+        collection_info = self.get_collection_info()
+        existing_points = collection_info.get("points_count") if collection_info else None
+        if existing_points is not None:
+            logger.info(f"Collection has {existing_points} existing points; starting scroll.")
+
+        max_iterations = self.config.qdrant.max_scroll_iterations
+        max_duration = self.config.qdrant.max_scroll_duration
+        batch_size = self.config.qdrant.scroll_batch_size
+
+        logger.info(
+            f"Scrolling existing collection for change detection... (batch_size={batch_size}, "
+            + f"max_iterations={max_iterations}, max_duration={max_duration}s)"
+        )
+
         offset = None
+        iterations = 0
+        start_time = time.monotonic()
+
         while True:
+            elapsed = time.monotonic() - start_time
+            if elapsed > max_duration:
+                logger.warning(
+                    f"Aborting scroll loop: reached max scroll duration {max_duration}s; processed {len(existing_hashes)} points so far."
+                )
+                break
+
+            if iterations >= max_iterations:
+                logger.warning(
+                    f"Aborting scroll loop: reached max scroll iterations {max_iterations}; processed {len(existing_hashes)} points so far."
+                )
+                break
+
             result = client.scroll(
                 collection_name=collection_name,
-                limit=500,
+                limit=batch_size,
                 offset=offset,
                 with_payload=["content_hash"],
                 with_vectors=False,
             )
+
             points, next_offset = result
             if not points:
+                logger.info("Scroll loop ended: no more points returned.")
                 break
+
             for point in points:
                 payload = point.payload or {}
                 existing_hashes[str(point.id)] = payload.get("content_hash")
+
             offset = next_offset
+            iterations += 1
+
+            logger.debug(
+                "Scroll progress: iteration %d, retrieved %d points, offset=%s",
+                iterations,
+                len(points),
+                repr(offset),
+            )
+
             if offset is None:
+                logger.info("Scroll loop ended: no further offset to continue.")
                 break
 
         logger.info(f"Found {len(existing_hashes)} existing points in collection")
@@ -249,7 +296,7 @@ class QdrantIndexer:
         existing_point_ids = set(existing_hashes.keys())
 
         # Points to delete (exist in Qdrant but not in new set)
-        to_delete: list[int | str] = list(existing_point_ids - new_point_ids)
+        to_delete: list[models.ExtendedPointId] = list(existing_point_ids - new_point_ids)
 
         # Points to upsert (new or content_hash changed)
         to_upsert: list[tuple[str, np.ndarray, Document]] = []
@@ -266,7 +313,7 @@ class QdrantIndexer:
 
         logger.info(
             f"Incremental index: {unchanged_count} unchanged, "
-            f"{len(to_upsert)} to upsert, {len(to_delete)} to delete"
+            + f"{len(to_upsert)} to upsert, {len(to_delete)} to delete"
         )
 
         # Delete removed points
@@ -472,7 +519,10 @@ class QdrantIndexer:
 
         # Load embeddings (will use cache if available)
         logger.info("Loading embeddings")
-        embeddings, documents = run_embedding(config_path="config.yaml", incremental=incremental)
+        embeddings, documents = run_embedding(
+            config_path=getattr(self, "config_path", "config.yaml"),
+            incremental=incremental,
+        )
 
         # Choose indexing strategy
         if self.config.incremental.alias_swap:
@@ -513,5 +563,5 @@ def run_indexing(
     from rainrag.config import load_config
 
     config = load_config(config_path)
-    indexer = QdrantIndexer(config)
+    indexer = QdrantIndexer(config, config_path=config_path)
     return indexer.index(recreate=recreate, incremental=incremental)

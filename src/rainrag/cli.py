@@ -27,9 +27,6 @@ INCREMENTAL_OPTION = typer.Option(
     "-i",
     help="Enable incremental mode: only process changed documents (skip unchanged)",
 )
-FULL_OPTION = typer.Option(
-    False, "--full", help="Force full re-processing even when incremental is configured"
-)
 SKIP_INGEST_OPTION = typer.Option(False, "--skip-ingest", help="Skip ingestion step")
 SKIP_EMBED_OPTION = typer.Option(False, "--skip-embed", help="Skip embedding step")
 TOP_K_OPTION = typer.Option(
@@ -178,6 +175,11 @@ def embed(
     setup_logging(config)
 
     try:
+        if force and incremental:
+            raise typer.BadParameter(
+                "--force and --incremental cannot be used together. Use --force for full re-embedding or --incremental for cache-based incremental embedding."
+            )
+
         mode = "incremental" if incremental else "full"
         typer.echo(f"Starting embedding generation ({mode} mode)...")
         embeddings, documents = run_embedding(

@@ -3,6 +3,7 @@
 import hashlib
 import html
 import json
+import os
 import re
 import subprocess
 from collections.abc import Generator, Sequence
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from tqdm import tqdm
 
 from rainrag.config import Config
@@ -1023,7 +1024,7 @@ class ManifestEntry(BaseModel):
     mtime: float
     size: int
     file_hash: str  # SHA-256 of file content
-    doc_ids: list[str] = []  # Document IDs produced from this file
+    doc_ids: list[str] = Field(default_factory=list)  # Document IDs produced from this file
 
 
 class FileManifest:
@@ -1035,6 +1036,7 @@ class FileManifest:
     """
 
     def __init__(self, manifest_path: str | Path) -> None:
+        super().__init__()
         self.manifest_path = Path(manifest_path)
         self.entries: dict[str, ManifestEntry] = {}
 
@@ -1079,7 +1081,8 @@ class FileManifest:
             return "new"
 
         # Fast check: if mtime and size match, file is unchanged
-        if stat.st_mtime == entry.mtime and stat.st_size == entry.size:
+        # Allow small tolerance for filesystem mtime precision differences
+        if abs(stat.st_mtime - entry.mtime) < 0.001 and stat.st_size == entry.size:
             return "unchanged"
 
         # Size changed -> definitely modified
@@ -1096,13 +1099,19 @@ class FileManifest:
     def update_entry(self, file_path: Path, doc_ids: list[str]) -> None:
         """Update manifest entry for a file after processing."""
         key = str(file_path.absolute())
-        stat = file_path.stat()
-        self.entries[key] = ManifestEntry(
-            mtime=stat.st_mtime,
-            size=stat.st_size,
-            file_hash=self._compute_file_hash(file_path),
-            doc_ids=doc_ids,
-        )
+        try:
+            stat = file_path.stat()
+            self.entries[key] = ManifestEntry(
+                mtime=stat.st_mtime,
+                size=stat.st_size,
+                file_hash=self._compute_file_hash(file_path),
+                doc_ids=doc_ids,
+            )
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning(
+                f"Failed to update manifest entry for missing file {file_path}: {exc}. Removing stale manifest entry if present."
+            )
+            self.entries.pop(key, None)
 
     def get_deleted_files(self, current_files: set[str]) -> list[str]:
         """Return manifest keys for files that no longer exist."""
@@ -1682,7 +1691,12 @@ class Ingester:
         logger.info(f"Output saved to {output_path}")
 
         # Save manifest for future incremental runs
-        manifest.save()
+        try:
+            manifest.save()
+        except Exception as exc:
+            logger.warning(
+                f"Failed to save manifest after ingestion: {exc}. Ingestion succeeded, but incremental manifest may be stale."
+            )
 
         return doc_count
 
@@ -1743,7 +1757,7 @@ class Ingester:
 
         logger.info(
             f"Incremental scan: {len(new_files)} new, {len(modified_files)} modified, "
-            f"{len(unchanged_files)} unchanged, {len(deleted_keys)} deleted files"
+            + f"{len(unchanged_files)} unchanged, {len(deleted_keys)} deleted files"
         )
 
         # Collect doc_ids that need to be replaced (from modified files)
@@ -1753,12 +1767,14 @@ class Ingester:
             if key in manifest.entries:
                 modified_old_doc_ids.update(manifest.entries[key].doc_ids)
 
-        # Write output: unchanged docs + newly processed docs
+        # Write output: unchanged docs + newly processed docs in a temp file for atomic replace
         doc_count = 0
         file_count = 0
         files_to_process = new_files + modified_files
 
-        with open(output_path, "w", encoding="utf-8") as out_file:
+        temp_output_path = output_path.with_name(output_path.name + ".tmp")
+
+        with open(temp_output_path, "w", encoding="utf-8") as out_file:
             # Write unchanged documents (skip deleted and modified-old)
             skip_ids = deleted_doc_ids | modified_old_doc_ids
             for doc_id, doc in previous_docs.items():
@@ -1782,6 +1798,13 @@ class Ingester:
                         doc_ids.append(doc.id)
                     manifest.update_entry(file_path, doc_ids)
 
+            # Ensure disk durability before job completion
+            out_file.flush()
+            os.fsync(out_file.fileno())
+
+        # Atomically replace the previous docs file with the new content
+        temp_output_path.replace(output_path)
+
         # Remove deleted file entries from manifest
         manifest.remove_entries(deleted_keys)
 
@@ -1789,8 +1812,8 @@ class Ingester:
         manifest.save()
 
         logger.info(
-            f"Incremental ingestion complete! "
-            f"{unchanged_count} unchanged + {doc_count - unchanged_count} new/modified documents = {doc_count} total"
+            f"Incremental ingestion complete! {unchanged_count} unchanged + "
+            + f"{doc_count - unchanged_count} new/modified documents = {doc_count} total"
         )
         if deleted_doc_ids:
             logger.info(

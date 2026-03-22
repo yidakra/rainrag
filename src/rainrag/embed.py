@@ -597,10 +597,20 @@ class Embedder:
             if doc.content_hash:
                 hash_to_embedding[doc.content_hash] = cached_embeddings[i]
 
+        # Handle empty cached embeddings gracefully: treat as cache miss and re-embed all docs.
+        if cached_embeddings.size == 0 or cached_embeddings.shape[0] == 0:
+            logger.warning(
+                "Cached embeddings are empty; falling back to full embedding for all documents"
+            )
+            self.load_model()
+            embeddings = self.generate_embeddings(documents)
+            self.cache.save(embeddings, documents)
+            return embeddings, documents
+
         embedding_dim = cached_embeddings.shape[1]
         logger.info(
             f"Incremental embedding: {len(hash_to_embedding)} cached hashes, "
-            f"{len(documents)} current documents"
+            + f"{len(documents)} current documents"
         )
 
         # Classify documents into cached vs. needs-embedding
@@ -618,7 +628,7 @@ class Embedder:
                 to_embed.append(doc)
                 to_embed_indices.append(i)
 
-        logger.info(f"Incremental embedding: {cached_count} cached, " f"{len(to_embed)} to embed")
+        logger.info(f"Incremental embedding: {cached_count} cached, " + f"{len(to_embed)} to embed")
 
         if to_embed:
             # Load model and embed only the new/changed documents
