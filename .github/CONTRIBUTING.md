@@ -15,7 +15,7 @@ Thank you for considering contributing to RainRAG! This document outlines the de
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/rainrag.git
+git clone https://github.com/yidakra/rainrag.git
 cd rainrag
 
 # Install dependencies

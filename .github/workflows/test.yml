@@ -13,6 +13,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
+        numpy-version: ["1.26.4", "2.0.0"]
 
     steps:
       - name: Checkout code
@@ -34,12 +35,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      - name: Pin NumPy matrix version
+        run: uv run pip install "numpy==${{ matrix.numpy-version }}"
+
       - name: Run tests
         run: uv run pytest -v --tb=short --cov=src/rainrag --cov-report=xml --cov-report=term
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         if: matrix.python-version == '3.11'
         with:
-          file: ./coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
           fail_ci_if_error: false

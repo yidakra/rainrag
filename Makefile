@@ -288,7 +288,7 @@ helm-template: ## Show rendered Helm templates
 # Development setup
 setup-dev: install qdrant-start ## Set up development environment
 	@echo "Development environment ready!"
-	@echo "Run 'uv run' to execute commands in the virtual environment"
+	@echo "Use uv with a command, e.g. 'uv run pytest' or 'uv run ruff check src/ tests/' (or interactive shell via 'uv shell' / 'uv run bash')"
 	@echo "Run 'make pipeline' to test the full pipeline"
 
 # Cleanup everything

@@ -146,7 +146,7 @@ mcp:
                 except requests.exceptions.RequestException:
                     time.sleep(0.5)
 
-            assert server_started, "MCP server failed to start within 15 seconds"
+            assert server_started, "MCP server failed to start within 60 seconds"
 
             # Give it a moment to fully initialize
             time.sleep(2)
