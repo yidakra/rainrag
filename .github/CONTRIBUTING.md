@@ -8,26 +8,26 @@ Thank you for considering contributing to RainRAG! This document outlines the de
 
 ### Prerequisites
 - Python 3.10, 3.11, or 3.12
-- [Poetry](https://python-poetry.org/) for dependency management
+- [uv](https://docs.astral.sh/uv/) for dependency management
 - Git
 
 ### Setup Development Environment
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/rainrag.git
+git clone https://github.com/yidakra/rainrag.git
 cd rainrag
 
 # Install dependencies
-poetry install
+uv sync
 
 # Install pre-commit hooks
-poetry run pre-commit install
+uv run pre-commit install
 
 # Verify setup
-poetry run pytest
-poetry run ruff check src/ tests/
-poetry run mypy src/rainrag/
+uv run pytest
+uv run ruff check src/ tests/
+uv run mypy src/rainrag/
 ```
 
 ---
@@ -43,16 +43,16 @@ Fast Python linter and formatter (replaces flake8, black, isort).
 
 ```bash
 # Check for issues
-poetry run ruff check src/ tests/
+uv run ruff check src/ tests/
 
 # Auto-fix issues
-poetry run ruff check src/ tests/ --fix
+uv run ruff check src/ tests/ --fix
 
 # Format code
-poetry run ruff format src/ tests/
+uv run ruff format src/ tests/
 
 # Check formatting without changing files
-poetry run ruff format --check src/ tests/
+uv run ruff format --check src/ tests/
 ```
 
 #### **Mypy** - Type Checker
@@ -60,10 +60,10 @@ Static type checking for Python.
 
 ```bash
 # Run type checking
-poetry run mypy src/rainrag/
+uv run mypy src/rainrag/
 
 # Install missing type stubs
-poetry run mypy --install-types
+uv run mypy --install-types
 ```
 
 #### **Bandit** - Security Linter
@@ -71,7 +71,7 @@ Finds common security issues in Python code.
 
 ```bash
 # Run security checks
-poetry run bandit -r src/
+uv run bandit -r src/
 ```
 
 #### **Pre-commit** - Git Hooks
@@ -79,10 +79,10 @@ Automatically runs checks before each commit.
 
 ```bash
 # Install hooks (one time)
-poetry run pre-commit install
+uv run pre-commit install
 
 # Run manually on all files
-poetry run pre-commit run --all-files
+uv run pre-commit run --all-files
 
 # Skip hooks for a commit (not recommended)
 git commit --no-verify -m "message"
@@ -96,25 +96,25 @@ git commit --no-verify -m "message"
 
 ```bash
 # Run all tests
-poetry run pytest
+uv run pytest
 
 # Run with coverage
-poetry run pytest --cov=src/rainrag --cov-report=html
+uv run pytest --cov=src/rainrag --cov-report=html
 
 # Run specific test file
-poetry run pytest tests/unit/test_query.py
+uv run pytest tests/unit/test_query.py
 
 # Run tests matching pattern
-poetry run pytest -k "test_mistral"
+uv run pytest -k "test_mistral"
 
 # Run with verbose output
-poetry run pytest -v
+uv run pytest -v
 
 # Run only unit tests
-poetry run pytest tests/unit/
+uv run pytest tests/unit/
 
 # Run only integration tests
-poetry run pytest tests/integration/
+uv run pytest tests/integration/
 ```
 
 ### Test Coverage
@@ -122,7 +122,7 @@ poetry run pytest tests/integration/
 We aim for >80% test coverage. View coverage report:
 
 ```bash
-poetry run pytest --cov=src/rainrag --cov-report=html
+uv run pytest --cov=src/rainrag --cov-report=html
 open htmlcov/index.html  # macOS
 xdg-open htmlcov/index.html  # Linux
 ```
@@ -190,16 +190,16 @@ Write your code following the style guidelines above.
 
 ```bash
 # Format code
-poetry run ruff format src/ tests/
+uv run ruff format src/ tests/
 
 # Check for issues
-poetry run ruff check src/ tests/ --fix
+uv run ruff check src/ tests/ --fix
 
 # Run tests
-poetry run pytest
+uv run pytest
 
 # Type check (optional, but recommended)
-poetry run mypy src/rainrag/
+uv run mypy src/rainrag/
 ```
 
 ### 4. Commit Changes
@@ -291,10 +291,10 @@ logging:
 
 ```bash
 # Using Python debugger
-poetry run python -m pdb -m rainrag.cli ask "your question"
+uv run python -m pdb -m rainrag.cli ask "your question"
 
 # Using IPython
-poetry run ipython
+uv run ipython
 >>> from rainrag.query import RAGQueryEngine
 >>> engine = RAGQueryEngine.from_config()
 >>> %debug
@@ -303,7 +303,7 @@ poetry run ipython
 ### Common Issues
 
 **Issue:** Tests fail with import errors
-**Solution:** Run `poetry install` to ensure all dependencies are installed
+**Solution:** Run `uv sync` to ensure all dependencies are installed
 
 **Issue:** Type checking shows many errors
 **Solution:** This is expected. We're incrementally improving type coverage.

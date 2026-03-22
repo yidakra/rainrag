@@ -15,14 +15,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
         with:
-          python-version: "3.11"
-          cache: 'pip'
+          enable-cache: true
 
-      - name: Install Ruff directly
-        run: pip install ruff==0.1.15
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install Ruff
+        run: uv tool install ruff@0.5.7
 
       - name: Run Ruff linter
         run: ruff check src/ tests/
@@ -38,14 +40,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: 'pip'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
 
-      - name: Install Mypy directly
-        run: pip install mypy==1.8.0
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install Mypy
+        run: uv tool install mypy@1.8.0
 
       - name: Run Mypy type checking
         run: mypy src/rainrag/

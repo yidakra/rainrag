@@ -1,19 +1,29 @@
+from __future__ import annotations
+
+
 """Embedding generation module using multilingual-e5-large."""
 
 import json
 import os
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import torch
-from google.genai import types  # type: ignore[import]
 from loguru import logger
-from sentence_transformers import SentenceTransformer  # type: ignore
 
 from rainrag.config import Config
 from rainrag.ingest import Document
+
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer as SentenceTransformerType
 
 
 class EmbeddingCache:
@@ -24,12 +34,26 @@ class EmbeddingCache:
         Initialize the embedding cache.
 
         Args:
-            cache_dir: Directory to store cache files
+            cache_dir: Path to the cache directory
         """
         super().__init__()
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            fallback_dir = Path.home() / ".cache" / "rainrag" / "embeddings"
+            logger.warning(
+                "Embedding cache path {!r} is not writable; falling back to {!r}",
+                str(self.cache_dir),
+                str(fallback_dir),
+            )
+            try:
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                self.cache_dir = fallback_dir
+            except PermissionError:
+                raise PermissionError(
+                    f"Cannot create embedding cache directory: neither {self.cache_dir} nor {fallback_dir} is writable"
+                )
         self.embeddings_file = self.cache_dir / "embeddings.npy"
         self.metadata_file = self.cache_dir / "metadata.jsonl"
 
@@ -113,10 +137,13 @@ class Embedder:
         super().__init__()
         self.config = config
         self.cache = EmbeddingCache(config.paths.embeddings_cache)
-        self.model: SentenceTransformer | None = None
-        self.openai_client: Any = None  # type: ignore[assignment]
-        self.mistral_client: Any = None  # type: ignore[assignment]
-        self.genai_client: Any = None  # type: ignore[assignment]
+        # SentenceTransformerType exists only within TYPE_CHECKING at runtime,
+        # so keep this as a string forward reference to avoid NameError.
+        self.model: SentenceTransformerType | None = None
+        self.openai_client: Any = None
+        self.mistral_client: Any = None
+        self.genai_client: Any = None
+        self._genai_types: Any = None
 
     def load_model(self) -> None:
         """Load the embedding model based on provider."""
@@ -174,20 +201,60 @@ class Embedder:
 
             logger.info(f"Using device: {device}")
 
-        # Load model
+        # Load model (module-level symbol allows tests to patch rainrag.embed.SentenceTransformer)
+        model_cls_any = SentenceTransformer
+        if model_cls_any is None:
+            from sentence_transformers import SentenceTransformer as _SentenceTransformer
+
+            model_cls_any = _SentenceTransformer
+
+        model_cls = cast(Any, model_cls_any)
         try:
-            model_cls = cast(Any, SentenceTransformer)
             self.model = model_cls(
                 self.config.embedding.model_name,
                 device=device,
                 model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
             )
-        except TypeError:
-            # Older sentence-transformers versions don't accept model_kwargs
-            self.model = SentenceTransformer(
-                self.config.embedding.model_name,
-                device=device,
-            )
+        except TypeError as exc:
+            # Use package version to determine whether sentence-transformers supports model_kwargs
+            try:
+                from importlib import metadata as importlib_metadata
+
+                st_version = importlib_metadata.version("sentence-transformers")
+            except Exception:
+                st_version = None
+
+            try:
+                from packaging.version import Version
+
+                parsed_version = Version(st_version) if st_version is not None else None
+                cutoff_version = Version("2.2.0")
+            except Exception:
+                parsed_version = None
+                cutoff_version = None
+
+            if (
+                parsed_version is not None
+                and cutoff_version is not None
+                and parsed_version < cutoff_version
+            ):
+                logger.warning(
+                    "sentence-transformers %s does not support model_kwargs; using legacy constructor for model '%s'",
+                    st_version,
+                    self.config.embedding.model_name,
+                )
+                self.model = model_cls(
+                    self.config.embedding.model_name,
+                    device=device,
+                )
+            else:
+                logger.error(
+                    "sentence-transformers model construction failed for %s (version=%s): %s",
+                    self.config.embedding.model_name,
+                    st_version,
+                    exc,
+                )
+                raise
 
         assert self.model is not None, "Model should be loaded after load_model() call"
         # Set max sequence length
@@ -372,12 +439,15 @@ class Embedder:
         elif provider == "gemini":
             if self.genai_client is None:
                 try:
-                    from google import genai  # type: ignore[import]
+                    from google import genai
+                    from google.genai import types as genai_types
                 except ImportError as e:
                     raise ImportError(
                         "google-genai package is required for Gemini embeddings. Install it with: pip install google-genai"
                     ) from e
                 self.genai_client = genai.Client(api_key=self.config.gemini.api_key)
+                # Store module-level alias for config type usage later
+                self._genai_types = genai_types
             client = None  # Gemini uses direct API calls
             model = self.config.gemini.embedding_model
         else:
@@ -396,7 +466,7 @@ class Embedder:
             batch_texts = texts[i : i + batch_size]
             if show_progress:
                 logger.info(
-                    f"Processing batch {i//batch_size + 1}/{(len(texts) + batch_size - 1)//batch_size}"
+                    f"Processing batch {i // batch_size + 1}/{(len(texts) + batch_size - 1) // batch_size}"
                 )
 
             # Retry logic for transient failures
@@ -413,10 +483,16 @@ class Embedder:
                         response = client.embeddings.create(model=model, inputs=batch_texts)
                         batch_embeddings = [item.embedding for item in response.data]
                     elif provider == "gemini":
+                        if self._genai_types is None:
+                            raise RuntimeError(
+                                "Gemini client types not initialized. Ensure google-genai is installed."
+                            )
                         result = self.genai_client.models.embed_content(
                             model=model,
                             contents=batch_texts,
-                            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
+                            config=self._genai_types.EmbedContentConfig(
+                                task_type="RETRIEVAL_DOCUMENT"
+                            ),
                         )
                         if result and result.embeddings:
                             batch_embeddings = []

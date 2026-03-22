@@ -1,61 +1,78 @@
-[tool.poetry]
+[project]
 name = "rainrag"
 version = "0.1.0"
 description = "Local-first RAG pipeline for VTT subtitle processing"
-authors = ["RainRAG Team"]
+authors = [{name = "RainRAG Team"}]
 readme = "README.md"
-packages = [{include = "rainrag", from = "src"}]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "torch>=2.1.0,<3.0.0",
+    "transformers>=4.35.0,<5.0.0",
+    "sentence-transformers>=2.2.2,<3.0.0",
+    "qdrant-client>=1.12.0,<2.0.0",
+    "pydantic>=2.5.0,<3.0.0",
+    "loguru>=0.7.2,<1.0.0",
+    "tqdm>=4.66.0,<5.0.0",
+    "typer>=0.16.0,<1.0.0",
+    "pyyaml>=6.0.1,<7.0.0",
+    "numpy>=1.26.4,<3.0.0", # relaxed to permit NumPy 2.x after compatibility verification
+    # Mistral API client
+    "mistralai>=1.0.0,<2.0.0",
+    # Web frontend dependencies
+    "streamlit>=1.31.0,<2.0.0",
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn[standard]>=0.31.1,<1.0.0",
+    "prometheus-client>=0.21.1,<1.0.0",
+    "httpx>=0.27.0,<1.0.0",
+    "python-dotenv>=1.2.1,<2.0.0",
+    "openai>=2.8.1,<3.0.0",
+    "anthropic>=0.39.0,<1.0.0",
+    "google-genai>=0.8.0,<1.0.0",
+    "cohere>=5.20.0,<6.0.0",
+    # MCP server
+    "mcp[cli]>=1.22.0,<2.0.0",
+    # BM25 for hybrid search
+    "rank-bm25>=0.2.2,<1.0.0",
+    # Security - password hashing
+    "argon2-cffi>=23.1.0,<24.0.0",
+    # Redis for server-side session storage
+    "redis>=5.0.0,<6.0.0",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.10,<3.14"
-torch = "^2.1.0"
-transformers = "^4.35.0"
-sentence-transformers = "^2.2.2"
-qdrant-client = "^1.12.0"
-pydantic = "^2.5.0"
-loguru = "^0.7.2"
-tqdm = "^4.66.0"
-typer = {extras = ["all"], version = "^0.16.0"}
-pyyaml = "^6.0.1"
-numpy = "^1.26.4"
-# Mistral API client
-mistralai = "^1.0.0"
-# Web frontend dependencies
-streamlit = "^1.31.0"
-fastapi = "^0.115.0"
-uvicorn = {extras = ["standard"], version = "^0.31.1"}
-httpx = "^0.27.0"
-python-dotenv = "^1.2.1"
-openai = "^2.8.1"
-anthropic = "^0.39.0"
-google-genai = "^0.8.0"
-cohere = "^5.20.0"
-# MCP server
-mcp = {extras = ["cli"], version = "^1.22.0"}
-# BM25 for hybrid search
-rank-bm25 = "^0.2.2"
-# Security - password hashing
-argon2-cffi = "^23.1.0"
-# Redis for server-side session storage
-redis = "^5.0.0"
+[project.optional-dependencies]
+eval = [
+    "mlflow>=2.14,<3.0.0",
+    "ragas>=0.1.0,<0.2.0",
+    "rouge-score>=0.1.2,<0.2.0",
+    "pandas>=2.0,<3.0.0",
+    "datasets>=2.14,<3.0.0",
+    "codecarbon>=2.3,<3.0.0",
+    "matplotlib>=3.7,<4.0.0",
+]
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^7.4.3"
-pytest-cov = "^4.1.0"
-pytest-mock = "^3.12.0"
-black = "^23.11.0"
-ruff = "^0.5.3"
-mypy = "^1.7.0"
-types-pyyaml = "^6.0.12"
-pre-commit = "^4.4.0"
-bandit = "^1.9.1"
+[dependency-groups]
+dev = [
+    "pytest>=7.4.3,<8.0.0",
+    "pytest-cov>=4.1.0,<5.0.0",
+    "pytest-mock>=3.12.0,<4.0.0",
+    "black>=23.11.0,<24.0.0",
+    "ruff>=0.5.3,<1.0.0",
+    "mypy>=1.7.0,<2.0.0",
+    "types-pyyaml>=6.0.12,<7.0.0",
+    "pre-commit>=4.4.0,<5.0.0",
+    "bandit>=1.9.1,<2.0.0",
+]
 
-[tool.poetry.scripts]
+[project.scripts]
 rainrag = "rainrag.cli:app"
+rainrag-eval = "rainrag_eval.run_eval:app"
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rainrag", "src/rainrag_eval"]
 
 [tool.black]
 line-length = 100
@@ -106,9 +123,15 @@ lint.fixable = ["ALL"]
 lint.unfixable = []
 
 # Configure isort
-lint.isort.known-first-party = ["rainrag"]
+lint.isort.known-first-party = ["rainrag", "rainrag_eval"]
 lint.isort.force-single-line = false
 lint.isort.lines-after-imports = 2
+
+[tool.ruff.lint.per-file-ignores]
+"tests/unit/test_eval_metrics.py" = ["I001"]
+"tests/unit/test_review_eval_set.py" = ["I001"]
+"tests/unit/test_run_eval_two_stage.py" = ["I001"]
+"tests/unit/test_two_stage_sweep.py" = ["I001"]
 
 # Format configuration
 [tool.ruff.format]
@@ -149,6 +172,24 @@ exclude = [
 [[tool.mypy.overrides]]
 module = [
     "numpy.*",
+    "pandas",
+    "pandas.*",
+    "datasets",
+    "datasets.*",
+    "ragas",
+    "ragas.*",
+    "rouge_score",
+    "rouge_score.*",
+    "codecarbon",
+    "codecarbon.*",
+    "mlflow",
+    "mlflow.*",
+    "matplotlib",
+    "matplotlib.*",
+    "rank_bm25",
+    "rank_bm25.*",
+    "rich",
+    "rich.*",
     "sentence_transformers.*",
     "tqdm.*",
     "qdrant_client.*",

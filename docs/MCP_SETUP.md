@@ -41,10 +41,10 @@ If you haven't already installed RainRAG:
 # Clone and install
 git clone https://github.com/yidakra/rainrag.git
 cd rainrag
-poetry install
+uv sync
 
 # Or update existing installation to get MCP support
-poetry install
+uv sync
 ```
 
 ## Configuration
@@ -152,7 +152,7 @@ Cursor typically reads MCP server configuration from `~/.cursor/mcp.json`.
       "command": "bash",
       "args": [
         "-lc",
-        "cd /absolute/path/to/rainrag && poetry run rainrag mcp --config /absolute/path/to/rainrag/config.yaml"
+        "cd /absolute/path/to/rainrag && uv run rainrag mcp --config /absolute/path/to/rainrag/config.yaml"
       ]
     }
   }
@@ -443,7 +443,7 @@ You don't need to explicitly call the tools - just ask naturally:
 - The correct way to test is with an MCP client. Example (Python):
 
 ```bash
-poetry run python - <<'PY'
+uv run python - <<'PY'
 import anyio
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.client.session import ClientSession

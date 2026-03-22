@@ -40,6 +40,7 @@ def _build_payload(doc: Document) -> dict:
         "web_date_ts": doc.web_date_ts,
         "web_description": doc.web_description,
         "web_url": doc.web_url,
+        "is_speech_free": doc.is_speech_free,
         "content_hash": doc.content_hash,
     }
 

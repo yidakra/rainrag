@@ -1,12 +1,36 @@
 """Pytest configuration and fixtures."""
 
+import os
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
 
+# The package import path is configured via pytest.ini (pythonpath = src).
+# Avoid runtime sys.path mutation to keep tests non-invasive and deterministic.
 import pytest
 
 from rainrag.config import Config
+
+
+def _configure_tempdir() -> None:
+    """Ensure tempfile has a writable location even when /tmp is full."""
+    preferred_tmp = Path("/dev/shm/rainrag-pytest")
+    try:
+        preferred_tmp.mkdir(parents=True, exist_ok=True)
+        tempfile.tempdir = str(preferred_tmp)
+        os.environ["TMPDIR"] = str(preferred_tmp)
+    except OSError:
+        # Keep default behavior when /dev/shm is unavailable.
+        pass
+
+
+_configure_tempdir()
+
+
+@pytest.fixture(autouse=True)
+def disable_api_startup_init(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable heavy API lifespan initialization during unit/integration tests."""
+    monkeypatch.setenv("RAINRAG_SKIP_API_STARTUP_INIT", "1")
 
 
 @pytest.fixture
@@ -74,76 +98,78 @@ def test_config(temp_dir: Path) -> Config:
     embeddings_dir = temp_dir / "embeddings"
     embeddings_dir.mkdir()
 
-    return Config(
-        paths={
-            "archive_root": str(archive_dir),
-            "docs_output": str(data_dir / "docs.jsonl"),
-            "embeddings_cache": str(embeddings_dir),
-        },
-        embedding={
-            "provider": "local",  # Use local model for tests
-            "model_name": "sentence-transformers/all-MiniLM-L6-v2",  # Smaller model for testing
-            "batch_size": 8,
-            "max_seq_length": 128,
-            "device": "cpu",
-            "normalize_embeddings": True,
-        },
-        qdrant={
-            "host": "localhost",
-            "port": 6333,
-            "collection_name": "test_collection",
-            "vector_size": 384,  # all-MiniLM-L6-v2 dimension
-            "distance": "Cosine",
-            "recreate_collection": False,
-        },
-        llm={
-            "provider": "mistral",
-        },
-        mistral={
-            "api_key": "test-api-key",
-            "model_name": "mistral-small-latest",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        openai={
-            "api_key": "test-api-key",
-            "model_name": "gpt-4o-mini",
-            "embedding_model": "text-embedding-3-small",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        claude={
-            "api_key": "test-api-key",
-            "model_name": "claude-3-5-sonnet-20240620",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        gemini={
-            "api_key": "test-api-key",
-            "model_name": "gemini-1.5-flash",
-            "embedding_model": "models/text-embedding-004",
-            "max_tokens": 512,
-            "temperature": 0.3,
-            "top_k": 5,
-        },
-        processing={
-            "num_workers": 2,
-            "max_file_size": 1048576,  # 1MB
-            "min_text_length": 10,
-        },
-        logging={
-            "level": "ERROR",  # Reduce noise during tests
-            "format": "{message}",
-            "log_file": str(temp_dir / "test.log"),
-        },
-        web_metadata={
-            "enabled": False,  # Disable web metadata for tests
-            "path": str(temp_dir / "web_metadata"),
-            "min_content_length": 10,
-        },
+    return Config.model_validate(
+        {
+            "paths": {
+                "archive_root": str(archive_dir),
+                "docs_output": str(data_dir / "docs.jsonl"),
+                "embeddings_cache": str(embeddings_dir),
+            },
+            "embedding": {
+                "provider": "local",  # Use local model for tests
+                "model_name": "sentence-transformers/all-MiniLM-L6-v2",  # Smaller model for testing
+                "batch_size": 8,
+                "max_seq_length": 128,
+                "device": "cpu",
+                "normalize_embeddings": True,
+            },
+            "qdrant": {
+                "host": "localhost",
+                "port": 6333,
+                "collection_name": "test_collection",
+                "vector_size": 384,  # all-MiniLM-L6-v2 dimension
+                "distance": "Cosine",
+                "recreate_collection": False,
+            },
+            "llm": {
+                "provider": "mistral",
+            },
+            "mistral": {
+                "api_key": "test-api-key",
+                "model_name": "mistral-small-latest",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+            "openai": {
+                "api_key": "test-api-key",
+                "model_name": "gpt-4o-mini",
+                "embedding_model": "text-embedding-3-small",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+            "claude": {
+                "api_key": "test-api-key",
+                "model_name": "claude-3-5-sonnet-20240620",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+            "gemini": {
+                "api_key": "test-api-key",
+                "model_name": "gemini-1.5-flash",
+                "embedding_model": "models/text-embedding-004",
+                "max_tokens": 512,
+                "temperature": 0.3,
+                "top_k": 5,
+            },
+            "processing": {
+                "num_workers": 2,
+                "max_file_size": 1048576,  # 1MB
+                "min_text_length": 10,
+            },
+            "logging": {
+                "level": "ERROR",  # Reduce noise during tests
+                "format": "{message}",
+                "log_file": str(temp_dir / "test.log"),
+            },
+            "web_metadata": {
+                "enabled": False,  # Disable web metadata for tests
+                "path": str(temp_dir / "web_metadata"),
+                "min_content_length": 10,
+            },
+        }
     )
 
 

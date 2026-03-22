@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from rainrag.config import (
     ClaudeConfig,
@@ -19,6 +20,7 @@ from rainrag.config import (
     PathsConfig,
     ProcessingConfig,
     QdrantConfig,
+    TwoStageConfig,
     load_config,
 )
 
@@ -52,6 +54,7 @@ class TestEmbeddingConfig:
         assert config.max_seq_length == 512
         assert config.device == "auto"
         assert config.normalize_embeddings is True
+        assert config.prefix == ""  # default empty, no prefix applied
 
     def test_embedding_config_custom(self) -> None:
         """Test custom embedding configuration."""
@@ -59,11 +62,13 @@ class TestEmbeddingConfig:
             model_name="custom-model",
             batch_size=64,
             device="cpu",
+            prefix="my-prefix: ",
         )
 
         assert config.model_name == "custom-model"
         assert config.batch_size == 64
         assert config.device == "cpu"
+        assert config.prefix == "my-prefix: "
 
 
 class TestQdrantConfig:
@@ -221,6 +226,104 @@ class TestGeminiConfig:
         assert config.max_tokens == 1024
         assert config.temperature == 0.7
         assert config.top_k == 10
+
+
+class TestTwoStageConfig:
+    """Tests for TwoStageConfig model."""
+
+    def test_two_stage_config_defaults(self) -> None:
+        """Test default two-stage configuration."""
+        config = TwoStageConfig()
+
+        assert config.enabled is False
+        assert config.query_rewrite_enabled is True
+        assert config.query_rewrite_variants == 2
+        assert config.query_rewrite_temperature == 0.7
+        assert config.hyde_enabled is False
+        assert config.hyde_alpha == 0.5
+        assert config.hyde_temperature == 0.7
+
+    def test_two_stage_config_custom(self) -> None:
+        """Test custom two-stage configuration."""
+        config = TwoStageConfig(
+            enabled=True,
+            query_rewrite_enabled=True,
+            query_rewrite_variants=3,
+            query_rewrite_temperature=1.2,
+            hyde_enabled=True,
+            hyde_alpha=0.7,
+            hyde_temperature=1.1,
+        )
+
+        assert config.enabled is True
+        assert config.query_rewrite_enabled is True
+        assert config.query_rewrite_variants == 3
+        assert config.query_rewrite_temperature == 1.2
+        assert config.hyde_enabled is True
+        assert config.hyde_alpha == 0.7
+        assert config.hyde_temperature == 1.1
+
+    def test_two_stage_config_alpha_bounds(self) -> None:
+        """Test that hyde_alpha is bounded to [0, 1]."""
+        # out-of-range values should raise
+        with pytest.raises(ValidationError):
+            TwoStageConfig(hyde_alpha=1.5)
+        with pytest.raises(ValidationError):
+            TwoStageConfig(hyde_alpha=-0.1)
+        # boundary values should be accepted and preserved
+        cfg_low = TwoStageConfig(hyde_alpha=0)
+        cfg_high = TwoStageConfig(hyde_alpha=1)
+        assert cfg_low.hyde_alpha == 0
+        assert cfg_high.hyde_alpha == 1
+
+    def test_two_stage_config_hyde_disabled_but_alpha_set(self) -> None:
+        """Ensure model accepts hyde_alpha when hyde_enabled is False."""
+        cfg = TwoStageConfig(hyde_enabled=False, hyde_alpha=0.5)
+        assert cfg.hyde_enabled is False
+        assert cfg.hyde_alpha == 0.5
+
+    def test_two_stage_config_rewrite_disabled_but_variants_set(self) -> None:
+        """Ensure model accepts query_rewrite_variants when query_rewrite_enabled is False."""
+        cfg = TwoStageConfig(query_rewrite_enabled=False, query_rewrite_variants=2)
+        assert cfg.query_rewrite_enabled is False
+        assert cfg.query_rewrite_variants == 2
+
+    def test_two_stage_config_variants_bounds(self) -> None:
+        """Test that query_rewrite_variants is bounded to [1, 5]."""
+        # values outside range should raise
+        with pytest.raises(ValidationError):
+            TwoStageConfig(query_rewrite_variants=0)
+        with pytest.raises(ValidationError):
+            TwoStageConfig(query_rewrite_variants=6)
+        # boundary values should be accepted and preserved (not silently clamped)
+        cfg_low = TwoStageConfig(query_rewrite_variants=1)
+        cfg_high = TwoStageConfig(query_rewrite_variants=5)
+        assert cfg_low.query_rewrite_variants == 1
+        assert cfg_high.query_rewrite_variants == 5
+
+    def test_two_stage_config_rewrite_temperature_bounds(self) -> None:
+        """Test that query_rewrite_temperature is bounded to [0, 2]."""
+        with pytest.raises(ValidationError):
+            TwoStageConfig(query_rewrite_temperature=-0.1)
+        with pytest.raises(ValidationError):
+            TwoStageConfig(query_rewrite_temperature=2.1)
+        # Boundary values should be valid and preserved
+        cfg_low = TwoStageConfig(query_rewrite_temperature=0.0)
+        cfg_high = TwoStageConfig(query_rewrite_temperature=2.0)
+        assert cfg_low.query_rewrite_temperature == 0.0
+        assert cfg_high.query_rewrite_temperature == 2.0
+
+    def test_two_stage_config_hyde_temperature_bounds(self) -> None:
+        """Test that hyde_temperature is bounded to [0, 2]."""
+        with pytest.raises(ValidationError):
+            TwoStageConfig(hyde_temperature=-0.1)
+        with pytest.raises(ValidationError):
+            TwoStageConfig(hyde_temperature=2.1)
+        # Boundary values should be valid and preserved
+        cfg_low = TwoStageConfig(hyde_temperature=0.0)
+        cfg_high = TwoStageConfig(hyde_temperature=2.0)
+        assert cfg_low.hyde_temperature == 0.0
+        assert cfg_high.hyde_temperature == 2.0
 
 
 class TestMCPConfig:

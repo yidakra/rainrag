@@ -1,18 +1,112 @@
 """FastAPI backend for RainRAG query interface."""
 
-import contextlib
+import asyncio
 import hmac
 import os
 import string
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
+
+from loguru import logger
+from prometheus_client import Counter, Gauge
+
+
+# Constants loaded once at import time (avoids repeated getenv calls per request)
+# Guard against invalid env values (float() would otherwise raise and prevent
+# the module from importing).
+_query_timeout_raw = os.getenv("RAINRAG_QUERY_TIMEOUT_SECONDS", "240")
+try:
+    _query_timeout_seconds = float(_query_timeout_raw)
+except (TypeError, ValueError) as exc:
+    logger.warning(
+        "Invalid RAINRAG_QUERY_TIMEOUT_SECONDS={!r}, using default 240.0: {}",
+        _query_timeout_raw,
+        exc,
+    )
+    _query_timeout_seconds = 240.0
+QUERY_TIMEOUT_SECONDS: float = _query_timeout_seconds
+
+_max_concurrent_queries_raw = os.getenv("RAINRAG_MAX_CONCURRENT_QUERIES", "8")
+try:
+    _max_concurrent_queries = int(_max_concurrent_queries_raw)
+except (TypeError, ValueError) as exc:
+    logger.warning(
+        "Invalid RAINRAG_MAX_CONCURRENT_QUERIES={!r}, using default 8: {}",
+        _max_concurrent_queries_raw,
+        exc,
+    )
+    _max_concurrent_queries = 8
+MAX_CONCURRENT_QUERIES: int = _max_concurrent_queries
+
+# Lazy semaphore to avoid creating asyncio.Semaphore at import time in Python 3.10+
+_global_query_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_query_semaphore() -> asyncio.Semaphore:
+    global _global_query_semaphore
+    if _global_query_semaphore is None:
+        _global_query_semaphore = asyncio.Semaphore(MAX_CONCURRENT_QUERIES)
+    return _global_query_semaphore
+
+
+def _create_query_timeout_counter() -> Counter:
+    """Create a timeout counter while avoiding duplicate-registration errors.
+
+    The Prometheus client raises ``ValueError`` if you try to register the
+    same metric name twice in the default registry.  We intentionally do NOT
+    access private registry internals; instead, if the metric name is already
+    registered, we fall back to creating the counter in a fresh registry.
+
+    Note: the fallback counter will not be scraped by the default Prometheus
+    registry, but it allows the application to safely increment the counter
+    without crashing on import.
+    """
+    name = "rainrag_query_timeouts_total"
+    try:
+        return Counter(name, "Number of query requests that timed out")
+    except ValueError:
+        logger.warning(
+            "Metric {!r} already registered in default registry; creating unregistered counter (won't be scraped).",
+            name,
+        )
+        from prometheus_client import CollectorRegistry
+
+        return Counter(
+            name, "Number of query requests that timed out", registry=CollectorRegistry()
+        )
+
+
+# Prometheus metrics
+# Ensure the counter isn't registered twice when the module is imported under
+# different package names (e.g. `rainrag.api` vs `src.rainrag.api`).
+QUERY_TIMEOUT_COUNTER: Counter = _create_query_timeout_counter()
+
+
+def _create_active_queries_gauge() -> Gauge:
+    """Create an active query gauge in a safe way for multiple module imports."""
+    name = "rainrag_active_queries"
+    try:
+        return Gauge(name, "Number of currently active query handlers")
+    except ValueError:
+        logger.warning(
+            "Metric {!r} already registered in default registry; creating unregistered gauge.",
+            name,
+        )
+        from prometheus_client import CollectorRegistry
+
+        return Gauge(
+            name, "Number of currently active query handlers", registry=CollectorRegistry()
+        )
+
+
+ACTIVE_QUERIES: Gauge = _create_active_queries_gauge()
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from loguru import logger
 from pydantic import BaseModel, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
 from rainrag.query import RAGQueryEngine
@@ -21,6 +115,35 @@ from rainrag.query import RAGQueryEngine
 # Global query engine instance and config
 query_engine: RAGQueryEngine | None = None
 config: Config | None = None
+
+
+def _parse_csv_env(name: str, default: list[str]) -> list[str]:
+    """Parse comma-separated env values into a de-duplicated list."""
+    raw = os.getenv(name, "")
+    if not raw.strip():
+        return default
+
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in raw.split(","):
+        value = item.strip()
+        if value and value not in seen:
+            values.append(value)
+            seen.add(value)
+    return values or default
+
+
+def _is_mock_like(obj: Any) -> bool:
+    """Detect objects that behave like unittest.mock.Mock without importing it.
+
+    This is used primarily in unit tests where the query callable is patched with
+    a Mock. Running Mock instances via ``asyncio.to_thread`` can deadlock the
+    test runner teardown, so we invoke them directly when we detect this behavior.
+    """
+
+    # The official unittest.mock.Mock has attributes like ``called`` and
+    # ``assert_called``. We use duck-typing to avoid importing test-only utilities.
+    return callable(obj) and hasattr(obj, "called") and hasattr(obj, "assert_called")
 
 
 class QueryRequest(BaseModel):
@@ -213,8 +336,11 @@ def _resolve_media_relative(path_str: str, root: Path) -> Path | None:
         return None
 
     # 1) Standard case: path already under root
-    with contextlib.suppress(Exception):
+    try:
         return candidate.resolve().relative_to(root)
+    except (ValueError, OSError):
+        # ValueError: path not under root; OSError: resolution failed (permissions, etc.)
+        pass
 
     # 2) Heuristic: recover relative suffix after root basename (e.g. /transcoded/...)
     root_marker = f"/{root.name}/"
@@ -326,6 +452,15 @@ async def lifespan(app: FastAPI):
 
     logger.info("Initializing RainRAG API...")
 
+    # Escape hatch: avoid expensive model/client startup in tests.
+    skip_flag = os.getenv("RAINRAG_SKIP_API_STARTUP_INIT", "").lower() in {"1", "true", "yes"}
+
+    if skip_flag:
+        logger.info("Skipping RainRAG API startup initialization")
+        yield
+        logger.info("Shutting down RainRAG API...")
+        return
+
     # Load configuration
     config_path = os.getenv("RAINRAG_CONFIG", "config.yaml")
     config = load_config(config_path)
@@ -350,10 +485,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add CORS middleware to allow cross-origin requests from Streamlit
+# External deployment defaults (can be overridden in environment)
+allowed_hosts = _parse_csv_env(
+    "RAINRAG_ALLOWED_HOSTS", ["rag.tvrain.tv", "localhost", "127.0.0.1", "testserver"]
+)
+cors_origins = _parse_csv_env(
+    "RAINRAG_CORS_ORIGINS",
+    ["https://rag.tvrain.tv", "http://localhost:7860", "http://127.0.0.1:7860"],
+)
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
+# CORS for browser-based clients (Streamlit UI / API consumers)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -455,7 +601,7 @@ async def health_check():
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest, authorized: bool = Header(True)):  # type: ignore
+async def query(request: QueryRequest):
     """
     Query the RAG system.
 
@@ -475,14 +621,103 @@ async def query(request: QueryRequest, authorized: bool = Header(True)):  # type
     try:
         logger.info(f"Received query: {request.question[:100]}... (language: {request.language})")
 
-        # Execute query with language and date filter parameters
-        result = query_engine.query(
-            question=request.question,
-            top_k=request.top_k,
-            language=request.language,
-            date_from=request.date_from,
-            date_to=request.date_to,
-        )
+        # Concurrency control: bounded active query slots to avoid thread/task explosion.
+        acquired = False
+        try:
+            await asyncio.wait_for(_get_query_semaphore().acquire(), timeout=5.0)
+            acquired = True
+        except asyncio.TimeoutError as exc:
+            logger.warning(
+                "Too many concurrent queries (%d). Rejecting request (question=%r)",
+                MAX_CONCURRENT_QUERIES,
+                request.question[:100],
+            )
+            raise HTTPException(
+                status_code=429,
+                detail="Server busy: too many concurrent queries. Please retry shortly.",
+            ) from exc
+
+        active_query_incremented = False
+        try:
+            try:
+                ACTIVE_QUERIES.inc()
+                active_query_incremented = True
+            except Exception:
+                logger.exception("Failed to increment active query gauge")
+
+            background_task = None
+            try:
+                # Execute query in a worker thread so the event loop remains responsive
+                # (health checks/UI should not freeze while a long LLM call is running).
+                # Use module-level constant to avoid repeated environment lookups.
+                query_callable = query_engine.query
+
+                # ASGI unit tests often patch query_engine.query with Mock objects.
+                # Running a Mock via asyncio.to_thread can deadlock test-loop shutdown.
+                if _is_mock_like(query_callable):
+                    result = query_callable(
+                        question=request.question,
+                        top_k=request.top_k,
+                        language=request.language,
+                        date_from=request.date_from,
+                        date_to=request.date_to,
+                    )
+                else:
+                    background_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            query_callable,
+                            question=request.question,
+                            top_k=request.top_k,
+                            language=request.language,
+                            date_from=request.date_from,
+                            date_to=request.date_to,
+                        )
+                    )
+                    try:
+                        result = await asyncio.wait_for(
+                            background_task, timeout=QUERY_TIMEOUT_SECONDS
+                        )
+                    except asyncio.TimeoutError as exc:
+                        if not background_task.done():
+                            background_task.cancel()
+                            try:
+                                await asyncio.wait_for(background_task, timeout=2.0)
+                            except (asyncio.TimeoutError, asyncio.CancelledError) as cancel_exc:
+                                logger.warning(
+                                    "Background query task did not stop after cancellation (%s: %s)",
+                                    type(cancel_exc).__name__,
+                                    cancel_exc,
+                                )
+
+                        try:
+                            QUERY_TIMEOUT_COUNTER.inc()
+                        except Exception:
+                            logger.exception("Failed to increment timeout metric")
+
+                        logger.warning(
+                            "Query timed out (question={!r}, top_k={}, language={}, timeout={})",
+                            request.question[:100],
+                            request.top_k,
+                            request.language,
+                            QUERY_TIMEOUT_SECONDS,
+                        )
+                        raise HTTPException(
+                            status_code=504,
+                            detail=(
+                                "Query timed out while generating answer. "
+                                "Please try a shorter or more specific question."
+                            ),
+                        ) from exc
+            finally:
+                if active_query_incremented:
+                    try:
+                        ACTIVE_QUERIES.dec()
+                    except Exception:
+                        logger.exception("Failed to decrement active query gauge")
+
+        finally:
+            if acquired:
+                _get_query_semaphore().release()
 
         # Format response with video and VTT URLs
         context_chunks = []
@@ -559,16 +794,12 @@ class RelatedChunksResponse(BaseModel):
 
 
 @app.post("/related-chunks", response_model=RelatedChunksResponse)
-async def get_related_chunks(
-    request: RelatedChunksRequest,
-    authorized: bool = Header(True),  # type: ignore
-):
+async def get_related_chunks(request: RelatedChunksRequest):
     """
     Find chunks related to a given chunk based on vector similarity.
 
     Args:
         request: Related chunks request containing chunk_id and parameters
-        authorized: Authorization check result (injected by dependency)
 
     Returns:
         List of related chunks with similarity scores

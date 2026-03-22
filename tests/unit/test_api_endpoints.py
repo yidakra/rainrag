@@ -41,8 +41,9 @@ from src.rainrag.config import (
 
 @pytest.fixture
 def test_client():
-    """Create a test client for the FastAPI app."""
-    return TestClient(app)
+    """Create a synchronous FastAPI test client for the app."""
+    with TestClient(app) as client:
+        yield client
 
 
 @pytest.fixture

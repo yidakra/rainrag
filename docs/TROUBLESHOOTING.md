@@ -204,7 +204,7 @@ qdrant:
 embedding:
   provider: "gemini"
 qdrant:
-  vector_size: 768  # ✅
+  vector_size: 3072  # ✅
 ```
 
 **If you changed embedding providers**:
@@ -503,7 +503,7 @@ echo $GOOGLE_API_KEY
 
 4. **Install MCP dependencies**:
 ```bash
-poetry install  # Ensure mcp[cli] is installed
+uv sync  # Ensure mcp[cli] is installed
 ```
 
 ### "Claude Desktop doesn't detect MCP server"
@@ -545,9 +545,8 @@ cat ~/Library/Application\ Support/Claude/claude_desktop_config.json | python -m
 
 3. **Check rainrag is in PATH**:
 ```bash
-# If using poetry
-poetry shell
-which rainrag  # Should show path to rainrag
+# If using uv
+uv run which rainrag  # Should show path to rainrag
 
 # Add to PATH if needed
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
@@ -742,7 +741,7 @@ llm:
 - [ ] Recreate Qdrant index: `rainrag index --recreate`
 - [ ] Clear cache: `rm -rf embeddings/*` then `rainrag embed --force`
 - [ ] Check logs: `tail logs/rainrag.log`
-- [ ] Update dependencies: `poetry install`
+- [ ] Update dependencies: `uv sync`
 - [ ] Restart services
 
 ---
