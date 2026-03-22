@@ -13,6 +13,7 @@ from rainrag.config import Config
 from rainrag.embed import run_embedding
 from rainrag.ingest import Document
 
+
 # Stable namespace UUID for generating deterministic point IDs from doc IDs
 _NAMESPACE_RAINRAG = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
@@ -248,16 +249,19 @@ class QdrantIndexer:
         existing_point_ids = set(existing_hashes.keys())
 
         # Points to delete (exist in Qdrant but not in new set)
-        to_delete = list(existing_point_ids - new_point_ids)
+        to_delete: list[int | str] = list(existing_point_ids - new_point_ids)
 
         # Points to upsert (new or content_hash changed)
         to_upsert: list[tuple[str, np.ndarray, Document]] = []
         unchanged_count = 0
         for point_id, (embedding, doc) in new_doc_map.items():
-            if point_id in existing_hashes:
-                if existing_hashes[point_id] == doc.content_hash and doc.content_hash is not None:
-                    unchanged_count += 1
-                    continue  # Unchanged
+            if (
+                point_id in existing_hashes
+                and doc.content_hash is not None
+                and existing_hashes[point_id] == doc.content_hash
+            ):
+                unchanged_count += 1
+                continue  # Unchanged
             to_upsert.append((point_id, embedding, doc))
 
         logger.info(
@@ -353,40 +357,35 @@ class QdrantIndexer:
         # Determine old collection name (what the alias currently points to)
         old_collection_name: str | None = None
         try:
-            aliases = client.get_collection_aliases(alias_name)
-            if aliases and aliases.aliases:
-                old_collection_name = aliases.aliases[0].collection_name
-        except Exception:
-            pass
+            aliases_response = client.get_aliases()
+            aliases = aliases_response.aliases if aliases_response else []
+            for alias in aliases:
+                if alias.alias_name == alias_name:
+                    old_collection_name = alias.collection_name
+                    break
+        except Exception as e:
+            logger.warning(f"Failed to resolve existing alias mapping for {alias_name}: {e}")
 
         # Swap alias atomically
         logger.info(f"Swapping alias '{alias_name}' to staging collection '{staging_name}'")
-        try:
-            client.update_collection_aliases(
-                change_aliases_operations=[
-                    models.DeleteAliasOperation(
-                        delete_alias=models.DeleteAlias(alias_name=alias_name)
-                    ),
-                    models.CreateAliasOperation(
-                        create_alias=models.CreateAlias(
-                            alias_name=alias_name,
-                            collection_name=staging_name,
-                        )
-                    ),
-                ]
+        alias_ops: list[
+            models.DeleteAliasOperation | models.CreateAliasOperation
+        ] = []
+        if old_collection_name:
+            alias_ops.append(
+                models.DeleteAliasOperation(
+                    delete_alias=models.DeleteAlias(alias_name=alias_name)
+                )
             )
-        except Exception:
-            # If alias doesn't exist yet, just create it
-            client.update_collection_aliases(
-                change_aliases_operations=[
-                    models.CreateAliasOperation(
-                        create_alias=models.CreateAlias(
-                            alias_name=alias_name,
-                            collection_name=staging_name,
-                        )
-                    ),
-                ]
+        alias_ops.append(
+            models.CreateAliasOperation(
+                create_alias=models.CreateAlias(
+                    alias_name=alias_name,
+                    collection_name=staging_name,
+                )
             )
+        )
+        client.update_collection_aliases(change_aliases_operations=alias_ops)
 
         # Delete old collection if it exists and is different from staging
         if old_collection_name and old_collection_name != staging_name:
@@ -477,9 +476,6 @@ class QdrantIndexer:
         # Connect to Qdrant
         self.connect()
 
-        # Create collection
-        self.create_collection(recreate=recreate)
-
         # Load embeddings (will use cache if available)
         logger.info("Loading embeddings")
         embeddings, documents = run_embedding(
@@ -489,11 +485,14 @@ class QdrantIndexer:
         # Choose indexing strategy
         if self.config.incremental.alias_swap:
             num_indexed = self.index_with_alias_swap(embeddings, documents)
-        elif incremental and self.config.incremental.enabled:
-            stats = self.index_documents_incremental(embeddings, documents)
-            num_indexed = stats["total"]
         else:
-            num_indexed = self.index_documents(embeddings, documents)
+            # Create/update the main collection for non-alias flows.
+            self.create_collection(recreate=recreate)
+            if incremental and self.config.incremental.enabled:
+                stats = self.index_documents_incremental(embeddings, documents)
+                num_indexed = stats["total"]
+            else:
+                num_indexed = self.index_documents(embeddings, documents)
 
         # Get collection info
         self.get_collection_info()

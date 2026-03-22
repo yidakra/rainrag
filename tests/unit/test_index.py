@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from rainrag.config import Config
-from rainrag.index import QdrantIndexer
+from rainrag.index import QdrantIndexer, doc_id_to_uuid
 from rainrag.ingest import Document
 
 
@@ -307,3 +307,93 @@ class TestQdrantIndexer:
         assert count == 5
         mock_client.create_collection.assert_called_once()
         mock_client.upsert.assert_called()
+
+    @patch("rainrag.index.QdrantClient")
+    def test_index_documents_incremental_diffing(
+        self, mock_client_class: Mock, test_config: Config
+    ) -> None:
+        """Incremental indexing should skip unchanged, upsert changed/new, and delete removed."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        # Existing points in Qdrant:
+        # - doc1: unchanged
+        # - old_doc: deleted in new dataset
+        doc1_id = "doc1"
+        old_doc_id = "old_doc"
+        point_doc1 = MagicMock()
+        point_doc1.id = doc_id_to_uuid(doc1_id)
+        point_doc1.payload = {"content_hash": "h1"}
+        point_old = MagicMock()
+        point_old.id = doc_id_to_uuid(old_doc_id)
+        point_old.payload = {"content_hash": "hold"}
+        mock_client.scroll.return_value = ([point_doc1, point_old], None)
+
+        documents = [
+            Document(
+                id=doc1_id,
+                path="/path/doc1.vtt",
+                language="en",
+                text="same text",
+                length=9,
+                content_hash="h1",
+            ),
+            Document(
+                id="doc2",
+                path="/path/doc2.vtt",
+                language="en",
+                text="new text",
+                length=8,
+                content_hash="h2",
+            ),
+        ]
+        embeddings = np.random.rand(2, 384).astype(np.float32)
+
+        indexer = QdrantIndexer(test_config)
+        indexer.client = mock_client
+
+        stats = indexer.index_documents_incremental(embeddings, documents, batch_size=50)
+
+        assert stats == {"total": 2, "upserted": 1, "deleted": 1, "unchanged": 1}
+        mock_client.delete.assert_called_once()
+        mock_client.upsert.assert_called_once()
+
+    @patch("rainrag.index.run_embedding")
+    @patch("rainrag.index.QdrantClient")
+    def test_index_pipeline_alias_swap_skips_create_collection(
+        self, mock_client_class: Mock, mock_run_embedding: Mock, test_config: Config
+    ) -> None:
+        """Alias-swap mode should bypass create_collection and use staging flow."""
+        mock_client = MagicMock()
+        mock_collections = MagicMock()
+        mock_collections.collections = []
+        mock_client.get_collections.return_value = mock_collections
+        mock_client_class.return_value = mock_client
+
+        embeddings = np.random.rand(2, 384).astype(np.float32)
+        documents = [
+            Document(
+                id=f"doc{i}",
+                path=f"/path/file{i}.vtt",
+                language="en",
+                text=f"Text {i}",
+                length=6,
+                content_hash=f"h{i}",
+            )
+            for i in range(2)
+        ]
+        mock_run_embedding.return_value = (embeddings, documents)
+
+        test_config.incremental.alias_swap = True
+        indexer = QdrantIndexer(test_config)
+
+        indexer.connect = MagicMock()
+        indexer.create_collection = MagicMock()
+        indexer.index_with_alias_swap = MagicMock(return_value=2)
+        indexer.get_collection_info = MagicMock(return_value={})
+
+        count = indexer.index(recreate=False, incremental=True)
+
+        assert count == 2
+        indexer.create_collection.assert_not_called()
+        indexer.index_with_alias_swap.assert_called_once_with(embeddings, documents)
