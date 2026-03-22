@@ -329,7 +329,7 @@ def create_eval_set(
         if len(pairs) >= n:
             break
         print(
-            f"  [{i+1}/{len(candidates)}] Generating pair for doc_id={chunk.get('doc_id', '?')} ...",
+            f"  [{i + 1}/{len(candidates)}] Generating pair for doc_id={chunk.get('doc_id', '?')} ...",
             end=" ",
         )
         pair = _generate_pair(engine, chunk, lang)
@@ -344,7 +344,7 @@ def create_eval_set(
         ):
             print("skipped (quality filter)")
             continue
-        pair["query_id"] = f"{lang}_{len(pairs)+1:03d}"
+        pair["query_id"] = f"{lang}_{len(pairs) + 1:03d}"
         pairs.append(pair)
         print(f"ok [{pair['category']}]")
 

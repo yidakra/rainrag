@@ -10,7 +10,7 @@ WorkingDirectory=/home/ubuntu/rainrag
 Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=RAINRAG_API_URL=https://rag.tvrain.tv/api
 EnvironmentFile=-/home/ubuntu/rainrag/.env
-ExecStart=/usr/bin/env bash -lc 'cd /home/ubuntu/rainrag && poetry run streamlit run app.py --server.address 127.0.0.1 --server.port 7861 --server.headless true'
+ExecStart=/usr/bin/env bash -lc 'uv run streamlit run app.py --server.address 127.0.0.1 --server.port 7861 --server.headless true'
 Restart=on-failure
 RestartSec=5
 

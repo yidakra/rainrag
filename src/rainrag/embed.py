@@ -222,12 +222,7 @@ class Embedder:
 
                 st_version = importlib_metadata.version("sentence-transformers")
             except Exception:
-                try:
-                    import importlib_metadata as importlib_metadata_backport
-
-                    st_version = importlib_metadata_backport.version("sentence-transformers")
-                except Exception:
-                    st_version = None
+                st_version = None
 
             try:
                 from packaging.version import Version
@@ -471,7 +466,7 @@ class Embedder:
             batch_texts = texts[i : i + batch_size]
             if show_progress:
                 logger.info(
-                    f"Processing batch {i//batch_size + 1}/{(len(texts) + batch_size - 1)//batch_size}"
+                    f"Processing batch {i // batch_size + 1}/{(len(texts) + batch_size - 1) // batch_size}"
                 )
 
             # Retry logic for transient failures

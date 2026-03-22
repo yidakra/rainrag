@@ -29,7 +29,7 @@ def _subprocess_env() -> dict[str, str]:
 
 
 def _rainrag_mcp_cmd(*args: str) -> list[str]:
-    return ["poetry", "run", "python", "-m", "rainrag.cli", "mcp", *args]
+    return ["uv", "run", "python", "-m", "rainrag.cli", "mcp", *args]
 
 
 def _strip_ansi(text: str) -> str:
@@ -146,7 +146,7 @@ mcp:
                 except requests.exceptions.RequestException:
                     time.sleep(0.5)
 
-            assert server_started, "MCP server failed to start within 15 seconds"
+            assert server_started, "MCP server failed to start within 60 seconds"
 
             # Give it a moment to fully initialize
             time.sleep(2)

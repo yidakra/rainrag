@@ -119,7 +119,7 @@ Optional:
 ### Prerequisites
 
 - Python 3.10+
-- Poetry (for dependency management)
+- uv (for dependency management)
 - Docker (optional, for containerized deployment)
 - Kubernetes/Minikube (optional, for Helm deployment)
 
@@ -132,16 +132,17 @@ git clone https://github.com/yourusername/rainrag.git
 cd rainrag
 ```
 
-2. **Install dependencies with Poetry**
+2. **Install dependencies with uv**
 
 ```bash
-poetry install
+uv sync
 ```
 
-3. **Activate the virtual environment**
+3. **Run commands in the project environment**
 
 ```bash
-poetry shell
+# uv automatically manages the virtual environment per command
+uv run rainrag --help
 ```
 
 4. **Download required models** (only needed if using local embeddings)
@@ -151,7 +152,7 @@ poetry shell
 make download-models
 
 # Or manually:
-poetry run python scripts/download_models.py
+uv run python scripts/download_models.py
 ```
 
 **Note:** This step downloads the `multilingual-e5-large` embedding model (~2GB) and caches it locally. This is only required if you're using `provider: "local"` in your embedding configuration. If you're using `provider: "mistral"` for Mistral API embeddings, you can skip this step.
@@ -1088,7 +1089,7 @@ rainrag/
 ├── config.yaml             # Configuration file
 ├── docker-compose.yaml     # Docker Compose setup
 ├── .env.example            # Environment variables template
-├── pyproject.toml          # Poetry dependencies
+├── pyproject.toml          # Project dependencies and metadata
 ├── Dockerfile              # Container image
 ├── Makefile                # Development commands
 └── README.md               # This file
@@ -1673,20 +1674,20 @@ cohere:
 ### Running Tests
 
 ```bash
-poetry run pytest
+uv run pytest
 ```
 
 ### Code Formatting
 
 ```bash
-poetry run black src/
-poetry run ruff check src/
+uv run black src/
+uv run ruff check src/
 ```
 
 ### Type Checking
 
 ```bash
-poetry run mypy src/
+uv run mypy src/
 ```
 
 ## Performance Considerations
@@ -1840,11 +1841,11 @@ Then check logs for detailed parsing information.
 
 ### Editor Shows “Import … could not be resolved”
 
-If runtime works but the editor shows missing imports, ensure the editor uses the project Poetry environment.
+If runtime works but the editor shows missing imports, ensure the editor uses the project uv-managed environment.
 
 - Recommended: use an in-project venv (`.venv`) and point your editor/type-checker at it.
 - This repo includes `pyrightconfig.json` and `.vscode/settings.json` to help Cursor/VS Code pick up `.venv`.
-- Ensure local Python builds/install use `poetry install` or `pip install -e .` from repo root so runtime imports match type checker lookup (package root is `src/`).
+- Ensure local Python builds/install use `uv sync` or `pip install -e .` from repo root so runtime imports match type checker lookup (package root is `src/`).
 
 ## Roadmap
 
