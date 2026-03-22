@@ -222,12 +222,7 @@ class Embedder:
 
                 st_version = importlib_metadata.version("sentence-transformers")
             except Exception:
-                try:
-                    import importlib_metadata as importlib_metadata_backport
-
-                    st_version = importlib_metadata_backport.version("sentence-transformers")
-                except Exception:
-                    st_version = None
+                st_version = None
 
             try:
                 from packaging.version import Version
