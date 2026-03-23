@@ -1,0 +1,13 @@
+[Unit]
+Description=Run RainRAG incremental update hourly
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=1h
+RandomizedDelaySec=5m
+Persistent=true
+Unit=rainrag-incremental-update.service
+
+[Install]
+WantedBy=timers.target
+

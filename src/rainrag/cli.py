@@ -174,12 +174,12 @@ def embed(
     """
     setup_logging(config)
 
-    try:
-        if force and incremental:
-            raise typer.BadParameter(
-                "--force and --incremental cannot be used together. Use --force for full re-embedding or --incremental for cache-based incremental embedding."
-            )
+    if force and incremental:
+        raise typer.BadParameter(
+            "--force and --incremental cannot be used together. Use --force for full re-embedding or --incremental for cache-based incremental embedding."
+        )
 
+    try:
         mode = "incremental" if incremental else "full"
         typer.echo(f"Starting embedding generation ({mode} mode)...")
         embeddings, documents = run_embedding(

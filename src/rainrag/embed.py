@@ -79,7 +79,7 @@ class EmbeddingCache:
 
         logger.info(f"Metadata saved to {self.metadata_file}")
 
-    def load(self) -> tuple[np.ndarray | None, list[Document] | None]:
+    def load(self, mmap_mode: str | None = None) -> tuple[np.ndarray | None, list[Document] | None]:
         """
         Load embeddings and metadata from cache.
 
@@ -93,7 +93,7 @@ class EmbeddingCache:
         logger.info("Loading embeddings from cache")
 
         # Load embeddings
-        embeddings = np.load(self.embeddings_file)
+        embeddings = np.load(self.embeddings_file, mmap_mode=mmap_mode)
         logger.info(f"Loaded {len(embeddings)} embeddings")
 
         # Load metadata
@@ -583,7 +583,7 @@ class Embedder:
         Only documents with a new or changed content_hash are sent to the
         embedding model. Unchanged documents reuse their cached vectors.
         """
-        cached_embeddings, cached_docs = self.cache.load()
+        cached_embeddings, cached_docs = self.cache.load(mmap_mode="r")
         if cached_embeddings is None or cached_docs is None:
             logger.info("Cache load failed, falling back to full embedding")
             self.load_model()
@@ -591,11 +591,11 @@ class Embedder:
             self.cache.save(embeddings, documents)
             return embeddings, documents
 
-        # Build content_hash -> embedding lookup from cache
-        hash_to_embedding: dict[str, np.ndarray] = {}
+        # Build content_hash -> cached row index lookup from cache
+        hash_to_embedding_index: dict[str, int] = {}
         for i, doc in enumerate(cached_docs):
             if doc.content_hash:
-                hash_to_embedding[doc.content_hash] = cached_embeddings[i]
+                hash_to_embedding_index[doc.content_hash] = i
 
         # Handle empty cached embeddings gracefully: treat as cache miss and re-embed all docs.
         if cached_embeddings.size == 0 or cached_embeddings.shape[0] == 0:
@@ -609,7 +609,7 @@ class Embedder:
 
         embedding_dim = cached_embeddings.shape[1]
         logger.info(
-            f"Incremental embedding: {len(hash_to_embedding)} cached hashes, "
+            f"Incremental embedding: {len(hash_to_embedding_index)} cached hashes, "
             + f"{len(documents)} current documents"
         )
 
@@ -618,11 +618,18 @@ class Embedder:
         to_embed_indices: list[int] = []
         cached_count = 0
 
-        final_embeddings = np.zeros((len(documents), embedding_dim), dtype=np.float32)
+        tmp_embeddings_path = self.cache.cache_dir / "embeddings.incremental.tmp.npy"
+        final_embeddings = np.lib.format.open_memmap(
+            tmp_embeddings_path,
+            mode="w+",
+            dtype=np.float32,
+            shape=(len(documents), embedding_dim),
+        )
 
         for i, doc in enumerate(documents):
-            if doc.content_hash and doc.content_hash in hash_to_embedding:
-                final_embeddings[i] = hash_to_embedding[doc.content_hash]
+            if doc.content_hash and doc.content_hash in hash_to_embedding_index:
+                cached_idx = hash_to_embedding_index[doc.content_hash]
+                final_embeddings[i] = cached_embeddings[cached_idx]
                 cached_count += 1
             else:
                 to_embed.append(doc)
@@ -639,8 +646,11 @@ class Embedder:
         else:
             logger.info("All documents have cached embeddings — nothing to embed!")
 
-        # Save updated cache
+        # Save updated cache and clean up the temporary memmap file.
+        final_embeddings.flush()
         self.cache.save(final_embeddings, documents)
+        if tmp_embeddings_path.exists():
+            tmp_embeddings_path.unlink()
 
         logger.info("Incremental embedding pipeline complete!")
         return final_embeddings, documents

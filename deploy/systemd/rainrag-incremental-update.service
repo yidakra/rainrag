@@ -1,0 +1,17 @@
+[Unit]
+Description=RainRAG Incremental Update Pipeline
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/rainrag
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=RAINRAG_CONFIG=/home/ubuntu/rainrag/config.yaml
+Environment=BOOTSTRAP_ON_MISSING=0
+Environment=MANIFEST_SANITY_MIN_ENTRIES=100
+Environment=MANIFEST_SANITY_DOCS_THRESHOLD=10000
+EnvironmentFile=-/home/ubuntu/rainrag/.env
+ExecStart=/usr/bin/env bash -lc '/home/ubuntu/rainrag/scripts/run_incremental_update.sh >> /home/ubuntu/rainrag/logs/incremental-hourly.log 2>&1'
+

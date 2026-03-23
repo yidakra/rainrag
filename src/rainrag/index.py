@@ -233,10 +233,10 @@ class QdrantIndexer:
 
         max_iterations = self.config.qdrant.max_scroll_iterations
         max_duration = self.config.qdrant.max_scroll_duration
-        batch_size = self.config.qdrant.scroll_batch_size
+        scroll_batch_size = self.config.qdrant.scroll_batch_size
 
         logger.info(
-            f"Scrolling existing collection for change detection... (batch_size={batch_size}, "
+            f"Scrolling existing collection for change detection... (batch_size={scroll_batch_size}, "
             + f"max_iterations={max_iterations}, max_duration={max_duration}s)"
         )
 
@@ -260,7 +260,7 @@ class QdrantIndexer:
 
             result = client.scroll(
                 collection_name=collection_name,
-                limit=batch_size,
+                limit=scroll_batch_size,
                 offset=offset,
                 with_payload=["content_hash"],
                 with_vectors=False,
@@ -312,8 +312,7 @@ class QdrantIndexer:
             to_upsert.append((point_id, embedding, doc))
 
         logger.info(
-            f"Incremental index: {unchanged_count} unchanged, "
-            + f"{len(to_upsert)} to upsert, {len(to_delete)} to delete"
+            f"Incremental index: {unchanged_count} unchanged, {len(to_upsert)} to upsert, {len(to_delete)} to delete"
         )
 
         # Delete removed points
@@ -520,7 +519,7 @@ class QdrantIndexer:
         # Load embeddings (will use cache if available)
         logger.info("Loading embeddings")
         embeddings, documents = run_embedding(
-            config_path=getattr(self, "config_path", "config.yaml"),
+            config_path=self.config_path,
             incremental=incremental,
         )
 

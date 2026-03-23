@@ -185,7 +185,7 @@ mcp:
 
 # Incremental re-indexing configuration
 incremental:
-  enabled: false  # Enable incremental processing (only re-process changed documents)
+  enabled: true  # Enable incremental processing (only re-process changed documents)
   manifest_path: "./data/manifest.json"  # File tracking source VTT file state for change detection
   alias_swap: false  # Use two-phase indexing with collection alias swap for zero-downtime updates
 
