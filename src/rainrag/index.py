@@ -23,6 +23,15 @@ def doc_id_to_uuid(doc_id: str) -> str:
     return str(uuid.uuid5(_NAMESPACE_RAINRAG, doc_id))
 
 
+def _is_uuid_string(value: str) -> bool:
+    """Return True if value is a valid UUID string."""
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
 def _build_payload(doc: Document) -> dict:
     """Build the Qdrant payload dict for a document."""
     return {
@@ -149,6 +158,47 @@ class QdrantIndexer:
         )
         logger.info(f"Created staging collection: {collection_name}")
 
+    def _collection_exists(self, collection_name: str | None = None) -> bool:
+        """Check whether a collection exists."""
+        client = self._get_client()
+        target_name = collection_name or self.config.qdrant.collection_name
+        collections = client.get_collections()
+        return any(col.name == target_name for col in collections.collections)
+
+    def _has_legacy_point_ids(self, sample_limit: int = 256) -> bool:
+        """Detect legacy point IDs (integer IDs or non-UUID strings).
+
+        Historically this project used sequential integer point IDs.
+        Current indexing uses deterministic UUIDv5 string IDs.
+        """
+        client = self._get_client()
+        collection_name = self.config.qdrant.collection_name
+
+        if not self._collection_exists(collection_name):
+            return False
+
+        try:
+            points, _ = client.scroll(
+                collection_name=collection_name,
+                limit=sample_limit,
+                with_payload=False,
+                with_vectors=False,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Could not inspect point IDs for legacy detection in {collection_name}: {e}"
+            )
+            return False
+
+        for point in points:
+            point_id = point.id
+            if isinstance(point_id, int):
+                return True
+            if isinstance(point_id, str) and not _is_uuid_string(point_id):
+                return True
+
+        return False
+
     def index_documents(
         self, embeddings: np.ndarray, documents: list[Document], batch_size: int = 50
     ) -> int:
@@ -223,7 +273,7 @@ class QdrantIndexer:
             new_doc_map[point_id] = (embeddings[i], doc)
 
         # Scroll existing points to get their content_hashes
-        existing_hashes: dict[str, str | None] = {}  # point_id -> content_hash
+        existing_hashes: dict[models.ExtendedPointId, str | None] = {}  # point_id -> content_hash
 
         # Use collection info to make the loop observable and bounded
         collection_info = self.get_collection_info()
@@ -273,7 +323,7 @@ class QdrantIndexer:
 
             for point in points:
                 payload = point.payload or {}
-                existing_hashes[str(point.id)] = payload.get("content_hash")
+                existing_hashes[point.id] = payload.get("content_hash")
 
             offset = next_offset
             iterations += 1
@@ -529,6 +579,16 @@ class QdrantIndexer:
         else:
             # Create/update the main collection for non-alias flows.
             self.create_collection(recreate=recreate)
+
+            # Migration guard: prior versions used integer / non-UUID point IDs.
+            # Without a one-time cleanup, UUID-based upserts can leave stale legacy points.
+            if not recreate and self._has_legacy_point_ids():
+                logger.warning(
+                    "Detected legacy non-UUID point IDs in existing collection. "
+                    + "Recreating collection to migrate safely to UUID-based point IDs."
+                )
+                self.create_collection(recreate=True)
+
             if incremental and self.config.incremental.enabled:
                 stats = self.index_documents_incremental(embeddings, documents)
                 num_indexed = stats["total"]
