@@ -15,12 +15,12 @@ if command -v ionice >/dev/null 2>&1 && command -v nice >/dev/null 2>&1; then
   ionice -c3 nice -n 15 flock "$LOCK_FILE" uv run python scripts/backfill_manifest_doc_ids.py \
     --docs data/docs.jsonl \
     --manifest data/manifest.json \
-    --archive-root "$ARCHIVE_ROOT" | tee -a "$LOG_FILE"
+    --archive-root "$ARCHIVE_ROOT" 2>&1 | tee -a "$LOG_FILE"
 else
   flock "$LOCK_FILE" uv run python scripts/backfill_manifest_doc_ids.py \
     --docs data/docs.jsonl \
     --manifest data/manifest.json \
-    --archive-root "$ARCHIVE_ROOT" | tee -a "$LOG_FILE"
+    --archive-root "$ARCHIVE_ROOT" 2>&1 | tee -a "$LOG_FILE"
 fi
 
 echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] manifest backfill finished" | tee -a "$LOG_FILE"

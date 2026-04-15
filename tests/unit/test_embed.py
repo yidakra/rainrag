@@ -320,3 +320,45 @@ class TestEmbedder:
 
         with pytest.raises(ValueError, match="No documents found"):
             embedder.embed()
+
+    def test_embed_incremental_reuses_legacy_cache_without_content_hash(
+        self, test_config: Config, temp_dir: Path
+    ) -> None:
+        """Incremental mode should reuse old cache rows that predate content_hash."""
+        test_config.embedding.provider = "mistral"
+        test_config.paths.embeddings_cache = str(temp_dir / "embeddings")
+        docs_file = temp_dir / "data" / "docs.jsonl"
+        docs_file.parent.mkdir(parents=True, exist_ok=True)
+        test_config.paths.docs_output = str(docs_file)
+
+        cached_docs = [
+            Document(
+                id="doc1",
+                path="/tmp/doc1.vtt",
+                language="en",
+                text="same text 1",
+                length=11,
+            ),
+            Document(
+                id="doc2",
+                path="/tmp/doc2.vtt",
+                language="en",
+                text="same text 2",
+                length=11,
+            ),
+        ]
+        cached_embeddings = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
+
+        # Simulate legacy cache metadata where content_hash was not present.
+        with open(docs_file, "w", encoding="utf-8") as f:
+            for doc in cached_docs:
+                f.write(doc.model_dump_json() + "\n")
+
+        embedder = Embedder(test_config)
+        embedder.cache.save(cached_embeddings, cached_docs)
+
+        with patch.object(Embedder, "generate_embeddings", side_effect=AssertionError):
+            embeddings, docs = embedder.embed(incremental=True)
+
+        assert len(docs) == 2
+        assert np.allclose(embeddings, cached_embeddings)

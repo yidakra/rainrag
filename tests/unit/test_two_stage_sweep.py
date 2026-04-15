@@ -144,9 +144,9 @@ class TestConditionStructure:
 
     def test_required_keys_present(self, single_axis_conditions):
         for cond in single_axis_conditions:
-            assert (
-                set(cond.keys()) >= _REQUIRED_CONDITION_KEYS
-            ), f"Missing keys in condition {cond.get('id')}"
+            assert set(cond.keys()) >= _REQUIRED_CONDITION_KEYS, (
+                f"Missing keys in condition {cond.get('id')}"
+            )
 
     def test_id_is_non_empty_string(self, single_axis_conditions):
         for cond in single_axis_conditions:
@@ -158,9 +158,9 @@ class TestConditionStructure:
 
     def test_base_overrides_present_in_every_condition(self, single_axis_conditions):
         for cond in single_axis_conditions:
-            assert (
-                set(cond["overrides"].keys()) >= _BASE_OVERRIDE_KEYS
-            ), f"Missing base override keys in {cond['id']}"
+            assert set(cond["overrides"].keys()) >= _BASE_OVERRIDE_KEYS, (
+                f"Missing base override keys in {cond['id']}"
+            )
 
     def test_sweep_axis_tag_present(self, single_axis_conditions):
         for cond in single_axis_conditions:
@@ -433,9 +433,9 @@ class TestValidation:
     def test_no_duplicate_condition_ids_full_sweep(self):
         exp = _make_exp()
         ids = [c["id"] for c in exp.conditions()]
-        assert len(ids) == len(
-            set(ids)
-        ), f"Duplicate IDs found: {[x for x in ids if ids.count(x) > 1]}"
+        assert len(ids) == len(set(ids)), (
+            f"Duplicate IDs found: {[x for x in ids if ids.count(x) > 1]}"
+        )
 
     def test_no_duplicate_condition_ids_per_axis(self):
         for axis in (

@@ -3,11 +3,12 @@ from __future__ import annotations
 
 """Embedding generation module using multilingual-e5-large."""
 
+import hashlib
 import json
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import torch
@@ -79,7 +80,10 @@ class EmbeddingCache:
 
         logger.info(f"Metadata saved to {self.metadata_file}")
 
-    def load(self, mmap_mode: str | None = None) -> tuple[np.ndarray | None, list[Document] | None]:
+    def load(
+        self,
+        mmap_mode: Literal["r+", "r", "w+", "c"] | None = None,
+    ) -> tuple[np.ndarray | None, list[Document] | None]:
         """
         Load embeddings and metadata from cache.
 
@@ -122,6 +126,31 @@ class EmbeddingCache:
             True if cache files exist
         """
         return self.embeddings_file.exists() and self.metadata_file.exists()
+
+    def load_hash_index(self) -> dict[str, int] | None:
+        """Load content-hash -> embedding row index from metadata without Document objects."""
+        if not self.exists():
+            logger.warning("Cache files not found")
+            return None
+
+        hash_to_embedding_index: dict[str, int] = {}
+        with open(self.metadata_file, encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                try:
+                    doc_dict = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                content_hash = doc_dict.get("content_hash")
+                if not content_hash:
+                    text = doc_dict.get("text")
+                    if isinstance(text, str):
+                        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+                if isinstance(content_hash, str) and content_hash:
+                    hash_to_embedding_index[content_hash] = i
+
+        return hash_to_embedding_index
 
 
 class Embedder:
@@ -216,7 +245,6 @@ class Embedder:
                 model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
             )
         except TypeError as exc:
-            # Use package version to determine whether sentence-transformers supports model_kwargs
             try:
                 from importlib import metadata as importlib_metadata
 
@@ -224,35 +252,22 @@ class Embedder:
             except Exception:
                 st_version = None
 
+            logger.warning(
+                "sentence-transformers constructor with model_kwargs failed for model '{}' (version={}): {}. Retrying legacy constructor.",
+                self.config.embedding.model_name,
+                st_version,
+                exc,
+            )
             try:
-                from packaging.version import Version
-
-                parsed_version = Version(st_version) if st_version is not None else None
-                cutoff_version = Version("2.2.0")
-            except Exception:
-                parsed_version = None
-                cutoff_version = None
-
-            if (
-                parsed_version is not None
-                and cutoff_version is not None
-                and parsed_version < cutoff_version
-            ):
-                logger.warning(
-                    "sentence-transformers %s does not support model_kwargs; using legacy constructor for model '%s'",
-                    st_version,
-                    self.config.embedding.model_name,
-                )
                 self.model = model_cls(
                     self.config.embedding.model_name,
                     device=device,
                 )
-            else:
-                logger.error(
-                    "sentence-transformers model construction failed for %s (version=%s): %s",
+            except Exception:
+                logger.exception(
+                    "sentence-transformers legacy constructor also failed for model '{}' (version={})",
                     self.config.embedding.model_name,
                     st_version,
-                    exc,
                 )
                 raise
 
@@ -583,24 +598,39 @@ class Embedder:
         Only documents with a new or changed content_hash are sent to the
         embedding model. Unchanged documents reuse their cached vectors.
         """
-        cached_embeddings, cached_docs = self.cache.load(mmap_mode="r")
-        if cached_embeddings is None or cached_docs is None:
+        try:
+            cached_embeddings = np.load(self.cache.embeddings_file, mmap_mode="r")
+        except Exception:
+            cached_embeddings = None
+        hash_to_embedding_index = self.cache.load_hash_index()
+        if cached_embeddings is None or hash_to_embedding_index is None:
             logger.info("Cache load failed, falling back to full embedding")
             self.load_model()
             embeddings = self.generate_embeddings(documents)
             self.cache.save(embeddings, documents)
             return embeddings, documents
 
-        # Build content_hash -> cached row index lookup from cache
-        hash_to_embedding_index: dict[str, int] = {}
-        for i, doc in enumerate(cached_docs):
+        def _content_hash(doc: Document) -> str:
+            """Return stable content hash, backfilling from text for legacy cache rows."""
             if doc.content_hash:
-                hash_to_embedding_index[doc.content_hash] = i
+                return doc.content_hash
+            return hashlib.sha256(doc.text.encode("utf-8")).hexdigest()
 
         # Handle empty cached embeddings gracefully: treat as cache miss and re-embed all docs.
         if cached_embeddings.size == 0 or cached_embeddings.shape[0] == 0:
             logger.warning(
                 "Cached embeddings are empty; falling back to full embedding for all documents"
+            )
+            self.load_model()
+            embeddings = self.generate_embeddings(documents)
+            self.cache.save(embeddings, documents)
+            return embeddings, documents
+
+        if len(hash_to_embedding_index) > cached_embeddings.shape[0]:
+            logger.warning(
+                "Cached hash index larger than embedding rows (hashes={}, rows={}); falling back to full embedding",
+                len(hash_to_embedding_index),
+                cached_embeddings.shape[0],
             )
             self.load_model()
             embeddings = self.generate_embeddings(documents)
@@ -627,8 +657,9 @@ class Embedder:
         )
 
         for i, doc in enumerate(documents):
-            if doc.content_hash and doc.content_hash in hash_to_embedding_index:
-                cached_idx = hash_to_embedding_index[doc.content_hash]
+            doc_hash = _content_hash(doc)
+            if doc_hash in hash_to_embedding_index:
+                cached_idx = hash_to_embedding_index[doc_hash]
                 final_embeddings[i] = cached_embeddings[cached_idx]
                 cached_count += 1
             else:
