@@ -24,7 +24,7 @@ jobs:
         run: uv python install 3.11
 
       - name: Install Ruff
-        run: uv tool install ruff@0.5.7
+        run: uv tool install ruff@0.15.7
 
       - name: Run Ruff linter
         run: ruff check src/ tests/
