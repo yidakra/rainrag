@@ -61,9 +61,7 @@ PY
 )
 
 for line in "${CFG[@]}"; do
-  key="${line%%=*}"
-  value="${line#*=}"
-  case "$key" in
+  IFS='=' read -r key value <<< "$line"
     incremental_enabled) incremental_enabled="$value" ;;
     manifest_path) manifest_path="$value" ;;
     docs_output) docs_output="$value" ;;
@@ -112,13 +110,13 @@ from pathlib import Path
 p = Path(sys.argv[1])
 try:
     obj = json.loads(p.read_text(encoding="utf-8"))
-    print(len(obj) if isinstance(obj, dict) else 0)
+    print(len(obj) if isinstance(obj, (dict, list)) else 0)
 except Exception:
     print(0)
 PY
 )"
 
-docs_lines="$(wc -l < "$docs_output" || echo 0)"
+docs_lines="$( { wc -l < "$docs_output"; } 2>/dev/null || echo 0 )"
 
 if [[ "$docs_lines" -ge "$MANIFEST_SANITY_DOCS_THRESHOLD" && "$manifest_entries" -lt "$MANIFEST_SANITY_MIN_ENTRIES" ]]; then
   log "ERROR: manifest sanity check failed."

@@ -138,7 +138,14 @@ class EmbeddingCache:
             for i, line in enumerate(f):
                 try:
                     doc_dict = json.loads(line)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "Skipping malformed metadata line {line_no} in {metadata_file}: {error} - {line!r}",
+                        line_no=i + 1,
+                        metadata_file=self.metadata_file,
+                        error=exc,
+                        line=line,
+                    )
                     continue
 
                 content_hash = doc_dict.get("content_hash")
@@ -601,6 +608,10 @@ class Embedder:
         try:
             cached_embeddings = np.load(self.cache.embeddings_file, mmap_mode="r")
         except Exception:
+            logger.exception(
+                "Failed to load cached embeddings from %s",
+                self.cache.embeddings_file,
+            )
             cached_embeddings = None
         hash_to_embedding_index = self.cache.load_hash_index()
         if cached_embeddings is None or hash_to_embedding_index is None:
@@ -660,6 +671,11 @@ class Embedder:
             doc_hash = _content_hash(doc)
             if doc_hash in hash_to_embedding_index:
                 cached_idx = hash_to_embedding_index[doc_hash]
+                if cached_idx >= cached_embeddings.shape[0]:
+                    # Stale index, treat as cache miss
+                    to_embed.append(doc)
+                    to_embed_indices.append(i)
+                    continue
                 final_embeddings[i] = cached_embeddings[cached_idx]
                 cached_count += 1
             else:
@@ -680,6 +696,8 @@ class Embedder:
         # Save updated cache and clean up the temporary memmap file.
         final_embeddings.flush()
         self.cache.save(final_embeddings, documents)
+        # Convert to regular ndarray before deleting backing file
+        final_embeddings = np.array(final_embeddings)
         if tmp_embeddings_path.exists():
             tmp_embeddings_path.unlink()
 

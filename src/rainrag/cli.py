@@ -215,6 +215,11 @@ def index(
     """
     setup_logging(config)
 
+    if recreate and incremental:
+        raise typer.BadParameter(
+            "--recreate and --incremental cannot be used together. Use --recreate to recreate the collection or --incremental to update it incrementally."
+        )
+
     try:
         mode = "incremental" if incremental else "full"
         typer.echo(f"Starting indexing pipeline ({mode} mode)...")

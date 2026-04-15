@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -68,6 +69,7 @@ def main() -> int:
     total_lines = 0
     mapped_lines = 0
     unmatched_lines = 0
+    skipped_lines = 0
 
     with docs_path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -75,7 +77,25 @@ def main() -> int:
             line = line.strip()
             if not line:
                 continue
-            obj = json.loads(line)
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as exc:
+                skipped_lines += 1
+                print(
+                    f"Skipping malformed JSON at line {total_lines}: {exc} - {line!r}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+            except Exception as exc:
+                skipped_lines += 1
+                print(
+                    f"Skipping invalid line at {total_lines}: {exc} - {line!r}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+
             doc_id = obj.get("id")
             raw_path = obj.get("path")
             if not isinstance(doc_id, str) or not isinstance(raw_path, str):
@@ -115,7 +135,7 @@ def main() -> int:
     )
     print(
         f"done lines={total_lines} mapped={mapped_lines} unmatched={unmatched_lines} "
-        f"manifest_entries={len(manifest)} entries_with_doc_ids={non_empty}",
+        f"skipped={skipped_lines} manifest_entries={len(manifest)} entries_with_doc_ids={non_empty}",
         flush=True,
     )
     return 0

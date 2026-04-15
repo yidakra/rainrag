@@ -347,7 +347,13 @@ class TestEmbedder:
                 length=11,
             ),
         ]
-        cached_embeddings = np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
+        num_vectors = len(cached_docs)
+        cached_embeddings = (
+            np.arange(num_vectors * test_config.qdrant.vector_size, dtype=np.float32).reshape(
+                num_vectors, test_config.qdrant.vector_size
+            )
+            / 10.0
+        )
 
         # Simulate legacy cache metadata where content_hash was not present.
         with open(docs_file, "w", encoding="utf-8") as f:

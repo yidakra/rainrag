@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 
@@ -34,14 +35,20 @@ def main() -> int:
 
     if not root.exists():
         raise FileNotFoundError(f"Archive root not found: {root}")
+    if not root.is_dir():
+        raise NotADirectoryError(f"Archive root must be a directory: {root}")
 
     manifest: dict[str, dict[str, object]] = {}
     count = 0
 
     for p in root.rglob("*.vtt"):
-        if not p.is_file():
+        try:
+            if not p.is_file():
+                continue
+            st = p.stat()
+        except FileNotFoundError:
             continue
-        st = p.stat()
+
         manifest[str(p.resolve())] = {
             "mtime": st.st_mtime,
             "size": st.st_size,
@@ -56,8 +63,13 @@ def main() -> int:
         )
 
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    with manifest_path.open("w", encoding="utf-8") as f:
+    temp_path = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    with temp_path.open("w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+
+    temp_path.replace(manifest_path)
 
     print(f"Rebuilt manifest at {manifest_path} with {count} archive entries.")
     return 0

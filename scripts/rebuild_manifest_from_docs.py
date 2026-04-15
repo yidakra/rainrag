@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -86,8 +88,16 @@ def main() -> int:
             path_val = obj.get("path")
             doc_id = obj.get("id")
             if not isinstance(path_val, str) or not path_val:
+                print(
+                    f"Skipping invalid doc entry at line {line_no}: missing or invalid path: {obj!r}",
+                    file=sys.stderr,
+                )
                 continue
             if not isinstance(doc_id, str) or not doc_id:
+                print(
+                    f"Skipping invalid doc entry at line {line_no}: missing or invalid id: {obj!r}",
+                    file=sys.stderr,
+                )
                 continue
 
             raw_file_to_doc_ids[path_val].append(doc_id)
@@ -130,8 +140,13 @@ def main() -> int:
         )
 
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    with manifest_path.open("w", encoding="utf-8") as f:
+    temp_path = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    with temp_path.open("w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+
+    temp_path.replace(manifest_path)
 
     print(
         f"Rebuilt manifest at {manifest_path} with {total} entries "
