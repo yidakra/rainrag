@@ -3,6 +3,7 @@
 import hashlib
 import html
 import json
+import os
 import re
 import subprocess
 from collections.abc import Generator, Sequence
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from tqdm import tqdm
 
 from rainrag.config import Config
@@ -46,6 +47,9 @@ class Document(BaseModel):
     web_date_ts: float | None = None  # Timestamp from web metadata
     web_description: str | None = None  # Description from web metadata
     web_url: str | None = None  # URL from web metadata
+
+    # Content hash for incremental processing
+    content_hash: str | None = None  # SHA-256 hash of embedded text for change detection
 
     # Speech-free flag
     is_speech_free: bool = False  # True when VTT had no cues (silent video); text is metadata-only
@@ -1009,6 +1013,133 @@ class WebMetadataLoader:
         return Path(*parts)
 
 
+def compute_content_hash(text: str) -> str:
+    """Compute SHA-256 hash of document text for change detection."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class ManifestEntry(BaseModel):
+    """Entry in the file manifest tracking source file state."""
+
+    mtime: float
+    size: int
+    file_hash: str  # SHA-256 of file content
+    doc_ids: list[str] = Field(default_factory=list)  # Document IDs produced from this file
+
+
+class FileManifest:
+    """Tracks source file metadata for incremental ingestion.
+
+    The manifest records each source VTT file's mtime, size, and content hash.
+    On subsequent runs, files are classified as new, modified, or unchanged
+    by comparing their current state against the manifest.
+    """
+
+    def __init__(self, manifest_path: str | Path) -> None:
+        super().__init__()
+        self.manifest_path = Path(manifest_path)
+        self.entries: dict[str, ManifestEntry] = {}
+
+    def load(self) -> bool:
+        """Load manifest from disk. Returns True if loaded successfully."""
+        if not self.manifest_path.exists():
+            logger.info("No existing manifest found, will do full ingestion")
+            return False
+        try:
+            with open(self.manifest_path, encoding="utf-8") as f:
+                raw = json.load(f)
+            self.entries = {k: ManifestEntry(**v) for k, v in raw.items()}
+            logger.info(f"Loaded manifest with {len(self.entries)} file entries")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to load manifest, will do full ingestion: {e}")
+            self.entries = {}
+            return False
+
+    def save(self) -> None:
+        """Save manifest to disk."""
+        self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {k: v.model_dump() for k, v in self.entries.items()}
+        with open(self.manifest_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        logger.info(f"Saved manifest with {len(self.entries)} file entries")
+
+    def classify_file(self, file_path: Path) -> str:
+        """Classify a file as 'new', 'modified', or 'unchanged'.
+
+        Uses mtime + size as a fast check. Falls back to content hash for
+        borderline cases (same size, different mtime).
+        """
+        key = str(file_path.absolute())
+        if key not in self.entries:
+            return "new"
+
+        entry = self.entries[key]
+        try:
+            stat = file_path.stat()
+        except OSError:
+            return "new"
+
+        # Fast check: if mtime and size match, file is unchanged
+        # Allow small tolerance for filesystem mtime precision differences
+        if abs(stat.st_mtime - entry.mtime) < 0.001 and stat.st_size == entry.size:
+            return "unchanged"
+
+        # Size changed -> definitely modified
+        if stat.st_size != entry.size:
+            return "modified"
+
+        # Same size, different mtime -> check content hash
+        current_hash = self._compute_file_hash(file_path)
+        if current_hash == entry.file_hash:
+            return "unchanged"
+
+        return "modified"
+
+    def update_entry(self, file_path: Path, doc_ids: list[str]) -> None:
+        """Update manifest entry for a file after processing."""
+        key = str(file_path.absolute())
+        try:
+            stat = file_path.stat()
+            self.entries[key] = ManifestEntry(
+                mtime=stat.st_mtime,
+                size=stat.st_size,
+                file_hash=self._compute_file_hash(file_path),
+                doc_ids=doc_ids,
+            )
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning(
+                f"Failed to update manifest entry for missing file {file_path}: {exc}. Removing stale manifest entry if present."
+            )
+            self.entries.pop(key, None)
+
+    def get_deleted_files(self, current_files: set[str]) -> list[str]:
+        """Return manifest keys for files that no longer exist."""
+        return [k for k in self.entries if k not in current_files]
+
+    def get_deleted_doc_ids(self, deleted_file_keys: list[str]) -> list[str]:
+        """Return document IDs associated with deleted files."""
+        doc_ids = []
+        for key in deleted_file_keys:
+            if key in self.entries:
+                doc_ids.extend(self.entries[key].doc_ids)
+        return doc_ids
+
+    def remove_entries(self, keys: list[str]) -> None:
+        """Remove entries for deleted files."""
+        for key in keys:
+            self.entries.pop(key, None)
+
+    @staticmethod
+    def _compute_file_hash(file_path: Path) -> str:
+        """Compute SHA-256 hash of a file's content."""
+        h = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+
 class Ingester:
     """Main ingestion class for crawling and parsing VTT files."""
 
@@ -1355,6 +1486,7 @@ class Ingester:
                     web_date_ts=web_metadata.get("web_date_ts"),
                     web_description=web_metadata.get("web_description"),
                     web_url=web_metadata.get("web_url"),
+                    content_hash=compute_content_hash(text),
                 )
                 documents.append(doc)
 
@@ -1423,6 +1555,7 @@ class Ingester:
                 web_date_ts=web_metadata.get("web_date_ts"),
                 web_description=web_metadata.get("web_description"),
                 web_url=web_metadata.get("web_url"),
+                content_hash=compute_content_hash(text),
             )
 
             return [doc]
@@ -1489,13 +1622,22 @@ class Ingester:
         label = self.config.web_metadata.append_label
         return "\n".join([label, *lines])
 
-    def ingest(self) -> int:
+    def ingest(self, incremental: bool = False) -> int:
         """
-        Run the full ingestion pipeline.
+        Run the ingestion pipeline.
+
+        Args:
+            incremental: If True, only re-process changed files using the manifest.
 
         Returns:
             Number of documents processed
         """
+        if incremental and self.config.incremental.enabled:
+            return self._ingest_incremental()
+        return self._ingest_full()
+
+    def _ingest_full(self) -> int:
+        """Run the full ingestion pipeline (processes all files)."""
         root_path = Path(self.config.paths.archive_root)
 
         if not root_path.exists():
@@ -1505,11 +1647,14 @@ class Ingester:
         output_path = Path(self.config.paths.docs_output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Starting ingestion from {root_path}")
+        logger.info(f"Starting full ingestion from {root_path}")
         logger.info(f"Output will be written to {output_path}")
 
         doc_count = 0
         file_count = 0
+
+        # Build manifest for future incremental runs
+        manifest = FileManifest(self.config.incremental.manifest_path)
 
         # Open output file for streaming writes
         with open(output_path, "w", encoding="utf-8") as out_file:
@@ -1521,11 +1666,16 @@ class Ingester:
 
                 if docs:
                     file_count += 1
+                    doc_ids = []
                     # Write each document as JSONL (one JSON object per line)
                     for doc in docs:
                         json_line = doc.model_dump_json()
                         out_file.write(json_line + "\n")
                         doc_count += 1
+                        doc_ids.append(doc.id)
+
+                    # Update manifest entry for this file
+                    manifest.update_entry(file_path, doc_ids)
 
                     if doc_count % 100 == 0:
                         logger.info(f"Processed {doc_count} documents from {file_count} files")
@@ -1540,15 +1690,146 @@ class Ingester:
             )
         logger.info(f"Output saved to {output_path}")
 
+        # Save manifest for future incremental runs
+        try:
+            manifest.save()
+        except Exception as exc:
+            logger.warning(
+                f"Failed to save manifest after ingestion: {exc}. Ingestion succeeded, but incremental manifest may be stale."
+            )
+
+        return doc_count
+
+    def _ingest_incremental(self) -> int:
+        """Run incremental ingestion — only re-process changed files."""
+        root_path = Path(self.config.paths.archive_root)
+
+        if not root_path.exists():
+            logger.error(f"Archive root does not exist: {root_path}")
+            raise FileNotFoundError(f"Archive root not found: {root_path}")
+
+        output_path = Path(self.config.paths.docs_output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Load manifest
+        manifest = FileManifest(self.config.incremental.manifest_path)
+        if not manifest.load():
+            logger.info("No manifest found, falling back to full ingestion")
+            return self._ingest_full()
+
+        # Load previous docs into a lookup by doc_id
+        previous_docs: dict[str, Document] = {}
+        if output_path.exists():
+            try:
+                with open(output_path, encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip():
+                            doc = Document(**json.loads(line))
+                            previous_docs[doc.id] = doc
+                logger.info(f"Loaded {len(previous_docs)} previous documents")
+            except Exception as e:
+                logger.warning(f"Failed to load previous docs, doing full ingestion: {e}")
+                return self._ingest_full()
+
+        logger.info(f"Starting incremental ingestion from {root_path}")
+
+        # Scan current files
+        vtt_files = list(self.find_vtt_files(root_path))
+        current_file_keys = {str(f.absolute()) for f in vtt_files}
+
+        # Classify files
+        new_files: list[Path] = []
+        modified_files: list[Path] = []
+        unchanged_files: list[Path] = []
+
+        for file_path in vtt_files:
+            state = manifest.classify_file(file_path)
+            if state == "new":
+                new_files.append(file_path)
+            elif state == "modified":
+                modified_files.append(file_path)
+            else:
+                unchanged_files.append(file_path)
+
+        # Detect deleted files
+        deleted_keys = manifest.get_deleted_files(current_file_keys)
+        deleted_doc_ids = set(manifest.get_deleted_doc_ids(deleted_keys))
+
+        logger.info(
+            f"Incremental scan: {len(new_files)} new, {len(modified_files)} modified, "
+            + f"{len(unchanged_files)} unchanged, {len(deleted_keys)} deleted files"
+        )
+
+        # Collect doc_ids that need to be replaced (from modified files)
+        modified_old_doc_ids: set[str] = set()
+        for file_path in modified_files:
+            key = str(file_path.absolute())
+            if key in manifest.entries:
+                modified_old_doc_ids.update(manifest.entries[key].doc_ids)
+
+        # Write output: unchanged docs + newly processed docs in a temp file for atomic replace
+        doc_count = 0
+        file_count = 0
+        files_to_process = new_files + modified_files
+
+        temp_output_path = output_path.with_name(output_path.name + ".tmp")
+
+        with open(temp_output_path, "w", encoding="utf-8") as out_file:
+            # Write unchanged documents (skip deleted and modified-old)
+            skip_ids = deleted_doc_ids | modified_old_doc_ids
+            for doc_id, doc in previous_docs.items():
+                if doc_id not in skip_ids:
+                    out_file.write(doc.model_dump_json() + "\n")
+                    doc_count += 1
+
+            unchanged_count = doc_count
+            logger.info(f"Kept {unchanged_count} unchanged documents")
+
+            # Process new and modified files
+            for file_path in tqdm(files_to_process, desc="Processing changed files"):
+                docs = self.process_file(file_path)
+
+                if docs:
+                    file_count += 1
+                    doc_ids = []
+                    for doc in docs:
+                        out_file.write(doc.model_dump_json() + "\n")
+                        doc_count += 1
+                        doc_ids.append(doc.id)
+                    manifest.update_entry(file_path, doc_ids)
+
+            # Ensure disk durability before job completion
+            out_file.flush()
+            os.fsync(out_file.fileno())
+
+        # Atomically replace the previous docs file with the new content
+        temp_output_path.replace(output_path)
+
+        # Remove deleted file entries from manifest
+        manifest.remove_entries(deleted_keys)
+
+        # Save updated manifest
+        manifest.save()
+
+        logger.info(
+            f"Incremental ingestion complete! {unchanged_count} unchanged + "
+            + f"{doc_count - unchanged_count} new/modified documents = {doc_count} total"
+        )
+        if deleted_doc_ids:
+            logger.info(
+                f"Removed {len(deleted_doc_ids)} documents from {len(deleted_keys)} deleted files"
+            )
+
         return doc_count
 
 
-def run_ingestion(config_path: str = "config.yaml") -> int:
+def run_ingestion(config_path: str = "config.yaml", incremental: bool = False) -> int:
     """
     Run the ingestion pipeline.
 
     Args:
         config_path: Path to configuration file
+        incremental: If True, only re-process changed files
 
     Returns:
         Number of documents processed
@@ -1557,4 +1838,4 @@ def run_ingestion(config_path: str = "config.yaml") -> int:
 
     config = load_config(config_path)
     ingester = Ingester(config)
-    return ingester.ingest()
+    return ingester.ingest(incremental=incremental)

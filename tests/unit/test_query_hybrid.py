@@ -669,6 +669,6 @@ def test_hybrid_search_rrf_vs_weighted(
             abs(score_map_result[doc_id] - score_map_result_other[doc_id]) > 1e-6
             for doc_id in common_doc_ids
         )
-        assert (
-            scores_differ
-        ), "Fusion methods should produce different scores for at least one document"
+        assert scores_differ, (
+            "Fusion methods should produce different scores for at least one document"
+        )

@@ -28,6 +28,10 @@ qdrant:
   host: "localhost"
   port: 6333
   timeout: 180
+  upsert_batch_size: 250
+  scroll_batch_size: 500
+  max_scroll_iterations: 5000
+  max_scroll_duration: 3600
   collection_name: "broadcast_transcripts"
   vector_size: 1024  # Must match the embedding model's output dimension:
                      #   - intfloat/multilingual-e5-large: 1024
@@ -182,6 +186,12 @@ mcp:
   host: "localhost"
   # Port for HTTP-based transports (ignored for stdio)
   port: 8000
+
+# Incremental re-indexing configuration
+incremental:
+  enabled: true  # Enable incremental processing (only re-process changed documents)
+  manifest_path: "./data/manifest.json"  # File tracking source VTT file state for change detection
+  alias_swap: false  # Use two-phase indexing with collection alias swap for zero-downtime updates
 
 # Web metadata integration
 web_metadata:

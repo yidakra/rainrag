@@ -15,6 +15,28 @@ Deployment notes (systemd + nginx)
    sudo systemctl status rainrag-api
    sudo systemctl status rainrag-streamlit
 
+Hourly incremental updater
+1) Ensure incremental mode is enabled in `/home/ubuntu/rainrag/config.yaml`:
+   incremental:
+     enabled: true
+
+2) Install timer units:
+   chmod +x /home/ubuntu/rainrag/deploy/systemd/install_incremental_timer.sh
+   /home/ubuntu/rainrag/deploy/systemd/install_incremental_timer.sh
+
+3) Inspect timer + service:
+   sudo systemctl status rainrag-incremental-update.timer
+   sudo systemctl status rainrag-incremental-update.service
+   sudo journalctl -u rainrag-incremental-update.service -n 200 --no-pager
+
+4) Logs:
+   /home/ubuntu/rainrag/logs/incremental-hourly.log
+
+Notes:
+- The updater script uses a lockfile (`/tmp/rainrag-incremental.lock`) to prevent overlapping runs.
+- It refuses to run when `incremental.enabled` is false.
+- It performs a manifest sanity check to avoid accidental full rebuilds when manifest state is stale.
+
 Nginx config
 - Copy the vhost file from deploy/nginx and enable it in your nginx setup.
 - The config assumes TLS certs at:
