@@ -258,11 +258,7 @@ class RAGQueryEngine:
             if video_hash not in self._web_metadata_cache:
                 try:
                     raw = self.web_metadata_loader.load_metadata(video_hash)
-                    cleaned = (
-                        self.web_metadata_loader.extract_clean_metadata(raw)
-                        if raw
-                        else None
-                    )
+                    cleaned = self.web_metadata_loader.extract_clean_metadata(raw) if raw else None
                     self._web_metadata_cache[video_hash] = cleaned if cleaned else None
                 except Exception as exc:
                     logger.debug(

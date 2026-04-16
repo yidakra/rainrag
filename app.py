@@ -1133,9 +1133,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
         with st.expander(get_text("context_header", lang), expanded=False):
             fallback_hits = message.get("metadata_fallback_hits")
             if isinstance(fallback_hits, int):
-                st.caption(
-                    f"{get_text('metadata_fallback_hits_label', lang)}: {fallback_hits}"
-                )
+                st.caption(f"{get_text('metadata_fallback_hits_label', lang)}: {fallback_hits}")
 
             # Group chunks by video (to show en/ru versions together)
             grouped_chunks = group_chunks_by_video(message["context"])
