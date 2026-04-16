@@ -223,6 +223,7 @@ def test_query_endpoint_default_language(test_client):
                     "answer": "Test",
                     "retrieved_documents": [],
                     "num_documents": 0,
+                    # metadata_fallback_hits is optional in the API response and defaults to 0
                 }
 
                 response = test_client.post(
@@ -250,6 +251,7 @@ def test_query_endpoint_russian_language(test_client):
                     "answer": "Это тестовый ответ.",
                     "retrieved_documents": [],
                     "num_documents": 0,
+                    # metadata_fallback_hits is optional in the API response and defaults to 0
                 }
 
                 response = test_client.post(
@@ -272,6 +274,7 @@ def test_query_endpoint_custom_top_k(test_client):
                     "answer": "Test",
                     "retrieved_documents": [],
                     "num_documents": 0,
+                    # metadata_fallback_hits is optional in the API response and defaults to 0
                 }
 
                 response = test_client.post("/query", json={"question": "test", "top_k": 10})
@@ -362,6 +365,7 @@ def test_cors_headers(test_client):
                     "answer": "Test",
                     "retrieved_documents": [],
                     "num_documents": 0,
+                    # metadata_fallback_hits is optional in the API response and defaults to 0
                 }
 
                 response = test_client.post(
@@ -389,6 +393,7 @@ def test_query_endpoint_with_mistral_provider(test_client, mistral_config):
                     "answer": "Mistral response",
                     "retrieved_documents": [],
                     "num_documents": 0,
+                    # metadata_fallback_hits is optional in the API response and defaults to 0
                 }
 
                 response = test_client.post("/query", json={"question": "test"})
@@ -409,6 +414,7 @@ def test_query_endpoint_with_openai_provider(test_client, openai_config):
                     "answer": "OpenAI response",
                     "retrieved_documents": [],
                     "num_documents": 0,
+                    # metadata_fallback_hits is optional in the API response and defaults to 0
                 }
 
                 response = test_client.post("/query", json={"question": "test"})

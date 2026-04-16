@@ -3,6 +3,7 @@
 import importlib
 import math as _math
 import re
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -89,12 +90,18 @@ class RAGQueryEngine:
         ),
     ]
 
-    def __init__(self, config: Config):
+    def __init__(
+        self,
+        config: Config,
+        web_metadata_cache_maxsize: int = 512,
+    ):
         """
         Initialize the query engine.
 
         Args:
             config: Configuration object containing all settings
+            web_metadata_cache_maxsize: Maximum number of video hashes to keep in the
+                in-memory web metadata fallback cache.
         """
         super().__init__()
         self.config = config
@@ -112,7 +119,8 @@ class RAGQueryEngine:
         # Optional web metadata fallback loader (used to enrich retrieved chunks
         # when index payload lacks web_* fields).
         self.web_metadata_loader: Any | None = None
-        self._web_metadata_cache: dict[str, dict[str, Any] | None] = {}
+        self._web_metadata_cache_maxsize = web_metadata_cache_maxsize
+        self._web_metadata_cache: OrderedDict[str, dict[str, Any] | None] = OrderedDict()
 
         # Initialize clients based on what's needed for LLM and embeddings
         needs_mistral = config.llm.provider == "mistral" or config.embedding.provider == "mistral"
@@ -196,18 +204,38 @@ class RAGQueryEngine:
                 except Exception as exc:
                     logger.warning(f"Could not initialize web metadata API client: {exc}")
                     if source == "api":
+                        logger.debug(
+                            "api mode: web metadata API client initialization failed, source=%s, metadata_path=%s",
+                            source,
+                            metadata_path,
+                        )
                         return
                     source = "local"
 
             if source in ("local", "hybrid"):
                 if not metadata_path.exists():
                     if source == "local":
+                        logger.debug(
+                            "local mode: metadata path missing, source=%s, metadata_path=%s",
+                            source,
+                            metadata_path,
+                        )
                         return
                     metadata_path.mkdir(parents=True, exist_ok=True)
                 elif not metadata_path.is_dir():
+                    logger.debug(
+                        "metadata path is file, source=%s, metadata_path=%s",
+                        source,
+                        metadata_path,
+                    )
                     return
             elif source == "api":
                 if metadata_path.exists() and metadata_path.is_file():
+                    logger.debug(
+                        "api mode: path exists as file, source=%s, metadata_path=%s",
+                        source,
+                        metadata_path,
+                    )
                     return
                 metadata_path.mkdir(parents=True, exist_ok=True)
 
@@ -219,6 +247,16 @@ class RAGQueryEngine:
         except Exception as exc:
             logger.warning(f"Web metadata fallback disabled due to initialization error: {exc}")
             self.web_metadata_loader = None
+
+    def _set_web_metadata_cache(self, video_hash: str, metadata: dict[str, Any] | None) -> None:
+        """Store an entry in the web metadata cache and evict the oldest item if needed."""
+        if not hasattr(self._web_metadata_cache, "move_to_end"):
+            self._web_metadata_cache = OrderedDict(self._web_metadata_cache)
+
+        self._web_metadata_cache[video_hash] = metadata
+        self._web_metadata_cache.move_to_end(video_hash)
+        if len(self._web_metadata_cache) > self._web_metadata_cache_maxsize:
+            self._web_metadata_cache.popitem(last=False)
 
     @staticmethod
     def _extract_video_hash_from_path(path_value: str) -> str | None:
@@ -259,12 +297,15 @@ class RAGQueryEngine:
                 try:
                     raw = self.web_metadata_loader.load_metadata(video_hash)
                     cleaned = self.web_metadata_loader.extract_clean_metadata(raw) if raw else None
-                    self._web_metadata_cache[video_hash] = cleaned if cleaned else None
+                    self._set_web_metadata_cache(video_hash, cleaned if cleaned else None)
                 except Exception as exc:
                     logger.debug(
                         f"Web metadata fallback lookup failed for hash {video_hash}: {exc}"
                     )
-                    self._web_metadata_cache[video_hash] = None
+                    self._set_web_metadata_cache(video_hash, None)
+            else:
+                if hasattr(self._web_metadata_cache, "move_to_end"):
+                    self._web_metadata_cache.move_to_end(video_hash)
 
             metadata = self._web_metadata_cache.get(video_hash)
             if not metadata:

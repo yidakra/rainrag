@@ -9,6 +9,7 @@ This module tests:
 - Full hybrid search pipeline
 """
 
+from collections import OrderedDict
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -693,7 +694,7 @@ def test_query_fills_missing_web_metadata_with_fallback_loader(
             "web_url": "https://example.com/video/doc1",
         }
         engine.web_metadata_loader = fallback_loader
-        engine._web_metadata_cache = {}
+        engine._web_metadata_cache = OrderedDict()
 
         # First query: should fetch via fallback loader
         result1 = engine.query(question="test", top_k=1, language="en")
@@ -706,7 +707,7 @@ def test_query_fills_missing_web_metadata_with_fallback_loader(
         assert doc1["date"] == "2024-01-15"
         assert result1["metadata_fallback_hits"] == 1
 
-        # Second query with same doc hash: should reuse in-memory cache
+        # Second query retrieving the same document: should reuse in-memory cache
         result2 = engine.query(question="test again", top_k=1, language="en")
         doc2 = result2["retrieved_documents"][0]
         assert doc2["web_title"] == "Recovered Web Title"

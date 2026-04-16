@@ -1657,7 +1657,7 @@ def main():
                     "role": "assistant",
                     "content": response["answer"],
                     "context": response.get("context", []),
-                    "metadata_fallback_hits": response.get("metadata_fallback_hits", 0),
+                    "metadata_fallback_hits": response.get("metadata_fallback_hits"),
                 }
                 st.session_state.messages.append(assistant_message)
 
