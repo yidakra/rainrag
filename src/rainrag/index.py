@@ -80,6 +80,7 @@ class QdrantIndexer:
         self.client = QdrantClient(
             host=self.config.qdrant.host,
             port=self.config.qdrant.port,
+            timeout=self.config.qdrant.timeout,
             prefer_grpc=False,
         )
 
@@ -219,13 +220,18 @@ class QdrantIndexer:
         client = self._get_client()
         collection_name = self.config.qdrant.collection_name
 
-        logger.info(f"Indexing {len(documents)} documents into {collection_name}")
+        effective_batch_size = (
+            batch_size if batch_size and batch_size > 0 else self.config.qdrant.upsert_batch_size
+        )
+        logger.info(
+            f"Indexing {len(documents)} documents into {collection_name} (batch_size={effective_batch_size})"
+        )
 
         # Upload in batches without holding all points in memory
         total = len(documents)
-        for i in tqdm(range(0, total, batch_size), desc="Uploading to Qdrant"):
+        for i in tqdm(range(0, total, effective_batch_size), desc="Uploading to Qdrant"):
             batch_points: list[models.PointStruct] = []
-            end = min(i + batch_size, total)
+            end = min(i + effective_batch_size, total)
 
             for idx in range(i, end):
                 embedding = embeddings[idx]
@@ -265,6 +271,9 @@ class QdrantIndexer:
         """
         client = self._get_client()
         collection_name = self.config.qdrant.collection_name
+        effective_batch_size = (
+            batch_size if batch_size and batch_size > 0 else self.config.qdrant.upsert_batch_size
+        )
 
         # Build new document map: point_uuid -> (embedding, doc)
         new_doc_map: dict[str, tuple[np.ndarray, Document]] = {}
@@ -277,17 +286,32 @@ class QdrantIndexer:
 
         # Use collection info to make the loop observable and bounded
         collection_info = self.get_collection_info()
-        existing_points = collection_info.get("points_count") if collection_info else None
+        existing_points_raw = collection_info.get("points_count") if collection_info else None
+        existing_points = existing_points_raw if isinstance(existing_points_raw, int) else None
         if existing_points is not None:
             logger.info(f"Collection has {existing_points} existing points; starting scroll.")
 
         max_iterations = self.config.qdrant.max_scroll_iterations
         max_duration = self.config.qdrant.max_scroll_duration
         scroll_batch_size = self.config.qdrant.scroll_batch_size
+        effective_max_iterations = max_iterations
+
+        if existing_points is not None and existing_points > 0:
+            required_iterations = (existing_points + scroll_batch_size - 1) // scroll_batch_size + 2
+            if required_iterations > effective_max_iterations:
+                logger.warning(
+                    "Configured max_scroll_iterations=%d is too low for points_count=%d at batch_size=%d; "
+                    + "temporarily raising to %d for this run.",
+                    max_iterations,
+                    existing_points,
+                    scroll_batch_size,
+                    required_iterations,
+                )
+            effective_max_iterations = max(effective_max_iterations, required_iterations)
 
         logger.info(
             f"Scrolling existing collection for change detection... (batch_size={scroll_batch_size}, "
-            + f"max_iterations={max_iterations}, max_duration={max_duration}s)"
+            + f"max_iterations={effective_max_iterations}, max_duration={max_duration}s)"
         )
 
         offset = None
@@ -302,9 +326,9 @@ class QdrantIndexer:
                 )
                 break
 
-            if iterations >= max_iterations:
+            if iterations >= effective_max_iterations:
                 logger.warning(
-                    f"Aborting scroll loop: reached max scroll iterations {max_iterations}; processed {len(existing_hashes)} points so far."
+                    f"Aborting scroll loop: reached max scroll iterations {effective_max_iterations}; processed {len(existing_hashes)} points so far."
                 )
                 break
 
@@ -369,8 +393,8 @@ class QdrantIndexer:
         if to_delete:
             logger.info(f"Deleting {len(to_delete)} removed points...")
             # Delete in batches to avoid payload size issues
-            for i in range(0, len(to_delete), batch_size):
-                batch_ids = to_delete[i : i + batch_size]
+            for i in range(0, len(to_delete), effective_batch_size):
+                batch_ids = to_delete[i : i + effective_batch_size]
                 client.delete(
                     collection_name=collection_name,
                     points_selector=models.PointIdsList(points=batch_ids),
@@ -378,9 +402,16 @@ class QdrantIndexer:
 
         # Upsert new/modified points
         if to_upsert:
-            logger.info(f"Upserting {len(to_upsert)} new/modified points...")
-            for i in tqdm(range(0, len(to_upsert), batch_size), desc="Incremental upsert"):
-                batch = to_upsert[i : i + batch_size]
+            logger.info(
+                f"Upserting {len(to_upsert)} new/modified points... (batch_size={effective_batch_size})"
+            )
+            start = time.monotonic()
+            total_batches = (len(to_upsert) + effective_batch_size - 1) // effective_batch_size
+            for batch_idx, i in enumerate(
+                tqdm(range(0, len(to_upsert), effective_batch_size), desc="Incremental upsert"),
+                start=1,
+            ):
+                batch = to_upsert[i : i + effective_batch_size]
                 batch_points = [
                     models.PointStruct(
                         id=point_id,
@@ -390,6 +421,14 @@ class QdrantIndexer:
                     for point_id, embedding, doc in batch
                 ]
                 client.upsert(collection_name=collection_name, points=batch_points)
+
+                if batch_idx == 1 or batch_idx % 50 == 0 or batch_idx == total_batches:
+                    processed = min(batch_idx * effective_batch_size, len(to_upsert))
+                    elapsed = time.monotonic() - start
+                    logger.info(
+                        f"Incremental upsert progress: {processed}/{len(to_upsert)} points "
+                        + f"({batch_idx}/{total_batches} batches, {elapsed:.1f}s elapsed)"
+                    )
         else:
             logger.info("No changes to upsert — collection is up to date!")
 

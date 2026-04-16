@@ -86,6 +86,11 @@ class QdrantConfig(BaseModel):
         ge=1,
         description="Maximum duration in seconds for incremental scroll loop before aborting",
     )
+    upsert_batch_size: int = Field(
+        default=250,
+        ge=1,
+        description="Batch size for Qdrant upsert operations during indexing",
+    )
 
 
 class MistralConfig(BaseModel):

@@ -38,6 +38,7 @@ class TestQdrantIndexer:
         mock_client_class.assert_called_once_with(
             host=test_config.qdrant.host,
             port=test_config.qdrant.port,
+            timeout=test_config.qdrant.timeout,
             prefer_grpc=False,
         )
         mock_client.get_collections.assert_called_once()

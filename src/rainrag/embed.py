@@ -401,18 +401,48 @@ class Embedder:
                 f"Processing chunk {chunk_number}/{total_chunks} ({len(chunk_texts)} documents)"
             )
 
-            chunk_embeddings = self.model.encode(
-                chunk_texts,
-                batch_size=self.config.embedding.batch_size,
-                show_progress_bar=show_progress
-                and len(chunk_texts) > self.config.embedding.batch_size,
-                normalize_embeddings=self.config.embedding.normalize_embeddings,
-                convert_to_numpy=True,
-            )
+            effective_batch_size = max(1, self.config.embedding.batch_size)
+            while True:
+                try:
+                    chunk_embeddings = self.model.encode(
+                        chunk_texts,
+                        batch_size=effective_batch_size,
+                        show_progress_bar=show_progress and len(chunk_texts) > effective_batch_size,
+                        normalize_embeddings=self.config.embedding.normalize_embeddings,
+                        convert_to_numpy=True,
+                    )
+                    break
+                except (torch.OutOfMemoryError, RuntimeError) as exc:
+                    msg = str(exc).lower()
+                    is_cuda_oom = isinstance(exc, torch.OutOfMemoryError) or (
+                        "cuda" in msg and "out of memory" in msg
+                    )
+                    if not is_cuda_oom:
+                        raise
+
+                    if effective_batch_size <= 1:
+                        logger.error(
+                            "CUDA OOM while embedding chunk %d even at batch_size=1; cannot continue.",
+                            chunk_number,
+                        )
+                        raise
+
+                    new_batch_size = max(1, effective_batch_size // 2)
+                    logger.warning(
+                        "CUDA OOM in chunk %d at batch_size=%d. Retrying with batch_size=%d.",
+                        chunk_number,
+                        effective_batch_size,
+                        new_batch_size,
+                    )
+                    effective_batch_size = new_batch_size
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
             chunk_embeddings = np.array(chunk_embeddings)
             all_embeddings.append(chunk_embeddings)
             logger.info(
-                f"Completed chunk {chunk_number}, embeddings shape: {chunk_embeddings.shape}"
+                f"Completed chunk {chunk_number}, embeddings shape: {chunk_embeddings.shape}, "
+                + f"batch_size_used={effective_batch_size}"
             )
 
         embeddings = np.concatenate(all_embeddings, axis=0)

@@ -10,12 +10,28 @@ LOG_DIR="${LOG_DIR:-$REPO_DIR/logs}"
 BOOTSTRAP_ON_MISSING="${BOOTSTRAP_ON_MISSING:-0}"
 MANIFEST_SANITY_MIN_ENTRIES="${MANIFEST_SANITY_MIN_ENTRIES:-100}"
 MANIFEST_SANITY_DOCS_THRESHOLD="${MANIFEST_SANITY_DOCS_THRESHOLD:-10000}"
+EMBED_FORCE_CPU_ON_LOW_GPU="${EMBED_FORCE_CPU_ON_LOW_GPU:-1}"
+EMBED_GPU_MIN_FREE_MB="${EMBED_GPU_MIN_FREE_MB:-7000}"
+SKIP_INGEST="${SKIP_INGEST:-0}"
+SKIP_EMBED="${SKIP_EMBED:-0}"
+SKIP_INDEX="${SKIP_INDEX:-0}"
 
 mkdir -p "$LOG_DIR"
 
 log() {
   printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
 }
+
+current_step="startup"
+on_error() {
+  local exit_code=$?
+  local line_no=${1:-unknown}
+  local cmd=${2:-unknown}
+  log "ERROR: step='$current_step' failed at line $line_no with exit_code=$exit_code"
+  log "ERROR: command: $cmd"
+  exit "$exit_code"
+}
+trap 'on_error ${LINENO} "${BASH_COMMAND}"' ERR
 
 if ! command -v uv >/dev/null 2>&1; then
   log "ERROR: uv is not installed or not in PATH"
@@ -62,6 +78,7 @@ PY
 
 for line in "${CFG[@]}"; do
   IFS='=' read -r key value <<< "$line"
+  case "$key" in
     incremental_enabled) incremental_enabled="$value" ;;
     manifest_path) manifest_path="$value" ;;
     docs_output) docs_output="$value" ;;
@@ -127,14 +144,40 @@ fi
 
 log "Starting incremental pipeline run."
 log "config=$CONFIG_PATH manifest_entries=$manifest_entries docs_lines=$docs_lines"
+current_step="ingest"
 log "Step 1/3: incremental ingestion"
-uv run rainrag ingest --config "$CONFIG_PATH" --incremental
+if [[ "$SKIP_INGEST" == "1" ]]; then
+  log "Step 1/3 skipped via SKIP_INGEST=1"
+else
+  uv run rainrag ingest --config "$CONFIG_PATH" --incremental
+fi
 
+current_step="embed"
 log "Step 2/3: incremental embedding"
-uv run rainrag embed --config "$CONFIG_PATH" --incremental
+if [[ "$SKIP_EMBED" == "1" ]]; then
+  log "Step 2/3 skipped via SKIP_EMBED=1"
+else
+  if [[ "$EMBED_FORCE_CPU_ON_LOW_GPU" == "1" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+    gpu_free_mb="$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -n 1 | tr -d '[:space:]' || true)"
+    if [[ -n "$gpu_free_mb" && "$gpu_free_mb" =~ ^[0-9]+$ && "$gpu_free_mb" -lt "$EMBED_GPU_MIN_FREE_MB" ]]; then
+      log "Low GPU free memory detected (${gpu_free_mb}MB < ${EMBED_GPU_MIN_FREE_MB}MB). Running embedding on CPU for this run."
+      CUDA_VISIBLE_DEVICES="" uv run rainrag embed --config "$CONFIG_PATH" --incremental
+    else
+      uv run rainrag embed --config "$CONFIG_PATH" --incremental
+    fi
+  else
+    uv run rainrag embed --config "$CONFIG_PATH" --incremental
+  fi
+fi
 
+current_step="index"
 log "Step 3/3: incremental indexing"
-uv run rainrag index --config "$CONFIG_PATH" --incremental
+if [[ "$SKIP_INDEX" == "1" ]]; then
+  log "Step 3/3 skipped via SKIP_INDEX=1"
+else
+  uv run rainrag index --config "$CONFIG_PATH" --incremental
+fi
 
+current_step="finalize"
 log "Incremental run completed successfully."
 date -u +'%Y-%m-%dT%H:%M:%SZ' > "$LOG_DIR/incremental.last_success"
