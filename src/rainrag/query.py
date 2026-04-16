@@ -3,6 +3,7 @@
 import importlib
 import math as _math
 import re
+import threading
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -121,6 +122,7 @@ class RAGQueryEngine:
         self.web_metadata_loader: Any | None = None
         self._web_metadata_cache_maxsize = web_metadata_cache_maxsize
         self._web_metadata_cache: OrderedDict[str, dict[str, Any] | None] = OrderedDict()
+        self._web_metadata_cache_lock = threading.Lock()
 
         # Initialize clients based on what's needed for LLM and embeddings
         needs_mistral = config.llm.provider == "mistral" or config.embedding.provider == "mistral"
@@ -205,9 +207,7 @@ class RAGQueryEngine:
                     logger.warning(f"Could not initialize web metadata API client: {exc}")
                     if source == "api":
                         logger.debug(
-                            "api mode: web metadata API client initialization failed, source=%s, metadata_path=%s",
-                            source,
-                            metadata_path,
+                            f"api mode: web metadata API client initialization failed, source={source}, metadata_path={metadata_path}"
                         )
                         return
                     source = "local"
@@ -216,25 +216,19 @@ class RAGQueryEngine:
                 if not metadata_path.exists():
                     if source == "local":
                         logger.debug(
-                            "local mode: metadata path missing, source=%s, metadata_path=%s",
-                            source,
-                            metadata_path,
+                            f"local mode: metadata path missing, source={source}, metadata_path={metadata_path}"
                         )
                         return
                     metadata_path.mkdir(parents=True, exist_ok=True)
                 elif not metadata_path.is_dir():
                     logger.debug(
-                        "metadata path is file, source=%s, metadata_path=%s",
-                        source,
-                        metadata_path,
+                        f"metadata path is file, source={source}, metadata_path={metadata_path}"
                     )
                     return
             elif source == "api":
                 if metadata_path.exists() and metadata_path.is_file():
                     logger.debug(
-                        "api mode: path exists as file, source=%s, metadata_path=%s",
-                        source,
-                        metadata_path,
+                        f"api mode: path exists as file, source={source}, metadata_path={metadata_path}"
                     )
                     return
                 metadata_path.mkdir(parents=True, exist_ok=True)
@@ -250,13 +244,17 @@ class RAGQueryEngine:
 
     def _set_web_metadata_cache(self, video_hash: str, metadata: dict[str, Any] | None) -> None:
         """Store an entry in the web metadata cache and evict the oldest item if needed."""
-        if not hasattr(self._web_metadata_cache, "move_to_end"):
-            self._web_metadata_cache = OrderedDict(self._web_metadata_cache)
+        with self._web_metadata_cache_lock:
+            if not hasattr(self._web_metadata_cache, "move_to_end"):
+                self._web_metadata_cache = OrderedDict(self._web_metadata_cache)
 
-        self._web_metadata_cache[video_hash] = metadata
-        self._web_metadata_cache.move_to_end(video_hash)
-        if len(self._web_metadata_cache) > self._web_metadata_cache_maxsize:
-            self._web_metadata_cache.popitem(last=False)
+            existed = video_hash in self._web_metadata_cache
+            self._web_metadata_cache[video_hash] = metadata
+            if existed:
+                self._web_metadata_cache.move_to_end(video_hash)
+
+            if len(self._web_metadata_cache) > self._web_metadata_cache_maxsize:
+                self._web_metadata_cache.popitem(last=False)
 
     @staticmethod
     def _extract_video_hash_from_path(path_value: str) -> str | None:
@@ -293,7 +291,10 @@ class RAGQueryEngine:
             if not video_hash:
                 continue
 
-            if video_hash not in self._web_metadata_cache:
+            with self._web_metadata_cache_lock:
+                cache_hit = video_hash in self._web_metadata_cache
+
+            if not cache_hit:
                 try:
                     raw = self.web_metadata_loader.load_metadata(video_hash)
                     cleaned = self.web_metadata_loader.extract_clean_metadata(raw) if raw else None
@@ -304,10 +305,12 @@ class RAGQueryEngine:
                     )
                     self._set_web_metadata_cache(video_hash, None)
             else:
-                if hasattr(self._web_metadata_cache, "move_to_end"):
-                    self._web_metadata_cache.move_to_end(video_hash)
+                with self._web_metadata_cache_lock:
+                    if hasattr(self._web_metadata_cache, "move_to_end"):
+                        self._web_metadata_cache.move_to_end(video_hash)
 
-            metadata = self._web_metadata_cache.get(video_hash)
+            with self._web_metadata_cache_lock:
+                metadata = self._web_metadata_cache.get(video_hash)
             if not metadata:
                 continue
 
