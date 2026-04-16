@@ -193,6 +193,7 @@ TRANSLATIONS = {
         "sidebar_session": "👤 Сессия",
         "search_features_label": "Функции поиска:",
         "search_features_standard": "Стандартный векторный поиск",
+        "metadata_fallback_hits_label": "Восстановлено метаданных (fallback)",
         "searching": "Поиск видео транскриптов...",
         "found_clips": "Найдено {count} релевантных фрагментов!",
         "session_expires": "Сессия истекает через:",
@@ -277,6 +278,7 @@ TRANSLATIONS = {
         "sidebar_session": "👤 Session",
         "search_features_label": "Search Features:",
         "search_features_standard": "Standard vector search",
+        "metadata_fallback_hits_label": "Metadata fallback enrichments",
         "searching": "Searching video transcripts...",
         "found_clips": "Found {count} relevant clips!",
         "session_expires": "Session expires in:",
@@ -1129,6 +1131,10 @@ def render_message_bubble(message: dict[str, Any], lang: str):
         # Search insights are available in chunk metadata if needed for debugging
 
         with st.expander(get_text("context_header", lang), expanded=False):
+            fallback_hits = message.get("metadata_fallback_hits")
+            if isinstance(fallback_hits, int):
+                st.caption(f"{get_text('metadata_fallback_hits_label', lang)}: {fallback_hits}")
+
             # Group chunks by video (to show en/ru versions together)
             grouped_chunks = group_chunks_by_video(message["context"])
 
@@ -1651,6 +1657,7 @@ def main():
                     "role": "assistant",
                     "content": response["answer"],
                     "context": response.get("context", []),
+                    "metadata_fallback_hits": response.get("metadata_fallback_hits"),
                 }
                 st.session_state.messages.append(assistant_message)
 

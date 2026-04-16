@@ -861,32 +861,59 @@ class VTTParser:
 
 
 class WebMetadataLoader:
-    """Loader for web metadata JSON files."""
+    """Loader for web metadata JSON files, with optional API backend.
 
-    def __init__(self, metadata_path: Path) -> None:
+    Supports three *source* modes controlled by
+    :pyattr:`rainrag.config.WebMetadataConfig.source`:
+
+    ``local``
+        Read only from the on-disk ``metadata_path`` directory (default,
+        backwards-compatible).
+    ``api``
+        Fetch every hash from the remote API.  Results are cached locally
+        under ``metadata_path`` so subsequent lookups are free.
+    ``hybrid``
+        Try the local file first; if missing, fall back to the API and
+        cache the result.
+    """
+
+    def __init__(
+        self,
+        metadata_path: Path,
+        *,
+        source: str = "local",
+        api_client: Any | None = None,
+    ) -> None:
         """
         Initialize the web metadata loader.
 
         Args:
             metadata_path: Path to directory containing web metadata JSON files
+            source: One of ``"local"``, ``"api"``, ``"hybrid"``.
+            api_client: Optional :class:`WebMetadataAPIClient` instance
+                        (required when *source* is ``"api"`` or ``"hybrid"``).
         """
         super().__init__()
+        allowed_sources = {"local", "api", "hybrid"}
+        source_normalized = source.lower().strip()
+        if source_normalized not in allowed_sources:
+            raise ValueError(
+                f"Invalid web metadata loader source {source!r}; "
+                + f"expected one of {sorted(allowed_sources)}."
+            )
         self.metadata_path = metadata_path
+        self.source = source_normalized
+        self.api_client = api_client
 
-    def load_metadata(self, video_hash: str) -> dict[str, Any] | None:
-        """
-        Load web metadata for a video by its hash.
+    # ------------------------------------------------------------------
+    # Local helpers
+    # ------------------------------------------------------------------
 
-        Args:
-            video_hash: Video hash (filename without extension)
-
-        Returns:
-            Dictionary containing web metadata, or None if not found
-        """
+    def _load_local(self, video_hash: str) -> dict[str, Any] | None:
+        """Read a single ``{hash}.json`` from the local directory."""
         metadata_file = self.metadata_path / f"{video_hash}.json"
         if not metadata_file.exists():
             return None
-
         try:
             with open(metadata_file, encoding="utf-8") as f:
                 data = json.load(f)
@@ -894,6 +921,64 @@ class WebMetadataLoader:
         except (json.JSONDecodeError, FileNotFoundError) as e:
             logger.debug(f"Could not load web metadata for {video_hash}: {e}")
             return None
+
+    def _fetch_api(self, video_hash: str) -> dict[str, Any] | None:
+        """Fetch metadata from the remote API and cache locally."""
+        if self.api_client is None:
+            return None
+        try:
+            data = self.api_client.fetch_by_hash(video_hash)
+        except Exception as exc:
+            logger.warning(f"API fetch failed for {video_hash}: {exc}")
+            return None
+        if data is None:
+            return None
+        # Cache to disk so future runs pick it up locally
+        self.metadata_path.mkdir(parents=True, exist_ok=True)
+        cache_file = self.metadata_path / f"{video_hash}.json"
+        try:
+            cache_file.write_text(
+                json.dumps(data, ensure_ascii=False, indent=None), encoding="utf-8"
+            )
+        except OSError as exc:
+            logger.warning(f"Failed to cache metadata for {video_hash}: {exc}")
+        return data
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def load_metadata(self, video_hash: str) -> dict[str, Any] | None:
+        """
+        Load web metadata for a video by its hash.
+
+        The lookup strategy depends on ``self.source``:
+
+        * ``local`` -- disk only
+        * ``api`` -- API only (result cached)
+        * ``hybrid`` -- disk first, then API fallback
+
+        Args:
+            video_hash: Video hash (filename without extension)
+
+        Returns:
+            Dictionary containing web metadata, or None if not found
+        """
+        if self.source == "local":
+            return self._load_local(video_hash)
+
+        if self.source == "api":
+            # Try local cache first even in API mode to avoid redundant calls
+            cached = self._load_local(video_hash)
+            if cached is not None:
+                return cached
+            return self._fetch_api(video_hash)
+
+        # hybrid: local first, then API
+        local = self._load_local(video_hash)
+        if local is not None:
+            return local
+        return self._fetch_api(video_hash)
 
     def extract_clean_metadata(self, raw_metadata: dict[str, Any]) -> dict[str, Any]:
         """
@@ -1160,14 +1245,63 @@ class Ingester:
         # Initialize web metadata loader with validation
         if config.web_metadata.enabled:
             web_metadata_path = Path(config.web_metadata.path)
-            if not web_metadata_path.exists():
-                logger.warning(f"Web metadata path does not exist: {web_metadata_path}")
-                self.web_metadata_loader = None
-            elif not web_metadata_path.is_dir():
+            source = config.web_metadata.source
+
+            # Build optional API client for api / hybrid modes
+            api_client = None
+            if source in ("api", "hybrid"):
+                try:
+                    from rainrag.web_metadata_api import WebMetadataAPIClient
+
+                    api_client = WebMetadataAPIClient.from_env(
+                        base_url=config.web_metadata.api_url,
+                        token_env=config.web_metadata.api_token_env,
+                    )
+                    logger.info(
+                        "Web metadata API client initialised "
+                        + f"(base_url={config.web_metadata.api_url})"
+                    )
+                except Exception as exc:
+                    logger.warning(f"Could not initialise web metadata API client: {exc}")
+                    if source == "api":
+                        logger.warning(
+                            "source='api' but API client failed to init; "
+                            + "web metadata will be unavailable"
+                        )
+                        self.web_metadata_loader = None
+                        return
+                    if source == "hybrid":
+                        logger.warning(
+                            "source='hybrid' but API client failed to init; "
+                            + "web metadata loader will operate in local-only mode"
+                        )
+
+            # For local/hybrid modes, validate the directory
+            if source in ("local", "hybrid") and not web_metadata_path.exists():
+                if source == "local":
+                    logger.warning(f"Web metadata path does not exist: {web_metadata_path}")
+                    self.web_metadata_loader = None
+                    return
+                # hybrid: directory will be created on first API cache write
+                web_metadata_path.mkdir(parents=True, exist_ok=True)
+            elif source in ("local", "hybrid") and not web_metadata_path.is_dir():
                 logger.warning(f"Web metadata path is not a directory: {web_metadata_path}")
                 self.web_metadata_loader = None
-            else:
-                self.web_metadata_loader = WebMetadataLoader(web_metadata_path)
+                return
+
+            # For api mode, ensure the cache directory exists
+            if source == "api":
+                if web_metadata_path.exists() and web_metadata_path.is_file():
+                    raise FileExistsError(
+                        f"Web metadata path for api mode exists as a file, not a directory: {web_metadata_path}"
+                    )
+                web_metadata_path.mkdir(parents=True, exist_ok=True)
+
+            self.web_metadata_loader = WebMetadataLoader(
+                web_metadata_path,
+                source=source,
+                api_client=api_client,
+            )
         else:
             self.web_metadata_loader = None
 

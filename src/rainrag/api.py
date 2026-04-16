@@ -198,6 +198,7 @@ class QueryResponse(BaseModel):
     context: list[ContextChunk]
     question: str
     num_documents: int
+    metadata_fallback_hits: int = 0
 
 
 class HealthResponse(BaseModel):
@@ -760,6 +761,7 @@ async def query(request: QueryRequest):
             context=context_chunks,
             question=result["question"],
             num_documents=result["num_documents"],
+            metadata_fallback_hits=int(result.get("metadata_fallback_hits") or 0),
         )
 
         logger.info(f"Query completed successfully. Retrieved {len(context_chunks)} documents")

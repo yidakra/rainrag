@@ -9,6 +9,7 @@ This module tests:
 - Full hybrid search pipeline
 """
 
+from collections import OrderedDict
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -672,3 +673,43 @@ def test_hybrid_search_rrf_vs_weighted(
         assert scores_differ, (
             "Fusion methods should produce different scores for at least one document"
         )
+
+
+def test_query_fills_missing_web_metadata_with_fallback_loader(
+    hybrid_config, mock_openai_client, mock_qdrant_client_with_corpus
+):
+    """When indexed payload lacks web_* fields, query-time fallback should enrich them."""
+    with patch("rainrag.query.OpenAI", return_value=mock_openai_client):
+        engine = RAGQueryEngine(hybrid_config)
+        setup_engine_for_testing(engine, mock_qdrant_client_with_corpus)
+
+        # Simulate query-time fallback loader (local/API abstraction)
+        fallback_loader = MagicMock()
+        fallback_loader.load_metadata.return_value = {"id": "doc1"}
+        fallback_loader.extract_clean_metadata.return_value = {
+            "web_title": "Recovered Web Title",
+            "web_date": "2024-01-15",
+            "web_date_ts": 1705276800,
+            "web_description": "Recovered web description",
+            "web_url": "https://example.com/video/doc1",
+        }
+        engine.web_metadata_loader = fallback_loader
+        engine._web_metadata_cache = OrderedDict()
+
+        # First query: should fetch via fallback loader
+        result1 = engine.query(question="test", top_k=1, language="en")
+        doc1 = result1["retrieved_documents"][0]
+
+        assert doc1["web_title"] == "Recovered Web Title"
+        assert doc1["web_description"] == "Recovered web description"
+        assert doc1["web_url"] == "https://example.com/video/doc1"
+        # UI uses `date`; fallback should mirror web_date into date when absent
+        assert doc1["date"] == "2024-01-15"
+        assert result1["metadata_fallback_hits"] == 1
+
+        # Second query retrieving the same document: should reuse in-memory cache
+        result2 = engine.query(question="test again", top_k=1, language="en")
+        doc2 = result2["retrieved_documents"][0]
+        assert doc2["web_title"] == "Recovered Web Title"
+        assert result2["metadata_fallback_hits"] == 1
+        assert fallback_loader.load_metadata.call_count == 1
