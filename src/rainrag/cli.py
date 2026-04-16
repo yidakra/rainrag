@@ -298,6 +298,95 @@ def ask(
         raise typer.Exit(code=1)
 
 
+@app.command("sync-metadata")
+def sync_metadata(
+    config: str = CONFIG_OPTION,
+    output_dir: str = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help="Directory to write metadata JSON files (default: config web_metadata.path)",
+    ),
+    start_time: int = typer.Option(
+        None,
+        "--start-time",
+        help="Unix timestamp for batch export start (default: 180 days ago)",
+    ),
+    end_time: int = typer.Option(
+        None,
+        "--end-time",
+        help="Unix timestamp for batch export end (default: now)",
+    ),
+    video_hash: str = typer.Option(
+        None,
+        "--hash",
+        help="Fetch metadata for a single video hash instead of batch export",
+    ),
+) -> None:
+    """
+    Sync web metadata from the library.tvrain.tv API.
+
+    By default, runs a batch export (article/export) and writes individual
+    {hash}.json files to the web_metadata directory.
+
+    Use --hash to fetch metadata for a single video hash via
+    video/{hash}/article.
+
+    Requires LIBRARY_API_TOKEN environment variable (or the env var name
+    configured in web_metadata.api_token_env).
+
+    Examples:
+        rainrag sync-metadata
+        rainrag sync-metadata --hash 0530e72fc85b6b2ee71acf5310610c0dbb568323
+        rainrag sync-metadata --start-time 1700000000 --end-time 1710000000
+    """
+    setup_logging(config)
+
+    try:
+        from pathlib import Path as _Path
+
+        from rainrag.web_metadata_api import WebMetadataAPIClient
+
+        cfg = load_config(config)
+        target_dir = _Path(output_dir) if output_dir else _Path(cfg.web_metadata.path)
+
+        client = WebMetadataAPIClient.from_env(
+            base_url=cfg.web_metadata.api_url,
+            token_env=cfg.web_metadata.api_token_env,
+        )
+
+        if video_hash:
+            # Single-hash mode
+            typer.echo(f"Fetching metadata for hash: {video_hash}")
+            data = client.fetch_by_hash(video_hash)
+            if data is None:
+                typer.echo("No metadata found for this hash (404).", err=True)
+                raise typer.Exit(code=1)
+
+            import json
+
+            target_dir.mkdir(parents=True, exist_ok=True)
+            out_file = target_dir / f"{video_hash}.json"
+            out_file.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            typer.echo(f"Written to {out_file}")
+        else:
+            # Batch mode
+            typer.echo("Starting batch metadata export...")
+            written = client.sync_to_local(
+                target_dir, start_time=start_time, end_time=end_time
+            )
+            typer.echo(f"Sync complete! Wrote {written} metadata files to {target_dir}")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        logger.exception(f"Metadata sync failed: {e}")
+        typer.echo(f"Metadata sync failed: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def info(
     config: str = CONFIG_OPTION,

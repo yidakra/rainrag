@@ -391,8 +391,30 @@ class WebMetadataConfig(BaseModel):
     enabled: bool = Field(
         default=False, description="Enable loading of web metadata from JSON files"
     )
+    source: Literal["local", "api", "hybrid"] = Field(
+        default="local",
+        description=(
+            "Metadata source: 'local' reads from path/ directory only; "
+            "'api' fetches from the library API only (with local cache); "
+            "'hybrid' tries local first, falls back to API for missing hashes"
+        ),
+    )
     path: str = Field(
         default="./web_metadata", description="Path to directory containing web metadata JSON files"
+    )
+    api_url: str = Field(
+        default="https://library.tvrain.tv",
+        description="Base URL for the library metadata API",
+    )
+    api_token_env: str = Field(
+        default="LIBRARY_API_TOKEN",
+        description="Environment variable name holding the Bearer token for the library API",
+    )
+    api_batch_days: int = Field(
+        default=180,
+        ge=1,
+        le=180,
+        description="Number of days to look back when running batch export (max 180)",
     )
     min_content_length: int = Field(
         default=10, ge=1, description="Minimum content length for web description text"
