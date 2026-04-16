@@ -1718,6 +1718,10 @@ rainrag embed --force  # Regenerate all embeddings
 rainrag index --recreate  # Rebuild index
 ```
 
+> Note: Incremental processing is now disabled by default in `config.yaml` (`incremental.enabled: false`).
+> Enable it explicitly to use manifest-driven delta ingestion and incremental indexing.
+> `incremental.manifest_path` and `incremental.alias_swap` are still available for configured incremental flows.
+
 ### Caching
 
 Embeddings are automatically cached. To skip regeneration:

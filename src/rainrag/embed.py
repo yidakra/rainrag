@@ -3,11 +3,12 @@ from __future__ import annotations
 
 """Embedding generation module using multilingual-e5-large."""
 
+import hashlib
 import json
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import torch
@@ -79,7 +80,10 @@ class EmbeddingCache:
 
         logger.info(f"Metadata saved to {self.metadata_file}")
 
-    def load(self) -> tuple[np.ndarray | None, list[Document] | None]:
+    def load(
+        self,
+        mmap_mode: Literal["r+", "r", "w+", "c"] | None = None,
+    ) -> tuple[np.ndarray | None, list[Document] | None]:
         """
         Load embeddings and metadata from cache.
 
@@ -93,7 +97,7 @@ class EmbeddingCache:
         logger.info("Loading embeddings from cache")
 
         # Load embeddings
-        embeddings = np.load(self.embeddings_file)
+        embeddings = np.load(self.embeddings_file, mmap_mode=mmap_mode)
         logger.info(f"Loaded {len(embeddings)} embeddings")
 
         # Load metadata
@@ -122,6 +126,38 @@ class EmbeddingCache:
             True if cache files exist
         """
         return self.embeddings_file.exists() and self.metadata_file.exists()
+
+    def load_hash_index(self) -> dict[str, int] | None:
+        """Load content-hash -> embedding row index from metadata without Document objects."""
+        if not self.exists():
+            logger.warning("Cache files not found")
+            return None
+
+        hash_to_embedding_index: dict[str, int] = {}
+        with open(self.metadata_file, encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                try:
+                    doc_dict = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "Skipping malformed metadata line {line_no} in {metadata_file}: {error} - {line!r}",
+                        line_no=i + 1,
+                        metadata_file=self.metadata_file,
+                        error=exc,
+                        line=line,
+                    )
+                    continue
+
+                content_hash = doc_dict.get("content_hash")
+                if not content_hash:
+                    text = doc_dict.get("text")
+                    if isinstance(text, str):
+                        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+                if isinstance(content_hash, str) and content_hash:
+                    hash_to_embedding_index[content_hash] = i
+
+        return hash_to_embedding_index
 
 
 class Embedder:
@@ -216,7 +252,6 @@ class Embedder:
                 model_kwargs={"dtype": "auto"},  # Prefer new dtype kwarg when supported
             )
         except TypeError as exc:
-            # Use package version to determine whether sentence-transformers supports model_kwargs
             try:
                 from importlib import metadata as importlib_metadata
 
@@ -224,35 +259,22 @@ class Embedder:
             except Exception:
                 st_version = None
 
+            logger.warning(
+                "sentence-transformers constructor with model_kwargs failed for model '{}' (version={}): {}. Retrying legacy constructor.",
+                self.config.embedding.model_name,
+                st_version,
+                exc,
+            )
             try:
-                from packaging.version import Version
-
-                parsed_version = Version(st_version) if st_version is not None else None
-                cutoff_version = Version("2.2.0")
-            except Exception:
-                parsed_version = None
-                cutoff_version = None
-
-            if (
-                parsed_version is not None
-                and cutoff_version is not None
-                and parsed_version < cutoff_version
-            ):
-                logger.warning(
-                    "sentence-transformers %s does not support model_kwargs; using legacy constructor for model '%s'",
-                    st_version,
-                    self.config.embedding.model_name,
-                )
                 self.model = model_cls(
                     self.config.embedding.model_name,
                     device=device,
                 )
-            else:
-                logger.error(
-                    "sentence-transformers model construction failed for %s (version=%s): %s",
+            except Exception:
+                logger.exception(
+                    "sentence-transformers legacy constructor also failed for model '{}' (version={})",
                     self.config.embedding.model_name,
                     st_version,
-                    exc,
                 )
                 raise
 
@@ -379,18 +401,48 @@ class Embedder:
                 f"Processing chunk {chunk_number}/{total_chunks} ({len(chunk_texts)} documents)"
             )
 
-            chunk_embeddings = self.model.encode(
-                chunk_texts,
-                batch_size=self.config.embedding.batch_size,
-                show_progress_bar=show_progress
-                and len(chunk_texts) > self.config.embedding.batch_size,
-                normalize_embeddings=self.config.embedding.normalize_embeddings,
-                convert_to_numpy=True,
-            )
+            effective_batch_size = max(1, self.config.embedding.batch_size)
+            while True:
+                try:
+                    chunk_embeddings = self.model.encode(
+                        chunk_texts,
+                        batch_size=effective_batch_size,
+                        show_progress_bar=show_progress and len(chunk_texts) > effective_batch_size,
+                        normalize_embeddings=self.config.embedding.normalize_embeddings,
+                        convert_to_numpy=True,
+                    )
+                    break
+                except (torch.OutOfMemoryError, RuntimeError) as exc:
+                    msg = str(exc).lower()
+                    is_cuda_oom = isinstance(exc, torch.OutOfMemoryError) or (
+                        "cuda" in msg and "out of memory" in msg
+                    )
+                    if not is_cuda_oom:
+                        raise
+
+                    if effective_batch_size <= 1:
+                        logger.error(
+                            "CUDA OOM while embedding chunk %d even at batch_size=1; cannot continue.",
+                            chunk_number,
+                        )
+                        raise
+
+                    new_batch_size = max(1, effective_batch_size // 2)
+                    logger.warning(
+                        "CUDA OOM in chunk %d at batch_size=%d. Retrying with batch_size=%d.",
+                        chunk_number,
+                        effective_batch_size,
+                        new_batch_size,
+                    )
+                    effective_batch_size = new_batch_size
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
             chunk_embeddings = np.array(chunk_embeddings)
             all_embeddings.append(chunk_embeddings)
             logger.info(
-                f"Completed chunk {chunk_number}, embeddings shape: {chunk_embeddings.shape}"
+                f"Completed chunk {chunk_number}, embeddings shape: {chunk_embeddings.shape}, "
+                + f"batch_size_used={effective_batch_size}"
             )
 
         embeddings = np.concatenate(all_embeddings, axis=0)
@@ -531,18 +583,21 @@ class Embedder:
         logger.info(f"Generated embeddings with shape: {embeddings_array.shape}")
         return embeddings_array
 
-    def embed(self, force_regenerate: bool = False) -> tuple[np.ndarray, list[Document]]:
+    def embed(
+        self, force_regenerate: bool = False, incremental: bool = False
+    ) -> tuple[np.ndarray, list[Document]]:
         """
         Run the embedding pipeline.
 
         Args:
             force_regenerate: If True, regenerate embeddings even if cache exists
+            incremental: If True, only embed documents with new content_hash
 
         Returns:
             Tuple of (embeddings array, list of documents)
         """
         # Check if cache exists and we're not forcing regeneration
-        if not force_regenerate and self.cache.exists():
+        if not force_regenerate and not incremental and self.cache.exists():
             logger.info("Loading embeddings from cache")
             embeddings, documents = self.cache.load()
 
@@ -555,6 +610,10 @@ class Embedder:
         if not documents:
             logger.error("No documents found to embed")
             raise ValueError("No documents found")
+
+        # Incremental mode: reuse cached embeddings for unchanged content
+        if incremental and not force_regenerate and self.cache.exists():
+            return self._embed_incremental(documents)
 
         # Load model
         self.load_model()
@@ -569,9 +628,117 @@ class Embedder:
 
         return embeddings, documents
 
+    def _embed_incremental(self, documents: list[Document]) -> tuple[np.ndarray, list[Document]]:
+        """Incrementally embed documents — reuse cached embeddings for unchanged content.
+
+        Builds a content_hash -> embedding lookup from the existing cache.
+        Only documents with a new or changed content_hash are sent to the
+        embedding model. Unchanged documents reuse their cached vectors.
+        """
+        try:
+            cached_embeddings = np.load(self.cache.embeddings_file, mmap_mode="r")
+        except Exception:
+            logger.exception(
+                "Failed to load cached embeddings from %s",
+                self.cache.embeddings_file,
+            )
+            cached_embeddings = None
+        hash_to_embedding_index = self.cache.load_hash_index()
+        if cached_embeddings is None or hash_to_embedding_index is None:
+            logger.info("Cache load failed, falling back to full embedding")
+            self.load_model()
+            embeddings = self.generate_embeddings(documents)
+            self.cache.save(embeddings, documents)
+            return embeddings, documents
+
+        def _content_hash(doc: Document) -> str:
+            """Return stable content hash, backfilling from text for legacy cache rows."""
+            if doc.content_hash:
+                return doc.content_hash
+            return hashlib.sha256(doc.text.encode("utf-8")).hexdigest()
+
+        # Handle empty cached embeddings gracefully: treat as cache miss and re-embed all docs.
+        if cached_embeddings.size == 0 or cached_embeddings.shape[0] == 0:
+            logger.warning(
+                "Cached embeddings are empty; falling back to full embedding for all documents"
+            )
+            self.load_model()
+            embeddings = self.generate_embeddings(documents)
+            self.cache.save(embeddings, documents)
+            return embeddings, documents
+
+        if len(hash_to_embedding_index) > cached_embeddings.shape[0]:
+            logger.warning(
+                "Cached hash index larger than embedding rows (hashes={}, rows={}); falling back to full embedding",
+                len(hash_to_embedding_index),
+                cached_embeddings.shape[0],
+            )
+            self.load_model()
+            embeddings = self.generate_embeddings(documents)
+            self.cache.save(embeddings, documents)
+            return embeddings, documents
+
+        embedding_dim = cached_embeddings.shape[1]
+        logger.info(
+            f"Incremental embedding: {len(hash_to_embedding_index)} cached hashes, "
+            + f"{len(documents)} current documents"
+        )
+
+        # Classify documents into cached vs. needs-embedding
+        to_embed: list[Document] = []
+        to_embed_indices: list[int] = []
+        cached_count = 0
+
+        tmp_embeddings_path = self.cache.cache_dir / "embeddings.incremental.tmp.npy"
+        final_embeddings = np.lib.format.open_memmap(
+            tmp_embeddings_path,
+            mode="w+",
+            dtype=np.float32,
+            shape=(len(documents), embedding_dim),
+        )
+
+        for i, doc in enumerate(documents):
+            doc_hash = _content_hash(doc)
+            if doc_hash in hash_to_embedding_index:
+                cached_idx = hash_to_embedding_index[doc_hash]
+                if cached_idx >= cached_embeddings.shape[0]:
+                    # Stale index, treat as cache miss
+                    to_embed.append(doc)
+                    to_embed_indices.append(i)
+                    continue
+                final_embeddings[i] = cached_embeddings[cached_idx]
+                cached_count += 1
+            else:
+                to_embed.append(doc)
+                to_embed_indices.append(i)
+
+        logger.info(f"Incremental embedding: {cached_count} cached, " + f"{len(to_embed)} to embed")
+
+        if to_embed:
+            # Load model and embed only the new/changed documents
+            self.load_model()
+            new_embeddings = self.generate_embeddings(to_embed)
+            for j, idx in enumerate(to_embed_indices):
+                final_embeddings[idx] = new_embeddings[j]
+        else:
+            logger.info("All documents have cached embeddings — nothing to embed!")
+
+        # Save updated cache and clean up the temporary memmap file.
+        final_embeddings.flush()
+        self.cache.save(final_embeddings, documents)
+        # Convert to regular ndarray before deleting backing file
+        final_embeddings = np.array(final_embeddings)
+        if tmp_embeddings_path.exists():
+            tmp_embeddings_path.unlink()
+
+        logger.info("Incremental embedding pipeline complete!")
+        return final_embeddings, documents
+
 
 def run_embedding(
-    config_path: str = "config.yaml", force_regenerate: bool = False
+    config_path: str = "config.yaml",
+    force_regenerate: bool = False,
+    incremental: bool = False,
 ) -> tuple[np.ndarray, list[Document]]:
     """
     Run the embedding generation pipeline.
@@ -579,6 +746,7 @@ def run_embedding(
     Args:
         config_path: Path to configuration file
         force_regenerate: If True, regenerate embeddings even if cache exists
+        incremental: If True, only embed documents with new content_hash
 
     Returns:
         Tuple of (embeddings array, list of documents)
@@ -589,4 +757,4 @@ def run_embedding(
     config = load_config(config_path)
     logger.info("Config loaded")
     embedder = Embedder(config)
-    return embedder.embed(force_regenerate=force_regenerate)
+    return embedder.embed(force_regenerate=force_regenerate, incremental=incremental)

@@ -71,6 +71,26 @@ class QdrantConfig(BaseModel):
     vector_size: int = Field(default=1024)
     distance: str = Field(default="Cosine")
     recreate_collection: bool = Field(default=False)
+    scroll_batch_size: int = Field(
+        default=500,
+        ge=1,
+        description="Number of points to fetch per scroll request for incremental indexing",
+    )
+    max_scroll_iterations: int = Field(
+        default=1000,
+        ge=1,
+        description="Maximum number of client.scroll iterations during incremental indexing",
+    )
+    max_scroll_duration: int = Field(
+        default=300,
+        ge=1,
+        description="Maximum duration in seconds for incremental scroll loop before aborting",
+    )
+    upsert_batch_size: int = Field(
+        default=250,
+        ge=1,
+        description="Batch size for Qdrant upsert operations during indexing",
+    )
 
 
 class MistralConfig(BaseModel):
@@ -385,6 +405,23 @@ class TwoStageConfig(BaseModel):
     )
 
 
+class IncrementalConfig(BaseModel):
+    """Configuration for incremental re-indexing pipeline."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable incremental processing (only re-process changed documents)",
+    )
+    manifest_path: str = Field(
+        default="./data/manifest.json",
+        description="Path to file manifest for tracking source file changes",
+    )
+    alias_swap: bool = Field(
+        default=False,
+        description="Use two-phase indexing with collection alias swap for zero-downtime updates",
+    )
+
+
 class WebMetadataConfig(BaseModel):
     """Configuration for web metadata integration."""
 
@@ -466,6 +503,7 @@ class Config(BaseModel):
     video: VideoConfig = Field(default_factory=VideoConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     web_metadata: WebMetadataConfig = Field(default_factory=WebMetadataConfig)
+    incremental: IncrementalConfig = Field(default_factory=IncrementalConfig)
 
     def get_max_chunk_tokens(self) -> int:
         """
