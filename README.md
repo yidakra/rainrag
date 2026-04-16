@@ -574,12 +574,18 @@ make streamlit
 
 #### Option 3: Using Docker Compose
 
+> Note: `docker buildx` requires Docker 19.03+ with BuildKit/Buildx enabled. The `--load` flag makes the built image available to the local Docker daemon so it can be started directly.
+
 ```bash
 # Build the image first (CPU)
 docker buildx build --load -t rainrag:latest -f Dockerfile .
 
 # Build the image first (GPU)
 docker buildx build --load -t rainrag:gpu -f Dockerfile.gpu .
+
+# Fallback for older Docker versions:
+# docker build -t rainrag:latest -f Dockerfile .
+# docker build -t rainrag:gpu -f Dockerfile.gpu .
 
 # Start all services
 docker-compose up -d
