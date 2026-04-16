@@ -4,6 +4,7 @@ import importlib
 import math as _math
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import cohere
@@ -108,6 +109,11 @@ class RAGQueryEngine:
         # Cohere client for reranking
         self.cohere_client: Any = None  # Can be ClientV2 or Client depending on SDK version
 
+        # Optional web metadata fallback loader (used to enrich retrieved chunks
+        # when index payload lacks web_* fields).
+        self.web_metadata_loader: Any | None = None
+        self._web_metadata_cache: dict[str, dict[str, Any] | None] = {}
+
         # Initialize clients based on what's needed for LLM and embeddings
         needs_mistral = config.llm.provider == "mistral" or config.embedding.provider == "mistral"
         needs_openai = config.llm.provider == "openai" or config.embedding.provider == "openai"
@@ -163,6 +169,133 @@ class RAGQueryEngine:
             logger.info(f"Using Gemini for LLM: {config.gemini.model_name}")
         else:
             raise ValueError(f"Unknown LLM provider: {config.llm.provider}")
+
+        # Initialize optional web metadata fallback loader.
+        self._initialize_web_metadata_loader()
+
+    def _initialize_web_metadata_loader(self) -> None:
+        """Initialize optional loader for query-time web metadata fallback."""
+        if not self.config.web_metadata.enabled:
+            return
+
+        try:
+            from rainrag.ingest import WebMetadataLoader
+
+            source = self.config.web_metadata.source
+            metadata_path = Path(self.config.web_metadata.path)
+            api_client = None
+
+            if source in ("api", "hybrid"):
+                try:
+                    from rainrag.web_metadata_api import WebMetadataAPIClient
+
+                    api_client = WebMetadataAPIClient.from_env(
+                        base_url=self.config.web_metadata.api_url,
+                        token_env=self.config.web_metadata.api_token_env,
+                    )
+                except Exception as exc:
+                    logger.warning(f"Could not initialize web metadata API client: {exc}")
+                    if source == "api":
+                        return
+                    source = "local"
+
+            if source in ("local", "hybrid"):
+                if not metadata_path.exists():
+                    if source == "local":
+                        return
+                    metadata_path.mkdir(parents=True, exist_ok=True)
+                elif not metadata_path.is_dir():
+                    return
+            elif source == "api":
+                if metadata_path.exists() and metadata_path.is_file():
+                    return
+                metadata_path.mkdir(parents=True, exist_ok=True)
+
+            self.web_metadata_loader = WebMetadataLoader(
+                metadata_path,
+                source=source,
+                api_client=api_client,
+            )
+        except Exception as exc:
+            logger.warning(f"Web metadata fallback disabled due to initialization error: {exc}")
+            self.web_metadata_loader = None
+
+    @staticmethod
+    def _extract_video_hash_from_path(path_value: str) -> str | None:
+        """Extract video hash from VTT path (e.g., abc123.ru.vtt -> abc123)."""
+        if not path_value:
+            return None
+        stem = Path(path_value).stem
+        if not stem:
+            return None
+        return stem.rsplit(".", 1)[0] if "." in stem else stem
+
+    def _enrich_documents_with_web_metadata(
+        self, documents: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Fill missing web metadata on retrieved documents via local/API fallback."""
+        if not documents or self.web_metadata_loader is None:
+            return documents, 0
+
+        metadata_fallback_hits = 0
+
+        def _missing_web_fields(doc: dict[str, Any]) -> bool:
+            return not (
+                doc.get("web_title")
+                or doc.get("web_description")
+                or doc.get("web_url")
+                or doc.get("web_date")
+            )
+
+        for doc in documents:
+            if not _missing_web_fields(doc):
+                continue
+
+            video_hash = self._extract_video_hash_from_path(str(doc.get("path", "")))
+            if not video_hash:
+                continue
+
+            if video_hash not in self._web_metadata_cache:
+                try:
+                    raw = self.web_metadata_loader.load_metadata(video_hash)
+                    cleaned = (
+                        self.web_metadata_loader.extract_clean_metadata(raw)
+                        if raw
+                        else None
+                    )
+                    self._web_metadata_cache[video_hash] = cleaned if cleaned else None
+                except Exception as exc:
+                    logger.debug(
+                        f"Web metadata fallback lookup failed for hash {video_hash}: {exc}"
+                    )
+                    self._web_metadata_cache[video_hash] = None
+
+            metadata = self._web_metadata_cache.get(video_hash)
+            if not metadata:
+                continue
+
+            doc_was_enriched = False
+
+            for field in (
+                "web_title",
+                "web_date",
+                "web_date_ts",
+                "web_description",
+                "web_url",
+            ):
+                if not doc.get(field) and metadata.get(field) is not None:
+                    doc[field] = metadata[field]
+                    doc_was_enriched = True
+
+            # UI primarily reads `date`; mirror web date into date when missing.
+            if not doc.get("date") and doc.get("web_date"):
+                doc["date"] = doc["web_date"]
+                doc_was_enriched = True
+
+            if doc_was_enriched:
+                metadata_fallback_hits += 1
+
+        return documents, metadata_fallback_hits
 
     def initialize(self) -> None:
         """Initialize the embedding model and Qdrant client."""
@@ -1773,6 +1906,9 @@ Question: {query}"""
         doc_order = self.config.two_stage.prompt_doc_order
         documents = self._order_documents_for_prompt(documents, doc_order)
 
+        # Step 5d: Fill missing web metadata from local/API fallback at query-time.
+        documents, metadata_fallback_hits = self._enrich_documents_with_web_metadata(documents)
+
         # Step 6: Build the messages with language specification
         messages = self.build_prompt(question, documents, language=language)
 
@@ -1802,6 +1938,7 @@ Question: {query}"""
             "cost.llm_hyde_calls": llm_hyde_calls,
             "cost.embed_calls_count": embed_calls,
             "cost.reranker_calls_count": reranker_calls,
+            "metadata_fallback_hits": metadata_fallback_hits,
         }
 
 

@@ -197,6 +197,7 @@ def test_query_endpoint_success(test_client):
                         }
                     ],
                     "num_documents": 1,
+                    "metadata_fallback_hits": 1,
                 }
 
                 response = test_client.post(
@@ -208,6 +209,7 @@ def test_query_endpoint_success(test_client):
                 data = response.json()
                 assert data["answer"] == "This is a test answer."
                 assert data["num_documents"] == 1
+                assert data["metadata_fallback_hits"] == 1
                 assert len(data["context"]) == 1
 
 

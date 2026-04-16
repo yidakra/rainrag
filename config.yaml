@@ -196,7 +196,7 @@ incremental:
 # Web metadata integration
 web_metadata:
   enabled: true
-  source: "local"  # "local" = disk only, "api" = API with local cache, "hybrid" = disk first then API fallback
+  source: "hybrid"  # "local" = disk only, "api" = API with local cache, "hybrid" = disk first then API fallback
   path: "./web_metadata"
   api_url: "https://library.tvrain.tv"
   api_token_env: "LIBRARY_API_TOKEN"  # env var holding the Bearer token

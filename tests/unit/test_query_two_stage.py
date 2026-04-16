@@ -494,6 +494,7 @@ class TestTwoStagePipeline:
             "cost.llm_hyde_calls",
             "cost.embed_calls_count",
             "cost.reranker_calls_count",
+            "metadata_fallback_hits",
         }
 
     def test_answer_generation_uses_zero_temperature(
