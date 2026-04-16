@@ -29,6 +29,27 @@ INCREMENTAL_OPTION = typer.Option(
 )
 SKIP_INGEST_OPTION = typer.Option(False, "--skip-ingest", help="Skip ingestion step")
 SKIP_EMBED_OPTION = typer.Option(False, "--skip-embed", help="Skip embedding step")
+OUTPUT_DIR_OPTION = typer.Option(
+    None,
+    "--output-dir",
+    "-o",
+    help="Directory to write metadata JSON files (default: config web_metadata.path)",
+)
+START_TIME_OPTION = typer.Option(
+    None,
+    "--start-time",
+    help="Unix timestamp for batch export start (default: 180 days ago)",
+)
+END_TIME_OPTION = typer.Option(
+    None,
+    "--end-time",
+    help="Unix timestamp for batch export end (default: now)",
+)
+HASH_OPTION = typer.Option(
+    None,
+    "--hash",
+    help="Fetch metadata for a single video hash instead of batch export",
+)
 TOP_K_OPTION = typer.Option(
     None, "--top-k", "-k", help="Number of documents to retrieve (default from config)"
 )
@@ -340,27 +361,10 @@ def ask(
 @app.command("sync-metadata")
 def sync_metadata(
     config: str = CONFIG_OPTION,
-    output_dir: str = typer.Option(
-        None,
-        "--output-dir",
-        "-o",
-        help="Directory to write metadata JSON files (default: config web_metadata.path)",
-    ),
-    start_time: int = typer.Option(
-        None,
-        "--start-time",
-        help="Unix timestamp for batch export start (default: 180 days ago)",
-    ),
-    end_time: int = typer.Option(
-        None,
-        "--end-time",
-        help="Unix timestamp for batch export end (default: now)",
-    ),
-    video_hash: str = typer.Option(
-        None,
-        "--hash",
-        help="Fetch metadata for a single video hash instead of batch export",
-    ),
+    output_dir: str | None = OUTPUT_DIR_OPTION,
+    start_time: int | None = START_TIME_OPTION,
+    end_time: int | None = END_TIME_OPTION,
+    video_hash: str | None = HASH_OPTION,
 ) -> None:
     """
     Sync web metadata from the library.tvrain.tv API.
@@ -381,13 +385,17 @@ def sync_metadata(
     """
     setup_logging(config)
 
-    try:
-        from pathlib import Path as _Path
+    if video_hash and (start_time is not None or end_time is not None):
+        raise typer.BadParameter(
+            "--hash and --start-time/--end-time cannot be used together. "
+            + "Use --hash for single video or time range for batch export."
+        )
 
+    try:
         from rainrag.web_metadata_api import WebMetadataAPIClient
 
         cfg = load_config(config)
-        target_dir = _Path(output_dir) if output_dir else _Path(cfg.web_metadata.path)
+        target_dir = Path(output_dir) if output_dir else Path(cfg.web_metadata.path)
 
         client = WebMetadataAPIClient.from_env(
             base_url=cfg.web_metadata.api_url,

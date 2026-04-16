@@ -41,6 +41,7 @@ class WebMetadataAPIClient:
         timeout: float = _DEFAULT_TIMEOUT,
         batch_timeout: float = _BATCH_TIMEOUT,
     ) -> None:
+        super().__init__()
         self.base_url = base_url.rstrip("/")
         self._headers = {
             "Authorization": f"Bearer {token}",
@@ -67,7 +68,7 @@ class WebMetadataAPIClient:
         if not token:
             raise ValueError(
                 f"Environment variable {token_env} is required for the web metadata API "
-                f"but is not set or empty."
+                + "but is not set or empty."
             )
         return cls(base_url=base_url, token=token)
 
@@ -156,7 +157,7 @@ class WebMetadataAPIClient:
                         for item in article:
                             if isinstance(item, dict):
                                 articles.append(item)
-                except (json.JSONDecodeError, KeyError) as exc:
+                except json.JSONDecodeError as exc:
                     logger.warning(f"Skipping unparseable entry {name} in ZIP: {exc}")
         logger.info(f"Parsed {len(articles)} articles from batch export ZIP")
         return articles
@@ -189,7 +190,12 @@ class WebMetadataAPIClient:
             if not video_hash:
                 logger.debug("Skipping article without video_hash field")
                 continue
-            target = output_dir / f"{video_hash}.json"
+            # Sanitize: use only the basename to prevent path traversal
+            safe_hash = Path(video_hash).name
+            if not safe_hash or safe_hash != video_hash:
+                logger.warning(f"Skipping article with invalid video_hash: {video_hash!r}")
+                continue
+            target = output_dir / f"{safe_hash}.json"
             target.write_text(
                 json.dumps(article, ensure_ascii=False, indent=None), encoding="utf-8"
             )

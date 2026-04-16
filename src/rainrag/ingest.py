@@ -894,8 +894,15 @@ class WebMetadataLoader:
                         (required when *source* is ``"api"`` or ``"hybrid"``).
         """
         super().__init__()
+        allowed_sources = {"local", "api", "hybrid"}
+        source_normalized = source.lower().strip()
+        if source_normalized not in allowed_sources:
+            raise ValueError(
+                f"Invalid web metadata loader source {source!r}; "
+                + f"expected one of {sorted(allowed_sources)}."
+            )
         self.metadata_path = metadata_path
-        self.source = source
+        self.source = source_normalized
         self.api_client = api_client
 
     # ------------------------------------------------------------------
@@ -1251,18 +1258,23 @@ class Ingester:
                         token_env=config.web_metadata.api_token_env,
                     )
                     logger.info(
-                        f"Web metadata API client initialised "
-                        f"(base_url={config.web_metadata.api_url})"
+                        "Web metadata API client initialised "
+                        + f"(base_url={config.web_metadata.api_url})"
                     )
                 except Exception as exc:
                     logger.warning(f"Could not initialise web metadata API client: {exc}")
                     if source == "api":
                         logger.warning(
                             "source='api' but API client failed to init; "
-                            "web metadata will be unavailable"
+                            + "web metadata will be unavailable"
                         )
                         self.web_metadata_loader = None
                         return
+                    if source == "hybrid":
+                        logger.warning(
+                            "source='hybrid' but API client failed to init; "
+                            + "web metadata loader will operate in local-only mode"
+                        )
 
             # For local/hybrid modes, validate the directory
             if source in ("local", "hybrid") and not web_metadata_path.exists():
@@ -1279,6 +1291,10 @@ class Ingester:
 
             # For api mode, ensure the cache directory exists
             if source == "api":
+                if web_metadata_path.exists() and web_metadata_path.is_file():
+                    raise FileExistsError(
+                        f"Web metadata path for api mode exists as a file, not a directory: {web_metadata_path}"
+                    )
                 web_metadata_path.mkdir(parents=True, exist_ok=True)
 
             self.web_metadata_loader = WebMetadataLoader(

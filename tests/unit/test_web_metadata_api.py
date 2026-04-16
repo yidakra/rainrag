@@ -45,6 +45,17 @@ def api_client() -> WebMetadataAPIClient:
 
 
 @pytest.fixture
+def mock_httpx_client():
+    mock_instance = MagicMock()
+    mock_client_cls = MagicMock()
+    mock_client_cls.return_value.__enter__.return_value = mock_instance
+    mock_client_cls.return_value.__exit__.return_value = False
+
+    with patch("rainrag.web_metadata_api.httpx.Client", mock_client_cls):
+        yield mock_client_cls, mock_instance
+
+
+@pytest.fixture
 def meta_dir(tmp_path: Path) -> Path:
     d = tmp_path / "web_metadata"
     d.mkdir()
@@ -69,30 +80,32 @@ class TestWebMetadataAPIClient:
             )
             assert client.base_url == "https://example.com"
 
-    def test_fetch_by_hash_success(self, api_client: WebMetadataAPIClient) -> None:
+    def test_fetch_by_hash_success(
+        self,
+        api_client: WebMetadataAPIClient,
+        mock_httpx_client,
+    ) -> None:
+        _mock_client_cls, mock_instance = mock_httpx_client
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = SAMPLE_ARTICLE
+        mock_instance.get.return_value = mock_resp
 
-        with patch("rainrag.web_metadata_api.httpx.Client") as mock_client_cls:
-            mock_client_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
-            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-            mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_resp
+        result = api_client.fetch_by_hash("abc123def456")
+        assert result == SAMPLE_ARTICLE
 
-            result = api_client.fetch_by_hash("abc123def456")
-            assert result == SAMPLE_ARTICLE
-
-    def test_fetch_by_hash_404(self, api_client: WebMetadataAPIClient) -> None:
+    def test_fetch_by_hash_404(
+        self,
+        api_client: WebMetadataAPIClient,
+        mock_httpx_client,
+    ) -> None:
+        _mock_client_cls, mock_instance = mock_httpx_client
         mock_resp = MagicMock()
         mock_resp.status_code = 404
+        mock_instance.get.return_value = mock_resp
 
-        with patch("rainrag.web_metadata_api.httpx.Client") as mock_client_cls:
-            mock_client_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
-            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-            mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_resp
-
-            result = api_client.fetch_by_hash("nonexistent")
-            assert result is None
+        result = api_client.fetch_by_hash("nonexistent")
+        assert result is None
 
     def test_parse_zip(self) -> None:
         articles = [SAMPLE_ARTICLE, {**SAMPLE_ARTICLE, "id": 2, "video_hash": "xyz789"}]
@@ -119,18 +132,20 @@ class TestWebMetadataAPIClient:
         parsed = WebMetadataAPIClient._parse_zip(buf.getvalue())
         assert len(parsed) == 2
 
-    def test_sync_to_local(self, api_client: WebMetadataAPIClient, meta_dir: Path) -> None:
+    def test_sync_to_local(
+        self,
+        api_client: WebMetadataAPIClient,
+        meta_dir: Path,
+        mock_httpx_client,
+    ) -> None:
+        _mock_client_cls, mock_instance = mock_httpx_client
         zip_data = _make_zip([SAMPLE_ARTICLE])
         mock_resp = MagicMock()
         mock_resp.content = zip_data
         mock_resp.raise_for_status = MagicMock()
+        mock_instance.get.return_value = mock_resp
 
-        with patch("rainrag.web_metadata_api.httpx.Client") as mock_client_cls:
-            mock_client_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
-            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-            mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_resp
-
-            written = api_client.sync_to_local(meta_dir)
+        written = api_client.sync_to_local(meta_dir)
 
         assert written == 1
         out_file = meta_dir / "abc123def456.json"
@@ -139,21 +154,21 @@ class TestWebMetadataAPIClient:
         assert data["name"] == "Test article title"
 
     def test_sync_to_local_skips_no_hash(
-        self, api_client: WebMetadataAPIClient, meta_dir: Path
+        self,
+        api_client: WebMetadataAPIClient,
+        meta_dir: Path,
+        mock_httpx_client,
     ) -> None:
+        _mock_client_cls, mock_instance = mock_httpx_client
         article_no_hash = {**SAMPLE_ARTICLE}
         del article_no_hash["video_hash"]
         zip_data = _make_zip([article_no_hash])
         mock_resp = MagicMock()
         mock_resp.content = zip_data
         mock_resp.raise_for_status = MagicMock()
+        mock_instance.get.return_value = mock_resp
 
-        with patch("rainrag.web_metadata_api.httpx.Client") as mock_client_cls:
-            mock_client_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
-            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-            mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_resp
-
-            written = api_client.sync_to_local(meta_dir)
+        written = api_client.sync_to_local(meta_dir)
 
         assert written == 0
 
@@ -165,7 +180,7 @@ class TestWebMetadataAPIClient:
 
 class TestWebMetadataLoaderSources:
     def test_local_mode_reads_file(self, meta_dir: Path) -> None:
-        (meta_dir / "abc123.json").write_text(json.dumps(SAMPLE_ARTICLE))
+        (meta_dir / "abc123.json").write_text(json.dumps(SAMPLE_ARTICLE), encoding="utf-8")
         loader = WebMetadataLoader(meta_dir, source="local")
 
         result = loader.load_metadata("abc123")
@@ -197,7 +212,7 @@ class TestWebMetadataLoaderSources:
         assert (meta_dir / "newvideo.json").exists()
 
     def test_api_mode_uses_cache(self, meta_dir: Path) -> None:
-        (meta_dir / "cached.json").write_text(json.dumps(SAMPLE_ARTICLE))
+        (meta_dir / "cached.json").write_text(json.dumps(SAMPLE_ARTICLE), encoding="utf-8")
         mock_api = MagicMock()
         loader = WebMetadataLoader(meta_dir, source="api", api_client=mock_api)
 
@@ -213,7 +228,7 @@ class TestWebMetadataLoaderSources:
         assert loader.load_metadata("missing") is None
 
     def test_hybrid_prefers_local(self, meta_dir: Path) -> None:
-        (meta_dir / "local_hash.json").write_text(json.dumps(SAMPLE_ARTICLE))
+        (meta_dir / "local_hash.json").write_text(json.dumps(SAMPLE_ARTICLE), encoding="utf-8")
         mock_api = MagicMock()
         loader = WebMetadataLoader(meta_dir, source="hybrid", api_client=mock_api)
 
