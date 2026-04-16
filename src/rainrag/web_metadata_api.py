@@ -58,7 +58,7 @@ class WebMetadataAPIClient:
         cls,
         base_url: str = "https://library.tvrain.tv",
         token_env: str = "LIBRARY_API_TOKEN",
-    ) -> "WebMetadataAPIClient":
+    ) -> WebMetadataAPIClient:
         """Create a client reading the Bearer token from an env var.
 
         Raises ``ValueError`` if the env var is not set or empty.
@@ -190,7 +190,9 @@ class WebMetadataAPIClient:
                 logger.debug("Skipping article without video_hash field")
                 continue
             target = output_dir / f"{video_hash}.json"
-            target.write_text(json.dumps(article, ensure_ascii=False, indent=None), encoding="utf-8")
+            target.write_text(
+                json.dumps(article, ensure_ascii=False, indent=None), encoding="utf-8"
+            )
             written += 1
 
         logger.info(f"Wrote {written} metadata files to {output_dir}")

@@ -406,16 +406,12 @@ def sync_metadata(
 
             target_dir.mkdir(parents=True, exist_ok=True)
             out_file = target_dir / f"{video_hash}.json"
-            out_file.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            out_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             typer.echo(f"Written to {out_file}")
         else:
             # Batch mode
             typer.echo("Starting batch metadata export...")
-            written = client.sync_to_local(
-                target_dir, start_time=start_time, end_time=end_time
-            )
+            written = client.sync_to_local(target_dir, start_time=start_time, end_time=end_time)
             typer.echo(f"Sync complete! Wrote {written} metadata files to {target_dir}")
 
     except typer.Exit:
