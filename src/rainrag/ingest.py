@@ -1092,11 +1092,15 @@ class WebMetadataLoader:
 
         # Stable two-pass sort: date descending first, then relevance tier
         results.sort(key=lambda a: a.get("date_active_start", ""), reverse=True)
-        results.sort(key=lambda a: (
-            0 if a.get("name", "").lower() == query_lower
-            else 1 if a.get("name", "").lower().startswith(query_lower)
-            else 2
-        ))
+        results.sort(
+            key=lambda a: (
+                0
+                if a.get("name", "").lower() == query_lower
+                else 1
+                if a.get("name", "").lower().startswith(query_lower)
+                else 2
+            )
+        )
         return results
 
     @staticmethod
