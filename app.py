@@ -1409,8 +1409,9 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
                 )
                 # Cache VTT content by URL to avoid re-fetching on every Streamlit rerun
                 cache_key = f"ns_vtt_{vtt_url}"
+                    escaped_vtt_content = html.escape(vtt_content)
                 if cache_key not in st.session_state:
-                    st.session_state[cache_key] = fetch_vtt_content(vtt_url)
+                        f'<div style="height: 400px; overflow-y: auto; border: 1px solid #4a4a4a; border-radius: 0.25rem; padding: 0.5rem; background-color: #1e1e1e; color: #e0e0e0; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap;">{escaped_vtt_content}</div>',
                 vtt_content = st.session_state[cache_key]
                 if vtt_content:
                     # Escape content to prevent XSS via malformed/malicious VTT markup
