@@ -3,10 +3,12 @@
 import asyncio
 import hmac
 import os
+import re
 import string
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from loguru import logger
 from prometheus_client import Counter, Gauge
@@ -104,7 +106,7 @@ ACTIVE_QUERIES: Gauge = _create_active_queries_gauge()
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -279,7 +281,7 @@ def find_video_file(vtt_path: str) -> str | None:
     # Search for video file in the same directory as VTT
     vtt_dir = vtt_file.parent
 
-    # Quality preference order (highest to lowest)
+    # Quality preference order (highest to lowest).
     quality_order = ["1080p", "720p", "480p", "360p", "180p"]
 
     # First, try to find video files with quality suffixes
@@ -309,6 +311,50 @@ def find_video_file(vtt_path: str) -> str | None:
                 return str(video_file)
     except Exception as e:
         logger.warning(f"Error searching for video files: {e}")
+
+    return None
+
+
+def _select_media_file_from_directory(
+    directory: Path,
+    *,
+    kind: str,
+) -> Path | None:
+    """Pick a likely media file from a hash-sharded directory.
+
+    This is a defensive fallback for callers that pass a directory path
+    instead of a specific file path (for example /video/<hash-shards>/).
+    """
+    if not directory.is_dir():
+        return None
+
+    try:
+        files = [p for p in directory.iterdir() if p.is_file()]
+    except OSError:
+        return None
+
+    if kind == "video":
+        quality_order = ["1080p", "720p", "480p", "360p", "180p"]
+        for quality in quality_order:
+            for file_path in files:
+                suffix = file_path.suffix.lower()
+                if suffix in config.video.extensions and f"_{quality}" in file_path.stem:
+                    return file_path
+        for file_path in files:
+            if file_path.suffix.lower() in config.video.extensions:
+                return file_path
+        return None
+
+    if kind == "vtt":
+        preferred_suffixes = [".ru.vtt", ".en.vtt"]
+        for preferred in preferred_suffixes:
+            for file_path in files:
+                if file_path.name.endswith(preferred):
+                    return file_path
+        for file_path in files:
+            if any(file_path.name.endswith(ext) for ext in config.video.vtt_extensions):
+                return file_path
+        return None
 
     return None
 
@@ -366,6 +412,59 @@ def _resolve_media_relative(path_str: str, root: Path) -> Path | None:
             return tail
 
     return None
+
+
+def _build_quality_video_map(directory: Path, target_stem: str | None = None) -> dict[str, Path]:
+    """Return available quality MP4 files in a directory keyed by quality label."""
+    if config is None or not directory.is_dir():
+        return {}
+
+    valid_exts = {ext.lower() for ext in config.video.extensions}
+    quality_re = re.compile(r"^(?P<base>.+)_(?P<quality>1080p|720p|480p|360p|180p)$")
+    out: dict[str, Path] = {}
+    for file_path in directory.iterdir():
+        if not file_path.is_file():
+            continue
+        if file_path.suffix.lower() not in valid_exts:
+            continue
+        match = quality_re.match(file_path.stem)
+        if not match:
+            continue
+        if target_stem is not None and match.group("base") != target_stem:
+            continue
+        quality = match.group("quality")
+        out[quality] = file_path
+    return out
+
+
+def _resolve_hls_file_context(file_path: str) -> tuple[Path, str | None]:
+    """Resolve HLS input path to (directory, target video base stem)."""
+    if config is None or not config.video.enabled:
+        raise HTTPException(status_code=404, detail="Video serving is disabled")
+
+    video_root = Path(
+        config.paths.video_root if config.paths.video_root else config.paths.archive_root
+    ).resolve()
+    full_path = (video_root / file_path).resolve()
+
+    try:
+        if not str(full_path).startswith(str(video_root)):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except Exception as e:
+        logger.error(f"Path resolution error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
+    if full_path.exists() and full_path.is_dir():
+        return full_path, None
+
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+    if full_path.suffix.lower() not in config.video.extensions:
+        raise HTTPException(status_code=400, detail="Invalid video file type")
+
+    match = re.match(r"^(?P<base>.+)_(1080p|720p|480p|360p|180p)$", full_path.stem)
+    target_base = match.group("base") if match else None
+    return full_path.parent, target_base
 
 
 def generate_media_urls(
@@ -795,6 +894,104 @@ class RelatedChunksResponse(BaseModel):
     num_related: int
 
 
+class VideoNameSearchLanguageResult(BaseModel):
+    """Media URLs for a single language version of a video found by name search."""
+
+    video_url: str | None = None
+    vtt_url: str | None = None
+
+
+class VideoNameSearchResult(BaseModel):
+    """A single result from a video name search."""
+
+    video_hash: str
+    name: str
+    date: str | None = None
+    web_url: str | None = None
+    teleshow_name: str | None = None
+    languages: dict[str, VideoNameSearchLanguageResult]
+
+
+class VideoNameSearchResponse(BaseModel):
+    """Response model for the video name search endpoint."""
+
+    results: list[VideoNameSearchResult]
+    query: str
+
+
+@app.get("/search-by-name", response_model=VideoNameSearchResponse)
+async def search_by_name(
+    q: str = Query(..., min_length=1, description="Video title search query"),
+    limit: int = Query(default=50, ge=1, le=200, description="Maximum number of results to return"),
+    authorization: str | None = Header(None),
+):
+    """Search for videos by title in the local web metadata cache.
+
+    Performs a case-insensitive substring match against the ``name`` field of
+    every cached ``{hash}.json`` file in the configured metadata directory.
+    Returns matching videos with media URLs for all locally available language
+    versions (ru / en).
+    """
+    verify_auth_token(authorization=authorization)
+
+    if config is None:
+        raise HTTPException(status_code=503, detail="Config not initialized")
+
+    from pathlib import Path as _Path
+
+    from rainrag.ingest import WebMetadataLoader
+
+    metadata_path = _Path(config.web_metadata.path)
+    loader = WebMetadataLoader(metadata_path)
+
+    # Run the directory scan in a thread so the async event loop stays responsive
+    matches = await asyncio.to_thread(loader.search_by_name, q)
+    matches = matches[:limit]
+
+    archive_root = _Path(config.paths.archive_root).resolve()
+
+    results: list[VideoNameSearchResult] = []
+    for article in matches:
+        video_hash = article.get("video_hash", "").strip()
+        if not video_hash:
+            continue
+
+        try:
+            archive_rel = WebMetadataLoader.hash_to_archive_dir(video_hash)
+        except ValueError:
+            logger.warning(f"Invalid video_hash in metadata: {video_hash!r}")
+            continue
+
+        archive_dir = archive_root / archive_rel
+
+        languages: dict[str, VideoNameSearchLanguageResult] = {}
+        for lang in ("ru", "en"):
+            vtt_file = archive_dir / f"{video_hash}.{lang}.vtt"
+            if vtt_file.exists():
+                video_url, vtt_url = generate_media_urls(str(vtt_file))
+                languages[lang] = VideoNameSearchLanguageResult(
+                    video_url=video_url,
+                    vtt_url=vtt_url,
+                )
+
+        teleshow = article.get("teleshow")
+        teleshow_name = teleshow.get("name") if isinstance(teleshow, dict) else None
+
+        results.append(
+            VideoNameSearchResult(
+                video_hash=video_hash,
+                name=article.get("name", ""),
+                date=article.get("date_active_start"),
+                web_url=article.get("url"),
+                teleshow_name=teleshow_name,
+                languages=languages,
+            )
+        )
+
+    logger.info(f"Name search for {q!r}: {len(results)} results (limit={limit})")
+    return VideoNameSearchResponse(results=results, query=q)
+
+
 @app.post("/related-chunks", response_model=RelatedChunksResponse)
 async def get_related_chunks(request: RelatedChunksRequest):
     """
@@ -922,6 +1119,13 @@ async def serve_video(
         logger.error(f"Path resolution error: {e}")
         raise HTTPException(status_code=400, detail="Invalid file path")
 
+    # If a directory is passed, choose best available video file in that directory.
+    if full_path.exists() and full_path.is_dir():
+        selected = _select_media_file_from_directory(full_path, kind="video")
+        if selected is None:
+            raise HTTPException(status_code=404, detail="Video directory is empty")
+        full_path = selected
+
     # Check if file exists
     if not full_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found")
@@ -945,6 +1149,96 @@ async def serve_video(
     # NOTE: Do not force Content-Disposition: attachment for videos.
     # Some browsers refuse to play media in <video> when it is served as an attachment.
     return FileResponse(path=str(full_path), media_type=media_type)
+
+
+@app.get("/hls/master/{file_path:path}")
+async def serve_hls_master(
+    file_path: str,
+    authorization: Annotated[str | None, Header()] = None,
+    auth: Annotated[str | None, Query()] = None,
+):
+    """Serve a master HLS playlist referencing available MP4 quality variants."""
+    verify_auth_token(authorization=authorization, access_token=auth)
+
+    directory, target_base = _resolve_hls_file_context(file_path)
+    available = _build_quality_video_map(directory, target_stem=target_base)
+    if not available:
+        raise HTTPException(status_code=404, detail="No quality variants found for HLS")
+
+    quality_order = ["1080p", "720p", "480p", "360p", "180p"]
+    bandwidth_map = {
+        "1080p": 8_000_000,
+        "720p": 4_500_000,
+        "480p": 2_500_000,
+        "360p": 1_200_000,
+        "180p": 450_000,
+    }
+    resolution_map = {
+        "1080p": "1920x1080",
+        "720p": "1280x720",
+        "480p": "854x480",
+        "360p": "640x360",
+        "180p": "320x180",
+    }
+
+    auth_q = f"?auth={quote(auth, safe='')}" if auth else ""
+    encoded_path = quote(file_path, safe="/")
+
+    lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
+    for quality in quality_order:
+        if quality not in available:
+            continue
+        lines.append(
+            f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth_map[quality]},RESOLUTION={resolution_map[quality]},NAME="{quality}"'
+        )
+        lines.append(f"/hls/variant/{quality}/{encoded_path}{auth_q}")
+
+    return Response(content="\n".join(lines) + "\n", media_type="application/vnd.apple.mpegurl")
+
+
+@app.get("/hls/variant/{quality}/{file_path:path}")
+async def serve_hls_variant(
+    quality: str,
+    file_path: str,
+    authorization: Annotated[str | None, Header()] = None,
+    auth: Annotated[str | None, Query()] = None,
+):
+    """Serve single-variant HLS playlist pointing to the MP4 file of requested quality."""
+    verify_auth_token(authorization=authorization, access_token=auth)
+
+    if quality not in {"1080p", "720p", "480p", "360p", "180p"}:
+        raise HTTPException(status_code=400, detail="Invalid quality")
+
+    directory, target_base = _resolve_hls_file_context(file_path)
+    available = _build_quality_video_map(directory, target_stem=target_base)
+    selected = available.get(quality)
+    if selected is None:
+        raise HTTPException(status_code=404, detail="Requested quality not available")
+
+    if config is None:
+        raise HTTPException(status_code=503, detail="Server not initialized")
+
+    video_root = Path(
+        config.paths.video_root if config.paths.video_root else config.paths.archive_root
+    ).resolve()
+    rel = _resolve_media_relative(str(selected), video_root)
+    if rel is None:
+        raise HTTPException(status_code=500, detail="Could not resolve variant path")
+
+    auth_q = f"?auth={quote(auth, safe='')}" if auth else ""
+    rel_posix = str(rel).replace("\\", "/")
+    segment_uri = f"/video/{quote(rel_posix, safe='/')}{auth_q}"
+
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        "#EXT-X-TARGETDURATION:600",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXTINF:600.0,",
+        segment_uri,
+        "#EXT-X-ENDLIST",
+    ]
+    return Response(content="\n".join(lines) + "\n", media_type="application/vnd.apple.mpegurl")
 
 
 @app.api_route("/vtt/{file_path:path}", methods=["GET", "HEAD"])
@@ -978,6 +1272,13 @@ async def serve_vtt(
     except Exception as e:
         logger.error(f"Path resolution error: {e}")
         raise HTTPException(status_code=400, detail="Invalid file path")
+
+    # If a directory is passed, choose preferred VTT file from that directory.
+    if full_path.exists() and full_path.is_dir():
+        selected = _select_media_file_from_directory(full_path, kind="vtt")
+        if selected is None:
+            raise HTTPException(status_code=404, detail="VTT directory is empty")
+        full_path = selected
 
     # Check if file exists
     if not full_path.exists():

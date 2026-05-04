@@ -1065,6 +1065,44 @@ class WebMetadataLoader:
                 hashes.append(metadata_file.stem)
         return hashes
 
+    def search_by_name(self, query: str) -> list[dict[str, Any]]:
+        """Search local metadata files by video title (case-insensitive substring match).
+
+        Returns matches sorted by relevance tier (exact → starts-with → contains)
+        then by date descending within each tier.
+        """
+        if not self.metadata_path.exists():
+            return []
+
+        query_lower = query.lower().strip()
+        if not query_lower:
+            return []
+
+        results: list[dict[str, Any]] = []
+        for metadata_file in self.metadata_path.glob("*.json"):
+            if not metadata_file.is_file():
+                continue
+            try:
+                with open(metadata_file, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+            if query_lower in data.get("name", "").lower():
+                results.append(data)
+
+        # Stable two-pass sort: date descending first, then relevance tier
+        results.sort(key=lambda a: a.get("date_active_start", ""), reverse=True)
+        results.sort(
+            key=lambda a: (
+                0
+                if a.get("name", "").lower() == query_lower
+                else 1
+                if a.get("name", "").lower().startswith(query_lower)
+                else 2
+            )
+        )
+        return results
+
     @staticmethod
     def hash_to_archive_dir(video_hash: str) -> Path:
         """

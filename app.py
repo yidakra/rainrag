@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import httpx
 import redis
 import streamlit as st
+import streamlit.components.v1 as components
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from dotenv import load_dotenv
@@ -216,6 +217,13 @@ TRANSLATIONS = {
         "auth_success": "Аутентификация успешна!",
         "attempts_left": "{count} попыток осталось",
         "account_locked_final": "Аккаунт заблокирован! Слишком много неудачных попыток.",
+        "name_search_toggle": "Поиск по названию видео",
+        "name_search_placeholder": "Введите название видео...",
+        "name_search_button": "Найти",
+        "name_search_no_results": "Видео с таким названием не найдено в локальном архиве.",
+        "name_search_no_local_files": "Файлы не найдены в локальном архиве.",
+        "name_search_show": "программа",
+        "name_search_searching": "Поиск видео по названию...",
     },
     "en": {
         "title": "RainRAG - Video Transcript Search",
@@ -301,6 +309,13 @@ TRANSLATIONS = {
         "auth_success": "Authentication successful!",
         "attempts_left": "{count} attempt(s) remaining",
         "account_locked_final": "Account locked! Too many failed attempts.",
+        "name_search_toggle": "Search by video name",
+        "name_search_placeholder": "Enter video title...",
+        "name_search_button": "Search",
+        "name_search_no_results": "No videos with that title found in the local archive.",
+        "name_search_no_local_files": "Files not found in local archive.",
+        "name_search_show": "show",
+        "name_search_searching": "Searching videos by name...",
     },
 }
 
@@ -674,6 +689,11 @@ def initialize_session_state():
                 "Gosuslugi invites to special forces university",
             ],
         }
+    # Search mode: "content" (default RAG) or "name" (title search)
+    if "search_mode" not in st.session_state:
+        st.session_state.search_mode = "content"
+    if "name_search_results" not in st.session_state:
+        st.session_state.name_search_results = None
     # Pending query flag for example buttons
     if "pending_query" not in st.session_state:
         st.session_state.pending_query = None
@@ -770,6 +790,114 @@ def build_asset_url(path_or_url: str) -> str:
     return f"{ASSET_BASE_URL}/{path_or_url}"
 
 
+def build_video_source_urls(
+    video_url: str,
+    start_time_seconds: float | None = None,
+    preferred_quality: str | None = None,
+) -> list[str]:
+    """Build ordered video source URLs with quality fallback.
+
+    If the URL points to a quality-suffixed MP4 (e.g. *_1080p.mp4), add
+    fallback variants so the browser can try lower qualities automatically.
+    """
+    base_video_url = video_url.split("#", 1)[0]
+    start_fragment = ""
+    if start_time_seconds is not None:
+        with contextlib.suppress(ValueError, TypeError):
+            start_fragment = f"#t={int(float(start_time_seconds))}"
+
+    quality_order = ["1080p", "720p", "480p", "360p", "180p"]
+    if preferred_quality in quality_order:
+        quality_order = [preferred_quality] + [q for q in quality_order if q != preferred_quality]
+    candidates: list[str] = []
+
+    match = re.search(r"_(1080p|720p|480p|360p|180p)\.mp4$", base_video_url)
+    if match:
+        for quality in quality_order:
+            candidate = re.sub(
+                r"_(1080p|720p|480p|360p|180p)\.mp4$",
+                f"_{quality}.mp4",
+                base_video_url,
+            )
+            if candidate not in candidates:
+                candidates.append(candidate)
+    else:
+        candidates.append(base_video_url)
+
+    return [append_auth_query(build_asset_url(candidate)) + start_fragment for candidate in candidates]
+
+
+def build_hls_master_url(video_url: str, start_time_seconds: float | None = None) -> str | None:
+    """Build HLS master playlist URL from a /video/... URL."""
+    base_video_url = video_url.split("#", 1)[0]
+    if not base_video_url.startswith("/video/"):
+        return None
+    hls_path = "/hls/master/" + base_video_url[len("/video/") :]
+    hls_url = append_auth_query(build_asset_url(hls_path))
+    if start_time_seconds is not None:
+        with contextlib.suppress(ValueError, TypeError):
+            hls_url += f"#t={int(float(start_time_seconds))}"
+    return hls_url
+
+
+def render_adaptive_hls_player(
+    hls_url: str,
+    mp4_fallback_url: str,
+    element_id: str,
+    height: int = 420,
+) -> None:
+    """Render an HLS.js player with MP4/native fallback."""
+    html_block = f"""
+<video id="{html.escape(element_id)}" controls playsinline
+       style="width: 100%; height: auto; border-radius: 8px;" preload="metadata"></video>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+<script>
+(() => {{
+  const video = document.getElementById("{html.escape(element_id)}");
+  const hlsUrl = {json.dumps(hls_url)};
+  const mp4Fallback = {json.dumps(mp4_fallback_url)};
+  const startFromFragment = (() => {{
+    try {{
+      const frag = new URL(hlsUrl).hash || "";
+      const m = frag.match(/t=(\\d+)/);
+      return m ? parseInt(m[1], 10) : null;
+    }} catch (e) {{
+      return null;
+    }}
+  }})();
+
+  const applyStartTime = () => {{
+    if (startFromFragment !== null && !Number.isNaN(startFromFragment)) {{
+      video.currentTime = startFromFragment;
+    }}
+  }};
+
+  if (window.Hls && window.Hls.isSupported()) {{
+    const hls = new window.Hls({{
+      startLevel: -1,
+      capLevelToPlayerSize: true,
+    }});
+    hls.loadSource(hlsUrl.split('#')[0]);
+    hls.attachMedia(video);
+    hls.on(window.Hls.Events.MANIFEST_PARSED, () => applyStartTime());
+    hls.on(window.Hls.Events.ERROR, (_event, data) => {{
+      if (data && data.fatal) {{
+        video.src = mp4Fallback;
+        video.load();
+      }}
+    }});
+  }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+    video.src = hlsUrl;
+    video.addEventListener('loadedmetadata', applyStartTime, {{ once: true }});
+  }} else {{
+    video.src = mp4Fallback;
+  }}
+}})();
+</script>
+"""
+    components.html(html_block, height=height)
+
+
 def append_auth_query(url: str) -> str:
     """Append auth token query param for browser media requests when configured."""
     if not AUTH_TOKEN:
@@ -828,6 +956,18 @@ async def query_rag(
         response = await client.post(
             f"{API_BASE}/query",
             json=payload,
+            headers=get_api_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def search_by_name_api(query: str) -> dict[str, Any]:
+    """Call the /search-by-name endpoint and return the parsed response."""
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
+        response = await client.get(
+            f"{API_BASE}/search-by-name",
+            params={"q": query},
             headers=get_api_headers(),
         )
         response.raise_for_status()
@@ -1147,30 +1287,48 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     video_url = group[0].get("video_url")
                     if video_url:
                         st.markdown(f"**{get_text('video_label', lang)}:**")
-                        # Strip any existing fragment
-                        base_video_url = video_url.split("#", 1)[0]
-                        video_full_url = append_auth_query(build_asset_url(base_video_url))
-
-                        # Add timestamp fragment for chunks to seek to start time
+                        quality_choice = st.selectbox(
+                            "Quality",
+                            options=["Auto", "1080p", "720p", "480p", "360p", "180p"],
+                            index=0,
+                            key=f"context_video_quality_{group_idx}",
+                            label_visibility="collapsed",
+                        )
                         start_time_seconds = group[0].get("start_time_seconds")
-                        if start_time_seconds is not None:
-                            with contextlib.suppress(ValueError, TypeError):
-                                # HTML5 video supports #t=seconds for seeking
-                                video_full_url += f"#t={int(float(start_time_seconds))}"
+                        preferred_quality = None if quality_choice == "Auto" else quality_choice
+                        source_urls = build_video_source_urls(
+                            video_url,
+                            start_time_seconds,
+                            preferred_quality=preferred_quality,
+                        )
+                        source_tags = "\n".join(
+                            f'<source src="{html.escape(url)}" type="video/mp4">' for url in source_urls
+                        )
 
                         try:
-                            # HTML5 video player so the browser streams /video directly
-                            st.markdown(
-                                f"""
-                                <video controls playsinline
-                                       style="max-width: 100%; height: auto; border-radius: 8px;"
-                                       preload="metadata">
-                                    <source src="{html.escape(video_full_url)}" type="video/mp4">
-                                    Your browser does not support the video tag.
-                                </video>
-                                """,
-                                unsafe_allow_html=True,
-                            )
+                            rendered_hls = False
+                            if quality_choice == "Auto":
+                                hls_url = build_hls_master_url(video_url, start_time_seconds)
+                                if hls_url:
+                                    render_adaptive_hls_player(
+                                        hls_url=hls_url,
+                                        mp4_fallback_url=source_urls[0],
+                                        element_id=f"ctx_hls_{group_idx}",
+                                    )
+                                    rendered_hls = True
+                            if not rendered_hls:
+                                # HTML5 video player so the browser streams /video directly
+                                st.markdown(
+                                    f"""
+                                    <video controls playsinline
+                                           style="max-width: 100%; height: auto; border-radius: 8px;"
+                                           preload="metadata">
+                                        {source_tags}
+                                        Your browser does not support the video tag.
+                                    </video>
+                                    """,
+                                    unsafe_allow_html=True,
+                                )
                         except Exception as e:
                             logger.warning(f"Could not load video: {e}")
                             st.warning(get_text("no_video", lang))
@@ -1298,6 +1456,148 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                 # Add a larger divider between groups
                 if group_idx < len(grouped_chunks):
                     st.divider()
+
+
+def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
+    """Render a single video name search result card."""
+    name = result.get("name", "")
+    date = result.get("date", "")
+    web_url = sanitize_web_url(result.get("web_url", "") or "")
+    teleshow_name = result.get("teleshow_name", "")
+    languages: dict[str, Any] = result.get("languages", {})
+
+    # Title row
+    title_parts = [f"**{html.escape(name)}**"]
+    if teleshow_name:
+        title_parts.append(f"_{get_text('name_search_show', lang)}: {html.escape(teleshow_name)}_")
+    if date:
+        title_parts.append(date[:10])
+    st.markdown(" · ".join(title_parts))
+
+    if web_url:
+        st.markdown(f"[{get_text('url_label', lang)}]({web_url})")
+
+    if not languages:
+        st.warning(get_text("name_search_no_local_files", lang))
+        st.divider()
+        return
+
+    video_col, vtt_col = st.columns([2, 1])
+
+    with video_col:
+        st.markdown(f"**{get_text('video_label', lang)}:**")
+        # Use the first available language for the video player (both share the same file)
+        video_url = None
+        for lang_key in ("ru", "en"):
+            v = languages.get(lang_key, {}).get("video_url")
+            if v:
+                video_url = v
+                break
+        if video_url:
+            quality_choice = st.selectbox(
+                "Quality",
+                options=["Auto", "1080p", "720p", "480p", "360p", "180p"],
+                index=0,
+                key=f"name_video_quality_{idx}",
+                label_visibility="collapsed",
+            )
+            preferred_quality = None if quality_choice == "Auto" else quality_choice
+            source_urls = build_video_source_urls(video_url, preferred_quality=preferred_quality)
+            source_tags = "\n".join(
+                f'<source src="{html.escape(url)}" type="video/mp4">' for url in source_urls
+            )
+            # Build <track> elements for every available VTT language
+            track_labels = {"ru": "Russian", "en": "English"}
+            track_tags = ""
+            for t_idx, t_lang in enumerate(("ru", "en")):
+                t_vtt = languages.get(t_lang, {}).get("vtt_url")
+                if t_vtt:
+                    t_full = html.escape(append_auth_query(build_asset_url(t_vtt)))
+                    default_attr = " default" if t_idx == 0 else ""
+                    track_tags += (
+                        f'<track kind="subtitles" src="{t_full}"'
+                        f' srclang="{t_lang}" label="{track_labels[t_lang]}"{default_attr}>\n'
+                    )
+            if quality_choice == "Auto":
+                hls_url = build_hls_master_url(video_url)
+                if hls_url:
+                    render_adaptive_hls_player(
+                        hls_url=hls_url,
+                        mp4_fallback_url=source_urls[0],
+                        element_id=f"name_hls_{idx}",
+                    )
+                else:
+                    st.markdown(
+                        f"""
+                        <video controls playsinline
+                               style="max-width: 100%; height: auto; border-radius: 8px;"
+                               preload="metadata">
+                            {source_tags}
+                            {track_tags}
+                            Your browser does not support the video tag.
+                        </video>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown(
+                    f"""
+                    <video controls playsinline
+                           style="max-width: 100%; height: auto; border-radius: 8px;"
+                           preload="metadata">
+                        {source_tags}
+                        {track_tags}
+                        Your browser does not support the video tag.
+                    </video>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info(get_text("no_video", lang))
+
+    with vtt_col:
+        st.markdown(f"**{get_text('vtt_label', lang)}:**")
+        lang_display = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
+        available_langs = [lk for lk in ("ru", "en") if lk in languages]
+        if available_langs:
+            if len(available_langs) > 1:
+                selected_vtt_lang = st.radio(
+                    get_text("vtt_language", lang),
+                    options=available_langs,
+                    format_func=lambda c: lang_display.get(c, c),
+                    horizontal=True,
+                    key=f"ns_vtt_lang_{idx}",
+                    label_visibility="collapsed",
+                )
+            else:
+                selected_vtt_lang = available_langs[0]
+
+            vtt_url = languages[selected_vtt_lang].get("vtt_url")
+            if vtt_url:
+                vtt_full_url = append_auth_query(build_asset_url(vtt_url))
+                vtt_filename = vtt_url.split("/")[-1]
+                st.markdown(
+                    f'<a href="{vtt_full_url}" download="{vtt_filename}" style="display: inline-block; padding: 0.4rem 0.8rem; background-color: #0084ff; color: white; text-decoration: none; border-radius: 0.25rem; text-align: center; width: 100%; box-sizing: border-box; margin-bottom: 0.5rem;">{get_text("download_vtt", lang)}</a>',
+                    unsafe_allow_html=True,
+                )
+                # Cache VTT content by URL to avoid re-fetching on every Streamlit rerun
+                cache_key = f"ns_vtt_{vtt_url}"
+                if cache_key not in st.session_state:
+                    st.session_state[cache_key] = fetch_vtt_content(vtt_url)
+
+                vtt_content = st.session_state[cache_key]
+                if vtt_content:
+                    # Escape content to prevent XSS via malformed/malicious VTT markup
+                    st.markdown(
+                        f'<div style="height: 400px; overflow-y: auto; border: 1px solid #4a4a4a; border-radius: 0.25rem; padding: 0.5rem; background-color: #1e1e1e; color: #e0e0e0; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap;">{html.escape(vtt_content)}</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.error(get_text("vtt_error", lang))
+        else:
+            st.info(get_text("no_vtt", lang))
+
+    st.divider()
 
 
 def render_sidebar(lang: str):
@@ -1575,8 +1875,67 @@ def main():
     st.title(get_text("title", lang))
     st.caption(get_text("subtitle", lang))
 
+    # Unobtrusive search-mode toggle (right-aligned)
+    toggle_col, _ = st.columns([1, 3])
+    with toggle_col:
+        name_mode = st.toggle(
+            get_text("name_search_toggle", lang),
+            value=(st.session_state.search_mode == "name"),
+            key="name_search_toggle_widget",
+        )
+    if name_mode:
+        st.session_state.search_mode = "name"
+    else:
+        st.session_state.search_mode = "content"
+
     st.divider()
 
+    # ---- NAME SEARCH MODE ----
+    if st.session_state.search_mode == "name":
+        search_col, btn_col = st.columns([5, 1])
+        with search_col:
+            name_query = st.text_input(
+                get_text("name_search_toggle", lang),
+                placeholder=get_text("name_search_placeholder", lang),
+                label_visibility="collapsed",
+                key="name_search_input",
+            )
+        with btn_col:
+            name_search_clicked = st.button(
+                get_text("name_search_button", lang),
+                use_container_width=True,
+            )
+
+        if name_search_clicked and name_query.strip():
+            with st.spinner(get_text("name_search_searching", lang)):
+                try:
+                    import asyncio
+
+                    response = asyncio.run(search_by_name_api(name_query.strip()))
+                    st.session_state.name_search_results = response.get("results", [])
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 401:
+                        st.error(get_text("error_auth", lang))
+                    else:
+                        st.error(f"{get_text('error_general', lang)}: {e}")
+                    st.session_state.name_search_results = []
+                except httpx.ConnectError:
+                    st.error(get_text("error_connection", lang))
+                    st.session_state.name_search_results = []
+                except Exception as e:
+                    st.error(f"{get_text('error_general', lang)}: {e}")
+                    st.session_state.name_search_results = []
+
+        results = st.session_state.get("name_search_results")
+        if results is not None:
+            if not results:
+                st.info(get_text("name_search_no_results", lang))
+            else:
+                for idx, result in enumerate(results):
+                    render_name_search_result(result, idx, lang)
+        return
+
+    # ---- CONTENT SEARCH MODE (existing RAG chat) ----
     # Display chat messages
     if st.session_state.messages:
         for message in st.session_state.messages:
