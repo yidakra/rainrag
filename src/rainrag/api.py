@@ -821,7 +821,10 @@ class VideoNameSearchResponse(BaseModel):
 
 
 @app.get("/search-by-name", response_model=VideoNameSearchResponse)
-async def search_by_name(q: str = Query(..., min_length=1, description="Video title search query")):
+async def search_by_name(
+    q: str = Query(..., min_length=1, description="Video title search query"),
+    limit: int = Query(default=50, ge=1, le=200, description="Maximum number of results to return"),
+):
     """Search for videos by title in the local web metadata cache.
 
     Performs a case-insensitive substring match against the ``name`` field of
@@ -840,7 +843,10 @@ async def search_by_name(q: str = Query(..., min_length=1, description="Video ti
 
     metadata_path = _Path(config.web_metadata.path)
     loader = WebMetadataLoader(metadata_path)
-    matches = loader.search_by_name(q)
+
+    # Run the directory scan in a thread so the async event loop stays responsive
+    matches = await asyncio.to_thread(loader.search_by_name, q)
+    matches = matches[:limit]
 
     archive_root = _Path(config.paths.archive_root).resolve()
 
@@ -882,7 +888,7 @@ async def search_by_name(q: str = Query(..., min_length=1, description="Video ti
             )
         )
 
-    logger.info(f"Name search for {q!r}: {len(results)} results")
+    logger.info(f"Name search for {q!r}: {len(results)} results (limit={limit})")
     return VideoNameSearchResponse(results=results, query=q)
 
 

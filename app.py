@@ -1407,10 +1407,15 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
                     f'<a href="{vtt_full_url}" download="{vtt_filename}" style="display: inline-block; padding: 0.4rem 0.8rem; background-color: #0084ff; color: white; text-decoration: none; border-radius: 0.25rem; text-align: center; width: 100%; box-sizing: border-box; margin-bottom: 0.5rem;">{get_text("download_vtt", lang)}</a>',
                     unsafe_allow_html=True,
                 )
-                vtt_content = fetch_vtt_content(vtt_url)
+                # Cache VTT content by URL to avoid re-fetching on every Streamlit rerun
+                cache_key = f"ns_vtt_{vtt_url}"
+                if cache_key not in st.session_state:
+                    st.session_state[cache_key] = fetch_vtt_content(vtt_url)
+                vtt_content = st.session_state[cache_key]
                 if vtt_content:
+                    # Escape content to prevent XSS via malformed/malicious VTT markup
                     st.markdown(
-                        f'<div style="height: 400px; overflow-y: auto; border: 1px solid #4a4a4a; border-radius: 0.25rem; padding: 0.5rem; background-color: #1e1e1e; color: #e0e0e0; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap;">{vtt_content}</div>',
+                        f'<div style="height: 400px; overflow-y: auto; border: 1px solid #4a4a4a; border-radius: 0.25rem; padding: 0.5rem; background-color: #1e1e1e; color: #e0e0e0; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap;">{html.escape(vtt_content)}</div>',
                         unsafe_allow_html=True,
                     )
                 else:
@@ -1735,7 +1740,10 @@ def main():
                     response = asyncio.run(search_by_name_api(name_query.strip()))
                     st.session_state.name_search_results = response.get("results", [])
                 except httpx.HTTPStatusError as e:
-                    st.error(f"{get_text('error_general', lang)}: {e}")
+                    if e.response.status_code == 401:
+                        st.error(get_text("error_auth", lang))
+                    else:
+                        st.error(f"{get_text('error_general', lang)}: {e}")
                     st.session_state.name_search_results = []
                 except httpx.ConnectError:
                     st.error(get_text("error_connection", lang))
