@@ -216,6 +216,13 @@ TRANSLATIONS = {
         "auth_success": "Аутентификация успешна!",
         "attempts_left": "{count} попыток осталось",
         "account_locked_final": "Аккаунт заблокирован! Слишком много неудачных попыток.",
+        "name_search_toggle": "Поиск по названию видео",
+        "name_search_placeholder": "Введите название видео...",
+        "name_search_button": "Найти",
+        "name_search_no_results": "Видео с таким названием не найдено в локальном архиве.",
+        "name_search_no_local_files": "Файлы не найдены в локальном архиве.",
+        "name_search_show": "программа",
+        "name_search_searching": "Поиск видео по названию...",
     },
     "en": {
         "title": "RainRAG - Video Transcript Search",
@@ -301,6 +308,13 @@ TRANSLATIONS = {
         "auth_success": "Authentication successful!",
         "attempts_left": "{count} attempt(s) remaining",
         "account_locked_final": "Account locked! Too many failed attempts.",
+        "name_search_toggle": "Search by video name",
+        "name_search_placeholder": "Enter video title...",
+        "name_search_button": "Search",
+        "name_search_no_results": "No videos with that title found in the local archive.",
+        "name_search_no_local_files": "Files not found in local archive.",
+        "name_search_show": "show",
+        "name_search_searching": "Searching videos by name...",
     },
 }
 
@@ -674,6 +688,11 @@ def initialize_session_state():
                 "Gosuslugi invites to special forces university",
             ],
         }
+    # Search mode: "content" (default RAG) or "name" (title search)
+    if "search_mode" not in st.session_state:
+        st.session_state.search_mode = "content"
+    if "name_search_results" not in st.session_state:
+        st.session_state.name_search_results = None
     # Pending query flag for example buttons
     if "pending_query" not in st.session_state:
         st.session_state.pending_query = None
@@ -828,6 +847,18 @@ async def query_rag(
         response = await client.post(
             f"{API_BASE}/query",
             json=payload,
+            headers=get_api_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def search_by_name_api(query: str) -> dict[str, Any]:
+    """Call the /search-by-name endpoint and return the parsed response."""
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
+        response = await client.get(
+            f"{API_BASE}/search-by-name",
+            params={"q": query},
             headers=get_api_headers(),
         )
         response.raise_for_status()
@@ -1300,6 +1331,96 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     st.divider()
 
 
+def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
+    """Render a single video name search result card."""
+    name = result.get("name", "")
+    date = result.get("date", "")
+    web_url = sanitize_web_url(result.get("web_url", "") or "")
+    teleshow_name = result.get("teleshow_name", "")
+    languages: dict[str, Any] = result.get("languages", {})
+
+    # Title row
+    title_parts = [f"**{html.escape(name)}**"]
+    if teleshow_name:
+        title_parts.append(f"_{get_text('name_search_show', lang)}: {html.escape(teleshow_name)}_")
+    if date:
+        title_parts.append(date[:10])
+    st.markdown(" · ".join(title_parts))
+
+    if web_url:
+        st.markdown(f"[{get_text('url_label', lang)}]({web_url})")
+
+    if not languages:
+        st.warning(get_text("name_search_no_local_files", lang))
+        st.divider()
+        return
+
+    video_col, vtt_col = st.columns([2, 1])
+
+    with video_col:
+        st.markdown(f"**{get_text('video_label', lang)}:**")
+        # Use the first available language for the video player (both share the same file)
+        video_url = None
+        for lang_key in ("ru", "en"):
+            v = languages.get(lang_key, {}).get("video_url")
+            if v:
+                video_url = v
+                break
+        if video_url:
+            full_video_url = append_auth_query(build_asset_url(video_url))
+            st.markdown(
+                f"""
+                <video controls playsinline
+                       style="max-width: 100%; height: auto; border-radius: 8px;"
+                       preload="metadata">
+                    <source src="{html.escape(full_video_url)}" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info(get_text("no_video", lang))
+
+    with vtt_col:
+        st.markdown(f"**{get_text('vtt_label', lang)}:**")
+        lang_display = {"ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
+        available_langs = [lk for lk in ("ru", "en") if lk in languages]
+        if available_langs:
+            if len(available_langs) > 1:
+                selected_vtt_lang = st.radio(
+                    get_text("vtt_language", lang),
+                    options=available_langs,
+                    format_func=lambda c: lang_display.get(c, c),
+                    horizontal=True,
+                    key=f"ns_vtt_lang_{idx}",
+                    label_visibility="collapsed",
+                )
+            else:
+                selected_vtt_lang = available_langs[0]
+
+            vtt_url = languages[selected_vtt_lang].get("vtt_url")
+            if vtt_url:
+                vtt_full_url = append_auth_query(build_asset_url(vtt_url))
+                vtt_filename = vtt_url.split("/")[-1]
+                st.markdown(
+                    f'<a href="{vtt_full_url}" download="{vtt_filename}" style="display: inline-block; padding: 0.4rem 0.8rem; background-color: #0084ff; color: white; text-decoration: none; border-radius: 0.25rem; text-align: center; width: 100%; box-sizing: border-box; margin-bottom: 0.5rem;">{get_text("download_vtt", lang)}</a>',
+                    unsafe_allow_html=True,
+                )
+                vtt_content = fetch_vtt_content(vtt_url)
+                if vtt_content:
+                    st.markdown(
+                        f'<div style="height: 400px; overflow-y: auto; border: 1px solid #4a4a4a; border-radius: 0.25rem; padding: 0.5rem; background-color: #1e1e1e; color: #e0e0e0; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap;">{vtt_content}</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.error(get_text("vtt_error", lang))
+        else:
+            st.info(get_text("no_vtt", lang))
+
+    st.divider()
+
+
 def render_sidebar(lang: str):
     """Render the sidebar with controls and system information."""
     with st.sidebar:
@@ -1575,8 +1696,64 @@ def main():
     st.title(get_text("title", lang))
     st.caption(get_text("subtitle", lang))
 
+    # Unobtrusive search-mode toggle (right-aligned)
+    toggle_col, _ = st.columns([1, 3])
+    with toggle_col:
+        name_mode = st.toggle(
+            get_text("name_search_toggle", lang),
+            value=(st.session_state.search_mode == "name"),
+            key="name_search_toggle_widget",
+        )
+    if name_mode:
+        st.session_state.search_mode = "name"
+    else:
+        st.session_state.search_mode = "content"
+
     st.divider()
 
+    # ---- NAME SEARCH MODE ----
+    if st.session_state.search_mode == "name":
+        search_col, btn_col = st.columns([5, 1])
+        with search_col:
+            name_query = st.text_input(
+                get_text("name_search_toggle", lang),
+                placeholder=get_text("name_search_placeholder", lang),
+                label_visibility="collapsed",
+                key="name_search_input",
+            )
+        with btn_col:
+            name_search_clicked = st.button(
+                get_text("name_search_button", lang),
+                use_container_width=True,
+            )
+
+        if name_search_clicked and name_query.strip():
+            with st.spinner(get_text("name_search_searching", lang)):
+                try:
+                    import asyncio
+
+                    response = asyncio.run(search_by_name_api(name_query.strip()))
+                    st.session_state.name_search_results = response.get("results", [])
+                except httpx.HTTPStatusError as e:
+                    st.error(f"{get_text('error_general', lang)}: {e}")
+                    st.session_state.name_search_results = []
+                except httpx.ConnectError:
+                    st.error(get_text("error_connection", lang))
+                    st.session_state.name_search_results = []
+                except Exception as e:
+                    st.error(f"{get_text('error_general', lang)}: {e}")
+                    st.session_state.name_search_results = []
+
+        results = st.session_state.get("name_search_results")
+        if results is not None:
+            if not results:
+                st.info(get_text("name_search_no_results", lang))
+            else:
+                for idx, result in enumerate(results):
+                    render_name_search_result(result, idx, lang)
+        return
+
+    # ---- CONTENT SEARCH MODE (existing RAG chat) ----
     # Display chat messages
     if st.session_state.messages:
         for message in st.session_state.messages:

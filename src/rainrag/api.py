@@ -795,6 +795,97 @@ class RelatedChunksResponse(BaseModel):
     num_related: int
 
 
+class VideoNameSearchLanguageResult(BaseModel):
+    """Media URLs for a single language version of a video found by name search."""
+
+    video_url: str | None = None
+    vtt_url: str | None = None
+
+
+class VideoNameSearchResult(BaseModel):
+    """A single result from a video name search."""
+
+    video_hash: str
+    name: str
+    date: str | None = None
+    web_url: str | None = None
+    teleshow_name: str | None = None
+    languages: dict[str, VideoNameSearchLanguageResult]
+
+
+class VideoNameSearchResponse(BaseModel):
+    """Response model for the video name search endpoint."""
+
+    results: list[VideoNameSearchResult]
+    query: str
+
+
+@app.get("/search-by-name", response_model=VideoNameSearchResponse)
+async def search_by_name(q: str = Query(..., min_length=1, description="Video title search query")):
+    """Search for videos by title in the local web metadata cache.
+
+    Performs a case-insensitive substring match against the ``name`` field of
+    every cached ``{hash}.json`` file in the configured metadata directory.
+    Returns matching videos with media URLs for all locally available language
+    versions (ru / en).
+    """
+    verify_auth_token()
+
+    if config is None:
+        raise HTTPException(status_code=503, detail="Config not initialized")
+
+    from pathlib import Path as _Path
+
+    from rainrag.ingest import WebMetadataLoader
+
+    metadata_path = _Path(config.web_metadata.path)
+    loader = WebMetadataLoader(metadata_path)
+    matches = loader.search_by_name(q)
+
+    archive_root = _Path(config.paths.archive_root).resolve()
+
+    results: list[VideoNameSearchResult] = []
+    for article in matches:
+        video_hash = article.get("video_hash", "").strip()
+        if not video_hash:
+            continue
+
+        try:
+            archive_rel = WebMetadataLoader.hash_to_archive_dir(video_hash)
+        except ValueError:
+            logger.warning(f"Invalid video_hash in metadata: {video_hash!r}")
+            continue
+
+        archive_dir = archive_root / archive_rel
+
+        languages: dict[str, VideoNameSearchLanguageResult] = {}
+        for lang in ("ru", "en"):
+            vtt_file = archive_dir / f"{video_hash}.{lang}.vtt"
+            if vtt_file.exists():
+                video_url, vtt_url = generate_media_urls(str(vtt_file))
+                languages[lang] = VideoNameSearchLanguageResult(
+                    video_url=video_url,
+                    vtt_url=vtt_url,
+                )
+
+        teleshow = article.get("teleshow")
+        teleshow_name = teleshow.get("name") if isinstance(teleshow, dict) else None
+
+        results.append(
+            VideoNameSearchResult(
+                video_hash=video_hash,
+                name=article.get("name", ""),
+                date=article.get("date_active_start"),
+                web_url=article.get("url"),
+                teleshow_name=teleshow_name,
+                languages=languages,
+            )
+        )
+
+    logger.info(f"Name search for {q!r}: {len(results)} results")
+    return VideoNameSearchResponse(results=results, query=q)
+
+
 @app.post("/related-chunks", response_model=RelatedChunksResponse)
 async def get_related_chunks(request: RelatedChunksRequest):
     """
