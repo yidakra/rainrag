@@ -1226,7 +1226,8 @@ async def serve_hls_variant(
         raise HTTPException(status_code=500, detail="Could not resolve variant path")
 
     auth_q = f"?auth={quote(auth, safe='')}" if auth else ""
-    segment_uri = f"/video/{quote(str(rel).replace('\\', '/'), safe='/')}{auth_q}"
+    rel_posix = str(rel).replace("\\", "/")
+    segment_uri = f"/video/{quote(rel_posix, safe='/')}{auth_q}"
 
     lines = [
         "#EXTM3U",
