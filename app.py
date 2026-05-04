@@ -1289,7 +1289,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         st.markdown(f"**{get_text('video_label', lang)}:**")
                         quality_choice = st.selectbox(
                             "Quality",
-                            options=["1080p", "720p", "480p", "360p", "180p", "Auto"],
+                            options=["Auto", "1080p", "720p", "480p", "360p", "180p"],
                             index=0,
                             key=f"context_video_quality_{group_idx}",
                             label_visibility="collapsed",
@@ -1496,7 +1496,7 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
         if video_url:
             quality_choice = st.selectbox(
                 "Quality",
-                options=["1080p", "720p", "480p", "360p", "180p", "Auto"],
+                options=["Auto", "1080p", "720p", "480p", "360p", "180p"],
                 index=0,
                 key=f"name_video_quality_{idx}",
                 label_visibility="collapsed",
