@@ -1368,12 +1368,25 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
                 break
         if video_url:
             full_video_url = append_auth_query(build_asset_url(video_url))
+            # Build <track> elements for every available VTT language
+            track_labels = {"ru": "Russian", "en": "English"}
+            track_tags = ""
+            for t_idx, t_lang in enumerate(("ru", "en")):
+                t_vtt = languages.get(t_lang, {}).get("vtt_url")
+                if t_vtt:
+                    t_full = html.escape(append_auth_query(build_asset_url(t_vtt)))
+                    default_attr = " default" if t_idx == 0 else ""
+                    track_tags += (
+                        f'<track kind="subtitles" src="{t_full}"'
+                        f' srclang="{t_lang}" label="{track_labels[t_lang]}"{default_attr}>\n'
+                    )
             st.markdown(
                 f"""
                 <video controls playsinline
                        style="max-width: 100%; height: auto; border-radius: 8px;"
                        preload="metadata">
                     <source src="{html.escape(full_video_url)}" type="video/mp4">
+                    {track_tags}
                     Your browser does not support the video tag.
                 </video>
                 """,

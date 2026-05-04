@@ -824,6 +824,7 @@ class VideoNameSearchResponse(BaseModel):
 async def search_by_name(
     q: str = Query(..., min_length=1, description="Video title search query"),
     limit: int = Query(default=50, ge=1, le=200, description="Maximum number of results to return"),
+    authorization: str | None = Header(None),
 ):
     """Search for videos by title in the local web metadata cache.
 
@@ -832,7 +833,7 @@ async def search_by_name(
     Returns matching videos with media URLs for all locally available language
     versions (ru / en).
     """
-    verify_auth_token()
+    verify_auth_token(authorization=authorization)
 
     if config is None:
         raise HTTPException(status_code=503, detail="Config not initialized")
