@@ -279,7 +279,7 @@ def find_video_file(vtt_path: str) -> str | None:
     # Search for video file in the same directory as VTT
     vtt_dir = vtt_file.parent
 
-    # Quality preference order (highest to lowest)
+    # Quality preference order (highest to lowest).
     quality_order = ["1080p", "720p", "480p", "360p", "180p"]
 
     # First, try to find video files with quality suffixes
@@ -309,6 +309,50 @@ def find_video_file(vtt_path: str) -> str | None:
                 return str(video_file)
     except Exception as e:
         logger.warning(f"Error searching for video files: {e}")
+
+    return None
+
+
+def _select_media_file_from_directory(
+    directory: Path,
+    *,
+    kind: str,
+) -> Path | None:
+    """Pick a likely media file from a hash-sharded directory.
+
+    This is a defensive fallback for callers that pass a directory path
+    instead of a specific file path (for example /video/<hash-shards>/).
+    """
+    if not directory.is_dir():
+        return None
+
+    try:
+        files = [p for p in directory.iterdir() if p.is_file()]
+    except OSError:
+        return None
+
+    if kind == "video":
+        quality_order = ["1080p", "720p", "480p", "360p", "180p"]
+        for quality in quality_order:
+            for file_path in files:
+                suffix = file_path.suffix.lower()
+                if suffix in config.video.extensions and f"_{quality}" in file_path.stem:
+                    return file_path
+        for file_path in files:
+            if file_path.suffix.lower() in config.video.extensions:
+                return file_path
+        return None
+
+    if kind == "vtt":
+        preferred_suffixes = [".ru.vtt", ".en.vtt"]
+        for preferred in preferred_suffixes:
+            for file_path in files:
+                if file_path.name.endswith(preferred):
+                    return file_path
+        for file_path in files:
+            if any(file_path.name.endswith(ext) for ext in config.video.vtt_extensions):
+                return file_path
+        return None
 
     return None
 
@@ -1020,6 +1064,13 @@ async def serve_video(
         logger.error(f"Path resolution error: {e}")
         raise HTTPException(status_code=400, detail="Invalid file path")
 
+    # If a directory is passed, choose best available video file in that directory.
+    if full_path.exists() and full_path.is_dir():
+        selected = _select_media_file_from_directory(full_path, kind="video")
+        if selected is None:
+            raise HTTPException(status_code=404, detail="Video directory is empty")
+        full_path = selected
+
     # Check if file exists
     if not full_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found")
@@ -1076,6 +1127,13 @@ async def serve_vtt(
     except Exception as e:
         logger.error(f"Path resolution error: {e}")
         raise HTTPException(status_code=400, detail="Invalid file path")
+
+    # If a directory is passed, choose preferred VTT file from that directory.
+    if full_path.exists() and full_path.is_dir():
+        selected = _select_media_file_from_directory(full_path, kind="vtt")
+        if selected is None:
+            raise HTTPException(status_code=404, detail="VTT directory is empty")
+        full_path = selected
 
     # Check if file exists
     if not full_path.exists():

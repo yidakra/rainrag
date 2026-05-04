@@ -789,6 +789,43 @@ def build_asset_url(path_or_url: str) -> str:
     return f"{ASSET_BASE_URL}/{path_or_url}"
 
 
+def build_video_source_urls(
+    video_url: str,
+    start_time_seconds: float | None = None,
+    preferred_quality: str | None = None,
+) -> list[str]:
+    """Build ordered video source URLs with quality fallback.
+
+    If the URL points to a quality-suffixed MP4 (e.g. *_1080p.mp4), add
+    fallback variants so the browser can try lower qualities automatically.
+    """
+    base_video_url = video_url.split("#", 1)[0]
+    start_fragment = ""
+    if start_time_seconds is not None:
+        with contextlib.suppress(ValueError, TypeError):
+            start_fragment = f"#t={int(float(start_time_seconds))}"
+
+    quality_order = ["1080p", "720p", "480p", "360p", "180p"]
+    if preferred_quality in quality_order:
+        quality_order = [preferred_quality] + [q for q in quality_order if q != preferred_quality]
+    candidates: list[str] = []
+
+    match = re.search(r"_(1080p|720p|480p|360p|180p)\.mp4$", base_video_url)
+    if match:
+        for quality in quality_order:
+            candidate = re.sub(
+                r"_(1080p|720p|480p|360p|180p)\.mp4$",
+                f"_{quality}.mp4",
+                base_video_url,
+            )
+            if candidate not in candidates:
+                candidates.append(candidate)
+    else:
+        candidates.append(base_video_url)
+
+    return [append_auth_query(build_asset_url(candidate)) + start_fragment for candidate in candidates]
+
+
 def append_auth_query(url: str) -> str:
     """Append auth token query param for browser media requests when configured."""
     if not AUTH_TOKEN:
@@ -1178,16 +1215,23 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                     video_url = group[0].get("video_url")
                     if video_url:
                         st.markdown(f"**{get_text('video_label', lang)}:**")
-                        # Strip any existing fragment
-                        base_video_url = video_url.split("#", 1)[0]
-                        video_full_url = append_auth_query(build_asset_url(base_video_url))
-
-                        # Add timestamp fragment for chunks to seek to start time
+                        quality_choice = st.selectbox(
+                            "Quality",
+                            options=["1080p", "720p", "480p", "360p", "180p", "Auto"],
+                            index=0,
+                            key=f"context_video_quality_{group_idx}",
+                            label_visibility="collapsed",
+                        )
                         start_time_seconds = group[0].get("start_time_seconds")
-                        if start_time_seconds is not None:
-                            with contextlib.suppress(ValueError, TypeError):
-                                # HTML5 video supports #t=seconds for seeking
-                                video_full_url += f"#t={int(float(start_time_seconds))}"
+                        preferred_quality = None if quality_choice == "Auto" else quality_choice
+                        source_urls = build_video_source_urls(
+                            video_url,
+                            start_time_seconds,
+                            preferred_quality=preferred_quality,
+                        )
+                        source_tags = "\n".join(
+                            f'<source src="{html.escape(url)}" type="video/mp4">' for url in source_urls
+                        )
 
                         try:
                             # HTML5 video player so the browser streams /video directly
@@ -1196,7 +1240,7 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                                 <video controls playsinline
                                        style="max-width: 100%; height: auto; border-radius: 8px;"
                                        preload="metadata">
-                                    <source src="{html.escape(video_full_url)}" type="video/mp4">
+                                    {source_tags}
                                     Your browser does not support the video tag.
                                 </video>
                                 """,
@@ -1367,7 +1411,18 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
                 video_url = v
                 break
         if video_url:
-            full_video_url = append_auth_query(build_asset_url(video_url))
+            quality_choice = st.selectbox(
+                "Quality",
+                options=["1080p", "720p", "480p", "360p", "180p", "Auto"],
+                index=0,
+                key=f"name_video_quality_{idx}",
+                label_visibility="collapsed",
+            )
+            preferred_quality = None if quality_choice == "Auto" else quality_choice
+            source_urls = build_video_source_urls(video_url, preferred_quality=preferred_quality)
+            source_tags = "\n".join(
+                f'<source src="{html.escape(url)}" type="video/mp4">' for url in source_urls
+            )
             # Build <track> elements for every available VTT language
             track_labels = {"ru": "Russian", "en": "English"}
             track_tags = ""
@@ -1385,7 +1440,7 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
                 <video controls playsinline
                        style="max-width: 100%; height: auto; border-radius: 8px;"
                        preload="metadata">
-                    <source src="{html.escape(full_video_url)}" type="video/mp4">
+                    {source_tags}
                     {track_tags}
                     Your browser does not support the video tag.
                 </video>
@@ -1422,9 +1477,9 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
                 )
                 # Cache VTT content by URL to avoid re-fetching on every Streamlit rerun
                 cache_key = f"ns_vtt_{vtt_url}"
-                    escaped_vtt_content = html.escape(vtt_content)
                 if cache_key not in st.session_state:
-                        f'<div style="height: 400px; overflow-y: auto; border: 1px solid #4a4a4a; border-radius: 0.25rem; padding: 0.5rem; background-color: #1e1e1e; color: #e0e0e0; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap;">{escaped_vtt_content}</div>',
+                    st.session_state[cache_key] = fetch_vtt_content(vtt_url)
+
                 vtt_content = st.session_state[cache_key]
                 if vtt_content:
                     # Escape content to prevent XSS via malformed/malicious VTT markup
