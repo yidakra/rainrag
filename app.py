@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import httpx
 import redis
 import streamlit as st
+import streamlit.components.v1 as components
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from dotenv import load_dotenv
@@ -826,6 +827,77 @@ def build_video_source_urls(
     return [append_auth_query(build_asset_url(candidate)) + start_fragment for candidate in candidates]
 
 
+def build_hls_master_url(video_url: str, start_time_seconds: float | None = None) -> str | None:
+    """Build HLS master playlist URL from a /video/... URL."""
+    base_video_url = video_url.split("#", 1)[0]
+    if not base_video_url.startswith("/video/"):
+        return None
+    hls_path = "/hls/master/" + base_video_url[len("/video/") :]
+    hls_url = append_auth_query(build_asset_url(hls_path))
+    if start_time_seconds is not None:
+        with contextlib.suppress(ValueError, TypeError):
+            hls_url += f"#t={int(float(start_time_seconds))}"
+    return hls_url
+
+
+def render_adaptive_hls_player(
+    hls_url: str,
+    mp4_fallback_url: str,
+    element_id: str,
+    height: int = 420,
+) -> None:
+    """Render an HLS.js player with MP4/native fallback."""
+    html_block = f"""
+<video id="{html.escape(element_id)}" controls playsinline
+       style="width: 100%; height: auto; border-radius: 8px;" preload="metadata"></video>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+<script>
+(() => {{
+  const video = document.getElementById("{html.escape(element_id)}");
+  const hlsUrl = {json.dumps(hls_url)};
+  const mp4Fallback = {json.dumps(mp4_fallback_url)};
+  const startFromFragment = (() => {{
+    try {{
+      const frag = new URL(hlsUrl).hash || "";
+      const m = frag.match(/t=(\\d+)/);
+      return m ? parseInt(m[1], 10) : null;
+    }} catch (e) {{
+      return null;
+    }}
+  }})();
+
+  const applyStartTime = () => {{
+    if (startFromFragment !== null && !Number.isNaN(startFromFragment)) {{
+      video.currentTime = startFromFragment;
+    }}
+  }};
+
+  if (window.Hls && window.Hls.isSupported()) {{
+    const hls = new window.Hls({{
+      startLevel: -1,
+      capLevelToPlayerSize: true,
+    }});
+    hls.loadSource(hlsUrl.split('#')[0]);
+    hls.attachMedia(video);
+    hls.on(window.Hls.Events.MANIFEST_PARSED, () => applyStartTime());
+    hls.on(window.Hls.Events.ERROR, (_event, data) => {{
+      if (data && data.fatal) {{
+        video.src = mp4Fallback;
+        video.load();
+      }}
+    }});
+  }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+    video.src = hlsUrl;
+    video.addEventListener('loadedmetadata', applyStartTime, {{ once: true }});
+  }} else {{
+    video.src = mp4Fallback;
+  }}
+}})();
+</script>
+"""
+    components.html(html_block, height=height)
+
+
 def append_auth_query(url: str) -> str:
     """Append auth token query param for browser media requests when configured."""
     if not AUTH_TOKEN:
@@ -1234,18 +1306,29 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                         )
 
                         try:
-                            # HTML5 video player so the browser streams /video directly
-                            st.markdown(
-                                f"""
-                                <video controls playsinline
-                                       style="max-width: 100%; height: auto; border-radius: 8px;"
-                                       preload="metadata">
-                                    {source_tags}
-                                    Your browser does not support the video tag.
-                                </video>
-                                """,
-                                unsafe_allow_html=True,
-                            )
+                            rendered_hls = False
+                            if quality_choice == "Auto":
+                                hls_url = build_hls_master_url(video_url, start_time_seconds)
+                                if hls_url:
+                                    render_adaptive_hls_player(
+                                        hls_url=hls_url,
+                                        mp4_fallback_url=source_urls[0],
+                                        element_id=f"ctx_hls_{group_idx}",
+                                    )
+                                    rendered_hls = True
+                            if not rendered_hls:
+                                # HTML5 video player so the browser streams /video directly
+                                st.markdown(
+                                    f"""
+                                    <video controls playsinline
+                                           style="max-width: 100%; height: auto; border-radius: 8px;"
+                                           preload="metadata">
+                                        {source_tags}
+                                        Your browser does not support the video tag.
+                                    </video>
+                                    """,
+                                    unsafe_allow_html=True,
+                                )
                         except Exception as e:
                             logger.warning(f"Could not load video: {e}")
                             st.warning(get_text("no_video", lang))
@@ -1435,18 +1518,40 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
                         f'<track kind="subtitles" src="{t_full}"'
                         f' srclang="{t_lang}" label="{track_labels[t_lang]}"{default_attr}>\n'
                     )
-            st.markdown(
-                f"""
-                <video controls playsinline
-                       style="max-width: 100%; height: auto; border-radius: 8px;"
-                       preload="metadata">
-                    {source_tags}
-                    {track_tags}
-                    Your browser does not support the video tag.
-                </video>
-                """,
-                unsafe_allow_html=True,
-            )
+            if quality_choice == "Auto":
+                hls_url = build_hls_master_url(video_url)
+                if hls_url:
+                    render_adaptive_hls_player(
+                        hls_url=hls_url,
+                        mp4_fallback_url=source_urls[0],
+                        element_id=f"name_hls_{idx}",
+                    )
+                else:
+                    st.markdown(
+                        f"""
+                        <video controls playsinline
+                               style="max-width: 100%; height: auto; border-radius: 8px;"
+                               preload="metadata">
+                            {source_tags}
+                            {track_tags}
+                            Your browser does not support the video tag.
+                        </video>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown(
+                    f"""
+                    <video controls playsinline
+                           style="max-width: 100%; height: auto; border-radius: 8px;"
+                           preload="metadata">
+                        {source_tags}
+                        {track_tags}
+                        Your browser does not support the video tag.
+                    </video>
+                    """,
+                    unsafe_allow_html=True,
+                )
         else:
             st.info(get_text("no_video", lang))
 
