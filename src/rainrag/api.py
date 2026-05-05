@@ -1210,6 +1210,105 @@ async def search_by_name(
     return VideoNameSearchResponse(results=results, query=q)
 
 
+class VideoUrlLookupResponse(BaseModel):
+    """Response model for the video URL lookup endpoint."""
+
+    result: VideoNameSearchResult | None
+    url: str
+
+
+@app.get("/search-by-url", response_model=VideoUrlLookupResponse)
+async def search_by_url(
+    url: str = Query(..., min_length=1, description="Exact tvrain.tv web URL for the video"),
+    authorization: str | None = Header(None),
+):
+    """Look up a video by its exact tvrain.tv web URL.
+
+    Performs an exact match against the ``url`` field of cached ``{hash}.json``
+    files and returns the video hash, title, date, and media URLs if found.
+    """
+    verify_auth_token(authorization=authorization)
+
+    if config is None:
+        raise HTTPException(status_code=503, detail="Config not initialized")
+
+    from pathlib import Path as _Path
+
+    from rainrag.ingest import WebMetadataLoader
+    from rainrag.web_metadata_api import WebMetadataAPIClient
+
+    metadata_path = _Path(config.web_metadata.path)
+    api_client = None
+    if config.web_metadata.source in {"api", "hybrid"}:
+        try:
+            api_client = WebMetadataAPIClient.from_env(
+                base_url=config.web_metadata.api_url,
+                token_env=config.web_metadata.api_token_env,
+            )
+        except ValueError as exc:
+            if config.web_metadata.source == "api":
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Web metadata API is required but token is missing. "
+                        + f"Set {config.web_metadata.api_token_env}."
+                    ),
+                ) from exc
+            logger.warning(
+                "Web metadata API token missing for hybrid mode; falling back to local-only search."
+            )
+
+    loader = WebMetadataLoader(
+        metadata_path,
+        source=config.web_metadata.source,
+        api_client=api_client,
+    )
+
+    article = await asyncio.to_thread(loader.search_by_url, url)
+
+    if article is None:
+        logger.info(f"URL lookup for {url!r}: not found")
+        return VideoUrlLookupResponse(result=None, url=url)
+
+    video_hash = article.get("video_hash", "").strip()
+    if not video_hash:
+        return VideoUrlLookupResponse(result=None, url=url)
+
+    try:
+        archive_rel = WebMetadataLoader.hash_to_archive_dir(video_hash)
+    except ValueError:
+        logger.warning(f"Invalid video_hash in metadata: {video_hash!r}")
+        return VideoUrlLookupResponse(result=None, url=url)
+
+    archive_root = _Path(config.paths.archive_root).resolve()
+    archive_dir = archive_root / archive_rel
+
+    languages: dict[str, VideoNameSearchLanguageResult] = {}
+    for lang in ("ru", "en"):
+        vtt_file = archive_dir / f"{video_hash}.{lang}.vtt"
+        if vtt_file.exists():
+            video_url, vtt_url = generate_media_urls(str(vtt_file))
+            languages[lang] = VideoNameSearchLanguageResult(
+                video_url=video_url,
+                vtt_url=vtt_url,
+            )
+
+    teleshow = article.get("teleshow")
+    teleshow_name = teleshow.get("name") if isinstance(teleshow, dict) else None
+
+    result = VideoNameSearchResult(
+        video_hash=video_hash,
+        name=article.get("name", ""),
+        date=article.get("date_active_start"),
+        web_url=article.get("url"),
+        teleshow_name=teleshow_name,
+        languages=languages,
+    )
+
+    logger.info(f"URL lookup for {url!r}: found {video_hash}")
+    return VideoUrlLookupResponse(result=result, url=url)
+
+
 @app.post("/related-chunks", response_model=RelatedChunksResponse)
 async def get_related_chunks(request: RelatedChunksRequest):
     """

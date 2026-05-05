@@ -1176,6 +1176,39 @@ class WebMetadataLoader:
         )
         return results
 
+    def search_by_url(self, url: str) -> dict[str, Any] | None:
+        """Find a single metadata entry by exact web URL match.
+
+        Searches local cache and, if configured, the API batch export.
+        Returns the first matching entry or ``None``.
+        """
+        url = url.strip()
+        if not url:
+            return None
+
+        candidates: list[dict[str, Any]] = []
+        if self.metadata_path.exists():
+            for metadata_file in self.metadata_path.glob("*.json"):
+                if not metadata_file.is_file():
+                    continue
+                try:
+                    with open(metadata_file, encoding="utf-8") as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if data.get("url") == url:
+                    return data
+
+        if self.source in {"api", "hybrid"} and self.api_client is not None:
+            try:
+                for item in self._load_api_batch_candidates():
+                    if item.get("url") == url:
+                        return item
+            except Exception as exc:
+                logger.warning(f"API batch export failed during URL search: {exc}")
+
+        return None
+
     @staticmethod
     def hash_to_archive_dir(video_hash: str) -> Path:
         """
