@@ -564,7 +564,7 @@ def _schedule_hls_prewarm(available: dict[str, Path]) -> None:
         return
 
     # Prefer lower startup bitrates first.
-    ordered = [q for q in ("720p", "480p", "360p", "180p", "1080p") if q in available]
+    ordered = [q for q in ("180p", "360p", "480p", "720p", "1080p") if q in available]
     if not ordered:
         return
 
