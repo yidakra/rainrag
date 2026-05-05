@@ -1186,7 +1186,6 @@ class WebMetadataLoader:
         if not url:
             return None
 
-        candidates: list[dict[str, Any]] = []
         if self.metadata_path.exists():
             for metadata_file in self.metadata_path.glob("*.json"):
                 if not metadata_file.is_file():

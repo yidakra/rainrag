@@ -303,7 +303,12 @@ def test_hls_variant_playlist_preserves_auth_and_appends_cb(
         )
         return key, playlist
 
+    def _fake_rewrite(_playlist_path: Path, cache_key: str, auth: str | None = None) -> str:
+        auth_q = f"?auth={auth}" if auth else ""
+        return f"#EXTM3U\n/hls/asset/{cache_key}/seg_00001.ts{auth_q}\n"
+
     monkeypatch.setattr(api_module, "_ensure_hls_variant_cache", _fake_cache)
+    monkeypatch.setattr(api_module, "_rewrite_hls_variant_playlist", _fake_rewrite)
 
     with override_api_config(test_cfg):
         response = test_client.get(f"/hls/variant/180p/{rel_path}?auth=token123&cb=cb987")
