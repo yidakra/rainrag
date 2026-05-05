@@ -824,7 +824,9 @@ def build_video_source_urls(
     else:
         candidates.append(base_video_url)
 
-    return [append_auth_query(build_asset_url(candidate)) + start_fragment for candidate in candidates]
+    return [
+        append_auth_query(build_asset_url(candidate)) + start_fragment for candidate in candidates
+    ]
 
 
 def build_hls_master_url(video_url: str, start_time_seconds: float | None = None) -> str | None:
@@ -835,7 +837,9 @@ def build_hls_master_url(video_url: str, start_time_seconds: float | None = None
     hls_path = "/hls/master/" + base_video_url[len("/video/") :]
     hls_url = append_auth_query(build_asset_url(hls_path))
     # Avoid stale HLS manifests from intermediary caches.
-    hls_url = append_auth_query(hls_url + ("&" if "?" in hls_url else "?") + f"cb={int(time.time())}")
+    hls_url = append_auth_query(
+        hls_url + ("&" if "?" in hls_url else "?") + f"cb={int(time.time())}"
+    )
     if start_time_seconds is not None:
         with contextlib.suppress(ValueError, TypeError):
             hls_url += f"#t={int(float(start_time_seconds))}"
@@ -914,14 +918,18 @@ def render_adaptive_hls_player(
       fallbackToMp4();
     }}
   }}, 8000);
-  const playbackStartTimer = setTimeout(() => {{
-    // Manifest may parse, but playback can still stall before first frame.
-    // If we're not actively progressing, switch to MP4 fallback.
-    const noPlaybackProgress = video.currentTime < 0.1 && video.paused;
-    if (noPlaybackProgress) {{
-      fallbackToMp4();
-    }}
-  }}, 5000);
+  let playbackStartTimer = null;
+  const armPlaybackWatchdog = () => {{
+    if (playbackStartTimer) return;
+    playbackStartTimer = setTimeout(() => {{
+      // Manifest may parse, but playback can still stall before first frame.
+      const noPlaybackProgress = video.currentTime < 0.1 && video.paused;
+      if (noPlaybackProgress) {{
+        fallbackToMp4();
+      }}
+    }}, 5000);
+  }};
+  video.addEventListener('play', armPlaybackWatchdog, {{ once: true }});
   video.addEventListener('playing', clearWatchdogs, {{ once: true }});
   video.addEventListener('timeupdate', saveTime);
   video.addEventListener('pause', saveTime);
@@ -1411,7 +1419,8 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                             preferred_quality=preferred_quality,
                         )
                         source_tags = "\n".join(
-                            f'<source src="{html.escape(url)}" type="video/mp4">' for url in source_urls
+                            f'<source src="{html.escape(url)}" type="video/mp4">'
+                            for url in source_urls
                         )
 
                         try:

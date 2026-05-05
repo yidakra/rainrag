@@ -124,6 +124,11 @@ config: Config | None = None
 HLS_CACHE_ROOT = Path(os.getenv("RAINRAG_HLS_CACHE_DIR", "/tmp/rainrag_hls_cache"))
 _hls_prewarm_inflight: set[str] = set()
 _hls_prewarm_lock = threading.Lock()
+_hls_generation_locks: dict[str, threading.Lock] = {}
+_hls_generation_locks_guard = threading.Lock()
+HLS_FFMPEG_TIMEOUT_SECONDS = int(os.getenv("RAINRAG_HLS_FFMPEG_TIMEOUT_SECONDS", "300"))
+HLS_CACHE_TTL_SECONDS = int(os.getenv("RAINRAG_HLS_CACHE_TTL_SECONDS", "86400"))
+HLS_CACHE_MAX_DIRS = int(os.getenv("RAINRAG_HLS_CACHE_MAX_DIRS", "512"))
 
 
 def _parse_csv_env(name: str, default: list[str]) -> list[str]:
@@ -484,6 +489,57 @@ def _hls_cache_key(video_file: Path, quality: str) -> str:
     return hashlib.sha1(signature.encode("utf-8")).hexdigest()
 
 
+def _get_hls_generation_lock(cache_key: str) -> threading.Lock:
+    with _hls_generation_locks_guard:
+        lock = _hls_generation_locks.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            _hls_generation_locks[cache_key] = lock
+        return lock
+
+
+def _cleanup_hls_cache_best_effort() -> None:
+    """Best-effort cleanup of stale/excess HLS cache directories."""
+    try:
+        HLS_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+        dirs = [d for d in HLS_CACHE_ROOT.iterdir() if d.is_dir()]
+    except OSError:
+        return
+
+    import time as _time
+
+    now = _time.time()
+    stale_before = now - max(HLS_CACHE_TTL_SECONDS, 0)
+
+    for d in dirs:
+        try:
+            if d.stat().st_mtime < stale_before:
+                for item in d.iterdir():
+                    item.unlink(missing_ok=True)
+                d.rmdir()
+        except OSError:
+            continue
+
+    try:
+        dirs = sorted(
+            [d for d in HLS_CACHE_ROOT.iterdir() if d.is_dir()],
+            key=lambda p: p.stat().st_mtime,
+        )
+    except OSError:
+        return
+
+    overflow = len(dirs) - max(HLS_CACHE_MAX_DIRS, 0)
+    if overflow <= 0:
+        return
+    for d in dirs[:overflow]:
+        try:
+            for item in d.iterdir():
+                item.unlink(missing_ok=True)
+            d.rmdir()
+        except OSError:
+            continue
+
+
 def _ensure_hls_variant_cache(video_file: Path, quality: str) -> tuple[str, Path]:
     """Generate segmented HLS files for a single quality, cached on disk."""
     cache_key = _hls_cache_key(video_file, quality)
@@ -492,48 +548,63 @@ def _ensure_hls_variant_cache(video_file: Path, quality: str) -> tuple[str, Path
 
     if playlist_path.exists():
         return cache_key, playlist_path
+    lock = _get_hls_generation_lock(cache_key)
+    with lock:
+        if playlist_path.exists():
+            return cache_key, playlist_path
+        _cleanup_hls_cache_best_effort()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=f"hls_{cache_key}_", dir=str(HLS_CACHE_ROOT)
+        ) as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            tmp_playlist = tmp_path / "index.m3u8"
+            segment_pattern = str(tmp_path / "seg_%05d.ts")
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(video_file),
+                "-c",
+                "copy",
+                "-f",
+                "hls",
+                "-hls_time",
+                "6",
+                "-hls_list_size",
+                "0",
+                "-hls_playlist_type",
+                "vod",
+                "-hls_flags",
+                "independent_segments",
+                "-hls_segment_filename",
+                segment_pattern,
+                str(tmp_playlist),
+            ]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=HLS_FFMPEG_TIMEOUT_SECONDS,
+                )
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=500, detail="ffmpeg is not installed") from exc
+            except subprocess.TimeoutExpired as exc:
+                raise HTTPException(status_code=504, detail="HLS generation timed out") from exc
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=f"hls_{cache_key}_", dir=str(HLS_CACHE_ROOT)
-    ) as tmp_dir:
-        tmp_path = Path(tmp_dir)
-        tmp_playlist = tmp_path / "index.m3u8"
-        segment_pattern = str(tmp_path / "seg_%05d.ts")
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            str(video_file),
-            "-c",
-            "copy",
-            "-f",
-            "hls",
-            "-hls_time",
-            "6",
-            "-hls_list_size",
-            "0",
-            "-hls_playlist_type",
-            "vod",
-            "-hls_flags",
-            "independent_segments",
-            "-hls_segment_filename",
-            segment_pattern,
-            str(tmp_playlist),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to generate HLS playlist for {quality}: {result.stderr.strip()}",
-            )
+            if result.returncode != 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to generate HLS playlist for {quality}: {result.stderr.strip()}",
+                )
 
-        for item in tmp_path.iterdir():
-            target = out_dir / item.name
-            item.replace(target)
+            for item in tmp_path.iterdir():
+                target = out_dir / item.name
+                item.replace(target)
 
     if not playlist_path.exists():
         raise HTTPException(status_code=500, detail="HLS playlist generation incomplete")
@@ -1389,9 +1460,17 @@ async def serve_hls_variant(
     cache_key, playlist_path = await asyncio.to_thread(_ensure_hls_variant_cache, selected, quality)
     content = _rewrite_hls_variant_playlist(playlist_path, cache_key, auth=auth)
     if cb:
-        content = re.sub(
-            r"(\n/hls/asset/[^\n?#]+)(\?[^\n#]*)?", rf"\1?cb={quote(cb, safe='')}", content
-        )
+        cb_q = quote(cb, safe="")
+
+        def _inject_cb(match: re.Match[str]) -> str:
+            base = match.group(1)
+            q = match.group(2)
+            if q:
+                sep = "&" if len(q) > 1 else ""
+                return f"{base}{q}{sep}cb={cb_q}"
+            return f"{base}?cb={cb_q}"
+
+        content = re.sub(r"(\n/hls/asset/[^\n?#]+)(\?[^\n#]*)?", _inject_cb, content)
     return Response(
         content=content,
         media_type="application/vnd.apple.mpegurl",
@@ -1409,7 +1488,9 @@ async def serve_hls_asset(
 ):
     """Serve generated HLS segments and variant-local assets."""
     verify_auth_token(authorization=authorization, access_token=auth)
-    safe_key = re.sub(r"[^a-f0-9]", "", cache_key.lower())
+    safe_key = cache_key.lower()
+    if not re.fullmatch(r"[a-f0-9]{40}", safe_key):
+        raise HTTPException(status_code=404, detail="HLS asset not found")
     safe_name = Path(file_name).name
     full_path = (HLS_CACHE_ROOT / safe_key / safe_name).resolve()
     root = (HLS_CACHE_ROOT / safe_key).resolve()
