@@ -824,7 +824,9 @@ def build_video_source_urls(
     else:
         candidates.append(base_video_url)
 
-    return [append_auth_query(build_asset_url(candidate)) + start_fragment for candidate in candidates]
+    return [
+        append_auth_query(build_asset_url(candidate)) + start_fragment for candidate in candidates
+    ]
 
 
 def build_hls_master_url(video_url: str, start_time_seconds: float | None = None) -> str | None:
@@ -834,6 +836,10 @@ def build_hls_master_url(video_url: str, start_time_seconds: float | None = None
         return None
     hls_path = "/hls/master/" + base_video_url[len("/video/") :]
     hls_url = append_auth_query(build_asset_url(hls_path))
+    # Avoid stale HLS manifests from intermediary caches.
+    hls_url = append_auth_query(
+        hls_url + ("&" if "?" in hls_url else "?") + f"cb={int(time.time())}"
+    )
     if start_time_seconds is not None:
         with contextlib.suppress(ValueError, TypeError):
             hls_url += f"#t={int(float(start_time_seconds))}"
@@ -856,6 +862,24 @@ def render_adaptive_hls_player(
   const video = document.getElementById("{html.escape(element_id)}");
   const hlsUrl = {json.dumps(hls_url)};
   const mp4Fallback = {json.dumps(mp4_fallback_url)};
+  const resumeKey = `rainrag_resume_{html.escape(element_id)}`;
+  const getSavedTime = () => {{
+    try {{
+      const raw = sessionStorage.getItem(resumeKey);
+      if (!raw) return null;
+      const parsed = parseFloat(raw);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+    }} catch (e) {{
+      return null;
+    }}
+  }};
+  const saveTime = () => {{
+    try {{
+      if (Number.isFinite(video.currentTime) && video.currentTime > 0) {{
+        sessionStorage.setItem(resumeKey, String(video.currentTime));
+      }}
+    }} catch (e) {{}}
+  }};
   const startFromFragment = (() => {{
     try {{
       const frag = new URL(hlsUrl).hash || "";
@@ -867,35 +891,128 @@ def render_adaptive_hls_player(
   }})();
 
   const applyStartTime = () => {{
+    const saved = getSavedTime();
+    if (saved !== null) {{
+      video.currentTime = saved;
+      return;
+    }}
     if (startFromFragment !== null && !Number.isNaN(startFromFragment)) {{
       video.currentTime = startFromFragment;
     }}
   }};
+  let fallbackTriggered = false;
+  const fallbackToMp4 = () => {{
+    if (fallbackTriggered) return;
+    fallbackTriggered = true;
+    video.src = mp4Fallback;
+    video.load();
+    video.addEventListener('loadedmetadata', applyStartTime, {{ once: true }});
+  }};
+  const clearWatchdogs = () => {{
+    clearTimeout(fallbackTimer);
+    clearTimeout(playbackStartTimer);
+  }};
+  const fallbackTimer = setTimeout(() => {{
+    // If HLS is stalled (no fatal event), force MP4 fallback.
+    if (video.readyState < 1) {{
+      fallbackToMp4();
+    }}
+  }}, 8000);
+  let playbackStartTimer = null;
+  const armPlaybackWatchdog = () => {{
+    if (playbackStartTimer) return;
+    playbackStartTimer = setTimeout(() => {{
+      // Manifest may parse, but playback can still stall before first frame.
+      const noPlaybackProgress = video.currentTime < 0.1 && video.paused;
+      if (noPlaybackProgress) {{
+        fallbackToMp4();
+      }}
+    }}, 5000);
+  }};
+  video.addEventListener('play', armPlaybackWatchdog, {{ once: true }});
+  video.addEventListener('playing', clearWatchdogs, {{ once: true }});
+  video.addEventListener('timeupdate', saveTime);
+  video.addEventListener('pause', saveTime);
+  video.addEventListener('timeupdate', () => {{
+    if (video.currentTime > 0.1) {{
+      clearWatchdogs();
+    }}
+  }});
 
   if (window.Hls && window.Hls.isSupported()) {{
     const hls = new window.Hls({{
-      startLevel: -1,
+      startLevel: 0,
       capLevelToPlayerSize: true,
+      testBandwidth: false,
     }});
     hls.loadSource(hlsUrl.split('#')[0]);
     hls.attachMedia(video);
-    hls.on(window.Hls.Events.MANIFEST_PARSED, () => applyStartTime());
+    hls.on(window.Hls.Events.MANIFEST_PARSED, () => {{
+      applyStartTime();
+    }});
     hls.on(window.Hls.Events.ERROR, (_event, data) => {{
       if (data && data.fatal) {{
-        video.src = mp4Fallback;
-        video.load();
+        clearWatchdogs();
+        fallbackToMp4();
       }}
     }});
   }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
     video.src = hlsUrl;
+    video.addEventListener('loadedmetadata', () => clearWatchdogs(), {{ once: true }});
     video.addEventListener('loadedmetadata', applyStartTime, {{ once: true }});
   }} else {{
-    video.src = mp4Fallback;
+    clearWatchdogs();
+    fallbackToMp4();
   }}
 }})();
 </script>
 """
     components.html(html_block, height=height)
+
+
+def render_html5_video_player(
+    source_tags: str,
+    track_tags: str,
+    element_id: str,
+) -> None:
+    """Render MP4 player and preserve playback position across Streamlit reruns."""
+    html_block = f"""
+<video id="{html.escape(element_id)}" controls playsinline
+       style="max-width: 100%; height: auto; border-radius: 8px;"
+       preload="metadata">
+    {source_tags}
+    {track_tags}
+    Your browser does not support the video tag.
+</video>
+<script>
+(() => {{
+  const video = document.getElementById("{html.escape(element_id)}");
+  if (!video) return;
+  const resumeKey = `rainrag_resume_{html.escape(element_id)}`;
+  const loadSavedTime = () => {{
+    try {{
+      const raw = sessionStorage.getItem(resumeKey);
+      if (!raw) return;
+      const parsed = parseFloat(raw);
+      if (Number.isFinite(parsed) && parsed >= 0) {{
+        video.currentTime = parsed;
+      }}
+    }} catch (e) {{}}
+  }};
+  const saveTime = () => {{
+    try {{
+      if (Number.isFinite(video.currentTime) && video.currentTime > 0) {{
+        sessionStorage.setItem(resumeKey, String(video.currentTime));
+      }}
+    }} catch (e) {{}}
+  }};
+  video.addEventListener("loadedmetadata", loadSavedTime, {{ once: true }});
+  video.addEventListener("timeupdate", saveTime);
+  video.addEventListener("pause", saveTime);
+}})();
+</script>
+"""
+    st.markdown(html_block, unsafe_allow_html=True)
 
 
 def append_auth_query(url: str) -> str:
@@ -1302,7 +1419,8 @@ def render_message_bubble(message: dict[str, Any], lang: str):
                             preferred_quality=preferred_quality,
                         )
                         source_tags = "\n".join(
-                            f'<source src="{html.escape(url)}" type="video/mp4">' for url in source_urls
+                            f'<source src="{html.escape(url)}" type="video/mp4">'
+                            for url in source_urls
                         )
 
                         try:
@@ -1527,30 +1645,16 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
                         element_id=f"name_hls_{idx}",
                     )
                 else:
-                    st.markdown(
-                        f"""
-                        <video controls playsinline
-                               style="max-width: 100%; height: auto; border-radius: 8px;"
-                               preload="metadata">
-                            {source_tags}
-                            {track_tags}
-                            Your browser does not support the video tag.
-                        </video>
-                        """,
-                        unsafe_allow_html=True,
+                    render_html5_video_player(
+                        source_tags=source_tags,
+                        track_tags=track_tags,
+                        element_id=f"name_mp4_{idx}",
                     )
             else:
-                st.markdown(
-                    f"""
-                    <video controls playsinline
-                           style="max-width: 100%; height: auto; border-radius: 8px;"
-                           preload="metadata">
-                        {source_tags}
-                        {track_tags}
-                        Your browser does not support the video tag.
-                    </video>
-                    """,
-                    unsafe_allow_html=True,
+                render_html5_video_player(
+                    source_tags=source_tags,
+                    track_tags=track_tags,
+                    element_id=f"name_mp4_{idx}",
                 )
         else:
             st.info(get_text("no_video", lang))

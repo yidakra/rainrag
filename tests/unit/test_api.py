@@ -265,6 +265,68 @@ def test_vtt_endpoint_security(test_client, temp_dir: Path, archive_with_videos:
         assert response.status_code in [400, 403, 404]  # Should be rejected
 
 
+def test_hls_master_playlist_includes_auth_and_cb(test_client, archive_with_videos: Path):
+    """Master playlist should include variant entries and propagate auth/cb query params."""
+
+    test_cfg = make_test_config(str(archive_with_videos))
+    hash_name = "3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd"
+    rel_path = f"test_videos/{hash_name}_1080p.mp4"
+    with override_api_config(test_cfg):
+        response = test_client.get(f"/hls/master/{rel_path}?auth=token123&cb=abc123")
+        assert response.status_code == 200
+        text = response.text
+        assert "#EXTM3U" in text
+        assert 'NAME="180p"' in text
+        assert f"/hls/variant/180p/{rel_path}?auth=token123&cb=abc123" in text
+        assert "application/vnd.apple.mpegurl" in response.headers["content-type"]
+        assert response.headers.get("cache-control") == "no-store"
+
+
+def test_hls_variant_playlist_preserves_auth_and_appends_cb(
+    test_client, archive_with_videos: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Variant playlist should keep auth and append cb for segment URLs."""
+    import rainrag.api as api_module
+
+    test_cfg = make_test_config(str(archive_with_videos))
+    hash_name = "3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd"
+    rel_path = f"test_videos/{hash_name}_1080p.mp4"
+
+    def _fake_cache(_video_file: Path, _quality: str):
+        key = "a" * 40
+        out_dir = api_module.HLS_CACHE_ROOT / key
+        out_dir.mkdir(parents=True, exist_ok=True)
+        playlist = out_dir / "index.m3u8"
+        playlist.write_text(
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:6.0,\nseg_00001.ts\n#EXT-X-ENDLIST\n",
+            encoding="utf-8",
+        )
+        return key, playlist
+
+    def _fake_rewrite(_playlist_path: Path, cache_key: str, auth: str | None = None) -> str:
+        auth_q = f"?auth={auth}" if auth else ""
+        return f"#EXTM3U\n/hls/asset/{cache_key}/seg_00001.ts{auth_q}\n"
+
+    monkeypatch.setattr(api_module, "_ensure_hls_variant_cache", _fake_cache)
+    monkeypatch.setattr(api_module, "_rewrite_hls_variant_playlist", _fake_rewrite)
+
+    with override_api_config(test_cfg):
+        response = test_client.get(f"/hls/variant/180p/{rel_path}?auth=token123&cb=cb987")
+        assert response.status_code == 200
+        text = response.text
+        assert "/hls/asset/" in text
+        assert "?auth=token123&cb=cb987" in text
+        assert response.headers.get("cache-control") == "no-store"
+
+
+def test_hls_asset_rejects_invalid_cache_key(test_client, archive_with_videos: Path):
+    """Asset endpoint should reject invalid cache key shapes."""
+    test_cfg = make_test_config(str(archive_with_videos))
+    with override_api_config(test_cfg):
+        response = test_client.get("/hls/asset/not-a-sha1/seg_00001.ts")
+        assert response.status_code == 404
+
+
 def test_video_disabled(test_client, temp_dir: Path):
     """Test video serving when disabled in config."""
     test_cfg = make_test_config(str(temp_dir), video_enabled=False)

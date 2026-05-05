@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from collections.abc import Generator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -904,6 +905,53 @@ class WebMetadataLoader:
         self.metadata_path = metadata_path
         self.source = source_normalized
         self.api_client = api_client
+        self._api_batch_cache_ttl_seconds = int(
+            os.getenv("RAINRAG_WEB_METADATA_BATCH_TTL_SECONDS", "900")
+        )
+        self._api_batch_cache_mtime: float | None = None
+        self._api_batch_cache: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _safe_metadata_hash(video_hash: str) -> str | None:
+        """Return safe hash for metadata filename, or None when invalid."""
+        candidate = video_hash.strip()
+        if not candidate:
+            return None
+        if Path(candidate).name != candidate:
+            return None
+        if not re.fullmatch(r"[a-fA-F0-9]{40}", candidate):
+            return None
+        return candidate.lower()
+
+    def _load_api_batch_candidates(self) -> list[dict[str, Any]]:
+        """Load API batch with in-process TTL cache and persist safe files."""
+        if self.api_client is None:
+            return []
+
+        now = time.time()
+        if (
+            self._api_batch_cache
+            and self._api_batch_cache_mtime is not None
+            and (now - self._api_batch_cache_mtime) < self._api_batch_cache_ttl_seconds
+        ):
+            return self._api_batch_cache
+
+        api_candidates = self.api_client.export_batch()
+        self._api_batch_cache = api_candidates
+        self._api_batch_cache_mtime = now
+
+        self.metadata_path.mkdir(parents=True, exist_ok=True)
+        for article in api_candidates:
+            safe_hash = self._safe_metadata_hash(str(article.get("video_hash", "")))
+            if not safe_hash:
+                continue
+            try:
+                (self.metadata_path / f"{safe_hash}.json").write_text(
+                    json.dumps(article, ensure_ascii=False, indent=None), encoding="utf-8"
+                )
+            except OSError:
+                continue
+        return api_candidates
 
     # ------------------------------------------------------------------
     # Local helpers
@@ -1066,29 +1114,54 @@ class WebMetadataLoader:
         return hashes
 
     def search_by_name(self, query: str) -> list[dict[str, Any]]:
-        """Search local metadata files by video title (case-insensitive substring match).
+        """Search metadata by title (case-insensitive substring match).
 
-        Returns matches sorted by relevance tier (exact → starts-with → contains)
-        then by date descending within each tier.
+        Source behavior:
+        - ``local``: search local ``{hash}.json`` files
+        - ``api``: search recent API batch export (and cache to disk)
+        - ``hybrid``: merge local + recent API results
         """
-        if not self.metadata_path.exists():
-            return []
-
         query_lower = query.lower().strip()
         if not query_lower:
             return []
 
-        results: list[dict[str, Any]] = []
-        for metadata_file in self.metadata_path.glob("*.json"):
-            if not metadata_file.is_file():
-                continue
+        # Collect candidates from local cache
+        local_candidates: list[dict[str, Any]] = []
+        if self.metadata_path.exists():
+            for metadata_file in self.metadata_path.glob("*.json"):
+                if not metadata_file.is_file():
+                    continue
+                try:
+                    with open(metadata_file, encoding="utf-8") as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    continue
+                local_candidates.append(data)
+
+        # Optionally collect candidates from API export
+        api_candidates: list[dict[str, Any]] = []
+        if self.source in {"api", "hybrid"} and self.api_client is not None:
             try:
-                with open(metadata_file, encoding="utf-8") as f:
-                    data = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                continue
-            if query_lower in data.get("name", "").lower():
-                results.append(data)
+                api_candidates = self._load_api_batch_candidates()
+            except Exception as exc:
+                logger.warning(f"API batch export failed during name search: {exc}")
+
+        if self.source == "local":
+            candidates = local_candidates
+        elif self.source == "api":
+            candidates = api_candidates
+        else:
+            # hybrid: local first, then API; de-duplicate by hash/url
+            seen: set[str] = set()
+            candidates = []
+            for item in local_candidates + api_candidates:
+                key = str(item.get("video_hash") or item.get("url") or "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(item)
+
+        results = [item for item in candidates if query_lower in item.get("name", "").lower()]
 
         # Stable two-pass sort: date descending first, then relevance tier
         results.sort(key=lambda a: a.get("date_active_start", ""), reverse=True)
@@ -1102,6 +1175,38 @@ class WebMetadataLoader:
             )
         )
         return results
+
+    def search_by_url(self, url: str) -> dict[str, Any] | None:
+        """Find a single metadata entry by exact web URL match.
+
+        Searches local cache and, if configured, the API batch export.
+        Returns the first matching entry or ``None``.
+        """
+        url = url.strip()
+        if not url:
+            return None
+
+        if self.metadata_path.exists():
+            for metadata_file in self.metadata_path.glob("*.json"):
+                if not metadata_file.is_file():
+                    continue
+                try:
+                    with open(metadata_file, encoding="utf-8") as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if data.get("url") == url:
+                    return data
+
+        if self.source in {"api", "hybrid"} and self.api_client is not None:
+            try:
+                for item in self._load_api_batch_candidates():
+                    if item.get("url") == url:
+                        return item
+            except Exception as exc:
+                logger.warning(f"API batch export failed during URL search: {exc}")
+
+        return None
 
     @staticmethod
     def hash_to_archive_dir(video_hash: str) -> Path:
