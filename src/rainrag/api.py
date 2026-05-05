@@ -1,10 +1,14 @@
 """FastAPI backend for RainRAG query interface."""
 
 import asyncio
+import hashlib
 import hmac
 import os
 import re
 import string
+import subprocess
+import tempfile
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
@@ -117,6 +121,9 @@ from rainrag.query import RAGQueryEngine
 # Global query engine instance and config
 query_engine: RAGQueryEngine | None = None
 config: Config | None = None
+HLS_CACHE_ROOT = Path(os.getenv("RAINRAG_HLS_CACHE_DIR", "/tmp/rainrag_hls_cache"))
+_hls_prewarm_inflight: set[str] = set()
+_hls_prewarm_lock = threading.Lock()
 
 
 def _parse_csv_env(name: str, default: list[str]) -> list[str]:
@@ -465,6 +472,119 @@ def _resolve_hls_file_context(file_path: str) -> tuple[Path, str | None]:
     match = re.match(r"^(?P<base>.+)_(1080p|720p|480p|360p|180p)$", full_path.stem)
     target_base = match.group("base") if match else None
     return full_path.parent, target_base
+
+
+def _hls_cache_key(video_file: Path, quality: str) -> str:
+    """Build deterministic cache key for generated HLS assets."""
+    try:
+        stat = video_file.stat()
+        signature = f"{video_file.resolve()}|{quality}|{int(stat.st_mtime)}|{stat.st_size}"
+    except OSError:
+        signature = f"{video_file.resolve()}|{quality}"
+    return hashlib.sha1(signature.encode("utf-8")).hexdigest()
+
+
+def _ensure_hls_variant_cache(video_file: Path, quality: str) -> tuple[str, Path]:
+    """Generate segmented HLS files for a single quality, cached on disk."""
+    cache_key = _hls_cache_key(video_file, quality)
+    out_dir = HLS_CACHE_ROOT / cache_key
+    playlist_path = out_dir / "index.m3u8"
+
+    if playlist_path.exists():
+        return cache_key, playlist_path
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"hls_{cache_key}_", dir=str(HLS_CACHE_ROOT)) as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        tmp_playlist = tmp_path / "index.m3u8"
+        segment_pattern = str(tmp_path / "seg_%05d.ts")
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(video_file),
+            "-c",
+            "copy",
+            "-f",
+            "hls",
+            "-hls_time",
+            "6",
+            "-hls_list_size",
+            "0",
+            "-hls_playlist_type",
+            "vod",
+            "-hls_flags",
+            "independent_segments",
+            "-hls_segment_filename",
+            segment_pattern,
+            str(tmp_playlist),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to generate HLS playlist for {quality}: {result.stderr.strip()}",
+            )
+
+        for item in tmp_path.iterdir():
+            target = out_dir / item.name
+            item.replace(target)
+
+    if not playlist_path.exists():
+        raise HTTPException(status_code=500, detail="HLS playlist generation incomplete")
+    return cache_key, playlist_path
+
+
+def _rewrite_hls_variant_playlist(
+    playlist_path: Path, cache_key: str, auth: str | None = None
+) -> str:
+    """Rewrite local segment names to API-served segment URLs."""
+    auth_q = f"?auth={quote(auth, safe='')}" if auth else ""
+    lines: list[str] = []
+    for raw_line in playlist_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            lines.append(line)
+            continue
+        seg_name = Path(line).name
+        lines.append(f"/hls/asset/{cache_key}/{quote(seg_name, safe='')}{auth_q}")
+    return "\n".join(lines) + "\n"
+
+
+def _schedule_hls_prewarm(available: dict[str, Path]) -> None:
+    """Schedule non-blocking HLS prewarm for available quality files."""
+    if not available:
+        return
+
+    # Prefer lower startup bitrates first.
+    ordered = [q for q in ("720p", "480p", "360p", "180p", "1080p") if q in available]
+    if not ordered:
+        return
+
+    key_file = available[ordered[0]]
+    prewarm_key = str(key_file.resolve())
+    with _hls_prewarm_lock:
+        if prewarm_key in _hls_prewarm_inflight:
+            return
+        _hls_prewarm_inflight.add(prewarm_key)
+
+    def _runner() -> None:
+        try:
+            for q in ordered:
+                try:
+                    _ensure_hls_variant_cache(available[q], q)
+                except Exception as exc:
+                    logger.debug(f"HLS prewarm skipped for {available[q].name} {q}: {exc}")
+        finally:
+            with _hls_prewarm_lock:
+                _hls_prewarm_inflight.discard(prewarm_key)
+
+    threading.Thread(target=_runner, daemon=True).start()
 
 
 def generate_media_urls(
@@ -940,9 +1060,34 @@ async def search_by_name(
     from pathlib import Path as _Path
 
     from rainrag.ingest import WebMetadataLoader
+    from rainrag.web_metadata_api import WebMetadataAPIClient
 
     metadata_path = _Path(config.web_metadata.path)
-    loader = WebMetadataLoader(metadata_path)
+    api_client = None
+    if config.web_metadata.source in {"api", "hybrid"}:
+        try:
+            api_client = WebMetadataAPIClient.from_env(
+                base_url=config.web_metadata.api_url,
+                token_env=config.web_metadata.api_token_env,
+            )
+        except ValueError as exc:
+            if config.web_metadata.source == "api":
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Web metadata API is required but token is missing. "
+                        + f"Set {config.web_metadata.api_token_env}."
+                    ),
+                ) from exc
+            logger.warning(
+                "Web metadata API token missing for hybrid mode; falling back to local-only search."
+            )
+
+    loader = WebMetadataLoader(
+        metadata_path,
+        source=config.web_metadata.source,
+        api_client=api_client,
+    )
 
     # Run the directory scan in a thread so the async event loop stays responsive
     matches = await asyncio.to_thread(loader.search_by_name, q)
@@ -1151,11 +1296,12 @@ async def serve_video(
     return FileResponse(path=str(full_path), media_type=media_type)
 
 
-@app.get("/hls/master/{file_path:path}")
+@app.api_route("/hls/master/{file_path:path}", methods=["GET", "HEAD"])
 async def serve_hls_master(
     file_path: str,
     authorization: Annotated[str | None, Header()] = None,
     auth: Annotated[str | None, Query()] = None,
+    cb: Annotated[str | None, Query()] = None,
 ):
     """Serve a master HLS playlist referencing available MP4 quality variants."""
     verify_auth_token(authorization=authorization, access_token=auth)
@@ -1164,8 +1310,10 @@ async def serve_hls_master(
     available = _build_quality_video_map(directory, target_stem=target_base)
     if not available:
         raise HTTPException(status_code=404, detail="No quality variants found for HLS")
+    _schedule_hls_prewarm(available)
 
-    quality_order = ["1080p", "720p", "480p", "360p", "180p"]
+    # List lower bitrates first to reduce startup latency in ABR auto mode.
+    quality_order = ["180p", "360p", "480p", "720p", "1080p"]
     bandwidth_map = {
         "1080p": 8_000_000,
         "720p": 4_500_000,
@@ -1181,7 +1329,12 @@ async def serve_hls_master(
         "180p": "320x180",
     }
 
-    auth_q = f"?auth={quote(auth, safe='')}" if auth else ""
+    params: list[str] = []
+    if auth:
+        params.append(f"auth={quote(auth, safe='')}")
+    if cb:
+        params.append(f"cb={quote(cb, safe='')}")
+    auth_q = f"?{'&'.join(params)}" if params else ""
     encoded_path = quote(file_path, safe="/")
 
     lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
@@ -1193,15 +1346,20 @@ async def serve_hls_master(
         )
         lines.append(f"/hls/variant/{quality}/{encoded_path}{auth_q}")
 
-    return Response(content="\n".join(lines) + "\n", media_type="application/vnd.apple.mpegurl")
+    return Response(
+        content="\n".join(lines) + "\n",
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
-@app.get("/hls/variant/{quality}/{file_path:path}")
+@app.api_route("/hls/variant/{quality}/{file_path:path}", methods=["GET", "HEAD"])
 async def serve_hls_variant(
     quality: str,
     file_path: str,
     authorization: Annotated[str | None, Header()] = None,
     auth: Annotated[str | None, Query()] = None,
+    cb: Annotated[str | None, Query()] = None,
 ):
     """Serve single-variant HLS playlist pointing to the MP4 file of requested quality."""
     verify_auth_token(authorization=authorization, access_token=auth)
@@ -1225,20 +1383,38 @@ async def serve_hls_variant(
     if rel is None:
         raise HTTPException(status_code=500, detail="Could not resolve variant path")
 
-    auth_q = f"?auth={quote(auth, safe='')}" if auth else ""
-    rel_posix = str(rel).replace("\\", "/")
-    segment_uri = f"/video/{quote(rel_posix, safe='/')}{auth_q}"
+    # Build real segmented HLS for robust player compatibility.
+    cache_key, playlist_path = await asyncio.to_thread(_ensure_hls_variant_cache, selected, quality)
+    content = _rewrite_hls_variant_playlist(playlist_path, cache_key, auth=auth)
+    if cb:
+        content = re.sub(r"(\n/hls/asset/[^\n?#]+)(\?[^\n#]*)?", rf"\1?cb={quote(cb, safe='')}", content)
+    return Response(
+        content=content,
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
 
-    lines = [
-        "#EXTM3U",
-        "#EXT-X-VERSION:3",
-        "#EXT-X-TARGETDURATION:600",
-        "#EXT-X-MEDIA-SEQUENCE:0",
-        "#EXTINF:600.0,",
-        segment_uri,
-        "#EXT-X-ENDLIST",
-    ]
-    return Response(content="\n".join(lines) + "\n", media_type="application/vnd.apple.mpegurl")
+
+@app.api_route("/hls/asset/{cache_key}/{file_name}", methods=["GET", "HEAD"])
+async def serve_hls_asset(
+    cache_key: str,
+    file_name: str,
+    authorization: Annotated[str | None, Header()] = None,
+    auth: Annotated[str | None, Query()] = None,
+    cb: Annotated[str | None, Query()] = None,
+):
+    """Serve generated HLS segments and variant-local assets."""
+    verify_auth_token(authorization=authorization, access_token=auth)
+    safe_key = re.sub(r"[^a-f0-9]", "", cache_key.lower())
+    safe_name = Path(file_name).name
+    full_path = (HLS_CACHE_ROOT / safe_key / safe_name).resolve()
+    root = (HLS_CACHE_ROOT / safe_key).resolve()
+    if not str(full_path).startswith(str(root)):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="HLS asset not found")
+    media_type = "video/MP2T" if full_path.suffix.lower() == ".ts" else "application/octet-stream"
+    return FileResponse(path=str(full_path), media_type=media_type, headers={"Cache-Control": "no-store"})
 
 
 @app.api_route("/vtt/{file_path:path}", methods=["GET", "HEAD"])
