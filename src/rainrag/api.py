@@ -494,7 +494,9 @@ def _ensure_hls_variant_cache(video_file: Path, quality: str) -> tuple[str, Path
         return cache_key, playlist_path
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=f"hls_{cache_key}_", dir=str(HLS_CACHE_ROOT)) as tmp_dir:
+    with tempfile.TemporaryDirectory(
+        prefix=f"hls_{cache_key}_", dir=str(HLS_CACHE_ROOT)
+    ) as tmp_dir:
         tmp_path = Path(tmp_dir)
         tmp_playlist = tmp_path / "index.m3u8"
         segment_pattern = str(tmp_path / "seg_%05d.ts")
@@ -1387,7 +1389,9 @@ async def serve_hls_variant(
     cache_key, playlist_path = await asyncio.to_thread(_ensure_hls_variant_cache, selected, quality)
     content = _rewrite_hls_variant_playlist(playlist_path, cache_key, auth=auth)
     if cb:
-        content = re.sub(r"(\n/hls/asset/[^\n?#]+)(\?[^\n#]*)?", rf"\1?cb={quote(cb, safe='')}", content)
+        content = re.sub(
+            r"(\n/hls/asset/[^\n?#]+)(\?[^\n#]*)?", rf"\1?cb={quote(cb, safe='')}", content
+        )
     return Response(
         content=content,
         media_type="application/vnd.apple.mpegurl",
@@ -1414,7 +1418,9 @@ async def serve_hls_asset(
     if not full_path.exists():
         raise HTTPException(status_code=404, detail="HLS asset not found")
     media_type = "video/MP2T" if full_path.suffix.lower() == ".ts" else "application/octet-stream"
-    return FileResponse(path=str(full_path), media_type=media_type, headers={"Cache-Control": "no-store"})
+    return FileResponse(
+        path=str(full_path), media_type=media_type, headers={"Cache-Control": "no-store"}
+    )
 
 
 @app.api_route("/vtt/{file_path:path}", methods=["GET", "HEAD"])
