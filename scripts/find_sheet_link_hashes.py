@@ -496,6 +496,20 @@ def main() -> int:
         action="store_true",
         help="When writing hashes, skip rows whose target cell already has a value",
     )
+    parser.add_argument(
+        "--write-multivalue-format",
+        choices=["comma", "newline"],
+        default="newline",
+        help="Format when a row has multiple links (default: newline)",
+    )
+    parser.add_argument(
+        "--write-include-unresolved-placeholders",
+        action="store_true",
+        help=(
+            "When writing multiline values, preserve one line per source link; "
+            "unresolved links become empty lines"
+        ),
+    )
     args = parser.parse_args()
 
     want_write = bool(args.write_hashes_to_column)
@@ -620,13 +634,28 @@ def main() -> int:
         assert sheet_title_for_write is not None
         assert access_token
 
-        row_to_hash: dict[int, str] = {}
+        row_to_hashes: dict[int, list[str | None]] = {}
         for item in results:
             row_num = int(item["row"])
             vhash = item.get("video_hash")
-            if not vhash:
+            row_to_hashes.setdefault(row_num, [])
+            row_to_hashes[row_num].append(str(vhash) if vhash else None)
+
+        row_to_hash: dict[int, str] = {}
+        rows_with_any_hash = 0
+        for row, hashes in row_to_hashes.items():
+            has_any_hash = any(h is not None for h in hashes)
+            if not has_any_hash:
                 continue
-            row_to_hash.setdefault(row_num, str(vhash))
+            rows_with_any_hash += 1
+            if args.write_include_unresolved_placeholders:
+                ordered = [h if h is not None else "" for h in hashes]
+            else:
+                ordered = [h for h in hashes if h is not None]
+            if not ordered:
+                continue
+            sep = "\n" if args.write_multivalue_format == "newline" else ","
+            row_to_hash[row] = sep.join(ordered)
 
         if args.write_only_empty and row_to_hash:
             existing = _fetch_sheet_values_private(
@@ -649,7 +678,7 @@ def main() -> int:
         )
         print(
             f"Updated {updated_cells} cells in column "
-            f"{args.write_hashes_to_column.upper()} (rows with resolved hash: {len(row_to_hash)})"
+            f"{args.write_hashes_to_column.upper()} (rows with at least one resolved hash: {rows_with_any_hash})"
         )
     return 0
 
