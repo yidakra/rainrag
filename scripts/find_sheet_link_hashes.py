@@ -105,7 +105,9 @@ def _http_get_json(url: str, *, access_token: str) -> dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _mint_access_token_from_service_account(service_account_file: str) -> str:
+def _mint_access_token_from_service_account(
+    service_account_file: str, *, writable_sheets: bool = False
+) -> str:
     """Mint an OAuth access token from a service-account JSON key file."""
     try:
         from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -116,10 +118,16 @@ def _mint_access_token_from_service_account(service_account_file: str) -> str:
             "Install it with: uv add google-auth"
         ) from exc
 
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets.readonly",
-        "https://www.googleapis.com/auth/drive.readonly",
-    ]
+    if writable_sheets:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ]
+    else:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ]
     creds = service_account.Credentials.from_service_account_file(
         service_account_file,
         scopes=scopes,
@@ -192,6 +200,40 @@ def _fetch_sheet_values_private(
         if value:
             out.append((i, value))
     return out
+
+
+def _write_hashes_to_sheet(
+    *,
+    spreadsheet_id: str,
+    sheet_title: str,
+    access_token: str,
+    target_column: str,
+    row_to_hash: dict[int, str],
+) -> int:
+    if not row_to_hash:
+        return 0
+
+    data = []
+    for row_num in sorted(row_to_hash):
+        cell_range = f"'{sheet_title}'!{target_column.upper()}{row_num}"
+        data.append({"range": cell_range, "values": [[row_to_hash[row_num]]]})
+
+    body = json.dumps({"valueInputOption": "RAW", "data": data}).encode("utf-8")
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate"
+    req = Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "rainrag-sheet-hash-lookup/1.0",
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    return int(payload.get("totalUpdatedCells", 0))
 
 
 def _iter_links(rows: list[list[str]], column: str, row: int | None) -> list[tuple[int, str]]:
@@ -444,8 +486,19 @@ def main() -> int:
         default=None,
         help="Optional env var for Bearer token to call title search API",
     )
+    parser.add_argument(
+        "--write-hashes-to-column",
+        default=None,
+        help="Optional target column letter to write resolved hashes back (e.g. G)",
+    )
+    parser.add_argument(
+        "--write-only-empty",
+        action="store_true",
+        help="When writing hashes, skip rows whose target cell already has a value",
+    )
     args = parser.parse_args()
 
+    want_write = bool(args.write_hashes_to_column)
     access_token = (args.google_access_token or "").strip()
     if not access_token and args.google_access_token_env:
         access_token = os.environ.get(args.google_access_token_env, "").strip()
@@ -454,20 +507,31 @@ def main() -> int:
         if not service_account_file and args.service_account_env:
             service_account_file = os.environ.get(args.service_account_env, "").strip()
         if service_account_file:
-            access_token = _mint_access_token_from_service_account(service_account_file)
+            access_token = _mint_access_token_from_service_account(
+                service_account_file, writable_sheets=want_write
+            )
 
+    sheet_title_for_write: str | None = None
+    spreadsheet_id_for_write: str | None = None
     if access_token:
+        spreadsheet_id_for_write = _parse_sheet_id(args.sheet_url)
+        final_gid_for_write = args.gid if args.gid is not None else _parse_gid(args.sheet_url)
+        sheet_title_for_write = (args.sheet_name or "").strip() or _resolve_sheet_title(
+            spreadsheet_id_for_write, final_gid_for_write, access_token
+        )
         links = _fetch_sheet_values_private(
             args.sheet_url,
             args.gid,
             access_token=access_token,
             column=args.column,
             row=args.row,
-            sheet_name=args.sheet_name,
+            sheet_name=sheet_title_for_write,
         )
     else:
         rows = _fetch_sheet_csv(args.sheet_url, args.gid)
         links = _iter_links(rows, args.column, args.row)
+        if want_write:
+            raise RuntimeError("Writing hashes requires private-sheet auth (access token/service account)")
     local_index: dict[str, str] = {}
     api_index: dict[str, str] = {}
     if args.metadata_source in {"local", "hybrid"}:
@@ -543,13 +607,49 @@ def main() -> int:
 
     if args.output_json:
         print(json.dumps(results, ensure_ascii=False, indent=2))
-        return 0
+    else:
+        print("row\tcolumn\tvideo_hash\turl")
+        for item in results:
+            print(
+                f"{item['row']}\t{item['column']}\t"
+                f"{item['video_hash'] or 'NOT_FOUND'}\t{item['url']}"
+            )
 
-    print("row\tcolumn\tvideo_hash\turl")
-    for item in results:
+    if want_write:
+        assert spreadsheet_id_for_write is not None
+        assert sheet_title_for_write is not None
+        assert access_token
+
+        row_to_hash: dict[int, str] = {}
+        for item in results:
+            row_num = int(item["row"])
+            vhash = item.get("video_hash")
+            if not vhash:
+                continue
+            row_to_hash.setdefault(row_num, str(vhash))
+
+        if args.write_only_empty and row_to_hash:
+            existing = _fetch_sheet_values_private(
+                args.sheet_url,
+                args.gid,
+                access_token=access_token,
+                column=args.write_hashes_to_column,
+                row=None,
+                sheet_name=sheet_title_for_write,
+            )
+            occupied_rows = {r for r, v in existing if (v or "").strip()}
+            row_to_hash = {r: h for r, h in row_to_hash.items() if r not in occupied_rows}
+
+        updated_cells = _write_hashes_to_sheet(
+            spreadsheet_id=spreadsheet_id_for_write,
+            sheet_title=sheet_title_for_write,
+            access_token=access_token,
+            target_column=args.write_hashes_to_column,
+            row_to_hash=row_to_hash,
+        )
         print(
-            f"{item['row']}\t{item['column']}\t"
-            f"{item['video_hash'] or 'NOT_FOUND'}\t{item['url']}"
+            f"Updated {updated_cells} cells in column "
+            f"{args.write_hashes_to_column.upper()} (rows with resolved hash: {len(row_to_hash)})"
         )
     return 0
 
