@@ -12,11 +12,13 @@ import io
 import json
 import os
 import re
+import ssl
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
+from urllib.error import URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
@@ -320,6 +322,45 @@ def _build_api_url_index(
     return index
 
 
+def _lookup_hash_by_url_api(
+    *,
+    article_url: str,
+    api_url: str,
+    api_token: str,
+    timeout_seconds: float = 20.0,
+) -> str | None:
+    endpoint = f"{api_url.rstrip('/')}/article/by-url?{urlencode({'url': article_url})}"
+    req = Request(
+        endpoint,
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Accept": "application/json",
+            "User-Agent": "rainrag-sheet-hash-lookup/1.0",
+        },
+    )
+    try:
+        with urlopen(req, timeout=timeout_seconds) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    except (TimeoutError, URLError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = (payload.get("video_hash") or "").strip()
+    if value:
+        return value
+    hashes = payload.get("video_hashes")
+    if isinstance(hashes, list):
+        for item in hashes:
+            candidate = str(item).strip()
+            if candidate:
+                return candidate
+    return None
+
+
 def _extract_urls_from_cell(cell: str) -> list[str]:
     urls = re.findall(r"https?://[^\s\"'<>]+", cell or "")
     if urls:
@@ -328,9 +369,9 @@ def _extract_urls_from_cell(cell: str) -> list[str]:
     return [v] if v.startswith(("http://", "https://")) else []
 
 
-def _fetch_page_title(url: str) -> str | None:
+def _fetch_page_title(url: str, *, timeout_seconds: float = 20.0) -> str | None:
     req = Request(url, headers={"User-Agent": "rainrag-sheet-hash-lookup/1.0"})
-    with urlopen(req, timeout=20) as resp:
+    with urlopen(req, timeout=timeout_seconds) as resp:
         html = resp.read().decode("utf-8", errors="ignore")
     og = re.search(
         r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
@@ -352,6 +393,9 @@ def _search_hash_by_title(
     title: str,
     api_base: str,
     api_token: str | None,
+    insecure_tls: bool = False,
+    timeout_seconds: float = 12.0,
+    retries: int = 2,
     limit: int = 10,
 ) -> tuple[str | None, str | None]:
     q = urlencode({"q": title, "limit": limit})
@@ -362,9 +406,20 @@ def _search_hash_by_title(
     }
     if api_token:
         headers["Authorization"] = f"Bearer {api_token}"
-    req = Request(url, headers=headers)
-    with urlopen(req, timeout=20) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+    context = ssl._create_unverified_context() if insecure_tls else None
+    last_exc: Exception | None = None
+    for _ in range(max(1, retries)):
+        try:
+            req = Request(url, headers=headers)
+            with urlopen(req, timeout=timeout_seconds, context=context) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            break
+        except (TimeoutError, URLError) as exc:
+            last_exc = exc
+            continue
+    else:
+        assert last_exc is not None
+        raise last_exc
     results = payload.get("results") or []
     if not results:
         return None, None
@@ -462,6 +517,12 @@ def main() -> int:
         help="Env var containing metadata API bearer token (default: LIBRARY_API_TOKEN)",
     )
     parser.add_argument(
+        "--url-lookup-timeout-seconds",
+        type=float,
+        default=20.0,
+        help="Timeout for library API /article/by-url lookup (default: 20)",
+    )
+    parser.add_argument(
         "--api-start-date",
         default=None,
         help="Optional API export start date in YYYY-MM-DD (UTC), for wider historical coverage",
@@ -483,8 +544,39 @@ def main() -> int:
     )
     parser.add_argument(
         "--title-search-api-token-env",
-        default=None,
-        help="Optional env var for Bearer token to call title search API",
+        default="RAINRAG_API_TOKEN",
+        help="Env var for Bearer token to call title search API (default: RAINRAG_API_TOKEN)",
+    )
+    parser.add_argument(
+        "--strict-title-fallback",
+        action="store_true",
+        help=(
+            "Fail fast if title fallback request errors (useful to catch auth/config issues "
+            "instead of silently skipping)"
+        ),
+    )
+    parser.add_argument(
+        "--title-search-insecure-tls",
+        action="store_true",
+        help="Disable TLS cert verification for title-search API calls (internal/self-signed certs)",
+    )
+    parser.add_argument(
+        "--title-fetch-timeout-seconds",
+        type=float,
+        default=6.0,
+        help="Timeout for fetching page title during fallback (default: 6)",
+    )
+    parser.add_argument(
+        "--title-search-timeout-seconds",
+        type=float,
+        default=12.0,
+        help="Timeout for title search API calls during fallback (default: 12)",
+    )
+    parser.add_argument(
+        "--title-search-retries",
+        type=int,
+        default=2,
+        help="Retry attempts for title search API calls (default: 2)",
     )
     parser.add_argument(
         "--write-hashes-to-column",
@@ -550,8 +642,8 @@ def main() -> int:
     api_index: dict[str, str] = {}
     if args.metadata_source in {"local", "hybrid"}:
         local_index = _build_url_index(Path(args.metadata_path))
+    api_token = os.environ.get(args.api_token_env, "").strip()
     if args.metadata_source in {"api", "hybrid"}:
-        api_token = os.environ.get(args.api_token_env, "").strip()
         if not api_token:
             raise RuntimeError(
                 f"metadata-source={args.metadata_source!r} requires API token in "
@@ -586,24 +678,43 @@ def main() -> int:
     for row_num, cell_value in links:
         for url in _extract_urls_from_cell(cell_value):
             normalized = _normalize_url(url)
-            video_hash = local_index.get(normalized) or api_index.get(normalized)
-            matched_by = "url_index" if video_hash else None
+            video_hash = None
+            matched_by = None
+            if api_token:
+                video_hash = _lookup_hash_by_url_api(
+                    article_url=url,
+                    api_url=args.api_url,
+                    api_token=api_token,
+                    timeout_seconds=args.url_lookup_timeout_seconds,
+                )
+                if video_hash:
+                    matched_by = "library_by_url"
+            if not video_hash:
+                video_hash = local_index.get(normalized) or api_index.get(normalized)
+                if video_hash:
+                    matched_by = "url_index"
             title_used: str | None = None
             title_match_name: str | None = None
 
+            title_error: str | None = None
             if not video_hash and args.title_fallback:
                 try:
-                    title_used = _fetch_page_title(url)
+                    title_used = _fetch_page_title(url, timeout_seconds=args.title_fetch_timeout_seconds)
                     if title_used:
                         video_hash, title_match_name = _search_hash_by_title(
                             title=title_used,
                             api_base=args.title_search_api_base,
                             api_token=title_api_token,
+                            insecure_tls=args.title_search_insecure_tls,
+                            timeout_seconds=args.title_search_timeout_seconds,
+                            retries=args.title_search_retries,
                         )
                         if video_hash:
                             matched_by = "title_search"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    title_error = str(exc)
+                    if args.strict_title_fallback:
+                        raise
 
             results.append(
                 {
@@ -616,6 +727,7 @@ def main() -> int:
                     "matched_by": matched_by,
                     "title_used": title_used,
                     "title_match_name": title_match_name,
+                    "title_error": title_error,
                 }
             )
 
