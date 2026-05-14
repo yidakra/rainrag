@@ -434,7 +434,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Read Google Sheet links from a column/row and resolve each link to a "
-            "video hash using local web_metadata JSON files."
+            "video hash using the configured metadata source (default: hybrid, with "
+            "local metadata plus API/by-URL/title fallback) and optional write-back "
+            "to Sheets."
         )
     )
     parser.add_argument("sheet_url", help="Google Spreadsheet URL")
