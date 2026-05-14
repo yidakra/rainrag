@@ -132,7 +132,7 @@ def _mint_access_token_from_service_account(
     if writable_drive:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/drive",
         ]
     elif writable_sheets:
         scopes = [
@@ -475,13 +475,18 @@ def _copy_en_vtts_with_row_titles(
     return copied, missing
 
 
-def _create_drive_folder(*, access_token: str, folder_name: str) -> str:
-    url = "https://www.googleapis.com/drive/v3/files"
+def _create_drive_folder(
+    *, access_token: str, folder_name: str, parent_folder_id: str | None = None
+) -> str:
+    url = "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true"
+    payload: dict[str, Any] = {
+        "name": folder_name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    if parent_folder_id:
+        payload["parents"] = [parent_folder_id]
     body = json.dumps(
-        {
-            "name": folder_name,
-            "mimeType": "application/vnd.google-apps.folder",
-        }
+        payload
     ).encode("utf-8")
     req = Request(
         url,
@@ -503,7 +508,10 @@ def _create_drive_folder(*, access_token: str, folder_name: str) -> str:
 
 
 def _share_drive_item_with_user(*, access_token: str, file_id: str, email: str, role: str = "reader") -> None:
-    url = f"https://www.googleapis.com/drive/v3/files/{quote(file_id, safe='')}/permissions"
+    url = (
+        "https://www.googleapis.com/drive/v3/files/"
+        f"{quote(file_id, safe='')}/permissions?supportsAllDrives=true"
+    )
     body = json.dumps(
         {
             "type": "user",
@@ -547,7 +555,7 @@ def _upload_file_to_drive(*, access_token: str, folder_id: str, file_path: Path)
         + b"--\r\n"
     )
     req = Request(
-        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true",
         data=body,
         headers={
             "Authorization": f"Bearer {access_token}",
@@ -557,8 +565,16 @@ def _upload_file_to_drive(*, access_token: str, folder_id: str, file_path: Path)
         },
         method="POST",
     )
-    with urlopen(req, timeout=120):
-        pass
+    try:
+        with urlopen(req, timeout=120):
+            pass
+    except HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="ignore")
+        except Exception:
+            detail = str(exc)
+        raise RuntimeError(f"Drive upload failed for {file_path.name}: HTTP {exc.code} {detail}") from exc
 
 
 def _upload_folder_to_drive(
@@ -567,10 +583,15 @@ def _upload_folder_to_drive(
     local_dir: Path,
     folder_name: str,
     share_with_email: str | None = None,
+    parent_folder_id: str | None = None,
 ) -> tuple[str, int]:
     if not local_dir.exists() or not local_dir.is_dir():
         raise RuntimeError(f"Local folder does not exist or is not a directory: {local_dir}")
-    folder_id = _create_drive_folder(access_token=access_token, folder_name=folder_name)
+    folder_id = _create_drive_folder(
+        access_token=access_token,
+        folder_name=folder_name,
+        parent_folder_id=parent_folder_id,
+    )
     if share_with_email:
         _share_drive_item_with_user(
             access_token=access_token,
@@ -840,6 +861,20 @@ def main() -> int:
             "'fast_subtitles_YYYY-MM-DD' and remove the local folder afterwards."
         ),
     )
+    parser.add_argument(
+        "--drive-parent-folder-id",
+        help=(
+            "Optional Google Drive parent folder ID where the new fast_subtitles folder "
+            "will be created (recommended for service-account uploads / shared drives)."
+        ),
+    )
+    parser.add_argument(
+        "--drive-folder-name",
+        help=(
+            "Optional explicit folder name for Drive upload. "
+            "Default: fast_subtitles_YYYY-MM-DD (UTC)."
+        ),
+    )
     args = parser.parse_args()
 
     want_write = bool(args.write_hashes_to_column)
@@ -1070,12 +1105,20 @@ def main() -> int:
                 raise RuntimeError(
                     "Drive upload requires private-sheet auth (service account or google access token)"
                 )
-            folder_name = f"fast_subtitles_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+            if service_account_file and not ((args.drive_parent_folder_id or "").strip()):
+                raise RuntimeError(
+                    "Service-account Drive uploads require --drive-parent-folder-id "
+                    "(use a shared-drive folder or a folder shared with the service account)."
+                )
+            folder_name = (args.drive_folder_name or "").strip() or (
+                f"fast_subtitles_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+            )
             folder_id, uploaded = _upload_folder_to_drive(
                 access_token=access_token,
                 local_dir=out_dir,
                 folder_name=folder_name,
                 share_with_email=DRIVE_SHARE_EMAIL,
+                parent_folder_id=(args.drive_parent_folder_id or "").strip() or None,
             )
             shutil.rmtree(out_dir)
             print(
