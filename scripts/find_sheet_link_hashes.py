@@ -29,6 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rainrag.ingest import WebMetadataLoader
 
+DRIVE_SHARE_EMAIL = "ard@tvrain.tv"
+
 
 def _column_to_index(column: str) -> int:
     col = column.strip().upper()
@@ -500,6 +502,30 @@ def _create_drive_folder(*, access_token: str, folder_name: str) -> str:
     return folder_id
 
 
+def _share_drive_item_with_user(*, access_token: str, file_id: str, email: str, role: str = "reader") -> None:
+    url = f"https://www.googleapis.com/drive/v3/files/{quote(file_id, safe='')}/permissions"
+    body = json.dumps(
+        {
+            "type": "user",
+            "role": role,
+            "emailAddress": email,
+        }
+    ).encode("utf-8")
+    req = Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "rainrag-sheet-hash-lookup/1.0",
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=30):
+        pass
+
+
 def _upload_file_to_drive(*, access_token: str, folder_id: str, file_path: Path) -> None:
     boundary = "rainrag-upload-boundary"
     mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
@@ -540,10 +566,18 @@ def _upload_folder_to_drive(
     access_token: str,
     local_dir: Path,
     folder_name: str,
+    share_with_email: str | None = None,
 ) -> tuple[str, int]:
     if not local_dir.exists() or not local_dir.is_dir():
         raise RuntimeError(f"Local folder does not exist or is not a directory: {local_dir}")
     folder_id = _create_drive_folder(access_token=access_token, folder_name=folder_name)
+    if share_with_email:
+        _share_drive_item_with_user(
+            access_token=access_token,
+            file_id=folder_id,
+            email=share_with_email,
+            role="reader",
+        )
     files = sorted([p for p in local_dir.iterdir() if p.is_file()])
     for file_path in files:
         _upload_file_to_drive(access_token=access_token, folder_id=folder_id, file_path=file_path)
@@ -1041,11 +1075,13 @@ def main() -> int:
                 access_token=access_token,
                 local_dir=out_dir,
                 folder_name=folder_name,
+                share_with_email=DRIVE_SHARE_EMAIL,
             )
             shutil.rmtree(out_dir)
             print(
                 f"Uploaded {uploaded} files to Google Drive folder '{folder_name}' "
-                f"(id: {folder_id}) and deleted local folder {out_dir}"
+                f"(id: {folder_id}), shared with {DRIVE_SHARE_EMAIL}, "
+                f"and deleted local folder {out_dir}"
             )
     return 0
 
