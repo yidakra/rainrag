@@ -84,7 +84,7 @@ def _fetch_sheet_csv(sheet_url: str, gid: str | None) -> list[list[str]]:
             with urlopen(req, timeout=30) as resp:
                 body = resp.read().decode("utf-8")
             return list(csv.reader(io.StringIO(body)))
-        except HTTPError as exc:
+        except (HTTPError, URLError, TimeoutError, OSError) as exc:
             last_error = exc
             continue
 
