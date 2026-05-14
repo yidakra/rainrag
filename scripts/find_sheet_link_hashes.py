@@ -411,6 +411,60 @@ def _copy_en_vtts_for_hashes(
     return copied, missing
 
 
+def _safe_filename_component(text: str) -> str:
+    name = (text or "").strip()
+    # Replace forbidden/awkward filename chars with underscore.
+    name = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", name)
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    return name or "untitled"
+
+
+def _copy_en_vtts_with_row_titles(
+    *,
+    results: list[dict[str, Any]],
+    row_title: dict[int, str],
+    archive_root: Path,
+    output_dir: Path,
+) -> tuple[int, int]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    missing = 0
+    used_names: set[str] = set()
+    seen_pairs: set[tuple[int, str]] = set()
+
+    for item in results:
+        video_hash = str(item.get("video_hash") or "").strip()
+        if not video_hash:
+            continue
+        row_num = int(item["row"])
+        pair = (row_num, video_hash)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+
+        src = _find_en_vtt_file(archive_root=archive_root, video_hash=video_hash)
+        if src is None:
+            missing += 1
+            continue
+
+        base = _safe_filename_component(row_title.get(row_num, ""))
+        filename = f"{base}_en.vtt"
+        if filename in used_names or (output_dir / filename).exists():
+            suffix = 2
+            while True:
+                candidate = f"{base}_{suffix}_en.vtt"
+                if candidate not in used_names and not (output_dir / candidate).exists():
+                    filename = candidate
+                    break
+                suffix += 1
+
+        dst = output_dir / filename
+        shutil.copy2(src, dst)
+        used_names.add(filename)
+        copied += 1
+    return copied, missing
+
+
 def _fetch_page_title(url: str, *, timeout_seconds: float = 20.0) -> str | None:
     req = Request(url, headers={"User-Agent": "rainrag-sheet-hash-lookup/1.0"})
     with urlopen(req, timeout=timeout_seconds) as resp:
@@ -859,13 +913,29 @@ def main() -> int:
             raise RuntimeError("--archive-root is required when --copy-en-vtt-to-dir is set")
         archive_root = Path(args.archive_root).expanduser().resolve()
         out_dir = Path(args.copy_en_vtt_to_dir).expanduser().resolve()
-        hashes = {str(item["video_hash"]) for item in results if item.get("video_hash")}
-        copied, missing = _copy_en_vtts_for_hashes(
-            video_hashes=hashes,
+        row_title: dict[int, str] = {}
+        if access_token:
+            d_rows = _fetch_sheet_values_private(
+                args.sheet_url,
+                args.gid,
+                access_token=access_token,
+                column="D",
+                row=None,
+                sheet_name=sheet_title_for_write,
+            )
+            row_title = {row_num: value for row_num, value in d_rows}
+        elif "rows" in locals():
+            for i, cells in enumerate(rows, start=1):
+                if len(cells) >= 4:
+                    row_title[i] = str(cells[3]).strip()
+
+        copied, missing = _copy_en_vtts_with_row_titles(
+            results=results,
+            row_title=row_title,
             archive_root=archive_root,
             output_dir=out_dir,
         )
-        print(f"Copied {copied} EN VTT files to {out_dir} (missing: {missing})")
+        print(f"Copied {copied} EN VTT files to {out_dir} using column D names (missing: {missing})")
     return 0
 
 
