@@ -10,6 +10,7 @@ import argparse
 import csv
 import io
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -114,7 +115,7 @@ def _http_get_json(url: str, *, access_token: str) -> dict[str, Any]:
 
 
 def _mint_access_token_from_service_account(
-    service_account_file: str, *, writable_sheets: bool = False
+    service_account_file: str, *, writable_sheets: bool = False, writable_drive: bool = False
 ) -> str:
     """Mint an OAuth access token from a service-account JSON key file."""
     try:
@@ -126,7 +127,12 @@ def _mint_access_token_from_service_account(
             "Install it with: uv add google-auth"
         ) from exc
 
-    if writable_sheets:
+    if writable_drive:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive.file",
+        ]
+    elif writable_sheets:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive.readonly",
@@ -467,6 +473,83 @@ def _copy_en_vtts_with_row_titles(
     return copied, missing
 
 
+def _create_drive_folder(*, access_token: str, folder_name: str) -> str:
+    url = "https://www.googleapis.com/drive/v3/files"
+    body = json.dumps(
+        {
+            "name": folder_name,
+            "mimeType": "application/vnd.google-apps.folder",
+        }
+    ).encode("utf-8")
+    req = Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "rainrag-sheet-hash-lookup/1.0",
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    folder_id = str(payload.get("id", "")).strip()
+    if not folder_id:
+        raise RuntimeError("Drive folder creation succeeded but no folder id returned")
+    return folder_id
+
+
+def _upload_file_to_drive(*, access_token: str, folder_id: str, file_path: Path) -> None:
+    boundary = "rainrag-upload-boundary"
+    mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    metadata = json.dumps({"name": file_path.name, "parents": [folder_id]}).encode("utf-8")
+    file_bytes = file_path.read_bytes()
+    body = (
+        b"--"
+        + boundary.encode("utf-8")
+        + b"\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
+        + metadata
+        + b"\r\n--"
+        + boundary.encode("utf-8")
+        + b"\r\nContent-Type: "
+        + mime_type.encode("utf-8")
+        + b"\r\n\r\n"
+        + file_bytes
+        + b"\r\n--"
+        + boundary.encode("utf-8")
+        + b"--\r\n"
+    )
+    req = Request(
+        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": f"multipart/related; boundary={boundary}",
+            "Accept": "application/json",
+            "User-Agent": "rainrag-sheet-hash-lookup/1.0",
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=120):
+        pass
+
+
+def _upload_folder_to_drive(
+    *,
+    access_token: str,
+    local_dir: Path,
+    folder_name: str,
+) -> tuple[str, int]:
+    if not local_dir.exists() or not local_dir.is_dir():
+        raise RuntimeError(f"Local folder does not exist or is not a directory: {local_dir}")
+    folder_id = _create_drive_folder(access_token=access_token, folder_name=folder_name)
+    files = sorted([p for p in local_dir.iterdir() if p.is_file()])
+    for file_path in files:
+        _upload_file_to_drive(access_token=access_token, folder_id=folder_id, file_path=file_path)
+    return folder_id, len(files)
+
+
 def _fetch_page_title(url: str, *, timeout_seconds: float = 20.0) -> str | None:
     req = Request(url, headers={"User-Agent": "rainrag-sheet-hash-lookup/1.0"})
     with urlopen(req, timeout=timeout_seconds) as resp:
@@ -715,6 +798,14 @@ def main() -> int:
         default=None,
         help="Archive root directory where hashed VTT tree is stored (required with --copy-en-vtt-to-dir)",
     )
+    parser.add_argument(
+        "--upload-copy-folder-to-drive",
+        action="store_true",
+        help=(
+            "Upload the copied EN VTT folder to Google Drive as "
+            "'fast_subtitles_YYYY-MM-DD' and remove the local folder afterwards."
+        ),
+    )
     args = parser.parse_args()
 
     want_write = bool(args.write_hashes_to_column)
@@ -727,7 +818,9 @@ def main() -> int:
             service_account_file = os.environ.get(args.service_account_env, "").strip()
         if service_account_file:
             access_token = _mint_access_token_from_service_account(
-                service_account_file, writable_sheets=want_write
+                service_account_file,
+                writable_sheets=want_write,
+                writable_drive=args.upload_copy_folder_to_drive,
             )
 
     sheet_title_for_write: str | None = None
@@ -938,6 +1031,22 @@ def main() -> int:
             output_dir=out_dir,
         )
         print(f"Copied {copied} EN VTT files to {out_dir} using column D names (missing: {missing})")
+        if args.upload_copy_folder_to_drive:
+            if not access_token:
+                raise RuntimeError(
+                    "Drive upload requires private-sheet auth (service account or google access token)"
+                )
+            folder_name = f"fast_subtitles_{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+            folder_id, uploaded = _upload_folder_to_drive(
+                access_token=access_token,
+                local_dir=out_dir,
+                folder_name=folder_name,
+            )
+            shutil.rmtree(out_dir)
+            print(
+                f"Uploaded {uploaded} files to Google Drive folder '{folder_name}' "
+                f"(id: {folder_id}) and deleted local folder {out_dir}"
+            )
     return 0
 
 
