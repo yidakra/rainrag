@@ -416,7 +416,7 @@ def _safe_filename_component(text: str) -> str:
     # Replace forbidden/awkward filename chars with underscore.
     name = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", name)
     name = re.sub(r"\s+", " ", name).strip(" .")
-    return name or "untitled"
+    return name
 
 
 def _copy_en_vtts_with_row_titles(
@@ -448,6 +448,8 @@ def _copy_en_vtts_with_row_titles(
             continue
 
         base = _safe_filename_component(row_title.get(row_num, ""))
+        if not base:
+            base = video_hash
         filename = f"{base}_en.vtt"
         if filename in used_names or (output_dir / filename).exists():
             suffix = 2
