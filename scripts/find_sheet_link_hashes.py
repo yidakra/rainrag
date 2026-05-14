@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import shutil
 import ssl
 import sys
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,8 @@ from urllib.error import HTTPError
 from urllib.error import URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
+
+from rainrag.ingest import WebMetadataLoader
 
 
 def _column_to_index(column: str) -> int:
@@ -369,6 +372,42 @@ def _extract_urls_from_cell(cell: str) -> list[str]:
     return [v] if v.startswith(("http://", "https://")) else []
 
 
+def _find_en_vtt_file(*, archive_root: Path, video_hash: str) -> Path | None:
+    try:
+        rel_dir = WebMetadataLoader.hash_to_archive_dir(video_hash)
+    except ValueError:
+        return None
+    base_dir = archive_root / rel_dir
+    candidates = [
+        base_dir / f"{video_hash}_en.vtt",
+        base_dir / f"{video_hash}.en.vtt",
+    ]
+    for path in candidates:
+        if path.exists() and path.is_file():
+            return path
+    return None
+
+
+def _copy_en_vtts_for_hashes(
+    *,
+    video_hashes: set[str],
+    archive_root: Path,
+    output_dir: Path,
+) -> tuple[int, int]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    missing = 0
+    for video_hash in sorted(video_hashes):
+        src = _find_en_vtt_file(archive_root=archive_root, video_hash=video_hash)
+        if src is None:
+            missing += 1
+            continue
+        dst = output_dir / src.name
+        shutil.copy2(src, dst)
+        copied += 1
+    return copied, missing
+
+
 def _fetch_page_title(url: str, *, timeout_seconds: float = 20.0) -> str | None:
     req = Request(url, headers={"User-Agent": "rainrag-sheet-hash-lookup/1.0"})
     with urlopen(req, timeout=timeout_seconds) as resp:
@@ -602,6 +641,19 @@ def main() -> int:
             "unresolved links become empty lines"
         ),
     )
+    parser.add_argument(
+        "--copy-en-vtt-to-dir",
+        default=None,
+        help=(
+            "Optional output directory. If set, copy resolved English VTT files "
+            "(<hash>_en.vtt or <hash>.en.vtt) into this directory."
+        ),
+    )
+    parser.add_argument(
+        "--archive-root",
+        default=None,
+        help="Archive root directory where hashed VTT tree is stored (required with --copy-en-vtt-to-dir)",
+    )
     args = parser.parse_args()
 
     want_write = bool(args.write_hashes_to_column)
@@ -792,6 +844,19 @@ def main() -> int:
             f"Updated {updated_cells} cells in column "
             f"{args.write_hashes_to_column.upper()} (rows with at least one resolved hash: {rows_with_any_hash})"
         )
+
+    if args.copy_en_vtt_to_dir:
+        if not args.archive_root:
+            raise RuntimeError("--archive-root is required when --copy-en-vtt-to-dir is set")
+        archive_root = Path(args.archive_root).expanduser().resolve()
+        out_dir = Path(args.copy_en_vtt_to_dir).expanduser().resolve()
+        hashes = {str(item["video_hash"]) for item in results if item.get("video_hash")}
+        copied, missing = _copy_en_vtts_for_hashes(
+            video_hashes=hashes,
+            archive_root=archive_root,
+            output_dir=out_dir,
+        )
+        print(f"Copied {copied} EN VTT files to {out_dir} (missing: {missing})")
     return 0
 
 
