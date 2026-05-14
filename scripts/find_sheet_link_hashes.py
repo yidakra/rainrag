@@ -15,13 +15,16 @@ import re
 import shutil
 import ssl
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.error import URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
+
+# Allow running as `python scripts/find_sheet_link_hashes.py` without installing the package.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rainrag.ingest import WebMetadataLoader
 
@@ -474,8 +477,8 @@ def main() -> int:
         description=(
             "Read Google Sheet links from a column/row and resolve each link to a "
             "video hash using the configured metadata source (default: hybrid, with "
-            "local metadata plus API/by-URL/title fallback) and optional write-back "
-            "to Sheets."
+            "local metadata plus API/by-URL/title fallback), with optional write-back "
+            "to Sheets and EN VTT file copy."
         )
     )
     parser.add_argument("sheet_url", help="Google Spreadsheet URL")
@@ -706,12 +709,16 @@ def main() -> int:
         api_start_ts: int | None = None
         api_end_ts: int | None = None
         if args.api_start_date:
-            start_dt = datetime.strptime(args.api_start_date, "%Y-%m-%d").replace(tzinfo=UTC)
+            start_dt = datetime.strptime(args.api_start_date, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
             if args.api_end_date:
-                end_dt = datetime.strptime(args.api_end_date, "%Y-%m-%d").replace(tzinfo=UTC)
+                end_dt = datetime.strptime(args.api_end_date, "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
                 end_dt = end_dt + timedelta(days=1) - timedelta(seconds=1)
             else:
-                end_dt = datetime.now(UTC)
+                end_dt = datetime.now(timezone.utc)
             api_start_ts = int(start_dt.timestamp())
             api_end_ts = int(end_dt.timestamp())
             if api_start_ts > api_end_ts:
@@ -734,7 +741,7 @@ def main() -> int:
             normalized = _normalize_url(url)
             video_hash = None
             matched_by = None
-            if api_token:
+            if api_token and args.metadata_source in {"api", "hybrid"}:
                 video_hash = _lookup_hash_by_url_api(
                     article_url=url,
                     api_url=args.api_url,
