@@ -490,15 +490,27 @@ def _collect_missing_hashes(*, results: list[dict[str, Any]], archive_root: Path
     return missing
 
 
+_QUALITY_ORDER = ["1080p", "720p", "480p", "360p", "180p"]
+
+
+def _pick_best_video(candidates: list[Path]) -> Path:
+    """Return the single best-quality candidate to avoid duplicate GPU work."""
+    for quality in _QUALITY_ORDER:
+        for p in candidates:
+            if f"_{quality}" in p.stem:
+                return p
+    return candidates[0]
+
+
 def _prepare_livevtt_staging(
     *,
     archive_root: Path,
     hashes: list[str],
     staging_input: Path,
+    video_exts: frozenset[str] = frozenset({".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".m2ts"}),
 ) -> tuple[int, int]:
     included = 0
     skipped = 0
-    video_exts = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".m2ts"}
     for video_hash in hashes:
         try:
             rel_dir = WebMetadataLoader.hash_to_archive_dir(video_hash)
@@ -513,12 +525,12 @@ def _prepare_livevtt_staging(
         if not candidates:
             skipped += 1
             continue
+        src = _pick_best_video(candidates)
         dst_dir = staging_input / rel_dir
         dst_dir.mkdir(parents=True, exist_ok=True)
-        for src in candidates:
-            dst = dst_dir / src.name
-            if not dst.exists():
-                dst.symlink_to(src)
+        dst = dst_dir / src.name
+        if not dst.exists():
+            dst.symlink_to(src)
         included += 1
     return included, skipped
 
@@ -551,11 +563,10 @@ def _run_livevtt_translate_missing(
     ]
     if gpus:
         cmd.extend(["--gpus", gpus])
-    proc = subprocess.run(cmd, cwd=str(livevtt_repo), capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=str(livevtt_repo))
     if proc.returncode != 0:
         raise RuntimeError(
-            "livevtt archive_transcriber failed with exit code "
-            f"{proc.returncode}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+            f"livevtt archive_transcriber failed with exit code {proc.returncode}"
         )
 
 
@@ -985,6 +996,14 @@ def main() -> int:
         help="Optional comma-separated GPU ids for livevtt (e.g. 0 or 0,1)",
     )
     parser.add_argument(
+        "--video-extensions",
+        default=".mp4,.mkv,.webm,.mov,.avi,.m4v,.ts,.m2ts",
+        help=(
+            "Comma-separated list of video file extensions to consider when staging "
+            "for livevtt (default: .mp4,.mkv,.webm,.mov,.avi,.m4v,.ts,.m2ts)"
+        ),
+    )
+    parser.add_argument(
         "--upload-copy-folder-to-drive",
         action="store_true",
         help=(
@@ -1007,6 +1026,9 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+
+    if args.generate_missing_en_vtt and not args.copy_en_vtt_to_dir:
+        parser.error("--generate-missing-en-vtt requires --copy-en-vtt-to-dir")
 
     want_write = bool(args.write_hashes_to_column)
     access_token = (args.google_access_token or "").strip()
@@ -1209,6 +1231,11 @@ def main() -> int:
         archive_root = Path(args.archive_root).expanduser().resolve()
         out_dir = Path(args.copy_en_vtt_to_dir).expanduser().resolve()
         if args.generate_missing_en_vtt:
+            video_exts = frozenset(
+                e.strip() if e.strip().startswith(".") else f".{e.strip()}"
+                for e in args.video_extensions.split(",")
+                if e.strip()
+            )
             missing_hashes = _collect_missing_hashes(results=results, archive_root=archive_root)
             if missing_hashes:
                 livevtt_repo = Path(args.livevtt_repo_path).expanduser().resolve()
@@ -1220,6 +1247,7 @@ def main() -> int:
                             archive_root=archive_root,
                             hashes=missing_hashes,
                             staging_input=staging_input,
+                            video_exts=video_exts,
                         )
                         print(
                             "Missing EN VTT hashes: "
