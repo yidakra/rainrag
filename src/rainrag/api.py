@@ -3,6 +3,8 @@
 import asyncio
 import hashlib
 import hmac
+import json
+import math
 import os
 import re
 import string
@@ -447,6 +449,24 @@ def _build_quality_video_map(directory: Path, target_stem: str | None = None) ->
         quality = match.group("quality")
         out[quality] = file_path
     return out
+
+
+def _get_video_duration(video_path: Path) -> float:
+    """Return video duration in seconds via ffprobe, falling back to 600."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(video_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            duration_str = json.loads(result.stdout).get("format", {}).get("duration")
+            if duration_str:
+                return float(duration_str)
+    except Exception:
+        pass
+    return 600.0
 
 
 def _resolve_hls_file_context(file_path: str) -> tuple[Path, str | None]:
@@ -1561,6 +1581,7 @@ async def serve_hls_variant(
     if cb:
         cb_q = quote(cb, safe="")
 
+<<<<<<< HEAD
         def _inject_cb(match: re.Match[str]) -> str:
             base = match.group(1)
             q = match.group(2)
@@ -1601,6 +1622,21 @@ async def serve_hls_asset(
     return FileResponse(
         path=str(full_path), media_type=media_type, headers={"Cache-Control": "no-store"}
     )
+=======
+    duration = await asyncio.to_thread(_get_video_duration, selected)
+    target_duration = max(1, int(math.ceil(duration)))
+
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        f"#EXT-X-TARGETDURATION:{target_duration}",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        f"#EXTINF:{duration:.3f},",
+        segment_uri,
+        "#EXT-X-ENDLIST",
+    ]
+    return Response(content="\n".join(lines) + "\n", media_type="application/vnd.apple.mpegurl")
+>>>>>>> 9639eb3 (fix: use real video duration in HLS variant playlist instead of hardcoded 600s)
 
 
 @app.api_route("/vtt/{file_path:path}", methods=["GET", "HEAD"])
