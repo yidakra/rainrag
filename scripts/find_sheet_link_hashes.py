@@ -15,7 +15,9 @@ import os
 import re
 import shutil
 import ssl
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -475,6 +477,122 @@ def _copy_en_vtts_with_row_titles(
     return copied, missing
 
 
+def _collect_missing_hashes(*, results: list[dict[str, Any]], archive_root: Path) -> list[str]:
+    seen: set[str] = set()
+    missing: list[str] = []
+    for item in results:
+        video_hash = str(item.get("video_hash") or "").strip()
+        if not video_hash or video_hash in seen:
+            continue
+        seen.add(video_hash)
+        if _find_en_vtt_file(archive_root=archive_root, video_hash=video_hash) is None:
+            missing.append(video_hash)
+    return missing
+
+
+_QUALITY_ORDER = ["1080p", "720p", "480p", "360p", "180p"]
+
+
+def _pick_best_video(candidates: list[Path]) -> Path:
+    """Return the single best-quality candidate to avoid duplicate GPU work."""
+    for quality in _QUALITY_ORDER:
+        for p in candidates:
+            if f"_{quality}" in p.stem:
+                return p
+    return candidates[0]
+
+
+def _prepare_livevtt_staging(
+    *,
+    archive_root: Path,
+    hashes: list[str],
+    staging_input: Path,
+    video_exts: frozenset[str] = frozenset({".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".m2ts"}),
+) -> tuple[int, int]:
+    included = 0
+    skipped = 0
+    for video_hash in hashes:
+        try:
+            rel_dir = WebMetadataLoader.hash_to_archive_dir(video_hash)
+        except ValueError:
+            skipped += 1
+            continue
+        src_dir = archive_root / rel_dir
+        if not src_dir.exists() or not src_dir.is_dir():
+            skipped += 1
+            continue
+        candidates = [p for p in src_dir.iterdir() if p.is_file() and p.suffix.lower() in video_exts]
+        if not candidates:
+            skipped += 1
+            continue
+        src = _pick_best_video(candidates)
+        dst_dir = staging_input / rel_dir
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst = dst_dir / src.name
+        if not dst.exists():
+            dst.symlink_to(src)
+        included += 1
+    return included, skipped
+
+
+def _run_livevtt_translate_missing(
+    *,
+    livevtt_repo: Path,
+    staging_input: Path,
+    staging_output: Path,
+    workers: int,
+    gpus: str | None,
+) -> None:
+    script = livevtt_repo / "src/python/tools/archive_transcriber.py"
+    if not script.exists():
+        raise RuntimeError(f"livevtt archive transcriber not found: {script}")
+    cmd = [
+        sys.executable,
+        str(script),
+        str(staging_input),
+        "--output-root",
+        str(staging_output),
+        "--workers",
+        str(max(1, workers)),
+        "--trim-silence",
+        "--use-cuda",
+        "true",
+        "--progress",
+        "--manifest",
+        str(staging_output / "manifest.jsonl"),
+    ]
+    if gpus:
+        cmd.extend(["--gpus", gpus])
+    proc = subprocess.run(cmd, cwd=str(livevtt_repo))
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"livevtt archive_transcriber failed with exit code {proc.returncode}"
+        )
+
+
+def _copy_generated_en_from_staging(
+    *,
+    archive_root: Path,
+    staging_output: Path,
+    hashes: list[str],
+) -> int:
+    copied = 0
+    for video_hash in hashes:
+        try:
+            rel_dir = WebMetadataLoader.hash_to_archive_dir(video_hash)
+        except ValueError:
+            continue
+        src = staging_output / rel_dir / f"{video_hash}.en.vtt"
+        if not src.exists():
+            continue
+        dst_dir = archive_root / rel_dir
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst = dst_dir / f"{video_hash}.en.vtt"
+        shutil.copy2(src, dst)
+        copied += 1
+    return copied
+
+
 def _create_drive_folder(
     *, access_token: str, folder_name: str, parent_folder_id: str | None = None
 ) -> str:
@@ -854,6 +972,38 @@ def main() -> int:
         help="Archive root directory where hashed VTT tree is stored (required with --copy-en-vtt-to-dir)",
     )
     parser.add_argument(
+        "--generate-missing-en-vtt",
+        action="store_true",
+        help=(
+            "Generate missing English VTT files via livevtt archive_transcriber "
+            "before copying/exporting."
+        ),
+    )
+    parser.add_argument(
+        "--livevtt-repo-path",
+        default="../livevtt",
+        help="Path to livevtt repo (default: ../livevtt)",
+    )
+    parser.add_argument(
+        "--translation-workers",
+        type=int,
+        default=2,
+        help="Worker count for livevtt archive_transcriber (default: 2)",
+    )
+    parser.add_argument(
+        "--translation-gpus",
+        default=None,
+        help="Optional comma-separated GPU ids for livevtt (e.g. 0 or 0,1)",
+    )
+    parser.add_argument(
+        "--video-extensions",
+        default=".mp4,.mkv,.webm,.mov,.avi,.m4v,.ts,.m2ts",
+        help=(
+            "Comma-separated list of video file extensions to consider when staging "
+            "for livevtt (default: .mp4,.mkv,.webm,.mov,.avi,.m4v,.ts,.m2ts)"
+        ),
+    )
+    parser.add_argument(
         "--upload-copy-folder-to-drive",
         action="store_true",
         help=(
@@ -876,6 +1026,9 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+
+    if args.generate_missing_en_vtt and not args.copy_en_vtt_to_dir:
+        parser.error("--generate-missing-en-vtt requires --copy-en-vtt-to-dir")
 
     want_write = bool(args.write_hashes_to_column)
     access_token = (args.google_access_token or "").strip()
@@ -1077,6 +1230,43 @@ def main() -> int:
             raise RuntimeError("--archive-root is required when --copy-en-vtt-to-dir is set")
         archive_root = Path(args.archive_root).expanduser().resolve()
         out_dir = Path(args.copy_en_vtt_to_dir).expanduser().resolve()
+        if args.generate_missing_en_vtt:
+            video_exts = frozenset(
+                e.strip() if e.strip().startswith(".") else f".{e.strip()}"
+                for e in args.video_extensions.split(",")
+                if e.strip()
+            )
+            missing_hashes = _collect_missing_hashes(results=results, archive_root=archive_root)
+            if missing_hashes:
+                livevtt_repo = Path(args.livevtt_repo_path).expanduser().resolve()
+                with tempfile.TemporaryDirectory(prefix="rainrag-livevtt-in-") as tmp_in:
+                    with tempfile.TemporaryDirectory(prefix="rainrag-livevtt-out-") as tmp_out:
+                        staging_input = Path(tmp_in)
+                        staging_output = Path(tmp_out)
+                        included, skipped = _prepare_livevtt_staging(
+                            archive_root=archive_root,
+                            hashes=missing_hashes,
+                            staging_input=staging_input,
+                            video_exts=video_exts,
+                        )
+                        print(
+                            "Missing EN VTT hashes: "
+                            f"{len(missing_hashes)} (staged: {included}, skipped: {skipped})"
+                        )
+                        if included > 0:
+                            _run_livevtt_translate_missing(
+                                livevtt_repo=livevtt_repo,
+                                staging_input=staging_input,
+                                staging_output=staging_output,
+                                workers=args.translation_workers,
+                                gpus=args.translation_gpus,
+                            )
+                            generated = _copy_generated_en_from_staging(
+                                archive_root=archive_root,
+                                staging_output=staging_output,
+                                hashes=missing_hashes,
+                            )
+                            print(f"Generated EN VTT files via livevtt: {generated}")
         row_title: dict[int, str] = {}
         if access_token:
             d_rows = _fetch_sheet_values_private(

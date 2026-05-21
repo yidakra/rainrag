@@ -3,6 +3,8 @@
 import asyncio
 import hashlib
 import hmac
+import json
+import math
 import os
 import re
 import string
@@ -447,6 +449,24 @@ def _build_quality_video_map(directory: Path, target_stem: str | None = None) ->
         quality = match.group("quality")
         out[quality] = file_path
     return out
+
+
+def _get_video_duration(video_path: Path) -> float:
+    """Return video duration in seconds via ffprobe, falling back to 600."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(video_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            duration_str = json.loads(result.stdout).get("format", {}).get("duration")
+            if duration_str:
+                return float(duration_str)
+    except Exception:
+        pass
+    return 600.0
 
 
 def _resolve_hls_file_context(file_path: str) -> tuple[Path, str | None]:
