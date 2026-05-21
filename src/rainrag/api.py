@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import hmac
 import json
-import math
 import os
 import re
 import string
