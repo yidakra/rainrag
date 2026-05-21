@@ -2,9 +2,12 @@
 
 import asyncio
 import hmac
+import json
+import math
 import os
 import re
 import string
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
@@ -435,6 +438,24 @@ def _build_quality_video_map(directory: Path, target_stem: str | None = None) ->
         quality = match.group("quality")
         out[quality] = file_path
     return out
+
+
+def _get_video_duration(video_path: Path) -> float:
+    """Return video duration in seconds via ffprobe, falling back to 600."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(video_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            duration_str = json.loads(result.stdout).get("format", {}).get("duration")
+            if duration_str:
+                return float(duration_str)
+    except Exception:
+        pass
+    return 600.0
 
 
 def _resolve_hls_file_context(file_path: str) -> tuple[Path, str | None]:
@@ -1229,12 +1250,15 @@ async def serve_hls_variant(
     rel_posix = str(rel).replace("\\", "/")
     segment_uri = f"/video/{quote(rel_posix, safe='/')}{auth_q}"
 
+    duration = await asyncio.to_thread(_get_video_duration, selected)
+    target_duration = max(1, int(math.ceil(duration)))
+
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
-        "#EXT-X-TARGETDURATION:600",
+        f"#EXT-X-TARGETDURATION:{target_duration}",
         "#EXT-X-MEDIA-SEQUENCE:0",
-        "#EXTINF:600.0,",
+        f"#EXTINF:{duration:.3f},",
         segment_uri,
         "#EXT-X-ENDLIST",
     ]
