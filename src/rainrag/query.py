@@ -1511,7 +1511,11 @@ class RAGQueryEngine:
             return documents[:top_n]
 
     def build_prompt(
-        self, query: str, documents: list[dict[str, Any]], language: str = "en"
+        self,
+        query: str,
+        documents: list[dict[str, Any]],
+        language: str = "en",
+        single_video: bool = False,
     ) -> list[dict[str, str]]:
         """
         Build the messages for the chat LLM with retrieved context.
@@ -1520,6 +1524,10 @@ class RAGQueryEngine:
             query: The user's question
             documents: List of retrieved documents
             language: Language code (e.g., "en", "ru") for response
+            single_video: When True, all context comes from one user-uploaded
+                video rather than the news archive. Switches to a system prompt
+                without archive framing and omits the per-document date, which
+                for an upload is only the file's mtime and carries no meaning.
 
         Returns:
             List of message dictionaries for the chat API
@@ -1544,10 +1552,13 @@ class RAGQueryEngine:
                 )
             context_parts.append(doc_header)
 
-            # Include date if available (prioritize web_date over date)
-            doc_date = doc.get("web_date") or doc.get("date")
-            if doc_date:
-                context_parts.append(f"Date: {doc_date}")
+            # Include date if available (prioritize web_date over date).
+            # Skipped for uploaded videos: the only date available there is the
+            # file's mtime (i.e. the upload time), which would be misleading.
+            if not single_video:
+                doc_date = doc.get("web_date") or doc.get("date")
+                if doc_date:
+                    context_parts.append(f"Date: {doc_date}")
 
             # Include duration if available (format as mm:ss)
             if doc.get("duration_seconds"):
@@ -1594,11 +1605,37 @@ ALL VIDEOS ARE ARCHIVAL RECORDINGS, not current news. Response rules:
 If date is missing, note this. If no relevant footage is found, say so clearly — do not fabricate.""",
         }
 
+        # For a single uploaded video there is no archive context: the user is
+        # asking about one file they just provided, so drop the archive framing
+        # and the date-citation rules.
+        single_video_messages = {
+            "ru": """Вы — ассистент, который отвечает на вопросы об одном видео, загруженном пользователем. КРИТИЧЕСКИ ВАЖНО: Вы ДОЛЖНЫ отвечать ТОЛЬКО на русском языке.
+
+Весь контекст ниже — это фрагменты транскрипта ОДНОГО загруженного видео. Правила ответа:
+- Отвечайте только на основе транскрипта этого видео
+- Ссылайтесь на тайм-коды (поле "Timecodes"), чтобы указать, где в видео это сказано
+- Не называйте видео архивным и не указывайте дату записи — это загруженный файл, даты у него нет
+- Если в транскрипте нет ответа — скажите прямо, не выдумывайте""",
+            "en": """You are an assistant answering questions about a single video the user uploaded. CRITICAL: You MUST answer ONLY in English.
+
+All context below consists of transcript excerpts from ONE uploaded video. Response rules:
+- Answer only from this video's transcript
+- Cite timecodes (the "Timecodes" field) to point to where something was said
+- Do not call the video archival and do not cite a recording date — this is an uploaded file with no known date
+- If the transcript does not contain the answer, say so clearly — do not fabricate""",
+        }
+
         # Get system message (default to English if not found)
-        system_message = system_messages.get(language, system_messages["en"])
+        active_messages = single_video_messages if single_video else system_messages
+        system_message = active_messages.get(language, active_messages["en"])
 
         # Build user message with context and question
-        user_message = f"""Context from video transcripts:
+        context_header = (
+            "Transcript excerpts from the uploaded video:"
+            if single_video
+            else "Context from video transcripts:"
+        )
+        user_message = f"""{context_header}
 {context}
 
 Question: {query}"""
@@ -1804,6 +1841,7 @@ Question: {query}"""
         date_to: str | None = None,
         exclude_speech_free: bool = False,
         collection_name: str | None = None,
+        single_video: bool = False,
     ) -> dict[str, Any]:
         """
         Execute the complete query pipeline.
@@ -1819,6 +1857,8 @@ Question: {query}"""
             collection_name: Override the Qdrant collection to search. Defaults to
                 the configured collection. Used to scope a query to a single
                 uploaded video's ephemeral collection.
+            single_video: When True, the context is one user-uploaded video, so
+                the prompt drops archive framing and date citations.
 
         Returns:
             Dictionary containing the answer and metadata
@@ -1969,7 +2009,9 @@ Question: {query}"""
         documents, metadata_fallback_hits = self._enrich_documents_with_web_metadata(documents)
 
         # Step 6: Build the messages with language specification
-        messages = self.build_prompt(question, documents, language=language)
+        messages = self.build_prompt(
+            question, documents, language=language, single_video=single_video
+        )
 
         # Step 7: Generate the answer
         answer = self.generate_answer(messages)

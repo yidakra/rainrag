@@ -1247,6 +1247,7 @@ async def query_video_session(session_id: str, request: VideoQueryRequest):
                 top_k=request.top_k,
                 language=request.language,
                 collection_name=session.collection_name,
+                single_video=True,
             )
         )
         try:
