@@ -189,7 +189,11 @@ video_upload:
   model: "large-v3-turbo"        # faster-whisper model (turbo ~halves latency vs large-v3)
   compute_type: "int8_float16"   # avoids CUDA OOM on large models
   device: "cuda"
-  device_index: 0
+  # Leave device_indices empty to use every GPU the transcription environment
+  # can see (one concurrent upload per GPU). Set an explicit list to pin
+  # transcription to specific devices, e.g. [0] to leave GPU 1 for other work.
+  device_indices: []
+  device_index: 0                 # used only if GPU detection is unavailable
   # "auto" lets Whisper detect the language from the audio, so a journalist does
   # not have to know it in advance. Set an explicit code (e.g. "ru") to force one.
   language: "auto"

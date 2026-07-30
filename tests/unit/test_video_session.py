@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,16 +22,39 @@ from rainrag.video_session import (
     SessionCancelledError,
     VideoSession,
     VideoSessionManager,
+    _GpuPool,
 )
 
 
-def _bare_manager() -> VideoSessionManager:
+def _bare_manager(devices: list[int] | None = None) -> VideoSessionManager:
     """Build a manager without touching Qdrant, the GPU, or the filesystem."""
     manager = VideoSessionManager.__new__(VideoSessionManager)
     manager._sessions = {}
     manager._lock = threading.Lock()
     manager._gpu_queue = []
     manager._procs = {}
+    manager._gpu_pool = _GpuPool(devices if devices is not None else [0])
+    return manager
+
+
+class _FakeVideoUploadConfig(SimpleNamespace):
+    """Stand-in for VideoUploadConfig covering only device resolution."""
+
+    def __init__(self, **overrides) -> None:
+        defaults = {
+            "device": "cuda",
+            "device_index": 0,
+            "device_indices": [],
+            "livevtt_python": "/nonexistent/python",
+        }
+        super().__init__(**{**defaults, **overrides})
+
+
+def _device_manager(probe_result: int | None, **cfg_overrides) -> VideoSessionManager:
+    """Manager whose CUDA probe returns a fixed device count."""
+    manager = _bare_manager()
+    manager.cfg = _FakeVideoUploadConfig(**cfg_overrides)
+    manager._probe_cuda_device_count = lambda: probe_result  # type: ignore[method-assign]
     return manager
 
 
@@ -216,3 +240,87 @@ class TestCancelledSessionsAreNotReportedAsFailures:
         assert session.status == STATUS_ERROR
         assert session.error is not None
         assert "model load failed" in session.error
+
+
+class TestGpuPool:
+    def test_hands_out_one_slot_per_device(self) -> None:
+        pool = _GpuPool([0, 1])
+
+        first = pool.acquire(timeout=0.1)
+        second = pool.acquire(timeout=0.1)
+
+        assert {first, second} == {0, 1}
+        # Both GPUs are busy, so a third job must wait rather than share one.
+        assert pool.acquire(timeout=0.1) is None
+
+    def test_released_device_is_reused(self) -> None:
+        pool = _GpuPool([0, 1])
+        first = pool.acquire(timeout=0.1)
+        pool.acquire(timeout=0.1)
+
+        assert pool.acquire(timeout=0.1) is None
+        pool.release(first)  # type: ignore[arg-type]
+
+        assert pool.acquire(timeout=0.1) == first
+
+    def test_single_device_serialises(self) -> None:
+        pool = _GpuPool([0])
+
+        assert pool.acquire(timeout=0.1) == 0
+        assert pool.acquire(timeout=0.1) is None
+        assert pool.size == 1
+
+    def test_waiter_is_woken_by_a_release(self) -> None:
+        """A queued job must start as soon as a GPU frees up, not on a timeout."""
+        pool = _GpuPool([0])
+        held = pool.acquire(timeout=0.1)
+        acquired: list[int | None] = []
+
+        def _worker() -> None:
+            acquired.append(pool.acquire(timeout=5.0))
+
+        waiter = threading.Thread(target=_worker)
+        waiter.start()
+        pool.release(held)  # type: ignore[arg-type]
+        waiter.join(timeout=5.0)
+
+        assert acquired == [0]
+
+
+class TestDeviceResolution:
+    def test_uses_every_detected_gpu_by_default(self) -> None:
+        """Two GPUs means two concurrent transcriptions, with no configuration."""
+        manager = _device_manager(probe_result=2)
+
+        assert manager._resolve_devices() == [0, 1]
+
+    def test_single_gpu_box_gets_one_slot(self) -> None:
+        manager = _device_manager(probe_result=1)
+
+        assert manager._resolve_devices() == [0]
+
+    def test_falls_back_to_configured_device_when_probe_fails(self) -> None:
+        """Guessing high would fail every job assigned to a missing device."""
+        manager = _device_manager(probe_result=None, device_index=1)
+
+        assert manager._resolve_devices() == [1]
+
+    def test_explicit_list_overrides_detection(self) -> None:
+        manager = _device_manager(probe_result=4, device_indices=[2, 3])
+
+        assert manager._resolve_devices() == [2, 3]
+
+    def test_explicit_list_is_clamped_to_visible_devices(self) -> None:
+        manager = _device_manager(probe_result=2, device_indices=[0, 1, 5])
+
+        assert manager._resolve_devices() == [0, 1]
+
+    def test_wholly_invalid_list_falls_back_to_device_zero(self) -> None:
+        manager = _device_manager(probe_result=1, device_indices=[3, 4])
+
+        assert manager._resolve_devices() == [0]
+
+    def test_cpu_mode_does_not_probe_or_parallelise(self) -> None:
+        manager = _device_manager(probe_result=8, device="cpu", device_index=0)
+
+        assert manager._resolve_devices() == [0]

@@ -10,8 +10,9 @@ This module powers the "upload your own video" mode. Each uploaded video gets:
 
 Sessions are ephemeral: a TTL reaper drops the collection and deletes the
 working directory once a session is older than ``session_ttl_seconds`` (or when
-explicitly deleted). Transcription is serialised across sessions by a global
-GPU lock so concurrent uploads queue instead of exhausting GPU memory.
+explicitly deleted). Transcription runs one job per visible GPU — the device
+count is detected at startup — so uploads beyond that queue rather than
+oversubscribing GPU memory.
 """
 
 from __future__ import annotations
@@ -41,8 +42,38 @@ STATUS_INDEXING = "indexing"
 STATUS_READY = "ready"
 STATUS_ERROR = "error"
 
-# Serialises GPU-bound transcription across all sessions in this process.
-_GPU_LOCK = threading.Lock()
+
+class _GpuPool:
+    """Hands out GPU slots to transcription jobs, one job per device.
+
+    Replaces a single global lock: with two GPUs visible, two uploads transcribe
+    at once instead of one waiting out the other. Jobs beyond the device count
+    still queue, so GPU memory is never oversubscribed.
+    """
+
+    def __init__(self, device_indices: list[int]):
+        self.devices = list(device_indices)
+        self._available = list(device_indices)
+        self._condition = threading.Condition()
+
+    @property
+    def size(self) -> int:
+        return len(self.devices)
+
+    def acquire(self, timeout: float) -> int | None:
+        """Take a free device, or return None if none freed up within timeout."""
+        with self._condition:
+            if not self._available:
+                self._condition.wait(timeout)
+            if not self._available:
+                return None
+            return self._available.pop(0)
+
+    def release(self, device_index: int) -> None:
+        with self._condition:
+            self._available.append(device_index)
+            self._condition.notify()
+
 
 # Language codes the ingest pipeline indexes natively. Anything else Whisper
 # detects still transcribes fine (embeddings are multilingual) but is indexed
@@ -101,11 +132,13 @@ class VideoSessionManager:
         self.cfg = config.video_upload
         self._sessions: dict[str, VideoSession] = {}
         self._lock = threading.Lock()
-        # Sessions waiting on (or holding) the GPU, oldest first, so each one can
+        # Sessions waiting on (or holding) a GPU, oldest first, so each one can
         # report how many uploads are ahead of it instead of a blank progress bar.
         self._gpu_queue: list[str] = []
         # Live transcriber subprocesses, so cancelling frees the GPU immediately.
         self._procs: dict[str, subprocess.Popen] = {}
+        # One transcription per GPU, across however many the box actually has.
+        self._gpu_pool = _GpuPool(self._resolve_devices())
 
         # Dedicated embedder/indexer for session indexing. The embedder loads
         # its own model lazily on first use; the indexer needs an explicit
@@ -289,6 +322,78 @@ class VideoSessionManager:
 
     # ------------------------------------------------------------- GPU queueing
 
+    def _resolve_devices(self) -> list[int]:
+        """Decide which GPUs transcription may use.
+
+        Defaults to every CUDA device the transcription environment can see, so
+        a two-GPU box runs two uploads concurrently without being configured to.
+        An explicit ``device_indices`` list overrides detection; if detection is
+        unavailable we fall back to the single configured device rather than
+        guessing high and failing every job assigned to a device that isn't there.
+        """
+        if self.cfg.device != "cuda":
+            return [self.cfg.device_index]
+
+        detected = self._probe_cuda_device_count()
+        configured = list(self.cfg.device_indices)
+
+        if configured:
+            if detected is None:
+                return configured
+            usable = [index for index in configured if index < detected]
+            if not usable:
+                logger.warning(
+                    f"Configured device_indices {configured} exceed the {detected} visible "
+                    f"CUDA device(s); falling back to device 0"
+                )
+                return [0]
+            if len(usable) < len(configured):
+                logger.warning(
+                    f"Only {detected} CUDA device(s) visible; using {usable} of {configured}"
+                )
+            return usable
+
+        if not detected:
+            logger.warning(
+                f"Could not detect CUDA devices; transcription will use device "
+                f"{self.cfg.device_index} only"
+            )
+            return [self.cfg.device_index]
+
+        logger.info(f"Video upload: {detected} CUDA device(s) detected for transcription")
+        return list(range(detected))
+
+    def _probe_cuda_device_count(self) -> int | None:
+        """Ask the transcription environment how many CUDA devices it can see.
+
+        Has to be a subprocess: the RainRAG environment has no ctranslate2, and
+        what matters is what the *transcriber* sees (its own CUDA_VISIBLE_DEVICES).
+        Returns None when the probe cannot run, which is treated as "unknown".
+        """
+        try:
+            result = subprocess.run(
+                [
+                    self.cfg.livevtt_python,
+                    "-c",
+                    "import ctranslate2; print(ctranslate2.get_cuda_device_count())",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning(f"CUDA device probe failed: {exc}")
+            return None
+        if result.returncode != 0:
+            logger.warning(f"CUDA device probe exited {result.returncode}: {result.stderr.strip()}")
+            return None
+        try:
+            return int(result.stdout.strip())
+        except ValueError:
+            logger.warning(f"CUDA device probe returned {result.stdout.strip()!r}")
+            return None
+
     def _is_cancelled(self, session_id: str) -> bool:
         """Whether the session has been deleted or flagged for cancellation."""
         with self._lock:
@@ -321,49 +426,49 @@ class VideoSessionManager:
         if not script.is_absolute():
             script = Path.cwd() / script
 
-        cmd = [
-            self.cfg.livevtt_python,
-            str(script),
-            str(video_path),
-            "--output",
-            str(vtt_path),
-            "--model",
-            self.cfg.model,
-            "--compute-type",
-            self.cfg.compute_type,
-            "--device",
-            self.cfg.device,
-            "--device-index",
-            str(self.cfg.device_index),
-            "--language",
-            self.cfg.language,
-            "--detection-segments",
-            str(self.cfg.language_detection_segments),
-            "--beam-size",
-            str(self.cfg.beam_size),
-            "--progress-file",
-            str(progress_file),
-        ]
-        if not self.cfg.multilingual:
-            cmd.append("--no-multilingual")
-
         self._update(session.id, status=STATUS_TRANSCRIBING, stage="waiting_for_gpu", percent=0.0)
-        # Safety cap so a hung transcription can't hold the GPU lock forever.
+        # Safety cap so a hung transcription can't hold its GPU slot forever.
         timeout = max(1800, self.cfg.session_ttl_seconds)
 
         with self._lock:
             self._gpu_queue.append(session.id)
-        acquired = False
+        device_index: int | None = None
         try:
-            # Poll for the lock rather than blocking on it, so a queued session
-            # can still report its position and notice cancellation while waiting.
-            while not acquired:
+            # Poll for a slot rather than blocking on one, so a queued session can
+            # still report its position and notice cancellation while it waits.
+            while device_index is None:
                 self._check_cancelled(session.id)
                 self._update(session.id, queue_position=self._queue_position(session.id))
-                acquired = _GPU_LOCK.acquire(timeout=1.0)
+                device_index = self._gpu_pool.acquire(timeout=1.0)
+
+            cmd = [
+                self.cfg.livevtt_python,
+                str(script),
+                str(video_path),
+                "--output",
+                str(vtt_path),
+                "--model",
+                self.cfg.model,
+                "--compute-type",
+                self.cfg.compute_type,
+                "--device",
+                self.cfg.device,
+                "--device-index",
+                str(device_index),
+                "--language",
+                self.cfg.language,
+                "--detection-segments",
+                str(self.cfg.language_detection_segments),
+                "--beam-size",
+                str(self.cfg.beam_size),
+                "--progress-file",
+                str(progress_file),
+            ]
+            if not self.cfg.multilingual:
+                cmd.append("--no-multilingual")
 
             self._update(session.id, stage="transcribing", percent=0.0, queue_position=0)
-            logger.info(f"[video-session {session.id}] transcribing: {' '.join(cmd)}")
+            logger.info(f"[video-session {session.id}] transcribing on GPU {device_index}")
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
             )
@@ -397,8 +502,8 @@ class VideoSessionManager:
             with self._lock:
                 if session.id in self._gpu_queue:
                     self._gpu_queue.remove(session.id)
-            if acquired:
-                _GPU_LOCK.release()
+            if device_index is not None:
+                self._gpu_pool.release(device_index)
 
         if not vtt_path.exists():
             raise RuntimeError("transcription produced no VTT output")

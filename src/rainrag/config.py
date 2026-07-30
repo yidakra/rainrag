@@ -275,7 +275,17 @@ class VideoUploadConfig(BaseModel):
     model: str = Field(default="large-v3-turbo", description="faster-whisper model")
     compute_type: str = Field(default="int8_float16", description="ctranslate2 compute type")
     device: str = Field(default="cuda", description="cuda or cpu")
-    device_index: int = Field(default=0, description="CUDA device index")
+    device_index: int = Field(
+        default=0, description="Fallback CUDA device when detection is unavailable"
+    )
+    device_indices: list[int] = Field(
+        default_factory=list,
+        description=(
+            "CUDA devices transcription may use, one concurrent upload per device. "
+            "Empty (the default) detects every visible GPU at startup, so a two-GPU "
+            "box transcribes two uploads at once without being configured to."
+        ),
+    )
     language: str = Field(
         default="auto",
         description="Source language code, or 'auto' to detect it from the audio",
