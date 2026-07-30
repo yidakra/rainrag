@@ -240,7 +240,9 @@ class VideoSessionManager:
     def _transcribe(self, session: VideoSession) -> None:
         """Run the single-file transcriber subprocess under the livevtt venv."""
         video_path = Path(session.video_path)
-        vtt_path = Path(session.session_dir) / "source.ru.vtt"
+        # Language suffix must match cfg.language: the ingester detects a
+        # document's language from this filename.
+        vtt_path = Path(session.session_dir) / f"source.{self.cfg.language}.vtt"
         progress_file = Path(session.session_dir) / "progress.json"
 
         script = Path(self.cfg.transcribe_script)

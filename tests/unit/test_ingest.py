@@ -174,6 +174,21 @@ class TestVTTParser:
         # Should default to English
         assert lang == "en"
 
+    def test_detect_language_ignores_ancestor_directories(self) -> None:
+        """Ancestor directories must not decide the language.
+
+        Regression: detection used to tokenize the whole path, so a temp dir
+        named e.g. 'tmpab_ru_9x' made every file under it Russian.
+        """
+        assert VTTParser.detect_language(Path("/tmp/tmpab_ru_9x/english/test.vtt")) == "en"
+        assert VTTParser.detect_language(Path("/tmp/tmpab_ru_9x/broadcast_en.vtt")) == "en"
+        assert VTTParser.detect_language(Path("/srv/en_archive/russian/subtitle.vtt")) == "ru"
+
+    def test_detect_language_filename_beats_parent(self) -> None:
+        """The filename suffix is more specific than the containing directory."""
+        assert VTTParser.detect_language(Path("/archive/russian/clip.en.vtt")) == "en"
+        assert VTTParser.detect_language(Path("/archive/english/clip.ru.vtt")) == "ru"
+
     def test_generate_id_consistency(self, temp_dir: Path) -> None:
         """Test that ID generation is consistent."""
         path = temp_dir / "test.vtt"

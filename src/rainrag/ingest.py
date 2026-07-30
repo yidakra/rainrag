@@ -114,7 +114,11 @@ class VTTParser:
         """
         Detect language from file path or name.
 
-        Looks for 'ru', 'rus', 'russian' or 'en', 'eng', 'english' in path.
+        Looks for 'ru', 'rus', 'russian' or 'en', 'eng', 'english' in the filename
+        first, then in the immediate parent directory. Ancestor directories are
+        deliberately ignored: an unrelated segment (a temp dir named 'tmpab_ru_9x',
+        a mount point, a user's home) would otherwise decide the language of every
+        file beneath it.
 
         Args:
             file_path: Path to the VTT file
@@ -122,16 +126,17 @@ class VTTParser:
         Returns:
             Language code ('ru' or 'en')
         """
-        path_str = str(file_path).lower()
-        tokens = set(filter(None, re.split(r"[^a-z0-9]+", path_str)))
+        path = Path(file_path)
+        for candidate in (path.name, path.parent.name):
+            tokens = set(filter(None, re.split(r"[^a-z0-9]+", candidate.lower())))
 
-        # Check for Russian indicators
-        if any(indicator in tokens for indicator in ["ru", "rus", "russian"]):
-            return "ru"
+            # Check for Russian indicators
+            if any(indicator in tokens for indicator in ["ru", "rus", "russian"]):
+                return "ru"
 
-        # Check for English indicators
-        if any(indicator in tokens for indicator in ["en", "eng", "english"]):
-            return "en"
+            # Check for English indicators
+            if any(indicator in tokens for indicator in ["en", "eng", "english"]):
+                return "en"
 
         # Default to English if no indicators found
         logger.warning(f"Could not detect language for {file_path}, defaulting to 'en'")
