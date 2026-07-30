@@ -177,6 +177,11 @@ class QdrantIndexer:
             logger.info(f"Dropping collection: {collection_name}")
             client.delete_collection(collection_name)
 
+    def list_collections(self) -> list[str]:
+        """Return the names of all collections on the server."""
+        client = self._get_client()
+        return [col.name for col in client.get_collections().collections]
+
     def _collection_exists(self, collection_name: str | None = None) -> bool:
         """Check whether a collection exists."""
         client = self._get_client()

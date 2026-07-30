@@ -98,6 +98,11 @@ class VideoSessionManager:
 
         Path(self.cfg.tmp_root).mkdir(parents=True, exist_ok=True)
 
+        # Sessions live in this process's memory, so anything left on disk or in
+        # Qdrant from a previous run is unreachable and would leak forever.
+        if self.cfg.sweep_orphans_on_start:
+            self._sweep_orphans()
+
         # Background TTL reaper.
         self._stop = threading.Event()
         self._reaper = threading.Thread(target=self._reaper_loop, daemon=True)
@@ -166,6 +171,48 @@ class VideoSessionManager:
         self._stop.set()
 
     # --------------------------------------------------------------- internals
+
+    def _sweep_orphans(self) -> None:
+        """Remove session collections and working dirs left over from a prior run.
+
+        Session state is held in process memory, so after a restart the previous
+        run's collections and upload directories can never be reached or cleaned
+        by the TTL reaper. Only names carrying the configured prefix are touched,
+        so the main archive collection is never at risk.
+        """
+        prefix = self.cfg.collection_prefix
+        if not prefix:
+            logger.warning("collection_prefix is empty; skipping orphan sweep to stay safe")
+            return
+
+        # Stale ephemeral collections.
+        try:
+            stale = [name for name in self._indexer.list_collections() if name.startswith(prefix)]
+            for name in stale:
+                # Guard against a prefix that would match the live archive.
+                if name == self.config.qdrant.collection_name:
+                    continue
+                self._indexer.drop_collection(name)
+            if stale:
+                logger.info(f"Orphan sweep: dropped {len(stale)} stale session collection(s)")
+        except Exception as exc:  # noqa: BLE001 - startup must not fail on cleanup
+            logger.warning(f"Orphan sweep (collections) failed: {exc}")
+
+        # Stale working directories, including any partial uploads.
+        try:
+            tmp_root = Path(self.cfg.tmp_root)
+            removed = 0
+            for entry in tmp_root.iterdir():
+                if entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=True)
+                    removed += 1
+                elif entry.suffix == ".upload":
+                    entry.unlink(missing_ok=True)
+                    removed += 1
+            if removed:
+                logger.info(f"Orphan sweep: removed {removed} stale session file(s)/dir(s)")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Orphan sweep (directories) failed: {exc}")
 
     def _update(self, session_id: str, **fields) -> None:
         with self._lock:

@@ -195,7 +195,13 @@ video_upload:
   tmp_root: "./data/video_sessions"   # per-session working files
   collection_prefix: "session_"       # ephemeral collection name prefix
   session_ttl_seconds: 7200           # auto-cleanup after 2h
-  max_upload_mb: 2048                 # reject uploads larger than this
+  # The Streamlit client buffers the whole file in memory before sending, so this
+  # cap also bounds UI memory per concurrent upload. Raise with that in mind.
+  max_upload_mb: 512                  # reject uploads larger than this
+  # Drop leftover session collections/dirs from previous runs at startup. Session
+  # state is in-process, so without this a restart leaks them permanently.
+  # Disable only if several API workers share one Qdrant instance.
+  sweep_orphans_on_start: true
 
 # MCP server configuration
 mcp:

@@ -288,8 +288,14 @@ class VideoUploadConfig(BaseModel):
     session_ttl_seconds: int = Field(
         default=7200, description="Session lifetime before automatic cleanup (seconds)"
     )
-    max_upload_mb: int = Field(
-        default=2048, description="Maximum accepted upload size in megabytes"
+    max_upload_mb: int = Field(default=512, description="Maximum accepted upload size in megabytes")
+    sweep_orphans_on_start: bool = Field(
+        default=True,
+        description=(
+            "On startup, drop leftover session collections and working directories from "
+            "previous runs. Assumes a single API process owns them; disable if running "
+            "multiple API workers against one Qdrant instance."
+        ),
     )
 
 
