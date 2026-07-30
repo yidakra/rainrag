@@ -229,7 +229,9 @@ class VideoSessionManager:
         with _GPU_LOCK:
             self._update(session.id, stage="transcribing", percent=0.0)
             logger.info(f"[video-session {session.id}] transcribing: {' '.join(cmd)}")
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            )
             start = time.time()
             try:
                 while proc.poll() is None:
@@ -285,9 +287,7 @@ class VideoSessionManager:
         )
 
         duration = documents[0].duration_seconds or session.duration_seconds
-        self._update(
-            session.id, num_documents=len(documents), duration_seconds=duration
-        )
+        self._update(session.id, num_documents=len(documents), duration_seconds=duration)
         logger.info(
             f"[video-session {session.id}] indexed {len(documents)} chunks "
             f"into {session.collection_name}"
@@ -311,9 +311,7 @@ class VideoSessionManager:
         while not self._stop.wait(timeout=60.0):
             now = time.time()
             with self._lock:
-                expired = [
-                    s for s in self._sessions.values() if now - s.created_at > ttl
-                ]
+                expired = [s for s in self._sessions.values() if now - s.created_at > ttl]
                 for s in expired:
                     self._sessions.pop(s.id, None)
             for s in expired:

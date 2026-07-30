@@ -273,9 +273,7 @@ class VideoUploadConfig(BaseModel):
         description="Path to the single-file transcription script",
     )
     model: str = Field(default="large-v3-turbo", description="faster-whisper model")
-    compute_type: str = Field(
-        default="int8_float16", description="ctranslate2 compute type"
-    )
+    compute_type: str = Field(default="int8_float16", description="ctranslate2 compute type")
     device: str = Field(default="cuda", description="cuda or cpu")
     device_index: int = Field(default=0, description="CUDA device index")
     language: str = Field(default="ru", description="Source language code")
