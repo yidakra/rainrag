@@ -61,7 +61,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="int8_float16",
         help="ctranslate2 compute type (int8_float16 avoids OOM on large models)",
     )
-    p.add_argument("--language", default="ru", help="Source language code")
+    p.add_argument(
+        "--language",
+        default="auto",
+        help="Source language code, or 'auto' to detect it from the audio",
+    )
+    p.add_argument(
+        "--detection-segments",
+        type=int,
+        default=4,
+        help="Windows sampled for auto-detection (guards against foreign/musical intros)",
+    )
+    p.add_argument(
+        "--no-multilingual",
+        action="store_true",
+        help="With --language auto, decode in one language instead of switching per window",
+    )
     p.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Device")
     p.add_argument("--device-index", type=int, default=0, help="CUDA device index")
     p.add_argument("--beam-size", type=int, default=5, help="Decoding beam size")
@@ -88,7 +103,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from faster_whisper import WhisperModel
     except Exception as exc:  # pragma: no cover - environment guard
-        _write_progress(progress, {"stage": "error", "error": f"faster_whisper import failed: {exc}"})
+        _write_progress(
+            progress, {"stage": "error", "error": f"faster_whisper import failed: {exc}"}
+        )
         print(f"faster_whisper import failed: {exc}", file=sys.stderr)
         return 3
 
@@ -106,14 +123,37 @@ def main(argv: list[str] | None = None) -> int:
 
     _write_progress(progress, {"stage": "transcribing", "percent": 0.0})
 
+    # "auto" (or empty) hands language selection to Whisper. multilingual then
+    # re-detects per 30s window, so a video that switches languages part-way is
+    # decoded in whichever language is actually being spoken rather than being
+    # force-decoded — often transliterated or hallucinated — as the first one.
+    auto_language = args.language.lower() in ("", "auto", "none")
+    language = None if auto_language else args.language
+    multilingual = auto_language and not args.no_multilingual
+
     try:
         segments, info = model.transcribe(
             str(args.input),
-            language=args.language,
+            language=language,
+            multilingual=multilingual,
+            language_detection_segments=max(1, args.detection_segments),
             beam_size=args.beam_size,
             vad_filter=not args.no_vad,
         )
         total = float(getattr(info, "duration", 0.0) or 0.0)
+        detected = getattr(info, "language", None) or args.language
+        detected_prob = float(getattr(info, "language_probability", 0.0) or 0.0)
+        _write_progress(
+            progress,
+            {
+                "stage": "transcribing",
+                "percent": 0.0,
+                "total_seconds": round(total, 1),
+                "detected_language": detected,
+                "language_probability": round(detected_prob, 3),
+                "multilingual": multilingual,
+            },
+        )
 
         args.output.parent.mkdir(parents=True, exist_ok=True)
         cue_count = 0
@@ -138,6 +178,9 @@ def main(argv: list[str] | None = None) -> int:
                             "processed_seconds": round(float(seg.end), 1),
                             "total_seconds": round(total, 1),
                             "cues": cue_count,
+                            "detected_language": detected,
+                            "language_probability": round(detected_prob, 3),
+                            "multilingual": multilingual,
                         },
                     )
     except Exception as exc:
@@ -153,9 +196,12 @@ def main(argv: list[str] | None = None) -> int:
             "total_seconds": round(total, 1),
             "cues": cue_count,
             "output": str(args.output),
+            "detected_language": detected,
+            "language_probability": round(detected_prob, 3),
+            "multilingual": multilingual,
         },
     )
-    print(f"wrote {cue_count} cues to {args.output}")
+    print(f"wrote {cue_count} cues to {args.output} (language={detected})")
     return 0
 
 

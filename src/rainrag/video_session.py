@@ -16,6 +16,7 @@ GPU lock so concurrent uploads queue instead of exhausting GPU memory.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -43,6 +44,19 @@ STATUS_ERROR = "error"
 # Serialises GPU-bound transcription across all sessions in this process.
 _GPU_LOCK = threading.Lock()
 
+# Language codes the ingest pipeline indexes natively. Anything else Whisper
+# detects still transcribes fine (embeddings are multilingual) but is indexed
+# under the default language.
+_INDEXABLE_LANGUAGES = ("ru", "en")
+
+
+class SessionCancelledError(RuntimeError):
+    """Raised inside a session's worker thread when the session goes away.
+
+    Either the user cancelled it or the TTL reaper collected it; in both cases
+    the session no longer exists, so there is nobody to report an error to.
+    """
+
 
 @dataclass
 class VideoSession:
@@ -57,10 +71,16 @@ class VideoSession:
     num_documents: int = 0
     duration_seconds: float | None = None
     error: str | None = None
+    # Language Whisper detected (or the configured override) and its confidence.
+    language: str | None = None
+    language_probability: float | None = None
+    # Sessions ahead of this one in the GPU queue; 0 means it is transcribing.
+    queue_position: int = 0
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
-    # Filesystem paths (not sent to the client).
+    # Internal state (not sent to the client).
+    cancelled: bool = False
     session_dir: str = ""
     video_path: str = ""
     vtt_path: str = ""
@@ -68,7 +88,7 @@ class VideoSession:
     def public_dict(self) -> dict:
         """Return a client-facing view (omits local filesystem paths)."""
         d = asdict(self)
-        for k in ("session_dir", "video_path", "vtt_path"):
+        for k in ("session_dir", "video_path", "vtt_path", "cancelled"):
             d.pop(k, None)
         return d
 
@@ -81,6 +101,11 @@ class VideoSessionManager:
         self.cfg = config.video_upload
         self._sessions: dict[str, VideoSession] = {}
         self._lock = threading.Lock()
+        # Sessions waiting on (or holding) the GPU, oldest first, so each one can
+        # report how many uploads are ahead of it instead of a blank progress bar.
+        self._gpu_queue: list[str] = []
+        # Live transcriber subprocesses, so cancelling frees the GPU immediately.
+        self._procs: dict[str, subprocess.Popen] = {}
 
         # Dedicated embedder/indexer for session indexing. The embedder loads
         # its own model lazily on first use; the indexer needs an explicit
@@ -158,11 +183,25 @@ class VideoSessionManager:
             return list(self._sessions.values())
 
     def delete(self, session_id: str) -> bool:
-        """Drop the session's collection + working dir and forget it."""
+        """Cancel any running work, then drop the collection + working dir.
+
+        Deleting a session that is still transcribing kills the transcriber so
+        the GPU is handed to the next queued upload right away rather than after
+        the abandoned video finishes.
+        """
         with self._lock:
             session = self._sessions.pop(session_id, None)
+            if session is not None:
+                session.cancelled = True
+            proc = self._procs.get(session_id)
+            if session_id in self._gpu_queue:
+                self._gpu_queue.remove(session_id)
         if session is None:
             return False
+        if proc is not None and proc.poll() is None:
+            logger.info(f"[video-session {session_id}] cancelling transcription")
+            with contextlib.suppress(OSError):
+                proc.kill()
         self._teardown(session)
         logger.info(f"[video-session {session_id}] deleted")
         return True
@@ -230,19 +269,52 @@ class VideoSessionManager:
             return
         try:
             self._transcribe(session)
+            self._check_cancelled(session_id)
             self._index(session)
             self._update(session_id, status=STATUS_READY, stage="ready", percent=100.0)
             logger.info(f"[video-session {session_id}] ready")
+        except SessionCancelledError:
+            # The session was deleted; _update is already a no-op for it and the
+            # working files were removed by delete()/the reaper.
+            logger.info(f"[video-session {session_id}] cancelled")
         except Exception as exc:  # noqa: BLE001 - report any failure to the client
+            # Cancelling mid-stage makes the work fail in whatever way that stage
+            # fails — a killed subprocess, a dropped collection. If the session is
+            # already gone it was cancelled, not broken; don't log a scare-traceback.
+            if self._is_cancelled(session_id):
+                logger.info(f"[video-session {session_id}] cancelled")
+                return
             logger.exception(f"[video-session {session_id}] failed")
             self._update(session_id, status=STATUS_ERROR, stage="error", error=str(exc))
+
+    # ------------------------------------------------------------- GPU queueing
+
+    def _is_cancelled(self, session_id: str) -> bool:
+        """Whether the session has been deleted or flagged for cancellation."""
+        with self._lock:
+            session = self._sessions.get(session_id)
+        return session is None or session.cancelled
+
+    def _check_cancelled(self, session_id: str) -> None:
+        """Raise if the session was deleted while its worker thread was running."""
+        if self._is_cancelled(session_id):
+            raise SessionCancelledError(session_id)
+
+    def _queue_position(self, session_id: str) -> int:
+        """Number of sessions ahead in the GPU queue (0 = holds it or is next)."""
+        with self._lock:
+            try:
+                return self._gpu_queue.index(session_id)
+            except ValueError:
+                return 0
 
     def _transcribe(self, session: VideoSession) -> None:
         """Run the single-file transcriber subprocess under the livevtt venv."""
         video_path = Path(session.video_path)
-        # Language suffix must match cfg.language: the ingester detects a
-        # document's language from this filename.
-        vtt_path = Path(session.session_dir) / f"source.{self.cfg.language}.vtt"
+        # Written without a language suffix: with auto-detection the language is
+        # only known once transcription finishes, and the ingester reads it back
+        # off this filename. Renamed to source.<lang>.vtt below.
+        vtt_path = Path(session.session_dir) / "source.vtt"
         progress_file = Path(session.session_dir) / "progress.json"
 
         script = Path(self.cfg.transcribe_script)
@@ -265,40 +337,99 @@ class VideoSessionManager:
             str(self.cfg.device_index),
             "--language",
             self.cfg.language,
+            "--detection-segments",
+            str(self.cfg.language_detection_segments),
             "--beam-size",
             str(self.cfg.beam_size),
             "--progress-file",
             str(progress_file),
         ]
+        if not self.cfg.multilingual:
+            cmd.append("--no-multilingual")
 
         self._update(session.id, status=STATUS_TRANSCRIBING, stage="waiting_for_gpu", percent=0.0)
         # Safety cap so a hung transcription can't hold the GPU lock forever.
         timeout = max(1800, self.cfg.session_ttl_seconds)
 
-        with _GPU_LOCK:
-            self._update(session.id, stage="transcribing", percent=0.0)
+        with self._lock:
+            self._gpu_queue.append(session.id)
+        acquired = False
+        try:
+            # Poll for the lock rather than blocking on it, so a queued session
+            # can still report its position and notice cancellation while waiting.
+            while not acquired:
+                self._check_cancelled(session.id)
+                self._update(session.id, queue_position=self._queue_position(session.id))
+                acquired = _GPU_LOCK.acquire(timeout=1.0)
+
+            self._update(session.id, stage="transcribing", percent=0.0, queue_position=0)
             logger.info(f"[video-session {session.id}] transcribing: {' '.join(cmd)}")
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
             )
+            with self._lock:
+                self._procs[session.id] = proc
             start = time.time()
             try:
                 while proc.poll() is None:
                     if time.time() - start > timeout:
                         proc.kill()
                         raise RuntimeError("transcription timed out")
+                    try:
+                        self._check_cancelled(session.id)
+                    except SessionCancelledError:
+                        proc.kill()
+                        raise
                     self._poll_progress(session.id, progress_file)
                     time.sleep(1.0)
             finally:
                 out = proc.stdout.read() if proc.stdout else ""
+                with self._lock:
+                    self._procs.pop(session.id, None)
             if proc.returncode != 0:
+                # delete() kills the transcriber directly, which lands here as a
+                # non-zero exit. Check for that before blaming the transcriber.
+                self._check_cancelled(session.id)
                 self._poll_progress(session.id, progress_file)  # capture any error stage
                 tail = "\n".join((out or "").splitlines()[-15:])
                 raise RuntimeError(f"transcriber exited {proc.returncode}: {tail}")
+        finally:
+            with self._lock:
+                if session.id in self._gpu_queue:
+                    self._gpu_queue.remove(session.id)
+            if acquired:
+                _GPU_LOCK.release()
 
         if not vtt_path.exists():
             raise RuntimeError("transcription produced no VTT output")
-        self._update(session.id, vtt_path=str(vtt_path))
+        self._update(session.id, vtt_path=str(self._apply_language_suffix(vtt_path, progress_file)))
+
+    def _apply_language_suffix(self, vtt_path: Path, progress_file: Path) -> Path:
+        """Rename source.vtt to source.<lang>.vtt so ingest picks up the language.
+
+        Whisper can return any language code; the ingester only distinguishes
+        ru/en, so anything else keeps the bare name and is indexed as the
+        default. Retrieval is unaffected — the embedding model is multilingual.
+        """
+        language = self._detected_language(progress_file)
+        if language not in _INDEXABLE_LANGUAGES:
+            return vtt_path
+        target = vtt_path.with_name(f"source.{language}.vtt")
+        try:
+            vtt_path.replace(target)
+        except OSError as exc:
+            logger.warning(f"Could not apply language suffix to {vtt_path}: {exc}")
+            return vtt_path
+        return target
+
+    def _detected_language(self, progress_file: Path) -> str | None:
+        """Read the language the transcriber reported, if any."""
+        try:
+            data = json.loads(progress_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        language = data.get("detected_language")
+        return str(language).lower() if language else None
 
     def _poll_progress(self, session_id: str, progress_file: Path) -> None:
         """Read the transcriber's JSON progress snapshot and mirror it to state."""
@@ -317,6 +448,13 @@ class VideoSessionManager:
             fields["stage"] = stage
         if data.get("total_seconds"):
             fields["duration_seconds"] = float(data["total_seconds"])
+        # Report the detected language as soon as it is known so the UI can show
+        # it while transcription is still running.
+        if data.get("detected_language"):
+            fields["language"] = str(data["detected_language"]).lower()
+        probability = data.get("language_probability")
+        if isinstance(probability, (int, float)):
+            fields["language_probability"] = float(probability)
         if fields:
             self._update(session_id, **fields)
 

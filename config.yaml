@@ -190,11 +190,15 @@ video_upload:
   compute_type: "int8_float16"   # avoids CUDA OOM on large models
   device: "cuda"
   device_index: 0
-  language: "ru"                 # source language for transcription
+  # "auto" lets Whisper detect the language from the audio, so a journalist does
+  # not have to know it in advance. Set an explicit code (e.g. "ru") to force one.
+  language: "auto"
+  language_detection_segments: 4  # sample several windows, not just the intro
+  multilingual: true              # re-detect per window so mixed-language video works
   beam_size: 5
   tmp_root: "./data/video_sessions"   # per-session working files
   collection_prefix: "session_"       # ephemeral collection name prefix
-  session_ttl_seconds: 7200           # auto-cleanup after 2h
+  session_ttl_seconds: 21600          # auto-cleanup after 6h (a working session)
   # The Streamlit client buffers the whole file in memory before sending, so this
   # cap also bounds UI memory per concurrent upload. Raise with that in mind.
   max_upload_mb: 512                  # reject uploads larger than this

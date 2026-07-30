@@ -243,8 +243,13 @@ TRANSLATIONS = {
         "video_ready": "Готово! Задайте вопрос по видео.",
         "video_error": "Ошибка обработки",
         "video_new_video": "Загрузить другое видео",
+        "video_cancel": "Отменить",
         "video_chat_placeholder": "Спросите что-нибудь об этом видео…",
         "video_processing_title": "Обрабатываем ваше видео",
+        "video_queue_position": "Перед вами в очереди: {n}",
+        "video_detected_language": "Язык видео",
+        "video_language_auto": "определён автоматически",
+        "video_jump_to": "Перейти к моменту:",
     },
     "en": {
         "title": "RainRAG - Video Transcript Search",
@@ -355,8 +360,13 @@ TRANSLATIONS = {
         "video_ready": "Ready! Ask a question about the video.",
         "video_error": "Processing error",
         "video_new_video": "Upload another video",
+        "video_cancel": "Cancel",
         "video_chat_placeholder": "Ask anything about this video…",
         "video_processing_title": "Processing your video",
+        "video_queue_position": "Uploads ahead of you: {n}",
+        "video_detected_language": "Video language",
+        "video_language_auto": "detected automatically",
+        "video_jump_to": "Jump to:",
     },
 }
 
@@ -742,6 +752,8 @@ def initialize_session_state():
         st.session_state.video_messages = []
     if "video_upload_error" not in st.session_state:
         st.session_state.video_upload_error = None
+    if "video_seek_seconds" not in st.session_state:
+        st.session_state.video_seek_seconds = 0.0
     # Pending query flag for example buttons
     if "pending_query" not in st.session_state:
         st.session_state.pending_query = None
@@ -1808,6 +1820,114 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
     st.divider()
 
 
+# HH:MM:SS or MM:SS, as cited by the single-video prompt.
+_TIMECODE_PATTERN = re.compile(r"\b(?:(\d{1,2}):)?([0-5]?\d):([0-5]\d)\b")
+
+# Human-readable names for the language codes Whisper reports most often here.
+_LANGUAGE_NAMES = {
+    "ru": {"ru": "русский", "en": "Russian"},
+    "en": {"ru": "английский", "en": "English"},
+    "uk": {"ru": "украинский", "en": "Ukrainian"},
+    "be": {"ru": "белорусский", "en": "Belarusian"},
+    "de": {"ru": "немецкий", "en": "German"},
+    "fr": {"ru": "французский", "en": "French"},
+    "es": {"ru": "испанский", "en": "Spanish"},
+    "ka": {"ru": "грузинский", "en": "Georgian"},
+    "hy": {"ru": "армянский", "en": "Armenian"},
+    "kk": {"ru": "казахский", "en": "Kazakh"},
+}
+
+
+def language_display_name(code: str, ui_lang: str) -> str:
+    """Render a detected language code for humans, falling back to the code."""
+    return _LANGUAGE_NAMES.get(code, {}).get(ui_lang, code.upper())
+
+
+def extract_timecodes(text: str, limit: int = 12) -> list[tuple[str, int]]:
+    """Extract cited timecodes from an answer as (label, seconds), deduplicated.
+
+    Used to turn the timecodes the model cites into seek buttons.
+    """
+    found: list[tuple[str, int]] = []
+    seen: set[int] = set()
+    for match in _TIMECODE_PATTERN.finditer(text):
+        seconds = int(match.group(1) or 0) * 3600 + int(match.group(2)) * 60 + int(match.group(3))
+        if seconds in seen:
+            continue
+        seen.add(seconds)
+        found.append((match.group(0), seconds))
+        if len(found) >= limit:
+            break
+    return found
+
+
+def render_video_session_player(
+    media_url: str,
+    element_id: str,
+    start_seconds: float = 0.0,
+    height: int = 420,
+) -> None:
+    """Play an uploaded session's video, optionally seeking to a cited timecode.
+
+    Rendered through components.html (an iframe) rather than st.markdown so the
+    seek/resume script actually executes. An explicit start time wins over the
+    remembered position, since it means the user just clicked a timecode.
+    """
+    html_block = f"""
+<video id="{html.escape(element_id)}" controls playsinline preload="metadata"
+       style="width: 100%; height: auto; border-radius: 8px; background: #000;">
+    <source src="{html.escape(media_url)}">
+</video>
+<script>
+(() => {{
+  const video = document.getElementById("{html.escape(element_id)}");
+  if (!video) return;
+  const startAt = {json.dumps(float(start_seconds))};
+  const resumeKey = `rainrag_session_resume_{html.escape(element_id)}`;
+  const applyStart = () => {{
+    if (startAt > 0) {{
+      video.currentTime = startAt;
+      video.play().catch(() => {{}});
+      return;
+    }}
+    try {{
+      const raw = sessionStorage.getItem(resumeKey);
+      const parsed = raw === null ? NaN : parseFloat(raw);
+      if (Number.isFinite(parsed) && parsed > 0) {{
+        video.currentTime = parsed;
+      }}
+    }} catch (e) {{}}
+  }};
+  const saveTime = () => {{
+    try {{
+      if (Number.isFinite(video.currentTime) && video.currentTime > 0) {{
+        sessionStorage.setItem(resumeKey, String(video.currentTime));
+      }}
+    }} catch (e) {{}}
+  }};
+  video.addEventListener("loadedmetadata", applyStart, {{ once: true }});
+  video.addEventListener("timeupdate", saveTime);
+  video.addEventListener("pause", saveTime);
+}})();
+</script>
+"""
+    components.html(html_block, height=height)
+
+
+def render_timecode_buttons(message_key: str, content: str, lang: str) -> None:
+    """Render the timecodes cited in an answer as buttons that seek the player."""
+    timecodes = extract_timecodes(content)
+    if not timecodes:
+        return
+    st.caption(get_text("video_jump_to", lang))
+    columns = st.columns(min(len(timecodes), 6))
+    for idx, (label, seconds) in enumerate(timecodes):
+        with columns[idx % len(columns)]:
+            if st.button(label, key=f"seek_{message_key}_{idx}", use_container_width=True):
+                st.session_state.video_seek_seconds = float(seconds)
+                st.rerun()
+
+
 def _reset_video_session(delete_remote: bool = True) -> None:
     """Clear local video-mode state and optionally delete the remote session."""
     session_id = st.session_state.get("video_session_id")
@@ -1819,6 +1939,7 @@ def _reset_video_session(delete_remote: bool = True) -> None:
     st.session_state.video_session_id = None
     st.session_state.video_messages = []
     st.session_state.video_upload_error = None
+    st.session_state.video_seek_seconds = 0.0
 
 
 def render_video_mode(lang: str):
@@ -1878,17 +1999,24 @@ def render_video_mode(lang: str):
     state = status.get("status", "queued")
     filename = status.get("filename", "")
 
+    processing = state in ("queued", "transcribing", "indexing")
+
     header_col, btn_col = st.columns([4, 1])
     with header_col:
         if filename:
             st.markdown(f"**{html.escape(filename)}**")
     with btn_col:
-        if st.button(get_text("video_new_video", lang), use_container_width=True):
+        # While work is in flight the same action means "stop this", and the
+        # backend kills the transcriber so the GPU goes to the next upload.
+        button_label = get_text("video_cancel" if processing else "video_new_video", lang)
+        if st.button(button_label, use_container_width=True):
             _reset_video_session()
             st.rerun()
 
+    detected_language = status.get("language")
+
     # --- Still processing: show progress and auto-refresh ---
-    if state in ("queued", "transcribing", "indexing"):
+    if processing:
         stage = status.get("stage", state)
         percent = float(status.get("percent") or 0.0)
         st.markdown(f"#### {get_text('video_processing_title', lang)}")
@@ -1897,6 +2025,14 @@ def render_video_mode(lang: str):
         known_stages = ("queued", "waiting_for_gpu", "transcribing", "indexing")
         stage_key = stage if stage in known_stages else state
         st.caption(get_text(f"video_{stage_key}", lang))
+        queue_position = int(status.get("queue_position") or 0)
+        if stage == "waiting_for_gpu" and queue_position > 0:
+            st.caption(get_text("video_queue_position", lang).format(n=queue_position))
+        if detected_language:
+            st.caption(
+                f"{get_text('video_detected_language', lang)}: "
+                f"{language_display_name(detected_language, lang)}"
+            )
         st.progress(min(max(percent / 100.0, 0.0), 1.0))
         time.sleep(2.0)
         st.rerun()
@@ -1907,11 +2043,25 @@ def render_video_mode(lang: str):
         st.error(f"{get_text('video_error', lang)}: {status.get('error', '')}")
         return
 
-    # --- Ready: chat scoped to this video ---
+    # --- Ready: player + chat scoped to this video ---
+    media_url = append_auth_query(build_asset_url(f"/video-sessions/{session_id}/media"))
+    render_video_session_player(
+        media_url,
+        f"video_session_{session_id}",
+        start_seconds=float(st.session_state.get("video_seek_seconds") or 0.0),
+    )
+    if detected_language:
+        st.caption(
+            f"{get_text('video_detected_language', lang)}: "
+            f"{language_display_name(detected_language, lang)} "
+            f"({get_text('video_language_auto', lang)})"
+        )
     st.success(get_text("video_ready", lang))
 
-    for message in st.session_state.video_messages:
+    for idx, message in enumerate(st.session_state.video_messages):
         render_message_bubble(message, lang)
+        if message.get("role") == "assistant":
+            render_timecode_buttons(f"{session_id}_{idx}", message.get("content", ""), lang)
 
     user_input = st.chat_input(get_text("video_chat_placeholder", lang))
     if user_input:

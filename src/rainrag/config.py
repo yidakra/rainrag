@@ -276,7 +276,24 @@ class VideoUploadConfig(BaseModel):
     compute_type: str = Field(default="int8_float16", description="ctranslate2 compute type")
     device: str = Field(default="cuda", description="cuda or cpu")
     device_index: int = Field(default=0, description="CUDA device index")
-    language: str = Field(default="ru", description="Source language code")
+    language: str = Field(
+        default="auto",
+        description="Source language code, or 'auto' to detect it from the audio",
+    )
+    language_detection_segments: int = Field(
+        default=4,
+        description=(
+            "Audio windows sampled when auto-detecting the language. More than one "
+            "guards against a musical or foreign-language intro deciding the whole file."
+        ),
+    )
+    multilingual: bool = Field(
+        default=True,
+        description=(
+            "With language='auto', re-detect the language per window so a video that "
+            "switches languages is decoded correctly. Costs some transcription speed."
+        ),
+    )
     beam_size: int = Field(default=5, description="Decoding beam size")
     tmp_root: str = Field(
         default="./data/video_sessions",
@@ -286,7 +303,7 @@ class VideoUploadConfig(BaseModel):
         default="session_", description="Prefix for ephemeral per-session collections"
     )
     session_ttl_seconds: int = Field(
-        default=7200, description="Session lifetime before automatic cleanup (seconds)"
+        default=21600, description="Session lifetime before automatic cleanup (seconds)"
     )
     max_upload_mb: int = Field(default=512, description="Maximum accepted upload size in megabytes")
     sweep_orphans_on_start: bool = Field(

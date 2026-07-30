@@ -1202,6 +1202,44 @@ async def get_video_session(session_id: str):
     return session.public_dict()
 
 
+@app.api_route("/video-sessions/{session_id}/media", methods=["GET", "HEAD"])
+async def serve_video_session_media(
+    session_id: str,
+    authorization: Annotated[str | None, Header()] = None,
+    auth: Annotated[str | None, Query()] = None,
+):
+    """Stream an uploaded session's source video back for in-page playback.
+
+    Accepts the token as a query parameter as well as a header, because a
+    <video> element cannot send custom headers. Serves the recorded session
+    path directly — it is never built from client input, so there is no
+    traversal surface here.
+    """
+    verify_auth_token(authorization=authorization, access_token=auth)
+    manager = _require_video_manager()
+
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    video_path = Path(session.video_path)
+    if not video_path.is_file():
+        raise HTTPException(status_code=404, detail="Session video is no longer available")
+
+    media_types = {
+        ".mp4": "video/mp4",
+        ".mkv": "video/x-matroska",
+        ".webm": "video/webm",
+        ".avi": "video/x-msvideo",
+        ".mov": "video/quicktime",
+        ".m4v": "video/mp4",
+    }
+    media_type = media_types.get(video_path.suffix.lower(), "video/mp4")
+    # FileResponse honours Range requests, which is what lets the player seek to
+    # a cited timecode without downloading the whole file first.
+    return FileResponse(path=str(video_path), media_type=media_type)
+
+
 @app.delete("/video-sessions/{session_id}")
 async def delete_video_session(session_id: str):
     """Delete an upload session: drop its collection and working files."""
