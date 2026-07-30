@@ -159,6 +159,24 @@ class QdrantIndexer:
         )
         logger.info(f"Created staging collection: {collection_name}")
 
+    def ensure_collection(self, collection_name: str) -> None:
+        """Create a named collection if it does not already exist.
+
+        Used for ephemeral per-upload collections. Uses the same vector params
+        as the main collection so the shared embedder/query path work unchanged.
+        """
+        if self._collection_exists(collection_name):
+            logger.info(f"Collection {collection_name} already exists")
+            return
+        self._create_collection_with_name(collection_name)
+
+    def drop_collection(self, collection_name: str) -> None:
+        """Delete a named collection if it exists (ephemeral-collection teardown)."""
+        client = self._get_client()
+        if self._collection_exists(collection_name):
+            logger.info(f"Dropping collection: {collection_name}")
+            client.delete_collection(collection_name)
+
     def _collection_exists(self, collection_name: str | None = None) -> bool:
         """Check whether a collection exists."""
         client = self._get_client()
@@ -201,7 +219,11 @@ class QdrantIndexer:
         return False
 
     def index_documents(
-        self, embeddings: np.ndarray, documents: list[Document], batch_size: int = 50
+        self,
+        embeddings: np.ndarray,
+        documents: list[Document],
+        batch_size: int = 50,
+        collection_name: str | None = None,
     ) -> int:
         """
         Index documents with their embeddings into Qdrant.
@@ -213,12 +235,15 @@ class QdrantIndexer:
             embeddings: NumPy array of embeddings (shape: [N, D])
             documents: List of Document objects
             batch_size: Batch size for uploading
+            collection_name: Override target collection. Defaults to the
+                configured collection. Used to index into a single video's
+                ephemeral collection.
 
         Returns:
             Number of documents indexed
         """
         client = self._get_client()
-        collection_name = self.config.qdrant.collection_name
+        collection_name = collection_name or self.config.qdrant.collection_name
 
         effective_batch_size = (
             batch_size if batch_size and batch_size > 0 else self.config.qdrant.upsert_batch_size

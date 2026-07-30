@@ -1204,6 +1204,7 @@ class RAGQueryEngine:
         date_to: str | None = None,
         query_text: str | None = None,
         exclude_speech_free: bool = False,
+        collection_name: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Retrieve the most relevant documents from Qdrant.
@@ -1218,6 +1219,9 @@ class RAGQueryEngine:
             query_text: Original query text (needed for BM25 in hybrid search)
             exclude_speech_free: When True, speech-free (no-transcript) documents
                 are removed from results before ranking and truncation.
+            collection_name: Override the Qdrant collection to search. Defaults to
+                the configured collection. Used to scope retrieval to a single
+                uploaded video's ephemeral collection.
 
         Returns:
             List of retrieved documents with metadata
@@ -1225,8 +1229,17 @@ class RAGQueryEngine:
         if self.qdrant_client is None:
             raise RuntimeError("Qdrant client not initialized. Call initialize() first.")
 
-        # Check if hybrid search is enabled and query_text is provided
-        use_hybrid = self.config.hybrid_search.enabled and query_text and self.bm25 is not None
+        target_collection = collection_name or self.config.qdrant.collection_name
+
+        # Check if hybrid search is enabled and query_text is provided.
+        # BM25 is built over the main corpus, so it cannot be used when
+        # retrieval is scoped to an override collection (e.g. an uploaded video).
+        use_hybrid = (
+            self.config.hybrid_search.enabled
+            and query_text
+            and self.bm25 is not None
+            and collection_name is None
+        )
 
         if use_hybrid:
             logger.info(f"Using hybrid search (vector + BM25) for top {top_k} documents...")
@@ -1268,7 +1281,7 @@ class RAGQueryEngine:
                     f"Querying Qdrant with filter: {query_filter}, limit: {effective_limit}"
                 )
             results = self.qdrant_client.query_points(
-                collection_name=self.config.qdrant.collection_name,
+                collection_name=target_collection,
                 query=query_vector,
                 limit=effective_limit,
                 query_filter=query_filter,
@@ -1790,6 +1803,7 @@ Question: {query}"""
         date_from: str | None = None,
         date_to: str | None = None,
         exclude_speech_free: bool = False,
+        collection_name: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute the complete query pipeline.
@@ -1802,6 +1816,9 @@ Question: {query}"""
             date_to: Filter results up to this date (YYYY-MM-DD)
             exclude_speech_free: When True, videos with no transcript are excluded
                 from retrieval results entirely.
+            collection_name: Override the Qdrant collection to search. Defaults to
+                the configured collection. Used to scope a query to a single
+                uploaded video's ephemeral collection.
 
         Returns:
             Dictionary containing the answer and metadata
@@ -1886,6 +1903,7 @@ Question: {query}"""
                     date_to=date_to,
                     query_text=variant,
                     exclude_speech_free=exclude_speech_free,
+                    collection_name=collection_name,
                 )
                 all_variant_docs.append(variant_docs)
                 variant_retrieved_ids.append([d["doc_id"] for d in variant_docs])
@@ -1916,6 +1934,7 @@ Question: {query}"""
                 date_to=date_to,
                 query_text=question,
                 exclude_speech_free=exclude_speech_free,
+                collection_name=collection_name,
             )
             variant_retrieved_ids = [[d["doc_id"] for d in documents]]
 

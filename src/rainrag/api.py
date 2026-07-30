@@ -108,7 +108,7 @@ def _create_active_queries_gauge() -> Gauge:
 
 ACTIVE_QUERIES: Gauge = _create_active_queries_gauge()
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
@@ -116,10 +116,13 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
 from rainrag.query import RAGQueryEngine
+from rainrag.video_session import VideoSessionManager
 
 
 # Global query engine instance and config
 query_engine: RAGQueryEngine | None = None
+# Manager for single-video upload sessions (initialized on startup when enabled)
+video_session_manager: VideoSessionManager | None = None
 config: Config | None = None
 HLS_CACHE_ROOT = Path(os.getenv("RAINRAG_HLS_CACHE_DIR", "/tmp/rainrag_hls_cache"))
 _hls_prewarm_inflight: set[str] = set()
@@ -741,7 +744,7 @@ def get_video_base_name(vtt_path: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize the query engine on startup."""
-    global query_engine, config
+    global query_engine, config, video_session_manager
 
     logger.info("Initializing RainRAG API...")
 
@@ -762,11 +765,22 @@ async def lifespan(app: FastAPI):
     query_engine = RAGQueryEngine(config)
     query_engine.initialize()
 
+    # Initialize the single-video upload manager (transcribe → scoped Q&A)
+    if config.video_upload.enabled:
+        try:
+            video_session_manager = VideoSessionManager(config)
+            logger.info("Video upload session manager initialized")
+        except Exception:
+            logger.exception("Failed to initialize video session manager; upload mode disabled")
+            video_session_manager = None
+
     logger.info("RainRAG API initialized successfully")
 
     yield
 
     # Cleanup (if needed)
+    if video_session_manager is not None:
+        video_session_manager.shutdown()
     logger.info("Shutting down RainRAG API...")
 
 
@@ -1067,6 +1081,191 @@ async def query(request: QueryRequest):
         logger.error(f"Query failed: {e}")
         logger.error(f"Full traceback:\n{error_details}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Single-video upload mode: upload → transcribe → scoped Q&A
+# ---------------------------------------------------------------------------
+
+
+class VideoQueryRequest(BaseModel):
+    """Request model for querying a single uploaded video's transcript."""
+
+    question: str = Field(..., description="The user's question", min_length=1)
+    language: str = Field(
+        default="ru", description="Response language (ru or en)", pattern="^(ru|en)$"
+    )
+    top_k: int | None = Field(
+        default=None, description="Number of context chunks to retrieve", ge=1, le=20
+    )
+
+
+def _require_video_manager() -> VideoSessionManager:
+    if video_session_manager is None:
+        raise HTTPException(status_code=503, detail="Video upload mode is not available")
+    return video_session_manager
+
+
+def _build_query_response(result: dict[str, Any]) -> QueryResponse:
+    """Format a query-engine result dict into the API QueryResponse."""
+    context_chunks = []
+    for doc in result["retrieved_documents"]:
+        vtt_path = doc["path"]
+        video_url, vtt_url = generate_media_urls(vtt_path, doc.get("start_time"))
+        context_chunks.append(
+            ContextChunk(
+                text=doc["text"],
+                filename=doc["path"],
+                language=doc.get("language", "unknown"),
+                score=doc["score"],
+                rank=doc["rank"],
+                doc_id=doc.get("doc_id", ""),
+                rerank_score=doc.get("rerank_score"),
+                original_score=doc.get("original_score"),
+                video_url=video_url,
+                vtt_url=vtt_url,
+                group_id=get_video_base_name(vtt_path),
+                date=doc.get("date"),
+                duration_seconds=doc.get("duration_seconds"),
+                start_time=doc.get("start_time"),
+                end_time=doc.get("end_time"),
+                web_title=doc.get("web_title"),
+                web_date=doc.get("web_date"),
+                web_date_ts=doc.get("web_date_ts"),
+                web_description=doc.get("web_description"),
+                web_url=doc.get("web_url"),
+            )
+        )
+    return QueryResponse(
+        answer=result["answer"],
+        context=context_chunks,
+        question=result["question"],
+        num_documents=result["num_documents"],
+        metadata_fallback_hits=int(result.get("metadata_fallback_hits") or 0),
+    )
+
+
+@app.post("/video-sessions")
+async def create_video_session(file: UploadFile):
+    """Upload a video, kick off transcription + indexing, return the session."""
+    verify_auth_token()
+    manager = _require_video_manager()
+
+    max_bytes = manager.cfg.max_upload_mb * 1024 * 1024
+    tmp_root = Path(manager.cfg.tmp_root)
+    tmp_root.mkdir(parents=True, exist_ok=True)
+
+    # Stream the upload to a temp file, enforcing the size cap as we go.
+    written = 0
+    fd, tmp_name = tempfile.mkstemp(dir=str(tmp_root), suffix=".upload")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Upload exceeds maximum size of {manager.cfg.max_upload_mb} MB",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
+        logger.exception("Upload failed")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}") from exc
+    finally:
+        await file.close()
+
+    if written == 0:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Empty upload")
+
+    filename = file.filename or "upload.mp4"
+    session = manager.create_session(tmp_path, filename)
+    return session.public_dict()
+
+
+@app.get("/video-sessions/{session_id}")
+async def get_video_session(session_id: str):
+    """Return the current status/progress of an upload session."""
+    verify_auth_token()
+    manager = _require_video_manager()
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session.public_dict()
+
+
+@app.delete("/video-sessions/{session_id}")
+async def delete_video_session(session_id: str):
+    """Delete an upload session: drop its collection and working files."""
+    verify_auth_token()
+    manager = _require_video_manager()
+    if not manager.delete(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"deleted": session_id}
+
+
+@app.post("/video-sessions/{session_id}/query", response_model=QueryResponse)
+async def query_video_session(session_id: str, request: VideoQueryRequest):
+    """Answer a question scoped to a single uploaded video's transcript."""
+    verify_auth_token()
+    manager = _require_video_manager()
+
+    if query_engine is None:
+        raise HTTPException(status_code=503, detail="Query engine not initialized")
+
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status != "ready":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Session not ready (status={session.status})",
+        )
+
+    # Concurrency control shared with the main /query path.
+    try:
+        await asyncio.wait_for(_get_query_semaphore().acquire(), timeout=5.0)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Server busy: too many concurrent queries. Please retry shortly.",
+        ) from exc
+
+    try:
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                query_engine.query,
+                question=request.question,
+                top_k=request.top_k,
+                language=request.language,
+                collection_name=session.collection_name,
+            )
+        )
+        try:
+            result = await asyncio.wait_for(task, timeout=QUERY_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError as exc:
+            if not task.done():
+                task.cancel()
+            raise HTTPException(
+                status_code=504, detail="Query timed out while generating answer."
+            ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Video-session query failed")
+        raise HTTPException(status_code=500, detail=f"Query failed: {exc}") from exc
+    finally:
+        _get_query_semaphore().release()
+
+    return _build_query_response(result)
 
 
 class RelatedChunksRequest(BaseModel):

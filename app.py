@@ -1,5 +1,6 @@
 """Streamlit frontend for RainRAG - Multilingual RAG system for video transcripts."""
 
+import asyncio
 import contextlib
 import hmac
 import html
@@ -689,11 +690,18 @@ def initialize_session_state():
                 "Gosuslugi invites to special forces university",
             ],
         }
-    # Search mode: "content" (default RAG) or "name" (title search)
+    # Search mode: "content" (default RAG), "name" (title search), or "video" (upload)
     if "search_mode" not in st.session_state:
         st.session_state.search_mode = "content"
     if "name_search_results" not in st.session_state:
         st.session_state.name_search_results = None
+    # Single-video upload mode state
+    if "video_session_id" not in st.session_state:
+        st.session_state.video_session_id = None
+    if "video_messages" not in st.session_state:
+        st.session_state.video_messages = []
+    if "video_upload_error" not in st.session_state:
+        st.session_state.video_upload_error = None
     # Pending query flag for example buttons
     if "pending_query" not in st.session_state:
         st.session_state.pending_query = None
@@ -1089,6 +1097,62 @@ async def search_by_name_api(query: str) -> dict[str, Any]:
         )
         response.raise_for_status()
         return response.json()
+
+
+def get_auth_headers() -> dict[str, str]:
+    """Auth-only headers (no Content-Type) for multipart/file requests."""
+    headers: dict[str, str] = {}
+    if AUTH_TOKEN:
+        headers["Authorization"] = f"Bearer {AUTH_TOKEN}"
+    return headers
+
+
+async def upload_video_api(data: bytes, filename: str, content_type: str) -> dict[str, Any]:
+    """Upload a video to start a transcription+indexing session."""
+    async with httpx.AsyncClient(timeout=httpx.Timeout(1200.0), verify=API_VERIFY_SSL) as client:
+        response = await client.post(
+            f"{API_BASE}/video-sessions",
+            files={"file": (filename, data, content_type or "application/octet-stream")},
+            headers=get_auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def get_video_session_api(session_id: str) -> dict[str, Any]:
+    """Fetch the status/progress of a video-upload session."""
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
+        response = await client.get(
+            f"{API_BASE}/video-sessions/{session_id}",
+            headers=get_api_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def query_video_session_api(
+    session_id: str, question: str, language: str, top_k: int
+) -> dict[str, Any]:
+    """Query a single uploaded video's transcript (scoped Q&A)."""
+    payload = {"question": question, "language": language, "top_k": top_k}
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
+        response = await client.post(
+            f"{API_BASE}/video-sessions/{session_id}/query",
+            json=payload,
+            headers=get_api_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def delete_video_session_api(session_id: str) -> bool:
+    """Delete a video-upload session and its ephemeral collection."""
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
+        response = await client.delete(
+            f"{API_BASE}/video-sessions/{session_id}",
+            headers=get_api_headers(),
+        )
+        return response.status_code in (200, 404)
 
 
 async def get_related_chunks(
@@ -1704,6 +1768,158 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
     st.divider()
 
 
+_VIDEO_MODE_TEXT = {
+    "upload_prompt": {
+        "ru": "Перетащите видео сюда, чтобы расшифровать его и задавать вопросы по нему",
+        "en": "Drop a video here to transcribe it and ask questions about it",
+    },
+    "uploading": {"ru": "Загрузка видео…", "en": "Uploading video…"},
+    "queued": {"ru": "В очереди на обработку…", "en": "Queued for processing…"},
+    "waiting_for_gpu": {"ru": "Ожидание GPU…", "en": "Waiting for GPU…"},
+    "transcribing": {"ru": "Распознавание речи…", "en": "Transcribing…"},
+    "indexing": {"ru": "Индексация транскрипта…", "en": "Indexing transcript…"},
+    "ready": {"ru": "Готово! Задайте вопрос по видео.", "en": "Ready! Ask a question about the video."},
+    "error": {"ru": "Ошибка обработки", "en": "Processing error"},
+    "new_video": {"ru": "Загрузить другое видео", "en": "Upload another video"},
+    "chat_placeholder": {"ru": "Спросите что-нибудь об этом видео…", "en": "Ask anything about this video…"},
+    "processing_title": {"ru": "Обрабатываем ваше видео", "en": "Processing your video"},
+}
+
+
+def _vt(key: str, lang: str) -> str:
+    entry = _VIDEO_MODE_TEXT.get(key, {})
+    return entry.get(lang if lang in ("ru", "en") else "ru", entry.get("ru", key))
+
+
+def _reset_video_session(delete_remote: bool = True) -> None:
+    """Clear local video-mode state and optionally delete the remote session."""
+    session_id = st.session_state.get("video_session_id")
+    if delete_remote and session_id:
+        try:
+            asyncio.run(delete_video_session_api(session_id))
+        except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+            logger.warning(f"Failed to delete video session {session_id}: {exc}")
+    st.session_state.video_session_id = None
+    st.session_state.video_messages = []
+    st.session_state.video_upload_error = None
+
+
+def render_video_mode(lang: str):
+    """Upload a single video, transcribe it, and chat scoped to that video."""
+    session_id = st.session_state.get("video_session_id")
+
+    # --- No active session: show the uploader ---
+    if not session_id:
+        if st.session_state.get("video_upload_error"):
+            st.error(st.session_state.video_upload_error)
+            st.session_state.video_upload_error = None
+        st.markdown(f"### {_vt('upload_prompt', lang)}")
+        uploaded = st.file_uploader(
+            _vt("upload_prompt", lang),
+            type=["mp4", "mkv", "webm", "avi", "mov", "m4v"],
+            label_visibility="collapsed",
+            key="video_uploader",
+        )
+        if uploaded is not None:
+            with st.spinner(_vt("uploading", lang)):
+                try:
+                    result = asyncio.run(
+                        upload_video_api(
+                            uploaded.getvalue(),
+                            uploaded.name,
+                            uploaded.type or "application/octet-stream",
+                        )
+                    )
+                    st.session_state.video_session_id = result.get("id")
+                    st.session_state.video_messages = []
+                    st.rerun()
+                except httpx.HTTPStatusError as e:
+                    detail = e.response.text
+                    st.session_state.video_upload_error = f"{get_text('error_general', lang)}: {detail}"
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.session_state.video_upload_error = f"{get_text('error_general', lang)}: {e}"
+                    st.rerun()
+        return
+
+    # --- Active session: fetch status ---
+    try:
+        status = asyncio.run(get_video_session_api(session_id))
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            # Session expired / gone on the server — reset locally.
+            _reset_video_session(delete_remote=False)
+            st.rerun()
+        st.error(f"{get_text('error_general', lang)}: {e}")
+        return
+    except Exception as e:  # noqa: BLE001
+        st.error(f"{get_text('error_general', lang)}: {e}")
+        return
+
+    state = status.get("status", "queued")
+    filename = status.get("filename", "")
+
+    header_col, btn_col = st.columns([4, 1])
+    with header_col:
+        if filename:
+            st.markdown(f"**{html.escape(filename)}**")
+    with btn_col:
+        if st.button(_vt("new_video", lang), use_container_width=True):
+            _reset_video_session()
+            st.rerun()
+
+    # --- Still processing: show progress and auto-refresh ---
+    if state in ("queued", "transcribing", "indexing"):
+        stage = status.get("stage", state)
+        percent = float(status.get("percent") or 0.0)
+        st.markdown(f"#### {_vt('processing_title', lang)}")
+        st.caption(_vt(stage if stage in _VIDEO_MODE_TEXT else state, lang))
+        st.progress(min(max(percent / 100.0, 0.0), 1.0))
+        time.sleep(2.0)
+        st.rerun()
+        return
+
+    # --- Error ---
+    if state == "error":
+        st.error(f"{_vt('error', lang)}: {status.get('error', '')}")
+        return
+
+    # --- Ready: chat scoped to this video ---
+    st.success(_vt("ready", lang))
+
+    for message in st.session_state.video_messages:
+        render_message_bubble(message, lang)
+
+    user_input = st.chat_input(_vt("chat_placeholder", lang))
+    if user_input:
+        st.session_state.video_messages.append({"role": "user", "content": user_input})
+        render_message_bubble({"role": "user", "content": user_input}, lang)
+        with st.spinner(get_text("thinking", lang)):
+            try:
+                response = asyncio.run(
+                    query_video_session_api(
+                        session_id,
+                        user_input,
+                        st.session_state.language,
+                        st.session_state.top_k,
+                    )
+                )
+                st.session_state.video_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": response["answer"],
+                        "context": response.get("context", []),
+                    }
+                )
+                st.rerun()
+            except httpx.HTTPStatusError as e:
+                st.error(f"{get_text('error_general', lang)}: {e}")
+            except httpx.TimeoutException:
+                st.error(get_text("error_timeout", lang))
+            except Exception as e:  # noqa: BLE001
+                st.error(f"{get_text('error_general', lang)}: {e}")
+
+
 def render_sidebar(lang: str):
     """Render the sidebar with controls and system information."""
     with st.sidebar:
@@ -1979,20 +2195,34 @@ def main():
     st.title(get_text("title", lang))
     st.caption(get_text("subtitle", lang))
 
-    # Unobtrusive search-mode toggle (right-aligned)
-    toggle_col, _ = st.columns([1, 3])
-    with toggle_col:
-        name_mode = st.toggle(
-            get_text("name_search_toggle", lang),
-            value=(st.session_state.search_mode == "name"),
-            key="name_search_toggle_widget",
-        )
-    if name_mode:
-        st.session_state.search_mode = "name"
-    else:
-        st.session_state.search_mode = "content"
+    # Search-mode selector: content RAG / name search / single-video upload
+    mode_labels = {
+        "content": {"ru": "Поиск по содержанию", "en": "Content search"},
+        "name": {"ru": "Поиск по названию", "en": "Name search"},
+        "video": {"ru": "Своё видео", "en": "Your video"},
+    }
+    modes = ["content", "name", "video"]
+    current_mode = (
+        st.session_state.search_mode if st.session_state.search_mode in modes else "content"
+    )
+    label_lang = lang if lang in ("ru", "en") else "ru"
+    selected_mode = st.radio(
+        "search_mode_selector",
+        modes,
+        index=modes.index(current_mode),
+        format_func=lambda m: mode_labels[m][label_lang],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="search_mode_selector_widget",
+    )
+    st.session_state.search_mode = selected_mode
 
     st.divider()
+
+    # ---- SINGLE-VIDEO UPLOAD MODE ----
+    if st.session_state.search_mode == "video":
+        render_video_mode(lang)
+        return
 
     # ---- NAME SEARCH MODE ----
     if st.session_state.search_mode == "name":

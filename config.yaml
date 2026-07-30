@@ -177,6 +177,26 @@ video:
     - ".en.vtt"
     - ".ru.vtt"
 
+# Single-video upload mode: drag-drop a video -> transcribe -> scoped Q&A.
+# Each upload gets its own ephemeral Qdrant collection so answers are isolated
+# to that video. Transcription runs as a subprocess under an interpreter that
+# has faster-whisper installed (the livevtt venv), keeping heavy CUDA deps out
+# of the RainRAG environment.
+video_upload:
+  enabled: true
+  livevtt_python: "/home/ubuntu/livevtt/.venv/bin/python"  # interpreter with faster-whisper
+  transcribe_script: "scripts/transcribe_one.py"           # single-file transcriber
+  model: "large-v3-turbo"        # faster-whisper model (turbo ~halves latency vs large-v3)
+  compute_type: "int8_float16"   # avoids CUDA OOM on large models
+  device: "cuda"
+  device_index: 0
+  language: "ru"                 # source language for transcription
+  beam_size: 5
+  tmp_root: "./data/video_sessions"   # per-session working files
+  collection_prefix: "session_"       # ephemeral collection name prefix
+  session_ttl_seconds: 7200           # auto-cleanup after 2h
+  max_upload_mb: 2048                 # reject uploads larger than this
+
 # MCP server configuration
 mcp:
   # Transport protocol: "stdio" for local CLI tools (Claude Desktop, Cursor),

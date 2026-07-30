@@ -1,0 +1,7 @@
+# Streamlit server configuration.
+# maxUploadSize raises the default 200 MB limit so the single-video upload mode
+# can accept real broadcast files. Keep in sync with config.yaml
+# video_upload.max_upload_mb (the API-side cap). Address/port/headless are set
+# via CLI flags at launch and override any values here.
+[server]
+maxUploadSize = 2048

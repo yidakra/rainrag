@@ -255,6 +255,46 @@ class VideoConfig(BaseModel):
     )
 
 
+class VideoUploadConfig(BaseModel):
+    """Configuration for the single-video upload / scoped-Q&A mode.
+
+    Transcription runs as a subprocess under an interpreter that has
+    faster-whisper installed (the livevtt virtualenv), keeping the heavy
+    CUDA/ctranslate2 stack out of the RainRAG environment.
+    """
+
+    enabled: bool = Field(default=True, description="Enable the video-upload mode")
+    livevtt_python: str = Field(
+        default="/home/ubuntu/livevtt/.venv/bin/python",
+        description="Python interpreter that has faster-whisper installed",
+    )
+    transcribe_script: str = Field(
+        default="scripts/transcribe_one.py",
+        description="Path to the single-file transcription script",
+    )
+    model: str = Field(default="large-v3-turbo", description="faster-whisper model")
+    compute_type: str = Field(
+        default="int8_float16", description="ctranslate2 compute type"
+    )
+    device: str = Field(default="cuda", description="cuda or cpu")
+    device_index: int = Field(default=0, description="CUDA device index")
+    language: str = Field(default="ru", description="Source language code")
+    beam_size: int = Field(default=5, description="Decoding beam size")
+    tmp_root: str = Field(
+        default="./data/video_sessions",
+        description="Root directory for per-session working files",
+    )
+    collection_prefix: str = Field(
+        default="session_", description="Prefix for ephemeral per-session collections"
+    )
+    session_ttl_seconds: int = Field(
+        default=7200, description="Session lifetime before automatic cleanup (seconds)"
+    )
+    max_upload_mb: int = Field(
+        default=2048, description="Maximum accepted upload size in megabytes"
+    )
+
+
 class MCPConfig(BaseModel):
     """Configuration for MCP server."""
 
@@ -501,6 +541,7 @@ class Config(BaseModel):
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
+    video_upload: VideoUploadConfig = Field(default_factory=VideoUploadConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     web_metadata: WebMetadataConfig = Field(default_factory=WebMetadataConfig)
     incremental: IncrementalConfig = Field(default_factory=IncrementalConfig)
