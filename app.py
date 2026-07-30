@@ -225,6 +225,26 @@ TRANSLATIONS = {
         "name_search_no_local_files": "Файлы не найдены в локальном архиве.",
         "name_search_show": "программа",
         "name_search_searching": "Поиск видео по названию...",
+        # Mode selector
+        "mode_selector_label": "Режим поиска",
+        "mode_content": "По содержанию",
+        "mode_name": "По названию",
+        "mode_video": "Своё видео",
+        "mode_content_caption": "Поиск по расшифровкам архива Дождя",
+        "mode_name_caption": "Поиск видео в архиве по названию",
+        "mode_video_caption": "Загрузите своё видео — мы его расшифруем и ответим на вопросы по нему",
+        # Single-video upload mode
+        "video_upload_prompt": "Перетащите видео сюда, чтобы расшифровать его и задавать вопросы по нему",
+        "video_uploading": "Загрузка видео…",
+        "video_queued": "В очереди на обработку…",
+        "video_waiting_for_gpu": "Ожидание GPU…",
+        "video_transcribing": "Распознавание речи…",
+        "video_indexing": "Индексация транскрипта…",
+        "video_ready": "Готово! Задайте вопрос по видео.",
+        "video_error": "Ошибка обработки",
+        "video_new_video": "Загрузить другое видео",
+        "video_chat_placeholder": "Спросите что-нибудь об этом видео…",
+        "video_processing_title": "Обрабатываем ваше видео",
     },
     "en": {
         "title": "RainRAG - Video Transcript Search",
@@ -317,6 +337,26 @@ TRANSLATIONS = {
         "name_search_no_local_files": "Files not found in local archive.",
         "name_search_show": "show",
         "name_search_searching": "Searching videos by name...",
+        # Mode selector
+        "mode_selector_label": "Search mode",
+        "mode_content": "By content",
+        "mode_name": "By title",
+        "mode_video": "Your video",
+        "mode_content_caption": "Search across the TV Rain archive transcripts",
+        "mode_name_caption": "Find archive videos by title",
+        "mode_video_caption": "Upload your own video — we'll transcribe it and answer questions about it",
+        # Single-video upload mode
+        "video_upload_prompt": "Drop a video here to transcribe it and ask questions about it",
+        "video_uploading": "Uploading video…",
+        "video_queued": "Queued for processing…",
+        "video_waiting_for_gpu": "Waiting for GPU…",
+        "video_transcribing": "Transcribing…",
+        "video_indexing": "Indexing transcript…",
+        "video_ready": "Ready! Ask a question about the video.",
+        "video_error": "Processing error",
+        "video_new_video": "Upload another video",
+        "video_chat_placeholder": "Ask anything about this video…",
+        "video_processing_title": "Processing your video",
     },
 }
 
@@ -1768,29 +1808,6 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
     st.divider()
 
 
-_VIDEO_MODE_TEXT = {
-    "upload_prompt": {
-        "ru": "Перетащите видео сюда, чтобы расшифровать его и задавать вопросы по нему",
-        "en": "Drop a video here to transcribe it and ask questions about it",
-    },
-    "uploading": {"ru": "Загрузка видео…", "en": "Uploading video…"},
-    "queued": {"ru": "В очереди на обработку…", "en": "Queued for processing…"},
-    "waiting_for_gpu": {"ru": "Ожидание GPU…", "en": "Waiting for GPU…"},
-    "transcribing": {"ru": "Распознавание речи…", "en": "Transcribing…"},
-    "indexing": {"ru": "Индексация транскрипта…", "en": "Indexing transcript…"},
-    "ready": {"ru": "Готово! Задайте вопрос по видео.", "en": "Ready! Ask a question about the video."},
-    "error": {"ru": "Ошибка обработки", "en": "Processing error"},
-    "new_video": {"ru": "Загрузить другое видео", "en": "Upload another video"},
-    "chat_placeholder": {"ru": "Спросите что-нибудь об этом видео…", "en": "Ask anything about this video…"},
-    "processing_title": {"ru": "Обрабатываем ваше видео", "en": "Processing your video"},
-}
-
-
-def _vt(key: str, lang: str) -> str:
-    entry = _VIDEO_MODE_TEXT.get(key, {})
-    return entry.get(lang if lang in ("ru", "en") else "ru", entry.get("ru", key))
-
-
 def _reset_video_session(delete_remote: bool = True) -> None:
     """Clear local video-mode state and optionally delete the remote session."""
     session_id = st.session_state.get("video_session_id")
@@ -1813,15 +1830,15 @@ def render_video_mode(lang: str):
         if st.session_state.get("video_upload_error"):
             st.error(st.session_state.video_upload_error)
             st.session_state.video_upload_error = None
-        st.markdown(f"### {_vt('upload_prompt', lang)}")
+        st.markdown(f"### {get_text('video_upload_prompt', lang)}")
         uploaded = st.file_uploader(
-            _vt("upload_prompt", lang),
+            get_text("video_upload_prompt", lang),
             type=["mp4", "mkv", "webm", "avi", "mov", "m4v"],
             label_visibility="collapsed",
             key="video_uploader",
         )
         if uploaded is not None:
-            with st.spinner(_vt("uploading", lang)):
+            with st.spinner(get_text("video_uploading", lang)):
                 try:
                     result = asyncio.run(
                         upload_video_api(
@@ -1835,7 +1852,9 @@ def render_video_mode(lang: str):
                     st.rerun()
                 except httpx.HTTPStatusError as e:
                     detail = e.response.text
-                    st.session_state.video_upload_error = f"{get_text('error_general', lang)}: {detail}"
+                    st.session_state.video_upload_error = (
+                        f"{get_text('error_general', lang)}: {detail}"
+                    )
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.session_state.video_upload_error = f"{get_text('error_general', lang)}: {e}"
@@ -1864,7 +1883,7 @@ def render_video_mode(lang: str):
         if filename:
             st.markdown(f"**{html.escape(filename)}**")
     with btn_col:
-        if st.button(_vt("new_video", lang), use_container_width=True):
+        if st.button(get_text("video_new_video", lang), use_container_width=True):
             _reset_video_session()
             st.rerun()
 
@@ -1872,8 +1891,12 @@ def render_video_mode(lang: str):
     if state in ("queued", "transcribing", "indexing"):
         stage = status.get("stage", state)
         percent = float(status.get("percent") or 0.0)
-        st.markdown(f"#### {_vt('processing_title', lang)}")
-        st.caption(_vt(stage if stage in _VIDEO_MODE_TEXT else state, lang))
+        st.markdown(f"#### {get_text('video_processing_title', lang)}")
+        # Prefer the fine-grained stage label (e.g. waiting_for_gpu) when the
+        # backend reports one we have a translation for; else fall back to status.
+        known_stages = ("queued", "waiting_for_gpu", "transcribing", "indexing")
+        stage_key = stage if stage in known_stages else state
+        st.caption(get_text(f"video_{stage_key}", lang))
         st.progress(min(max(percent / 100.0, 0.0), 1.0))
         time.sleep(2.0)
         st.rerun()
@@ -1881,16 +1904,16 @@ def render_video_mode(lang: str):
 
     # --- Error ---
     if state == "error":
-        st.error(f"{_vt('error', lang)}: {status.get('error', '')}")
+        st.error(f"{get_text('video_error', lang)}: {status.get('error', '')}")
         return
 
     # --- Ready: chat scoped to this video ---
-    st.success(_vt("ready", lang))
+    st.success(get_text("video_ready", lang))
 
     for message in st.session_state.video_messages:
         render_message_bubble(message, lang)
 
-    user_input = st.chat_input(_vt("chat_placeholder", lang))
+    user_input = st.chat_input(get_text("video_chat_placeholder", lang))
     if user_input:
         st.session_state.video_messages.append({"role": "user", "content": user_input})
         render_message_bubble({"role": "user", "content": user_input}, lang)
@@ -2196,26 +2219,26 @@ def main():
     st.caption(get_text("subtitle", lang))
 
     # Search-mode selector: content RAG / name search / single-video upload
-    mode_labels = {
-        "content": {"ru": "Поиск по содержанию", "en": "Content search"},
-        "name": {"ru": "Поиск по названию", "en": "Name search"},
-        "video": {"ru": "Своё видео", "en": "Your video"},
-    }
     modes = ["content", "name", "video"]
     current_mode = (
         st.session_state.search_mode if st.session_state.search_mode in modes else "content"
     )
-    label_lang = lang if lang in ("ru", "en") else "ru"
-    selected_mode = st.radio(
-        "search_mode_selector",
+    selected_mode = st.segmented_control(
+        get_text("mode_selector_label", lang),
         modes,
-        index=modes.index(current_mode),
-        format_func=lambda m: mode_labels[m][label_lang],
-        horizontal=True,
+        default=current_mode,
+        format_func=lambda m: get_text(f"mode_{m}", lang),
         label_visibility="collapsed",
         key="search_mode_selector_widget",
     )
+    # segmented_control returns None when the active option is clicked again;
+    # treat that as "keep the current mode" so the UI never ends up mode-less.
+    if selected_mode is None:
+        selected_mode = current_mode
     st.session_state.search_mode = selected_mode
+
+    # Tell the user what the active mode actually does.
+    st.caption(get_text(f"mode_{selected_mode}_caption", lang))
 
     st.divider()
 
