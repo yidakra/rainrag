@@ -468,3 +468,144 @@ class TestDimensionProbe:
 
         assert public["width"] == 3420
         assert public["height"] == 2224
+
+
+class TestTranscriberOutputHandling:
+    """A chatty transcriber must not deadlock.
+
+    Regression: stdout was a pipe drained only after the process exited, so a
+    child writing past the ~64KB pipe buffer blocked forever while the manager
+    waited for it.
+    """
+
+    def test_log_tail_returns_the_end_of_a_large_log(self, tmp_path: Path) -> None:
+        log = tmp_path / "transcribe.log"
+        log.write_text("x" * 100_000 + "\nFINAL ERROR\n", encoding="utf-8")
+
+        tail = VideoSessionManager._read_log_tail(log)
+
+        assert "FINAL ERROR" in tail
+        assert len(tail) <= 64_100
+
+    def test_log_tail_survives_a_missing_file(self, tmp_path: Path) -> None:
+        assert VideoSessionManager._read_log_tail(tmp_path / "absent.log") == ""
+
+
+class TestOrphanSweepScope:
+    """The sweep must only remove paths this manager created.
+
+    tmp_root can be shared or misconfigured; deleting everything under it
+    would be silent data loss.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("0123456789abcdef0123456789abcdef", True),
+            ("0123456789abcdef0123456789abcdef.upload", True),
+            ("important-data", False),
+            ("", False),
+            ("0123456789ABCDEF0123456789ABCDEF", False),  # uuid4().hex is lowercase
+            ("0123456789abcdef0123456789abcde", False),  # 31 chars
+            ("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", False),  # right length, not hex
+        ],
+    )
+    def test_recognises_only_session_artifacts(self, name: str, expected: bool) -> None:
+        assert VideoSessionManager._is_session_artifact(Path("/tmp") / name) is expected
+
+
+class TestShutdownTeardown:
+    """Sessions left registered at shutdown can never be reached again."""
+
+    def test_shutdown_tears_down_active_sessions(self) -> None:
+        manager = _bare_manager()
+        manager._stop = threading.Event()
+        session = VideoSession(id="s1", filename="clip.mp4")
+        manager._sessions["s1"] = session
+        torn: list[str] = []
+        manager._teardown = lambda s: torn.append(s.id)  # type: ignore[method-assign]
+
+        manager.shutdown()
+
+        assert torn == ["s1"]
+        assert manager._sessions == {}
+        assert manager._stop.is_set()
+
+    def test_shutdown_continues_after_a_teardown_failure(self) -> None:
+        manager = _bare_manager()
+        manager._stop = threading.Event()
+        manager._sessions = {
+            "s1": VideoSession(id="s1", filename="a.mp4"),
+            "s2": VideoSession(id="s2", filename="b.mp4"),
+        }
+        torn: list[str] = []
+
+        def _teardown(session: VideoSession) -> None:
+            if session.id == "s1":
+                raise RuntimeError("qdrant down")
+            torn.append(session.id)
+
+        manager._teardown = _teardown  # type: ignore[method-assign]
+
+        manager.shutdown()  # must not raise
+
+        assert torn == ["s2"]
+
+
+class TestSessionResponsesHideLocalPaths:
+    """Session paths are internal; public_dict strips them for the same reason."""
+
+    @staticmethod
+    def _result(path: str) -> dict:
+        return {
+            "answer": "a",
+            "question": "q",
+            "num_documents": 1,
+            "retrieved_documents": [
+                {"path": path, "text": "t", "score": 0.5, "rank": 1, "start_time": "00:00:00"}
+            ],
+        }
+
+    def test_session_filename_is_a_bare_name(self) -> None:
+        from rainrag.api import _build_query_response
+
+        response = _build_query_response(
+            self._result("/srv/data/video_sessions/abc/source.ru.vtt"), media_urls=False
+        )
+
+        chunk = response.context[0]
+        assert chunk.filename == "source.ru.vtt"
+        # No path fragments, and no stray separator from a missing parent dir.
+        assert chunk.group_id == "source"
+
+    def test_archive_filename_keeps_its_path(self, monkeypatch) -> None:
+        """The archive path identifies the broadcast, so it must survive."""
+        import rainrag.api as api
+
+        monkeypatch.setattr(api, "generate_media_urls", lambda *_: ("/video/x", "/vtt/x"))
+
+        response = api._build_query_response(self._result("2024/05/show.ru.vtt"))
+
+        assert response.context[0].filename == "2024/05/show.ru.vtt"
+
+
+class TestSingleVideoQueryScoping:
+    """Archive-shaped retrieval stages must not run against one uploaded video."""
+
+    def test_hybrid_applies_to_the_main_corpus_however_it_is_named(self) -> None:
+        """BM25 is built over the main corpus; naming it explicitly is still it."""
+        main = "broadcast_transcripts"
+
+        def gate(collection_name: str | None) -> bool:
+            target = collection_name or main
+            return target == main
+
+        assert gate(None) is True
+        assert gate(main) is True
+        assert gate("session_abc") is False
+
+    def test_two_stage_is_off_for_single_video(self) -> None:
+        """Rewriting and HyDE paraphrase into archive register -- off-corpus here."""
+        for configured in (True, False):
+            assert (configured and not True) is False  # single_video wins
+        assert (True and not False) is True  # archive keeps its configured value

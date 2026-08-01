@@ -1232,13 +1232,14 @@ class RAGQueryEngine:
         target_collection = collection_name or self.config.qdrant.collection_name
 
         # Check if hybrid search is enabled and query_text is provided.
-        # BM25 is built over the main corpus, so it cannot be used when
-        # retrieval is scoped to an override collection (e.g. an uploaded video).
+        # BM25 is built over the main corpus, so it applies whenever retrieval
+        # targets that corpus -- including a caller that names it explicitly --
+        # and never to an override collection such as an uploaded video.
         use_hybrid = (
             self.config.hybrid_search.enabled
             and query_text
             and self.bm25 is not None
-            and collection_name is None
+            and target_collection == self.config.qdrant.collection_name
         )
 
         if use_hybrid:
@@ -1897,7 +1898,11 @@ Question: {query}"""
                 )
 
         # Step 1: Build query variants (Stage 2a: LLM query rewriting)
-        two_stage_enabled = self.config.two_stage.enabled
+        # Both rewriting and HyDE are written around the broadcast archive: they
+        # paraphrase into news-transcript register and invent plausible archive
+        # passages. Against one uploaded video that is off-corpus guesswork over
+        # a handful of chunks, so the whole of Stage 2 is skipped there.
+        two_stage_enabled = self.config.two_stage.enabled and not single_video
         if two_stage_enabled and self.config.two_stage.query_rewrite_enabled:
             query_variants = self._rewrite_query_for_retrieval(question, language)
         else:
@@ -2006,7 +2011,13 @@ Question: {query}"""
         documents = self._order_documents_for_prompt(documents, doc_order)
 
         # Step 5d: Fill missing web metadata from local/API fallback at query-time.
-        documents, metadata_fallback_hits = self._enrich_documents_with_web_metadata(documents)
+        # An uploaded video has no archive entry, so this would look up the
+        # session's own filename and could only mislabel it with someone else's
+        # broadcast metadata.
+        if single_video:
+            metadata_fallback_hits = 0
+        else:
+            documents, metadata_fallback_hits = self._enrich_documents_with_web_metadata(documents)
 
         # Step 6: Build the messages with language specification
         messages = self.build_prompt(

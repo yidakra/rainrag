@@ -263,7 +263,11 @@ class VideoUploadConfig(BaseModel):
     CUDA/ctranslate2 stack out of the RainRAG environment.
     """
 
-    enabled: bool = Field(default=True, description="Enable the video-upload mode")
+    # Off unless a deployment asks for it: the mode needs a GPU and a separate
+    # interpreter with faster-whisper, neither of which can be assumed. A config
+    # that omits this section would otherwise get a broken upload flow rather
+    # than no upload flow. config.yaml turns it on for this deployment.
+    enabled: bool = Field(default=False, description="Enable the video-upload mode")
     livevtt_python: str = Field(
         default="/home/ubuntu/livevtt/.venv/bin/python",
         description="Python interpreter that has faster-whisper installed",

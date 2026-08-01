@@ -132,16 +132,29 @@ def main(argv: list[str] | None = None) -> int:
     multilingual = auto_language and not args.no_multilingual
 
     try:
-        segments, info = model.transcribe(
-            str(args.input),
-            language=language,
-            multilingual=multilingual,
-            language_detection_segments=max(1, args.detection_segments),
-            beam_size=args.beam_size,
-            vad_filter=not args.no_vad,
-        )
+        kwargs = {
+            "language": language,
+            "beam_size": args.beam_size,
+            "vad_filter": not args.no_vad,
+        }
+        # multilingual and language_detection_segments arrived in faster-whisper
+        # 1.1.0. This runs under a separate interpreter we do not control, so
+        # fall back to plain single-language detection rather than crashing.
+        try:
+            segments, info = model.transcribe(
+                str(args.input),
+                multilingual=multilingual,
+                language_detection_segments=max(1, args.detection_segments),
+                **kwargs,
+            )
+        except TypeError as exc:
+            print(f"faster-whisper lacks multilingual detection ({exc}); using basic detection")
+            multilingual = False
+            segments, info = model.transcribe(str(args.input), **kwargs)
         total = float(getattr(info, "duration", 0.0) or 0.0)
-        detected = getattr(info, "language", None) or args.language
+        # None, never the literal "auto": this is read back to label the VTT and
+        # is shown to the user, so an unknown language must stay unknown.
+        detected = getattr(info, "language", None) or (None if auto_language else args.language)
         detected_prob = float(getattr(info, "language_probability", 0.0) or 0.0)
         _write_progress(
             progress,

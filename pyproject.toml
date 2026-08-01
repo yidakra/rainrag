@@ -19,7 +19,8 @@ dependencies = [
     # Mistral API client
     "mistralai>=1.0.0,<2.0.0",
     # Web frontend dependencies
-    "streamlit>=1.31.0,<2.0.0",
+    # >=1.40 for st.segmented_control, used by the search-mode selector.
+    "streamlit>=1.40.0,<2.0.0",
     "fastapi>=0.115.0,<1.0.0",
     "uvicorn[standard]>=0.31.1,<1.0.0",
     "prometheus-client>=0.21.1,<1.0.0",

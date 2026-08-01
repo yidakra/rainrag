@@ -244,7 +244,34 @@ class VideoSessionManager:
         return True
 
     def shutdown(self) -> None:
+        """Stop the reaper and tear down every session still registered.
+
+        Session state is in-process only, so anything left registered here can
+        never be reached again -- its collection and working directory would
+        accumulate until someone cleaned up by hand.
+        """
         self._stop.set()
+        with self._lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+            procs = list(self._procs.items())
+            self._procs.clear()
+            self._gpu_queue.clear()
+
+        for session_id, proc in procs:
+            if proc.poll() is None:
+                logger.info(f"[video-session {session_id}] stopping transcription for shutdown")
+                with contextlib.suppress(OSError):
+                    proc.kill()
+
+        for session in sessions:
+            session.cancelled = True
+            try:
+                self._teardown(session)
+            except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+                logger.warning(f"[video-session {session.id}] shutdown teardown failed: {exc}")
+        if sessions:
+            logger.info(f"Video upload: tore down {len(sessions)} session(s) on shutdown")
 
     # --------------------------------------------------------------- internals
 
@@ -261,34 +288,58 @@ class VideoSessionManager:
             logger.warning("collection_prefix is empty; skipping orphan sweep to stay safe")
             return
 
-        # Stale ephemeral collections.
+        # Stale ephemeral collections. Dropped one at a time so a single failure
+        # does not abandon the rest, and only successes are counted.
         try:
             stale = [name for name in self._indexer.list_collections() if name.startswith(prefix)]
+        except Exception as exc:  # noqa: BLE001 - startup must not fail on cleanup
+            logger.warning(f"Orphan sweep (collections) failed: {exc}")
+        else:
+            dropped = 0
             for name in stale:
                 # Guard against a prefix that would match the live archive.
                 if name == self.config.qdrant.collection_name:
                     continue
-                self._indexer.drop_collection(name)
-            if stale:
-                logger.info(f"Orphan sweep: dropped {len(stale)} stale session collection(s)")
-        except Exception as exc:  # noqa: BLE001 - startup must not fail on cleanup
-            logger.warning(f"Orphan sweep (collections) failed: {exc}")
+                try:
+                    self._indexer.drop_collection(name)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"Orphan sweep: could not drop collection {name}: {exc}")
+                else:
+                    dropped += 1
+            if dropped:
+                logger.info(f"Orphan sweep: dropped {dropped} stale session collection(s)")
 
-        # Stale working directories, including any partial uploads.
+        # Stale working directories. Only paths this manager creates are touched:
+        # tmp_root may be shared or misconfigured, and deleting everything under
+        # it would be silent data loss.
         try:
-            tmp_root = Path(self.cfg.tmp_root)
-            removed = 0
-            for entry in tmp_root.iterdir():
-                if entry.is_dir():
-                    shutil.rmtree(entry, ignore_errors=True)
-                    removed += 1
-                elif entry.suffix == ".upload":
-                    entry.unlink(missing_ok=True)
-                    removed += 1
-            if removed:
-                logger.info(f"Orphan sweep: removed {removed} stale session file(s)/dir(s)")
-        except Exception as exc:  # noqa: BLE001
+            entries = list(Path(self.cfg.tmp_root).iterdir())
+        except OSError as exc:
             logger.warning(f"Orphan sweep (directories) failed: {exc}")
+            return
+
+        removed = 0
+        for entry in entries:
+            if not self._is_session_artifact(entry):
+                logger.debug(f"Orphan sweep: leaving unrecognised entry {entry.name}")
+                continue
+            try:
+                if entry.is_dir():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+            except OSError as exc:
+                logger.warning(f"Orphan sweep: could not remove {entry.name}: {exc}")
+            else:
+                removed += 1
+        if removed:
+            logger.info(f"Orphan sweep: removed {removed} stale session file(s)/dir(s)")
+
+    @staticmethod
+    def _is_session_artifact(entry: Path) -> bool:
+        """True for paths this manager creates: <uuid4 hex>/ and <uuid4 hex>.upload."""
+        name = entry.name[: -len(".upload")] if entry.name.endswith(".upload") else entry.name
+        return len(name) == 32 and all(c in "0123456789abcdef" for c in name)
 
     def _update(self, session_id: str, **fields) -> None:
         with self._lock:
@@ -520,28 +571,32 @@ class VideoSessionManager:
 
             self._update(session.id, stage="transcribing", percent=0.0, queue_position=0)
             logger.info(f"[video-session {session.id}] transcribing on GPU {device_index}")
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-            )
-            with self._lock:
-                self._procs[session.id] = proc
-            start = time.time()
-            try:
-                while proc.poll() is None:
-                    if time.time() - start > timeout:
-                        proc.kill()
-                        raise RuntimeError("transcription timed out")
-                    try:
-                        self._check_cancelled(session.id)
-                    except SessionCancelledError:
-                        proc.kill()
-                        raise
-                    self._poll_progress(session.id, progress_file)
-                    time.sleep(1.0)
-            finally:
-                out = proc.stdout.read() if proc.stdout else ""
+            # Child output goes to a file, not a pipe: this loop only reads it
+            # once the child has exited, so a pipe would deadlock the transcriber
+            # as soon as it wrote past the OS buffer (~64 KB) -- which model
+            # download progress alone can do.
+            log_file = Path(session.session_dir) / "transcribe.log"
+            with log_file.open("w", encoding="utf-8") as sink:
+                proc = subprocess.Popen(cmd, stdout=sink, stderr=subprocess.STDOUT, text=True)
                 with self._lock:
-                    self._procs.pop(session.id, None)
+                    self._procs[session.id] = proc
+                start = time.time()
+                try:
+                    while proc.poll() is None:
+                        if time.time() - start > timeout:
+                            proc.kill()
+                            raise RuntimeError("transcription timed out")
+                        try:
+                            self._check_cancelled(session.id)
+                        except SessionCancelledError:
+                            proc.kill()
+                            raise
+                        self._poll_progress(session.id, progress_file)
+                        time.sleep(1.0)
+                finally:
+                    with self._lock:
+                        self._procs.pop(session.id, None)
+            out = self._read_log_tail(log_file)
             if proc.returncode != 0:
                 # delete() kills the transcriber directly, which lands here as a
                 # non-zero exit. Check for that before blaming the transcriber.
@@ -559,6 +614,22 @@ class VideoSessionManager:
         if not vtt_path.exists():
             raise RuntimeError("transcription produced no VTT output")
         self._update(session.id, vtt_path=str(self._apply_language_suffix(vtt_path, progress_file)))
+
+    @staticmethod
+    def _read_log_tail(log_file: Path, max_bytes: int = 64_000) -> str:
+        """Read the end of the transcriber log, for reporting a failure.
+
+        Only the tail is read: a failing run can leave a large log, and the
+        error is always at the end.
+        """
+        try:
+            size = log_file.stat().st_size
+            with log_file.open("r", encoding="utf-8", errors="replace") as handle:
+                if size > max_bytes:
+                    handle.seek(size - max_bytes)
+                return handle.read()
+        except OSError:
+            return ""
 
     def _apply_language_suffix(self, vtt_path: Path, progress_file: Path) -> Path:
         """Rename source.vtt to source.<lang>.vtt so ingest picks up the language.
@@ -616,14 +687,19 @@ class VideoSessionManager:
 
     def _index(self, session: VideoSession) -> None:
         """Ingest the VTT → embed → index into the session's ephemeral collection."""
-        self._update(session.id, status=STATUS_INDEXING, stage="indexing", percent=100.0)
+        # Not 100%: indexing still has to parse, embed and upsert. Claiming
+        # completion here makes the bar sit full while work continues, which
+        # reads as a stall. _run sets 100% once the session is actually ready.
+        self._update(session.id, status=STATUS_INDEXING, stage="indexing", percent=0.0)
 
         documents = self._ingester.process_file(Path(session.vtt_path))
+        self._update(session.id, percent=35.0)
         if not documents:
             # Valid VTT but no speech cues (silent video) → nothing to answer over.
             raise RuntimeError("no speech detected in the video")
 
         embeddings = self._embedder.generate_embeddings(documents, show_progress=False)
+        self._update(session.id, percent=80.0)
         self._indexer.ensure_collection(session.collection_name)
         self._indexer.index_documents(
             embeddings, documents, collection_name=session.collection_name

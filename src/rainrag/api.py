@@ -737,8 +737,10 @@ def get_video_base_name(vtt_path: str) -> str:
             break
 
     # Include the parent directory to make it unique across different videos
-    # This creates a group_id like "archive/subdir/hash"
-    return f"{vtt_file.parent.name}/{base_name}"
+    # This creates a group_id like "archive/subdir/hash". A bare filename (an
+    # upload session, whose path is redacted) has no parent to qualify it.
+    parent = vtt_file.parent.name
+    return f"{parent}/{base_name}" if parent else base_name
 
 
 @asynccontextmanager
@@ -1113,7 +1115,8 @@ def _build_query_response(result: dict[str, Any], *, media_urls: bool = True) ->
     live outside the archive root, so ``generate_media_urls`` would hand out
     ``/video/<absolute path>`` links that the archive routes reject as 400. The
     session's media is addressable through ``/video-sessions/{id}/media``
-    instead.
+    instead. It also keeps the session's local paths off the wire, matching
+    ``VideoSession.public_dict()``, which strips them for the same reason.
     """
     context_chunks = []
     for doc in result["retrieved_documents"]:
@@ -1121,10 +1124,13 @@ def _build_query_response(result: dict[str, Any], *, media_urls: bool = True) ->
         video_url, vtt_url = (
             generate_media_urls(vtt_path, doc.get("start_time")) if media_urls else (None, None)
         )
+        # An archive path is relative to the archive root and identifies the
+        # broadcast; a session path is absolute and internal, so send its name.
+        filename = doc["path"] if media_urls else Path(doc["path"]).name
         context_chunks.append(
             ContextChunk(
                 text=doc["text"],
-                filename=doc["path"],
+                filename=filename,
                 language=doc.get("language", "unknown"),
                 score=doc["score"],
                 rank=doc["rank"],
@@ -1133,7 +1139,7 @@ def _build_query_response(result: dict[str, Any], *, media_urls: bool = True) ->
                 original_score=doc.get("original_score"),
                 video_url=video_url,
                 vtt_url=vtt_url,
-                group_id=get_video_base_name(vtt_path),
+                group_id=get_video_base_name(vtt_path if media_urls else filename),
                 date=doc.get("date"),
                 duration_seconds=doc.get("duration_seconds"),
                 start_time=doc.get("start_time"),

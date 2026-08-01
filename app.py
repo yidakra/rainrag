@@ -2041,6 +2041,10 @@ def _reset_video_session(delete_remote: bool = True) -> None:
     st.session_state.video_messages = []
     st.session_state.video_upload_error = None
     st.session_state.video_seek_seconds = 0.0
+    # st.file_uploader keeps its value across reruns, so without a fresh widget
+    # key the next rerun lands on the uploader branch with the previous file
+    # still set and immediately re-uploads it.
+    st.session_state.video_uploader_seq = int(st.session_state.get("video_uploader_seq", 0)) + 1
 
 
 def render_video_mode(lang: str):
@@ -2057,7 +2061,7 @@ def render_video_mode(lang: str):
             get_text("video_upload_prompt", lang),
             type=["mp4", "mkv", "webm", "avi", "mov", "m4v"],
             label_visibility="collapsed",
-            key="video_uploader",
+            key=f"video_uploader_{st.session_state.get('video_uploader_seq', 0)}",
         )
         if uploaded is not None:
             with st.spinner(get_text("video_uploading", lang)):
