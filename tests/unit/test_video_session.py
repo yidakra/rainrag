@@ -324,3 +324,147 @@ class TestDeviceResolution:
         manager = _device_manager(probe_result=8, device="cpu", device_index=0)
 
         assert manager._resolve_devices() == [0]
+
+
+class TestSessionQueryMediaUrls:
+    """Session transcripts are not archive files, so archive URLs must not be emitted.
+
+    Regression: ``generate_media_urls`` turned an absolute session path into
+    ``/video//home/ubuntu/.../source.mov``, which the archive routes reject with
+    400. Session media is served from ``/video-sessions/{id}/media`` instead.
+    """
+
+    @staticmethod
+    def _result() -> dict:
+        return {
+            "answer": "a",
+            "question": "q",
+            "num_documents": 1,
+            "retrieved_documents": [
+                {
+                    "path": "/srv/data/video_sessions/abc/source.ru.vtt",
+                    "text": "hello",
+                    "score": 0.5,
+                    "rank": 1,
+                    "start_time": "00:00:00",
+                    "end_time": "00:02:01",
+                }
+            ],
+        }
+
+    def test_session_response_omits_archive_urls(self) -> None:
+        from rainrag.api import _build_query_response
+
+        response = _build_query_response(self._result(), media_urls=False)
+
+        chunk = response.context[0]
+        assert chunk.video_url is None
+        assert chunk.vtt_url is None
+        # The fragment still carries what the UI needs to seek the session player.
+        assert chunk.start_time == "00:00:00"
+        assert chunk.text == "hello"
+
+    def test_archive_response_still_consults_media_urls(self, monkeypatch) -> None:
+        """The default path is unchanged: archive answers keep their media links."""
+        import rainrag.api as api
+
+        monkeypatch.setattr(api, "generate_media_urls", lambda *_: ("/video/x.mp4", "/vtt/x.vtt"))
+
+        response = api._build_query_response(self._result())
+
+        assert response.context[0].video_url == "/video/x.mp4"
+        assert response.context[0].vtt_url == "/vtt/x.vtt"
+
+    def test_session_response_never_consults_media_urls(self, monkeypatch) -> None:
+        import rainrag.api as api
+
+        def _boom(*_args):
+            raise AssertionError("archive URL generation must be skipped for sessions")
+
+        monkeypatch.setattr(api, "generate_media_urls", _boom)
+
+        response = api._build_query_response(self._result(), media_urls=False)
+
+        assert response.context[0].video_url is None
+
+
+class TestTranscriptDownloadNaming:
+    """The download is named after the upload, not the internal source.ru.vtt."""
+
+    @pytest.mark.parametrize(
+        ("filename", "vtt_name", "expected"),
+        [
+            ("2026-05-08 23-20-37.mov", "source.ru.vtt", "2026-05-08 23-20-37.ru.vtt"),
+            ("interview.mp4", "source.vtt", "interview.vtt"),
+        ],
+    )
+    def test_download_filename(self, filename: str, vtt_name: str, expected: str) -> None:
+        stem = Path(filename).stem or "transcript"
+        suffixes = "".join(Path(vtt_name).suffixes[-2:])
+
+        assert f"{stem}{suffixes}" == expected
+
+
+class TestDimensionProbe:
+    """Player sizing needs the upload's real shape, but must survive without it."""
+
+    def _session(self, tmp_path: Path) -> VideoSession:
+        return VideoSession(id="s1", filename="clip.mov", video_path=str(tmp_path / "source.mov"))
+
+    def test_records_dimensions(self, tmp_path: Path, monkeypatch) -> None:
+        manager = _bare_manager()
+        session = self._session(tmp_path)
+        manager._sessions["s1"] = session
+        monkeypatch.setattr(
+            "rainrag.video_session.subprocess.run",
+            lambda *a, **k: SimpleNamespace(returncode=0, stdout="3420x2224\n", stderr=""),
+        )
+
+        manager._probe_dimensions(session)
+
+        assert manager._sessions["s1"].width == 3420
+        assert manager._sessions["s1"].height == 2224
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            SimpleNamespace(returncode=1, stdout="", stderr="boom"),
+            SimpleNamespace(returncode=0, stdout="\n", stderr=""),
+            SimpleNamespace(returncode=0, stdout="notxnumbers\n", stderr=""),
+            SimpleNamespace(returncode=0, stdout="0x0\n", stderr=""),
+        ],
+    )
+    def test_bad_probe_leaves_dimensions_unset(self, tmp_path: Path, monkeypatch, outcome) -> None:
+        manager = _bare_manager()
+        session = self._session(tmp_path)
+        manager._sessions["s1"] = session
+        monkeypatch.setattr("rainrag.video_session.subprocess.run", lambda *a, **k: outcome)
+
+        manager._probe_dimensions(session)
+
+        assert manager._sessions["s1"].width is None
+        assert manager._sessions["s1"].height is None
+
+    def test_missing_ffprobe_is_not_fatal(self, tmp_path: Path, monkeypatch) -> None:
+        """A box without ffmpeg still transcribes; it just gets a 16:9 player."""
+        manager = _bare_manager()
+        session = self._session(tmp_path)
+        manager._sessions["s1"] = session
+
+        def _raise(*_a, **_k):
+            raise FileNotFoundError("ffprobe")
+
+        monkeypatch.setattr("rainrag.video_session.subprocess.run", _raise)
+
+        manager._probe_dimensions(session)  # must not raise
+
+        assert manager._sessions["s1"].width is None
+
+    def test_dimensions_reach_the_client(self) -> None:
+        session = VideoSession(id="s1", filename="clip.mov")
+        session.width, session.height = 3420, 2224
+
+        public = session.public_dict()
+
+        assert public["width"] == 3420
+        assert public["height"] == 2224

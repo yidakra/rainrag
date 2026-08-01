@@ -107,6 +107,10 @@ class VideoSession:
     language_probability: float | None = None
     # Sessions ahead of this one in the GPU queue; 0 means it is transcribing.
     queue_position: int = 0
+    # Pixel dimensions of the upload, so the client can size its player to the
+    # real aspect ratio instead of assuming 16:9. None when ffprobe is absent.
+    width: int | None = None
+    height: int | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -301,6 +305,7 @@ class VideoSessionManager:
         if session is None:
             return
         try:
+            self._probe_dimensions(session)
             self._transcribe(session)
             self._check_cancelled(session_id)
             self._index(session)
@@ -412,6 +417,52 @@ class VideoSessionManager:
                 return self._gpu_queue.index(session_id)
             except ValueError:
                 return 0
+
+    def _probe_dimensions(self, session: VideoSession) -> None:
+        """Record the upload's pixel size so the client can size its player.
+
+        Best-effort: a missing or failing ffprobe just leaves the dimensions
+        unset, and the client falls back to a 16:9 assumption.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=width,height",
+                    "-of",
+                    "csv=p=0:s=x",
+                    session.video_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.debug(f"[video-session {session.id}] ffprobe unavailable: {exc}")
+            return
+
+        if result.returncode != 0:
+            logger.debug(f"[video-session {session.id}] ffprobe failed: {result.stderr.strip()}")
+            return
+
+        parts = result.stdout.strip().split("x")
+        if len(parts) < 2:
+            return
+        try:
+            width, height = int(parts[0]), int(parts[1])
+        except ValueError:
+            return
+        if width <= 0 or height <= 0:
+            return
+
+        self._update(session.id, width=width, height=height)
+        logger.info(f"[video-session {session.id}] source is {width}x{height}")
 
     def _transcribe(self, session: VideoSession) -> None:
         """Run the single-file transcriber subprocess under the livevtt venv."""

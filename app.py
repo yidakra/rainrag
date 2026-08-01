@@ -250,6 +250,8 @@ TRANSLATIONS = {
         "video_detected_language": "Язык видео",
         "video_language_auto": "определён автоматически",
         "video_jump_to": "Перейти к моменту:",
+        "video_jump_to_fragment": "▶ Смотреть этот фрагмент",
+        "video_download_transcript": "⬇ Скачать расшифровку (VTT)",
     },
     "en": {
         "title": "RainRAG - Video Transcript Search",
@@ -367,6 +369,8 @@ TRANSLATIONS = {
         "video_detected_language": "Video language",
         "video_language_auto": "detected automatically",
         "video_jump_to": "Jump to:",
+        "video_jump_to_fragment": "▶ Play this fragment",
+        "video_download_transcript": "⬇ Download transcript (VTT)",
     },
 }
 
@@ -1491,8 +1495,62 @@ def get_text_preview(text: str, max_lines: int = 3, max_chars: int = 200) -> tup
     return preview_text, is_truncated
 
 
-def render_message_bubble(message: dict[str, Any], lang: str):
-    """Render a message bubble with appropriate styling."""
+# Chunks run ~300s of speech, so the full text of five of them buries the panel.
+_FRAGMENT_PREVIEW_CHARS = 160
+
+
+def render_video_session_context(message_key: str, chunks: list[dict[str, Any]], lang: str) -> None:
+    """Render retrieved fragments for an uploaded video.
+
+    The archive renderer builds ``/video``, ``/hls`` and ``/vtt`` URLs from the
+    transcript path, which only resolve under the archive root; a session
+    transcript lives in the session directory, so those routes reject it. The
+    session already shows one player above the chat, so a fragment needs only
+    its text and a button that seeks that player.
+    """
+    for idx, chunk in enumerate(chunks):
+        start = str(chunk.get("start_time") or "")
+        end = str(chunk.get("end_time") or "")
+        span = " – ".join(part for part in (start, end) if part)
+        score = chunk.get("score")
+        heading = f"**{span}**" if span else f"**{idx + 1}**"
+        if isinstance(score, (int, float)):
+            heading += f" · {score:.3f}"
+        st.markdown(heading)
+
+        text = str(chunk.get("text") or "")
+        if text:
+            # A native <details> rather than st.expander: this already runs
+            # inside the context expander, and Streamlit forbids nesting those.
+            preview = text[:_FRAGMENT_PREVIEW_CHARS].rstrip()
+            if len(text) > _FRAGMENT_PREVIEW_CHARS:
+                preview += "…"
+            st.markdown(
+                f"<details><summary style='cursor: pointer; color: #9aa0a6;'>"
+                f"{html.escape(preview)}</summary>"
+                f"<div style='white-space: pre-wrap; margin-top: 0.5rem;'>"
+                f"{html.escape(text)}</div></details>",
+                unsafe_allow_html=True,
+            )
+
+        timecodes = extract_timecodes(start, limit=1)
+        if timecodes and st.button(
+            get_text("video_jump_to_fragment", lang),
+            key=f"ctx_seek_{message_key}_{idx}",
+        ):
+            st.session_state.video_seek_seconds = float(timecodes[0][1])
+            st.rerun()
+
+        if idx < len(chunks) - 1:
+            st.markdown("---")
+
+
+def render_message_bubble(message: dict[str, Any], lang: str, video_session_key: str | None = None):
+    """Render a message bubble with appropriate styling.
+
+    ``video_session_key`` marks the message as belonging to an uploaded-video
+    session, which renders context fragments without archive media widgets.
+    """
     role = message["role"]
     content = message["content"]
 
@@ -1504,6 +1562,10 @@ def render_message_bubble(message: dict[str, Any], lang: str):
         # Search insights are available in chunk metadata if needed for debugging
 
         with st.expander(get_text("context_header", lang), expanded=False):
+            if video_session_key is not None:
+                render_video_session_context(video_session_key, message["context"], lang)
+                return
+
             fallback_hits = message.get("metadata_fallback_hits")
             if isinstance(fallback_hits, int):
                 st.caption(f"{get_text('metadata_fallback_hits_label', lang)}: {fallback_hits}")
@@ -1861,6 +1923,31 @@ def extract_timecodes(text: str, limit: int = 12) -> list[tuple[str, int]]:
     return found
 
 
+# Bounds for the player frame: tall uploads (4:3, phone video) must not push the
+# chat off screen, and a very wide one must stay big enough to use.
+_PLAYER_MIN_HEIGHT = 260
+_PLAYER_MAX_HEIGHT = 720
+# Typical content width of the main column. Only used to turn an aspect ratio
+# into a frame height; the video is centred and scaled to fit, so a narrower
+# window costs some empty frame rather than cropping anything.
+_PLAYER_ASSUMED_WIDTH = 1100
+
+
+def player_frame_height(width: int | None, height: int | None) -> int:
+    """Frame height that shows an upload of this shape whole.
+
+    The component iframe's height is fixed when Streamlit renders it, and
+    growing it from inside does not reflow the elements below -- they end up
+    drawn over the video. So the height is decided here, from the real
+    dimensions when ffprobe supplied them and 16:9 when it did not.
+    """
+    ratio = 9 / 16
+    if width and height and width > 0 and height > 0:
+        ratio = height / width
+    wanted = round(_PLAYER_ASSUMED_WIDTH * ratio)
+    return int(min(max(wanted, _PLAYER_MIN_HEIGHT), _PLAYER_MAX_HEIGHT))
+
+
 def render_video_session_player(
     media_url: str,
     element_id: str,
@@ -1872,10 +1959,24 @@ def render_video_session_player(
     Rendered through components.html (an iframe) rather than st.markdown so the
     seek/resume script actually executes. An explicit start time wins over the
     remembered position, since it means the user just clicked a timecode.
+
+    ``height`` comes from :func:`player_frame_height`. Inside the frame the
+    video is scaled to fit rather than stretched, so whatever the caller got
+    wrong shows up as empty space, never as a cropped picture or hidden
+    controls.
     """
     html_block = f"""
-<video id="{html.escape(element_id)}" controls playsinline preload="metadata"
-       style="width: 100%; height: auto; border-radius: 8px; background: #000;">
+<style>
+  html, body {{
+    margin: 0; padding: 0; height: 100%; background: transparent;
+    display: flex; align-items: center; justify-content: center;
+  }}
+  #{html.escape(element_id)} {{
+    max-width: 100%; max-height: 100%; width: auto; height: auto;
+    display: block; border-radius: 8px; background: #000;
+  }}
+</style>
+<video id="{html.escape(element_id)}" controls playsinline preload="metadata">
     <source src="{html.escape(media_url)}">
 </video>
 <script>
@@ -2049,6 +2150,7 @@ def render_video_mode(lang: str):
         media_url,
         f"video_session_{session_id}",
         start_seconds=float(st.session_state.get("video_seek_seconds") or 0.0),
+        height=player_frame_height(status.get("width"), status.get("height")),
     )
     if detected_language:
         st.caption(
@@ -2058,8 +2160,19 @@ def render_video_mode(lang: str):
         )
     st.success(get_text("video_ready", lang))
 
+    # Sessions are ephemeral, so this is the only way to keep the transcript.
+    transcript_url = append_auth_query(build_asset_url(f"/video-sessions/{session_id}/transcript"))
+    download_name = f"{Path(status.get('filename') or 'transcript').stem}.vtt"
+    st.markdown(
+        f'<a href="{html.escape(transcript_url)}" download="{html.escape(download_name)}" '
+        f'style="display: inline-block; padding: 0.4rem 0.8rem; background-color: #0084ff; '
+        f'color: white; text-decoration: none; border-radius: 0.25rem; margin-bottom: 0.5rem;">'
+        f"{get_text('video_download_transcript', lang)}</a>",
+        unsafe_allow_html=True,
+    )
+
     for idx, message in enumerate(st.session_state.video_messages):
-        render_message_bubble(message, lang)
+        render_message_bubble(message, lang, video_session_key=f"{session_id}_{idx}")
         if message.get("role") == "assistant":
             render_timecode_buttons(f"{session_id}_{idx}", message.get("content", ""), lang)
 

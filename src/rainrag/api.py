@@ -1106,12 +1106,21 @@ def _require_video_manager() -> VideoSessionManager:
     return video_session_manager
 
 
-def _build_query_response(result: dict[str, Any]) -> QueryResponse:
-    """Format a query-engine result dict into the API QueryResponse."""
+def _build_query_response(result: dict[str, Any], *, media_urls: bool = True) -> QueryResponse:
+    """Format a query-engine result dict into the API QueryResponse.
+
+    ``media_urls`` must be False for uploaded-video sessions: their transcripts
+    live outside the archive root, so ``generate_media_urls`` would hand out
+    ``/video/<absolute path>`` links that the archive routes reject as 400. The
+    session's media is addressable through ``/video-sessions/{id}/media``
+    instead.
+    """
     context_chunks = []
     for doc in result["retrieved_documents"]:
         vtt_path = doc["path"]
-        video_url, vtt_url = generate_media_urls(vtt_path, doc.get("start_time"))
+        video_url, vtt_url = (
+            generate_media_urls(vtt_path, doc.get("start_time")) if media_urls else (None, None)
+        )
         context_chunks.append(
             ContextChunk(
                 text=doc["text"],
@@ -1240,6 +1249,41 @@ async def serve_video_session_media(
     return FileResponse(path=str(video_path), media_type=media_type)
 
 
+@app.api_route("/video-sessions/{session_id}/transcript", methods=["GET", "HEAD"])
+async def serve_video_session_transcript(
+    session_id: str,
+    authorization: Annotated[str | None, Header()] = None,
+    auth: Annotated[str | None, Query()] = None,
+):
+    """Return an uploaded session's VTT transcript as a download.
+
+    Sessions are ephemeral, so this is the only way to keep the transcript
+    after the session expires. Like the media route it accepts a query-param
+    token, because a download link cannot send headers.
+    """
+    verify_auth_token(authorization=authorization, access_token=auth)
+    manager = _require_video_manager()
+
+    session = manager.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if not session.vtt_path:
+        raise HTTPException(status_code=409, detail="Transcript is not ready yet")
+
+    vtt_path = Path(session.vtt_path)
+    if not vtt_path.is_file():
+        raise HTTPException(status_code=404, detail="Session transcript is no longer available")
+
+    # Name the download after the uploaded file, not the internal "source.ru.vtt".
+    stem = Path(session.filename).stem or "transcript"
+    return FileResponse(
+        path=str(vtt_path),
+        media_type="text/vtt",
+        filename=f"{stem}{''.join(vtt_path.suffixes[-2:])}",
+    )
+
+
 @app.delete("/video-sessions/{session_id}")
 async def delete_video_session(session_id: str):
     """Delete an upload session: drop its collection and working files."""
@@ -1304,7 +1348,7 @@ async def query_video_session(session_id: str, request: VideoQueryRequest):
     finally:
         _get_query_semaphore().release()
 
-    return _build_query_response(result)
+    return _build_query_response(result, media_urls=False)
 
 
 class RelatedChunksRequest(BaseModel):
