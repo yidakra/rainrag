@@ -1,5 +1,6 @@
 """Streamlit frontend for RainRAG - Multilingual RAG system for video transcripts."""
 
+import asyncio
 import contextlib
 import hmac
 import html
@@ -224,6 +225,33 @@ TRANSLATIONS = {
         "name_search_no_local_files": "Файлы не найдены в локальном архиве.",
         "name_search_show": "программа",
         "name_search_searching": "Поиск видео по названию...",
+        # Mode selector
+        "mode_selector_label": "Режим поиска",
+        "mode_content": "По содержанию",
+        "mode_name": "По названию",
+        "mode_video": "Своё видео",
+        "mode_content_caption": "Поиск по расшифровкам архива Дождя",
+        "mode_name_caption": "Поиск видео в архиве по названию",
+        "mode_video_caption": "Загрузите своё видео — мы его расшифруем и ответим на вопросы по нему",
+        # Single-video upload mode
+        "video_upload_prompt": "Перетащите видео сюда, чтобы расшифровать его и задавать вопросы по нему",
+        "video_uploading": "Загрузка видео…",
+        "video_queued": "В очереди на обработку…",
+        "video_waiting_for_gpu": "Ожидание GPU…",
+        "video_transcribing": "Распознавание речи…",
+        "video_indexing": "Индексация транскрипта…",
+        "video_ready": "Готово! Задайте вопрос по видео.",
+        "video_error": "Ошибка обработки",
+        "video_new_video": "Загрузить другое видео",
+        "video_cancel": "Отменить",
+        "video_chat_placeholder": "Спросите что-нибудь об этом видео…",
+        "video_processing_title": "Обрабатываем ваше видео",
+        "video_queue_position": "Перед вами в очереди: {n}",
+        "video_detected_language": "Язык видео",
+        "video_language_auto": "определён автоматически",
+        "video_jump_to": "Перейти к моменту:",
+        "video_jump_to_fragment": "▶ Смотреть этот фрагмент",
+        "video_download_transcript": "⬇ Скачать расшифровку (VTT)",
     },
     "en": {
         "title": "RainRAG - Video Transcript Search",
@@ -316,6 +344,33 @@ TRANSLATIONS = {
         "name_search_no_local_files": "Files not found in local archive.",
         "name_search_show": "show",
         "name_search_searching": "Searching videos by name...",
+        # Mode selector
+        "mode_selector_label": "Search mode",
+        "mode_content": "By content",
+        "mode_name": "By title",
+        "mode_video": "Your video",
+        "mode_content_caption": "Search across the TV Rain archive transcripts",
+        "mode_name_caption": "Find archive videos by title",
+        "mode_video_caption": "Upload your own video — we'll transcribe it and answer questions about it",
+        # Single-video upload mode
+        "video_upload_prompt": "Drop a video here to transcribe it and ask questions about it",
+        "video_uploading": "Uploading video…",
+        "video_queued": "Queued for processing…",
+        "video_waiting_for_gpu": "Waiting for GPU…",
+        "video_transcribing": "Transcribing…",
+        "video_indexing": "Indexing transcript…",
+        "video_ready": "Ready! Ask a question about the video.",
+        "video_error": "Processing error",
+        "video_new_video": "Upload another video",
+        "video_cancel": "Cancel",
+        "video_chat_placeholder": "Ask anything about this video…",
+        "video_processing_title": "Processing your video",
+        "video_queue_position": "Uploads ahead of you: {n}",
+        "video_detected_language": "Video language",
+        "video_language_auto": "detected automatically",
+        "video_jump_to": "Jump to:",
+        "video_jump_to_fragment": "▶ Play this fragment",
+        "video_download_transcript": "⬇ Download transcript (VTT)",
     },
 }
 
@@ -689,11 +744,20 @@ def initialize_session_state():
                 "Gosuslugi invites to special forces university",
             ],
         }
-    # Search mode: "content" (default RAG) or "name" (title search)
+    # Search mode: "content" (default RAG), "name" (title search), or "video" (upload)
     if "search_mode" not in st.session_state:
         st.session_state.search_mode = "content"
     if "name_search_results" not in st.session_state:
         st.session_state.name_search_results = None
+    # Single-video upload mode state
+    if "video_session_id" not in st.session_state:
+        st.session_state.video_session_id = None
+    if "video_messages" not in st.session_state:
+        st.session_state.video_messages = []
+    if "video_upload_error" not in st.session_state:
+        st.session_state.video_upload_error = None
+    if "video_seek_seconds" not in st.session_state:
+        st.session_state.video_seek_seconds = 0.0
     # Pending query flag for example buttons
     if "pending_query" not in st.session_state:
         st.session_state.pending_query = None
@@ -1091,6 +1155,62 @@ async def search_by_name_api(query: str) -> dict[str, Any]:
         return response.json()
 
 
+def get_auth_headers() -> dict[str, str]:
+    """Auth-only headers (no Content-Type) for multipart/file requests."""
+    headers: dict[str, str] = {}
+    if AUTH_TOKEN:
+        headers["Authorization"] = f"Bearer {AUTH_TOKEN}"
+    return headers
+
+
+async def upload_video_api(data: bytes, filename: str, content_type: str) -> dict[str, Any]:
+    """Upload a video to start a transcription+indexing session."""
+    async with httpx.AsyncClient(timeout=httpx.Timeout(1200.0), verify=API_VERIFY_SSL) as client:
+        response = await client.post(
+            f"{API_BASE}/video-sessions",
+            files={"file": (filename, data, content_type or "application/octet-stream")},
+            headers=get_auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def get_video_session_api(session_id: str) -> dict[str, Any]:
+    """Fetch the status/progress of a video-upload session."""
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
+        response = await client.get(
+            f"{API_BASE}/video-sessions/{session_id}",
+            headers=get_api_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def query_video_session_api(
+    session_id: str, question: str, language: str, top_k: int
+) -> dict[str, Any]:
+    """Query a single uploaded video's transcript (scoped Q&A)."""
+    payload = {"question": question, "language": language, "top_k": top_k}
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
+        response = await client.post(
+            f"{API_BASE}/video-sessions/{session_id}/query",
+            json=payload,
+            headers=get_api_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def delete_video_session_api(session_id: str) -> bool:
+    """Delete a video-upload session and its ephemeral collection."""
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
+        response = await client.delete(
+            f"{API_BASE}/video-sessions/{session_id}",
+            headers=get_api_headers(),
+        )
+        return response.status_code in (200, 404)
+
+
 async def get_related_chunks(
     chunk_id: str, top_k: int = 3, same_video_only: bool = False
 ) -> list[dict[str, Any]]:
@@ -1375,8 +1495,62 @@ def get_text_preview(text: str, max_lines: int = 3, max_chars: int = 200) -> tup
     return preview_text, is_truncated
 
 
-def render_message_bubble(message: dict[str, Any], lang: str):
-    """Render a message bubble with appropriate styling."""
+# Chunks run ~300s of speech, so the full text of five of them buries the panel.
+_FRAGMENT_PREVIEW_CHARS = 160
+
+
+def render_video_session_context(message_key: str, chunks: list[dict[str, Any]], lang: str) -> None:
+    """Render retrieved fragments for an uploaded video.
+
+    The archive renderer builds ``/video``, ``/hls`` and ``/vtt`` URLs from the
+    transcript path, which only resolve under the archive root; a session
+    transcript lives in the session directory, so those routes reject it. The
+    session already shows one player above the chat, so a fragment needs only
+    its text and a button that seeks that player.
+    """
+    for idx, chunk in enumerate(chunks):
+        start = str(chunk.get("start_time") or "")
+        end = str(chunk.get("end_time") or "")
+        span = " – ".join(part for part in (start, end) if part)
+        score = chunk.get("score")
+        heading = f"**{span}**" if span else f"**{idx + 1}**"
+        if isinstance(score, (int, float)):
+            heading += f" · {score:.3f}"
+        st.markdown(heading)
+
+        text = str(chunk.get("text") or "")
+        if text:
+            # A native <details> rather than st.expander: this already runs
+            # inside the context expander, and Streamlit forbids nesting those.
+            preview = text[:_FRAGMENT_PREVIEW_CHARS].rstrip()
+            if len(text) > _FRAGMENT_PREVIEW_CHARS:
+                preview += "…"
+            st.markdown(
+                f"<details><summary style='cursor: pointer; color: #9aa0a6;'>"
+                f"{html.escape(preview)}</summary>"
+                f"<div style='white-space: pre-wrap; margin-top: 0.5rem;'>"
+                f"{html.escape(text)}</div></details>",
+                unsafe_allow_html=True,
+            )
+
+        timecodes = extract_timecodes(start, limit=1)
+        if timecodes and st.button(
+            get_text("video_jump_to_fragment", lang),
+            key=f"ctx_seek_{message_key}_{idx}",
+        ):
+            st.session_state.video_seek_seconds = float(timecodes[0][1])
+            st.rerun()
+
+        if idx < len(chunks) - 1:
+            st.markdown("---")
+
+
+def render_message_bubble(message: dict[str, Any], lang: str, video_session_key: str | None = None):
+    """Render a message bubble with appropriate styling.
+
+    ``video_session_key`` marks the message as belonging to an uploaded-video
+    session, which renders context fragments without archive media widgets.
+    """
     role = message["role"]
     content = message["content"]
 
@@ -1388,6 +1562,10 @@ def render_message_bubble(message: dict[str, Any], lang: str):
         # Search insights are available in chunk metadata if needed for debugging
 
         with st.expander(get_text("context_header", lang), expanded=False):
+            if video_session_key is not None:
+                render_video_session_context(video_session_key, message["context"], lang)
+                return
+
             fallback_hits = message.get("metadata_fallback_hits")
             if isinstance(fallback_hits, int):
                 st.caption(f"{get_text('metadata_fallback_hits_label', lang)}: {fallback_hits}")
@@ -1704,6 +1882,334 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
     st.divider()
 
 
+# HH:MM:SS or MM:SS, as cited by the single-video prompt.
+_TIMECODE_PATTERN = re.compile(r"\b(?:(\d{1,2}):)?([0-5]?\d):([0-5]\d)\b")
+
+# Human-readable names for the language codes Whisper reports most often here.
+_LANGUAGE_NAMES = {
+    "ru": {"ru": "русский", "en": "Russian"},
+    "en": {"ru": "английский", "en": "English"},
+    "uk": {"ru": "украинский", "en": "Ukrainian"},
+    "be": {"ru": "белорусский", "en": "Belarusian"},
+    "de": {"ru": "немецкий", "en": "German"},
+    "fr": {"ru": "французский", "en": "French"},
+    "es": {"ru": "испанский", "en": "Spanish"},
+    "ka": {"ru": "грузинский", "en": "Georgian"},
+    "hy": {"ru": "армянский", "en": "Armenian"},
+    "kk": {"ru": "казахский", "en": "Kazakh"},
+}
+
+
+def language_display_name(code: str, ui_lang: str) -> str:
+    """Render a detected language code for humans, falling back to the code."""
+    return _LANGUAGE_NAMES.get(code, {}).get(ui_lang, code.upper())
+
+
+def extract_timecodes(text: str, limit: int = 12) -> list[tuple[str, int]]:
+    """Extract cited timecodes from an answer as (label, seconds), deduplicated.
+
+    Used to turn the timecodes the model cites into seek buttons.
+    """
+    found: list[tuple[str, int]] = []
+    seen: set[int] = set()
+    for match in _TIMECODE_PATTERN.finditer(text):
+        seconds = int(match.group(1) or 0) * 3600 + int(match.group(2)) * 60 + int(match.group(3))
+        if seconds in seen:
+            continue
+        seen.add(seconds)
+        found.append((match.group(0), seconds))
+        if len(found) >= limit:
+            break
+    return found
+
+
+# Bounds for the player frame: tall uploads (4:3, phone video) must not push the
+# chat off screen, and a very wide one must stay big enough to use.
+_PLAYER_MIN_HEIGHT = 260
+_PLAYER_MAX_HEIGHT = 720
+# Typical content width of the main column. Only used to turn an aspect ratio
+# into a frame height; the video is centred and scaled to fit, so a narrower
+# window costs some empty frame rather than cropping anything.
+_PLAYER_ASSUMED_WIDTH = 1100
+
+
+def player_frame_height(width: int | None, height: int | None) -> int:
+    """Frame height that shows an upload of this shape whole.
+
+    The component iframe's height is fixed when Streamlit renders it, and
+    growing it from inside does not reflow the elements below -- they end up
+    drawn over the video. So the height is decided here, from the real
+    dimensions when ffprobe supplied them and 16:9 when it did not.
+    """
+    ratio = 9 / 16
+    if width and height and width > 0 and height > 0:
+        ratio = height / width
+    wanted = round(_PLAYER_ASSUMED_WIDTH * ratio)
+    return int(min(max(wanted, _PLAYER_MIN_HEIGHT), _PLAYER_MAX_HEIGHT))
+
+
+def render_video_session_player(
+    media_url: str,
+    element_id: str,
+    start_seconds: float = 0.0,
+    height: int = 420,
+) -> None:
+    """Play an uploaded session's video, optionally seeking to a cited timecode.
+
+    Rendered through components.html (an iframe) rather than st.markdown so the
+    seek/resume script actually executes. An explicit start time wins over the
+    remembered position, since it means the user just clicked a timecode.
+
+    ``height`` comes from :func:`player_frame_height`. Inside the frame the
+    video is scaled to fit rather than stretched, so whatever the caller got
+    wrong shows up as empty space, never as a cropped picture or hidden
+    controls.
+    """
+    html_block = f"""
+<style>
+  html, body {{
+    margin: 0; padding: 0; height: 100%; background: transparent;
+    display: flex; align-items: center; justify-content: center;
+  }}
+  #{html.escape(element_id)} {{
+    max-width: 100%; max-height: 100%; width: auto; height: auto;
+    display: block; border-radius: 8px; background: #000;
+  }}
+</style>
+<video id="{html.escape(element_id)}" controls playsinline preload="metadata">
+    <source src="{html.escape(media_url)}">
+</video>
+<script>
+(() => {{
+  const video = document.getElementById("{html.escape(element_id)}");
+  if (!video) return;
+  const startAt = {json.dumps(float(start_seconds))};
+  const resumeKey = `rainrag_session_resume_{html.escape(element_id)}`;
+  const applyStart = () => {{
+    if (startAt > 0) {{
+      video.currentTime = startAt;
+      video.play().catch(() => {{}});
+      return;
+    }}
+    try {{
+      const raw = sessionStorage.getItem(resumeKey);
+      const parsed = raw === null ? NaN : parseFloat(raw);
+      if (Number.isFinite(parsed) && parsed > 0) {{
+        video.currentTime = parsed;
+      }}
+    }} catch (e) {{}}
+  }};
+  const saveTime = () => {{
+    try {{
+      if (Number.isFinite(video.currentTime) && video.currentTime > 0) {{
+        sessionStorage.setItem(resumeKey, String(video.currentTime));
+      }}
+    }} catch (e) {{}}
+  }};
+  video.addEventListener("loadedmetadata", applyStart, {{ once: true }});
+  video.addEventListener("timeupdate", saveTime);
+  video.addEventListener("pause", saveTime);
+}})();
+</script>
+"""
+    components.html(html_block, height=height)
+
+
+def render_timecode_buttons(message_key: str, content: str, lang: str) -> None:
+    """Render the timecodes cited in an answer as buttons that seek the player."""
+    timecodes = extract_timecodes(content)
+    if not timecodes:
+        return
+    st.caption(get_text("video_jump_to", lang))
+    columns = st.columns(min(len(timecodes), 6))
+    for idx, (label, seconds) in enumerate(timecodes):
+        with columns[idx % len(columns)]:
+            if st.button(label, key=f"seek_{message_key}_{idx}", use_container_width=True):
+                st.session_state.video_seek_seconds = float(seconds)
+                st.rerun()
+
+
+def _reset_video_session(delete_remote: bool = True) -> None:
+    """Clear local video-mode state and optionally delete the remote session."""
+    session_id = st.session_state.get("video_session_id")
+    if delete_remote and session_id:
+        try:
+            asyncio.run(delete_video_session_api(session_id))
+        except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+            logger.warning(f"Failed to delete video session {session_id}: {exc}")
+    st.session_state.video_session_id = None
+    st.session_state.video_messages = []
+    st.session_state.video_upload_error = None
+    st.session_state.video_seek_seconds = 0.0
+    # st.file_uploader keeps its value across reruns, so without a fresh widget
+    # key the next rerun lands on the uploader branch with the previous file
+    # still set and immediately re-uploads it.
+    st.session_state.video_uploader_seq = int(st.session_state.get("video_uploader_seq", 0)) + 1
+
+
+def render_video_mode(lang: str):
+    """Upload a single video, transcribe it, and chat scoped to that video."""
+    session_id = st.session_state.get("video_session_id")
+
+    # --- No active session: show the uploader ---
+    if not session_id:
+        if st.session_state.get("video_upload_error"):
+            st.error(st.session_state.video_upload_error)
+            st.session_state.video_upload_error = None
+        st.markdown(f"### {get_text('video_upload_prompt', lang)}")
+        uploaded = st.file_uploader(
+            get_text("video_upload_prompt", lang),
+            type=["mp4", "mkv", "webm", "avi", "mov", "m4v"],
+            label_visibility="collapsed",
+            key=f"video_uploader_{st.session_state.get('video_uploader_seq', 0)}",
+        )
+        if uploaded is not None:
+            with st.spinner(get_text("video_uploading", lang)):
+                try:
+                    result = asyncio.run(
+                        upload_video_api(
+                            uploaded.getvalue(),
+                            uploaded.name,
+                            uploaded.type or "application/octet-stream",
+                        )
+                    )
+                    st.session_state.video_session_id = result.get("id")
+                    st.session_state.video_messages = []
+                    st.rerun()
+                except httpx.HTTPStatusError as e:
+                    detail = e.response.text
+                    st.session_state.video_upload_error = (
+                        f"{get_text('error_general', lang)}: {detail}"
+                    )
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.session_state.video_upload_error = f"{get_text('error_general', lang)}: {e}"
+                    st.rerun()
+        return
+
+    # --- Active session: fetch status ---
+    try:
+        status = asyncio.run(get_video_session_api(session_id))
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            # Session expired / gone on the server — reset locally.
+            _reset_video_session(delete_remote=False)
+            st.rerun()
+        st.error(f"{get_text('error_general', lang)}: {e}")
+        return
+    except Exception as e:  # noqa: BLE001
+        st.error(f"{get_text('error_general', lang)}: {e}")
+        return
+
+    state = status.get("status", "queued")
+    filename = status.get("filename", "")
+
+    processing = state in ("queued", "transcribing", "indexing")
+
+    header_col, btn_col = st.columns([4, 1])
+    with header_col:
+        if filename:
+            st.markdown(f"**{html.escape(filename)}**")
+    with btn_col:
+        # While work is in flight the same action means "stop this", and the
+        # backend kills the transcriber so the GPU goes to the next upload.
+        button_label = get_text("video_cancel" if processing else "video_new_video", lang)
+        if st.button(button_label, use_container_width=True):
+            _reset_video_session()
+            st.rerun()
+
+    detected_language = status.get("language")
+
+    # --- Still processing: show progress and auto-refresh ---
+    if processing:
+        stage = status.get("stage", state)
+        percent = float(status.get("percent") or 0.0)
+        st.markdown(f"#### {get_text('video_processing_title', lang)}")
+        # Prefer the fine-grained stage label (e.g. waiting_for_gpu) when the
+        # backend reports one we have a translation for; else fall back to status.
+        known_stages = ("queued", "waiting_for_gpu", "transcribing", "indexing")
+        stage_key = stage if stage in known_stages else state
+        st.caption(get_text(f"video_{stage_key}", lang))
+        queue_position = int(status.get("queue_position") or 0)
+        if stage == "waiting_for_gpu" and queue_position > 0:
+            st.caption(get_text("video_queue_position", lang).format(n=queue_position))
+        if detected_language:
+            st.caption(
+                f"{get_text('video_detected_language', lang)}: "
+                f"{language_display_name(detected_language, lang)}"
+            )
+        st.progress(min(max(percent / 100.0, 0.0), 1.0))
+        time.sleep(2.0)
+        st.rerun()
+        return
+
+    # --- Error ---
+    if state == "error":
+        st.error(f"{get_text('video_error', lang)}: {status.get('error', '')}")
+        return
+
+    # --- Ready: player + chat scoped to this video ---
+    media_url = append_auth_query(build_asset_url(f"/video-sessions/{session_id}/media"))
+    render_video_session_player(
+        media_url,
+        f"video_session_{session_id}",
+        start_seconds=float(st.session_state.get("video_seek_seconds") or 0.0),
+        height=player_frame_height(status.get("width"), status.get("height")),
+    )
+    if detected_language:
+        st.caption(
+            f"{get_text('video_detected_language', lang)}: "
+            f"{language_display_name(detected_language, lang)} "
+            f"({get_text('video_language_auto', lang)})"
+        )
+    st.success(get_text("video_ready", lang))
+
+    # Sessions are ephemeral, so this is the only way to keep the transcript.
+    transcript_url = append_auth_query(build_asset_url(f"/video-sessions/{session_id}/transcript"))
+    download_name = f"{Path(status.get('filename') or 'transcript').stem}.vtt"
+    st.markdown(
+        f'<a href="{html.escape(transcript_url)}" download="{html.escape(download_name)}" '
+        f'style="display: inline-block; padding: 0.4rem 0.8rem; background-color: #0084ff; '
+        f'color: white; text-decoration: none; border-radius: 0.25rem; margin-bottom: 0.5rem;">'
+        f"{get_text('video_download_transcript', lang)}</a>",
+        unsafe_allow_html=True,
+    )
+
+    for idx, message in enumerate(st.session_state.video_messages):
+        render_message_bubble(message, lang, video_session_key=f"{session_id}_{idx}")
+        if message.get("role") == "assistant":
+            render_timecode_buttons(f"{session_id}_{idx}", message.get("content", ""), lang)
+
+    user_input = st.chat_input(get_text("video_chat_placeholder", lang))
+    if user_input:
+        st.session_state.video_messages.append({"role": "user", "content": user_input})
+        render_message_bubble({"role": "user", "content": user_input}, lang)
+        with st.spinner(get_text("thinking", lang)):
+            try:
+                response = asyncio.run(
+                    query_video_session_api(
+                        session_id,
+                        user_input,
+                        st.session_state.language,
+                        st.session_state.top_k,
+                    )
+                )
+                st.session_state.video_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": response["answer"],
+                        "context": response.get("context", []),
+                    }
+                )
+                st.rerun()
+            except httpx.HTTPStatusError as e:
+                st.error(f"{get_text('error_general', lang)}: {e}")
+            except httpx.TimeoutException:
+                st.error(get_text("error_timeout", lang))
+            except Exception as e:  # noqa: BLE001
+                st.error(f"{get_text('error_general', lang)}: {e}")
+
+
 def render_sidebar(lang: str):
     """Render the sidebar with controls and system information."""
     with st.sidebar:
@@ -1979,20 +2485,34 @@ def main():
     st.title(get_text("title", lang))
     st.caption(get_text("subtitle", lang))
 
-    # Unobtrusive search-mode toggle (right-aligned)
-    toggle_col, _ = st.columns([1, 3])
-    with toggle_col:
-        name_mode = st.toggle(
-            get_text("name_search_toggle", lang),
-            value=(st.session_state.search_mode == "name"),
-            key="name_search_toggle_widget",
-        )
-    if name_mode:
-        st.session_state.search_mode = "name"
-    else:
-        st.session_state.search_mode = "content"
+    # Search-mode selector: content RAG / name search / single-video upload
+    modes = ["content", "name", "video"]
+    current_mode = (
+        st.session_state.search_mode if st.session_state.search_mode in modes else "content"
+    )
+    selected_mode = st.segmented_control(
+        get_text("mode_selector_label", lang),
+        modes,
+        default=current_mode,
+        format_func=lambda m: get_text(f"mode_{m}", lang),
+        label_visibility="collapsed",
+        key="search_mode_selector_widget",
+    )
+    # segmented_control returns None when the active option is clicked again;
+    # treat that as "keep the current mode" so the UI never ends up mode-less.
+    if selected_mode is None:
+        selected_mode = current_mode
+    st.session_state.search_mode = selected_mode
+
+    # Tell the user what the active mode actually does.
+    st.caption(get_text(f"mode_{selected_mode}_caption", lang))
 
     st.divider()
+
+    # ---- SINGLE-VIDEO UPLOAD MODE ----
+    if st.session_state.search_mode == "video":
+        render_video_mode(lang)
+        return
 
     # ---- NAME SEARCH MODE ----
     if st.session_state.search_mode == "name":

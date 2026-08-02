@@ -1,0 +1,8 @@
+# Streamlit server configuration.
+# maxUploadSize raises the default 200 MB limit for the single-video upload mode.
+# MUST stay in sync with config.yaml video_upload.max_upload_mb: the client
+# buffers the whole file in memory before POSTing, so a larger value here would
+# let a user spend RAM on a file the API then rejects with 413.
+# Address/port/headless come from CLI flags at launch and override values here.
+[server]
+maxUploadSize = 512

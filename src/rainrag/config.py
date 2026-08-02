@@ -255,6 +255,81 @@ class VideoConfig(BaseModel):
     )
 
 
+class VideoUploadConfig(BaseModel):
+    """Configuration for the single-video upload / scoped-Q&A mode.
+
+    Transcription runs as a subprocess under an interpreter that has
+    faster-whisper installed (the livevtt virtualenv), keeping the heavy
+    CUDA/ctranslate2 stack out of the RainRAG environment.
+    """
+
+    # Off unless a deployment asks for it: the mode needs a GPU and a separate
+    # interpreter with faster-whisper, neither of which can be assumed. A config
+    # that omits this section would otherwise get a broken upload flow rather
+    # than no upload flow. config.yaml turns it on for this deployment.
+    enabled: bool = Field(default=False, description="Enable the video-upload mode")
+    livevtt_python: str = Field(
+        default="/home/ubuntu/livevtt/.venv/bin/python",
+        description="Python interpreter that has faster-whisper installed",
+    )
+    transcribe_script: str = Field(
+        default="scripts/transcribe_one.py",
+        description="Path to the single-file transcription script",
+    )
+    model: str = Field(default="large-v3-turbo", description="faster-whisper model")
+    compute_type: str = Field(default="int8_float16", description="ctranslate2 compute type")
+    device: str = Field(default="cuda", description="cuda or cpu")
+    device_index: int = Field(
+        default=0, description="Fallback CUDA device when detection is unavailable"
+    )
+    device_indices: list[int] = Field(
+        default_factory=list,
+        description=(
+            "CUDA devices transcription may use, one concurrent upload per device. "
+            "Empty (the default) detects every visible GPU at startup, so a two-GPU "
+            "box transcribes two uploads at once without being configured to."
+        ),
+    )
+    language: str = Field(
+        default="auto",
+        description="Source language code, or 'auto' to detect it from the audio",
+    )
+    language_detection_segments: int = Field(
+        default=4,
+        description=(
+            "Audio windows sampled when auto-detecting the language. More than one "
+            "guards against a musical or foreign-language intro deciding the whole file."
+        ),
+    )
+    multilingual: bool = Field(
+        default=True,
+        description=(
+            "With language='auto', re-detect the language per window so a video that "
+            "switches languages is decoded correctly. Costs some transcription speed."
+        ),
+    )
+    beam_size: int = Field(default=5, description="Decoding beam size")
+    tmp_root: str = Field(
+        default="./data/video_sessions",
+        description="Root directory for per-session working files",
+    )
+    collection_prefix: str = Field(
+        default="session_", description="Prefix for ephemeral per-session collections"
+    )
+    session_ttl_seconds: int = Field(
+        default=21600, description="Session lifetime before automatic cleanup (seconds)"
+    )
+    max_upload_mb: int = Field(default=512, description="Maximum accepted upload size in megabytes")
+    sweep_orphans_on_start: bool = Field(
+        default=True,
+        description=(
+            "On startup, drop leftover session collections and working directories from "
+            "previous runs. Assumes a single API process owns them; disable if running "
+            "multiple API workers against one Qdrant instance."
+        ),
+    )
+
+
 class MCPConfig(BaseModel):
     """Configuration for MCP server."""
 
@@ -501,6 +576,7 @@ class Config(BaseModel):
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)
+    video_upload: VideoUploadConfig = Field(default_factory=VideoUploadConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     web_metadata: WebMetadataConfig = Field(default_factory=WebMetadataConfig)
     incremental: IncrementalConfig = Field(default_factory=IncrementalConfig)

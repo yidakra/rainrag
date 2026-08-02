@@ -177,6 +177,40 @@ video:
     - ".en.vtt"
     - ".ru.vtt"
 
+# Single-video upload mode: drag-drop a video -> transcribe -> scoped Q&A.
+# Each upload gets its own ephemeral Qdrant collection so answers are isolated
+# to that video. Transcription runs as a subprocess under an interpreter that
+# has faster-whisper installed (the livevtt venv), keeping heavy CUDA deps out
+# of the RainRAG environment.
+video_upload:
+  enabled: true
+  livevtt_python: "/home/ubuntu/livevtt/.venv/bin/python"  # interpreter with faster-whisper
+  transcribe_script: "scripts/transcribe_one.py"           # single-file transcriber
+  model: "large-v3-turbo"        # faster-whisper model (turbo ~halves latency vs large-v3)
+  compute_type: "int8_float16"   # avoids CUDA OOM on large models
+  device: "cuda"
+  # Leave device_indices empty to use every GPU the transcription environment
+  # can see (one concurrent upload per GPU). Set an explicit list to pin
+  # transcription to specific devices, e.g. [0] to leave GPU 1 for other work.
+  device_indices: []
+  device_index: 0                 # used only if GPU detection is unavailable
+  # "auto" lets Whisper detect the language from the audio, so a journalist does
+  # not have to know it in advance. Set an explicit code (e.g. "ru") to force one.
+  language: "auto"
+  language_detection_segments: 4  # sample several windows, not just the intro
+  multilingual: true              # re-detect per window so mixed-language video works
+  beam_size: 5
+  tmp_root: "./data/video_sessions"   # per-session working files
+  collection_prefix: "session_"       # ephemeral collection name prefix
+  session_ttl_seconds: 21600          # auto-cleanup after 6h (a working session)
+  # The Streamlit client buffers the whole file in memory before sending, so this
+  # cap also bounds UI memory per concurrent upload. Raise with that in mind.
+  max_upload_mb: 512                  # reject uploads larger than this
+  # Drop leftover session collections/dirs from previous runs at startup. Session
+  # state is in-process, so without this a restart leaks them permanently.
+  # Disable only if several API workers share one Qdrant instance.
+  sweep_orphans_on_start: true
+
 # MCP server configuration
 mcp:
   # Transport protocol: "stdio" for local CLI tools (Claude Desktop, Cursor),

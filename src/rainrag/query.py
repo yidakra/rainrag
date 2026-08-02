@@ -1204,6 +1204,7 @@ class RAGQueryEngine:
         date_to: str | None = None,
         query_text: str | None = None,
         exclude_speech_free: bool = False,
+        collection_name: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Retrieve the most relevant documents from Qdrant.
@@ -1218,6 +1219,9 @@ class RAGQueryEngine:
             query_text: Original query text (needed for BM25 in hybrid search)
             exclude_speech_free: When True, speech-free (no-transcript) documents
                 are removed from results before ranking and truncation.
+            collection_name: Override the Qdrant collection to search. Defaults to
+                the configured collection. Used to scope retrieval to a single
+                uploaded video's ephemeral collection.
 
         Returns:
             List of retrieved documents with metadata
@@ -1225,8 +1229,18 @@ class RAGQueryEngine:
         if self.qdrant_client is None:
             raise RuntimeError("Qdrant client not initialized. Call initialize() first.")
 
-        # Check if hybrid search is enabled and query_text is provided
-        use_hybrid = self.config.hybrid_search.enabled and query_text and self.bm25 is not None
+        target_collection = collection_name or self.config.qdrant.collection_name
+
+        # Check if hybrid search is enabled and query_text is provided.
+        # BM25 is built over the main corpus, so it applies whenever retrieval
+        # targets that corpus -- including a caller that names it explicitly --
+        # and never to an override collection such as an uploaded video.
+        use_hybrid = (
+            self.config.hybrid_search.enabled
+            and query_text
+            and self.bm25 is not None
+            and target_collection == self.config.qdrant.collection_name
+        )
 
         if use_hybrid:
             logger.info(f"Using hybrid search (vector + BM25) for top {top_k} documents...")
@@ -1268,7 +1282,7 @@ class RAGQueryEngine:
                     f"Querying Qdrant with filter: {query_filter}, limit: {effective_limit}"
                 )
             results = self.qdrant_client.query_points(
-                collection_name=self.config.qdrant.collection_name,
+                collection_name=target_collection,
                 query=query_vector,
                 limit=effective_limit,
                 query_filter=query_filter,
@@ -1498,7 +1512,11 @@ class RAGQueryEngine:
             return documents[:top_n]
 
     def build_prompt(
-        self, query: str, documents: list[dict[str, Any]], language: str = "en"
+        self,
+        query: str,
+        documents: list[dict[str, Any]],
+        language: str = "en",
+        single_video: bool = False,
     ) -> list[dict[str, str]]:
         """
         Build the messages for the chat LLM with retrieved context.
@@ -1507,6 +1525,10 @@ class RAGQueryEngine:
             query: The user's question
             documents: List of retrieved documents
             language: Language code (e.g., "en", "ru") for response
+            single_video: When True, all context comes from one user-uploaded
+                video rather than the news archive. Switches to a system prompt
+                without archive framing and omits the per-document date, which
+                for an upload is only the file's mtime and carries no meaning.
 
         Returns:
             List of message dictionaries for the chat API
@@ -1531,10 +1553,13 @@ class RAGQueryEngine:
                 )
             context_parts.append(doc_header)
 
-            # Include date if available (prioritize web_date over date)
-            doc_date = doc.get("web_date") or doc.get("date")
-            if doc_date:
-                context_parts.append(f"Date: {doc_date}")
+            # Include date if available (prioritize web_date over date).
+            # Skipped for uploaded videos: the only date available there is the
+            # file's mtime (i.e. the upload time), which would be misleading.
+            if not single_video:
+                doc_date = doc.get("web_date") or doc.get("date")
+                if doc_date:
+                    context_parts.append(f"Date: {doc_date}")
 
             # Include duration if available (format as mm:ss)
             if doc.get("duration_seconds"):
@@ -1581,11 +1606,37 @@ ALL VIDEOS ARE ARCHIVAL RECORDINGS, not current news. Response rules:
 If date is missing, note this. If no relevant footage is found, say so clearly — do not fabricate.""",
         }
 
+        # For a single uploaded video there is no archive context: the user is
+        # asking about one file they just provided, so drop the archive framing
+        # and the date-citation rules.
+        single_video_messages = {
+            "ru": """Вы — ассистент, который отвечает на вопросы об одном видео, загруженном пользователем. КРИТИЧЕСКИ ВАЖНО: Вы ДОЛЖНЫ отвечать ТОЛЬКО на русском языке.
+
+Весь контекст ниже — это фрагменты транскрипта ОДНОГО загруженного видео. Правила ответа:
+- Отвечайте только на основе транскрипта этого видео
+- Ссылайтесь на тайм-коды (поле "Timecodes"), чтобы указать, где в видео это сказано
+- Не называйте видео архивным и не указывайте дату записи — это загруженный файл, даты у него нет
+- Если в транскрипте нет ответа — скажите прямо, не выдумывайте""",
+            "en": """You are an assistant answering questions about a single video the user uploaded. CRITICAL: You MUST answer ONLY in English.
+
+All context below consists of transcript excerpts from ONE uploaded video. Response rules:
+- Answer only from this video's transcript
+- Cite timecodes (the "Timecodes" field) to point to where something was said
+- Do not call the video archival and do not cite a recording date — this is an uploaded file with no known date
+- If the transcript does not contain the answer, say so clearly — do not fabricate""",
+        }
+
         # Get system message (default to English if not found)
-        system_message = system_messages.get(language, system_messages["en"])
+        active_messages = single_video_messages if single_video else system_messages
+        system_message = active_messages.get(language, active_messages["en"])
 
         # Build user message with context and question
-        user_message = f"""Context from video transcripts:
+        context_header = (
+            "Transcript excerpts from the uploaded video:"
+            if single_video
+            else "Context from video transcripts:"
+        )
+        user_message = f"""{context_header}
 {context}
 
 Question: {query}"""
@@ -1790,6 +1841,8 @@ Question: {query}"""
         date_from: str | None = None,
         date_to: str | None = None,
         exclude_speech_free: bool = False,
+        collection_name: str | None = None,
+        single_video: bool = False,
     ) -> dict[str, Any]:
         """
         Execute the complete query pipeline.
@@ -1802,6 +1855,11 @@ Question: {query}"""
             date_to: Filter results up to this date (YYYY-MM-DD)
             exclude_speech_free: When True, videos with no transcript are excluded
                 from retrieval results entirely.
+            collection_name: Override the Qdrant collection to search. Defaults to
+                the configured collection. Used to scope a query to a single
+                uploaded video's ephemeral collection.
+            single_video: When True, the context is one user-uploaded video, so
+                the prompt drops archive framing and date citations.
 
         Returns:
             Dictionary containing the answer and metadata
@@ -1840,7 +1898,11 @@ Question: {query}"""
                 )
 
         # Step 1: Build query variants (Stage 2a: LLM query rewriting)
-        two_stage_enabled = self.config.two_stage.enabled
+        # Both rewriting and HyDE are written around the broadcast archive: they
+        # paraphrase into news-transcript register and invent plausible archive
+        # passages. Against one uploaded video that is off-corpus guesswork over
+        # a handful of chunks, so the whole of Stage 2 is skipped there.
+        two_stage_enabled = self.config.two_stage.enabled and not single_video
         if two_stage_enabled and self.config.two_stage.query_rewrite_enabled:
             query_variants = self._rewrite_query_for_retrieval(question, language)
         else:
@@ -1886,6 +1948,7 @@ Question: {query}"""
                     date_to=date_to,
                     query_text=variant,
                     exclude_speech_free=exclude_speech_free,
+                    collection_name=collection_name,
                 )
                 all_variant_docs.append(variant_docs)
                 variant_retrieved_ids.append([d["doc_id"] for d in variant_docs])
@@ -1916,6 +1979,7 @@ Question: {query}"""
                 date_to=date_to,
                 query_text=question,
                 exclude_speech_free=exclude_speech_free,
+                collection_name=collection_name,
             )
             variant_retrieved_ids = [[d["doc_id"] for d in documents]]
 
@@ -1947,10 +2011,18 @@ Question: {query}"""
         documents = self._order_documents_for_prompt(documents, doc_order)
 
         # Step 5d: Fill missing web metadata from local/API fallback at query-time.
-        documents, metadata_fallback_hits = self._enrich_documents_with_web_metadata(documents)
+        # An uploaded video has no archive entry, so this would look up the
+        # session's own filename and could only mislabel it with someone else's
+        # broadcast metadata.
+        if single_video:
+            metadata_fallback_hits = 0
+        else:
+            documents, metadata_fallback_hits = self._enrich_documents_with_web_metadata(documents)
 
         # Step 6: Build the messages with language specification
-        messages = self.build_prompt(question, documents, language=language)
+        messages = self.build_prompt(
+            question, documents, language=language, single_video=single_video
+        )
 
         # Step 7: Generate the answer
         answer = self.generate_answer(messages)
