@@ -910,19 +910,22 @@ async def health_check():
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest):
+async def query(
+    request: QueryRequest,
+    authorization: Annotated[str | None, Header()] = None,
+):
     """
     Query the RAG system.
 
     Args:
         request: Query request containing question and parameters
-        authorized: Authorization check result (injected by dependency)
+        authorization: Bearer token header, checked when auth is configured
 
     Returns:
         Answer and retrieved context chunks
     """
     # Verify authentication
-    verify_auth_token()
+    verify_auth_token(authorization=authorization)
 
     if query_engine is None:
         raise HTTPException(status_code=503, detail="Query engine not initialized")
@@ -1161,9 +1164,12 @@ def _build_query_response(result: dict[str, Any], *, media_urls: bool = True) ->
 
 
 @app.post("/video-sessions")
-async def create_video_session(file: UploadFile):
+async def create_video_session(
+    file: UploadFile,
+    authorization: Annotated[str | None, Header()] = None,
+):
     """Upload a video, kick off transcription + indexing, return the session."""
-    verify_auth_token()
+    verify_auth_token(authorization=authorization)
     manager = _require_video_manager()
 
     max_bytes = manager.cfg.max_upload_mb * 1024 * 1024
@@ -1207,9 +1213,12 @@ async def create_video_session(file: UploadFile):
 
 
 @app.get("/video-sessions/{session_id}")
-async def get_video_session(session_id: str):
+async def get_video_session(
+    session_id: str,
+    authorization: Annotated[str | None, Header()] = None,
+):
     """Return the current status/progress of an upload session."""
-    verify_auth_token()
+    verify_auth_token(authorization=authorization)
     manager = _require_video_manager()
     session = manager.get(session_id)
     if session is None:
@@ -1291,9 +1300,12 @@ async def serve_video_session_transcript(
 
 
 @app.delete("/video-sessions/{session_id}")
-async def delete_video_session(session_id: str):
+async def delete_video_session(
+    session_id: str,
+    authorization: Annotated[str | None, Header()] = None,
+):
     """Delete an upload session: drop its collection and working files."""
-    verify_auth_token()
+    verify_auth_token(authorization=authorization)
     manager = _require_video_manager()
     if not manager.delete(session_id):
         raise HTTPException(status_code=404, detail="Session not found")
@@ -1301,9 +1313,13 @@ async def delete_video_session(session_id: str):
 
 
 @app.post("/video-sessions/{session_id}/query", response_model=QueryResponse)
-async def query_video_session(session_id: str, request: VideoQueryRequest):
+async def query_video_session(
+    session_id: str,
+    request: VideoQueryRequest,
+    authorization: Annotated[str | None, Header()] = None,
+):
     """Answer a question scoped to a single uploaded video's transcript."""
-    verify_auth_token()
+    verify_auth_token(authorization=authorization)
     manager = _require_video_manager()
 
     if query_engine is None:
@@ -1598,17 +1614,21 @@ async def search_by_url(
 
 
 @app.post("/related-chunks", response_model=RelatedChunksResponse)
-async def get_related_chunks(request: RelatedChunksRequest):
+async def get_related_chunks(
+    request: RelatedChunksRequest,
+    authorization: Annotated[str | None, Header()] = None,
+):
     """
     Find chunks related to a given chunk based on vector similarity.
 
     Args:
         request: Related chunks request containing chunk_id and parameters
+        authorization: Bearer token header, checked when auth is configured
 
     Returns:
         List of related chunks with similarity scores
     """
-    verify_auth_token()
+    verify_auth_token(authorization=authorization)
 
     if query_engine is None:
         raise HTTPException(status_code=503, detail="Query engine not initialized")

@@ -609,3 +609,46 @@ class TestSingleVideoQueryScoping:
         for configured in (True, False):
             assert (configured and not True) is False  # single_video wins
         assert (True and not False) is True  # archive keeps its configured value
+
+
+class TestEndpointsAcceptTheAuthHeader:
+    """Every route must read the header it authenticates against.
+
+    Regression: routes called ``verify_auth_token()`` with no arguments, so
+    ``authorization`` defaulted to None and every request 401'd as soon as
+    RAINRAG_AUTH_TOKEN was set -- the entire API was unusable with auth on.
+    Local .env has an empty token, which hid this behind auth being disabled.
+    """
+
+    def test_no_route_calls_verify_without_a_token_source(self) -> None:
+        import inspect
+
+        import rainrag.api as api
+
+        source = inspect.getsource(api)
+        # A bare call cannot see the request's header; it must be passed one.
+        assert "verify_auth_token()" not in source
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "query",
+            "get_related_chunks",
+            "create_video_session",
+            "get_video_session",
+            "delete_video_session",
+            "query_video_session",
+            "serve_video_session_media",
+            "serve_video_session_transcript",
+        ],
+    )
+    def test_route_declares_an_authorization_parameter(self, endpoint: str) -> None:
+        import inspect
+
+        import rainrag.api as api
+
+        signature = inspect.signature(getattr(api, endpoint))
+
+        assert "authorization" in signature.parameters, (
+            f"{endpoint} cannot authenticate: it never receives the header"
+        )
