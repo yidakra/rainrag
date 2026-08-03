@@ -28,6 +28,25 @@ def test_choose_chunk_boundaries_prefers_nearby_silence() -> None:
     assert boundaries == [1792, 3605]
 
 
+def test_detect_silence_centers_pairs_start_and_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stderr = (
+        "[silencedetect] silence_start: 10.0\n"
+        "[silencedetect] silence_end: 12.0 | silence_duration: 2.0\n"
+        "[silencedetect] silence_end: 15.0 | silence_duration: 1.0\n"
+        "[silencedetect] silence_start: 20.0\n"
+        "[silencedetect] silence_end: 24.0 | silence_duration: 4.0\n"
+    )
+    monkeypatch.setattr(
+        transcription,
+        "_run_command",
+        lambda command, *, description: SimpleNamespace(stderr=stderr),
+    )
+
+    assert transcription._detect_silence_centers(tmp_path / "audio.mp3") == [11.0, 22.0]
+
+
 def test_parse_response_offsets_segments_and_normalizes_language() -> None:
     response = SimpleNamespace(
         language="russian",
@@ -245,6 +264,15 @@ def test_transcribe_media_rejects_an_entirely_silent_video(
         transcription.transcribe_media(media, output, api_key="test-key")
 
     assert not output.exists()
+
+
+def test_transcribe_media_rejects_a_blank_api_key(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="API key cannot be empty"):
+        transcription.transcribe_media(
+            tmp_path / "source.mp4",
+            tmp_path / "source.vtt",
+            api_key="   ",
+        )
 
 
 def test_timestamped_transcription_rejects_unsupported_model(tmp_path: Path) -> None:

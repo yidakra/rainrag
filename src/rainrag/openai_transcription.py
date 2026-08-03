@@ -36,6 +36,8 @@ _LANGUAGE_CODES = {
 
 @dataclass(frozen=True)
 class TranscriptionCue:
+    """One timestamped text segment returned by the transcription API."""
+
     start_seconds: float
     end_seconds: float
     text: str
@@ -43,6 +45,8 @@ class TranscriptionCue:
 
 @dataclass(frozen=True)
 class OpenAITranscriptionResult:
+    """Summary metadata for a completed uploaded-video transcription."""
+
     language: str | None
     duration_seconds: float
     cue_count: int
@@ -51,11 +55,15 @@ class OpenAITranscriptionResult:
 
 @dataclass(frozen=True)
 class _AudioChunk:
+    """Prepared API upload and its starting position in the source media."""
+
     path: Path
     offset_seconds: float
 
 
 def _run_command(command: list[str], *, description: str) -> subprocess.CompletedProcess[str]:
+    """Run a media command and convert execution failures into actionable errors."""
+
     try:
         return subprocess.run(
             command,
@@ -77,6 +85,8 @@ def _run_command(command: list[str], *, description: str) -> subprocess.Complete
 
 
 def _extract_audio(media_path: Path, output_path: Path) -> None:
+    """Extract compact mono MP3 audio suitable for transcription uploads."""
+
     _run_command(
         [
             "ffmpeg",
@@ -105,6 +115,8 @@ def _extract_audio(media_path: Path, output_path: Path) -> None:
 
 
 def _probe_duration(audio_path: Path) -> float:
+    """Return the positive media duration reported by ffprobe."""
+
     proc = _run_command(
         [
             "ffprobe",
@@ -128,6 +140,8 @@ def _probe_duration(audio_path: Path) -> float:
 
 
 def _detect_silence_centers(audio_path: Path) -> list[float]:
+    """Return midpoint timestamps for complete silence intervals in the audio."""
+
     proc = _run_command(
         [
             "ffmpeg",
@@ -164,6 +178,8 @@ def _choose_chunk_boundaries(
     chunk_seconds: float,
     silence_window_seconds: float,
 ) -> list[float]:
+    """Choose target-duration boundaries, preferring nearby silence."""
+
     if chunk_seconds <= 0:
         raise ValueError("chunk_seconds must be positive")
     if silence_window_seconds < 0:
@@ -194,6 +210,8 @@ def _split_audio(
     duration_seconds: float,
     boundaries: list[float],
 ) -> list[_AudioChunk]:
+    """Create chunks that respect requested boundaries and the API size limit."""
+
     size_bytes = audio_path.stat().st_size
     if not boundaries and size_bytes <= MAX_OPENAI_UPLOAD_BYTES:
         return [_AudioChunk(path=audio_path, offset_seconds=0.0)]
@@ -247,12 +265,16 @@ def _split_audio(
 
 
 def _response_field(value: Any, name: str, default: Any = None) -> Any:
+    """Read one field from either an SDK response object or a plain mapping."""
+
     if isinstance(value, dict):
         return value.get(name, default)
     return getattr(value, name, default)
 
 
 def _normalize_language(language: str | None) -> str | None:
+    """Normalize API language names and codes for session metadata."""
+
     value = (language or "").strip().lower().replace("_", "-")
     if not value:
         return None
@@ -266,6 +288,8 @@ def _normalize_language(language: str | None) -> str | None:
 def _parse_response(
     response: Any, *, offset_seconds: float
 ) -> tuple[list[TranscriptionCue], str | None]:
+    """Parse API segments and shift their timestamps onto the source timeline."""
+
     cues: list[TranscriptionCue] = []
     for segment in _response_field(response, "segments", []) or []:
         text = str(_response_field(segment, "text", "") or "").strip()
@@ -282,6 +306,8 @@ def _parse_response(
 
 
 def _format_timestamp(seconds: float) -> str:
+    """Format seconds as a WebVTT timestamp."""
+
     total_ms = max(0, round(seconds * 1000))
     hours, remainder = divmod(total_ms, 3_600_000)
     minutes, remainder = divmod(remainder, 60_000)
@@ -290,6 +316,8 @@ def _format_timestamp(seconds: float) -> str:
 
 
 def _render_vtt(cues: list[TranscriptionCue]) -> str:
+    """Render ordered, non-overlapping transcription cues as WebVTT."""
+
     lines = ["WEBVTT", ""]
     ordered = sorted(cues, key=lambda item: item.start_seconds)
     for position, cue in enumerate(ordered):

@@ -603,6 +603,45 @@ class TestOpenAIUploadTranscription:
         assert manager._transcription_queue == []
         assert manager._transcription_pool.acquire(timeout=0) == 0
 
+    def test_progress_callback_cancellation_releases_queue_and_worker(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = _bare_manager()
+        manager.cfg = SimpleNamespace(
+            openai_api_key_env="OPENAI_API_KEY",
+            openai_model="whisper-1",
+            openai_chunk_seconds=1800.0,
+            openai_silence_window_seconds=30.0,
+            language="auto",
+        )
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        video = session_dir / "source.mov"
+        video.touch()
+        session = VideoSession(
+            id="s1",
+            filename="clip.mov",
+            session_dir=str(session_dir),
+            video_path=str(video),
+        )
+        manager._sessions[session.id] = session
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        def fake_transcribe(_media_path: Path, _output_path: Path, **kwargs: object):
+            callback = kwargs["progress_callback"]
+            assert manager.delete(session.id) is True
+            callback(1, 2)  # type: ignore[operator]
+            raise AssertionError("cancelled progress callback unexpectedly returned")
+
+        monkeypatch.setattr("rainrag.video_session.transcribe_media", fake_transcribe)
+
+        with pytest.raises(SessionCancelledError):
+            manager._transcribe_openai(session)
+
+        assert not session_dir.exists()
+        assert manager._transcription_queue == []
+        assert manager._transcription_pool.acquire(timeout=0) == 0
+
 
 class TestOrphanSweepScope:
     """The sweep must only remove paths this manager created.
