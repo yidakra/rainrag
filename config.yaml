@@ -179,11 +179,17 @@ video:
 
 # Single-video upload mode: drag-drop a video -> transcribe -> scoped Q&A.
 # Each upload gets its own ephemeral Qdrant collection so answers are isolated
-# to that video. Transcription runs as a subprocess under an interpreter that
-# has faster-whisper installed (the livevtt venv), keeping heavy CUDA deps out
-# of the RainRAG environment.
+# to that video. OpenAI handles transcription in this deployment; the local
+# faster-whisper settings remain available as an explicit fallback.
 video_upload:
   enabled: true
+  provider: "openai"
+  openai_model: "whisper-1"            # required for segment timestamps / VTT
+  openai_api_key_env: "OPENAI_API_KEY"
+  openai_workers: 2                     # at most two uploads transcribe concurrently
+  openai_chunk_seconds: 1800            # 30-minute silence-aware chunks
+  openai_silence_window_seconds: 30
+  # Local fallback settings (used only when provider: "local").
   livevtt_python: "/home/ubuntu/livevtt/.venv/bin/python"  # interpreter with faster-whisper
   transcribe_script: "scripts/transcribe_one.py"           # single-file transcriber
   model: "large-v3-turbo"        # faster-whisper model (turbo ~halves latency vs large-v3)

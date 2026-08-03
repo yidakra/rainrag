@@ -253,6 +253,26 @@ gemini:
 
 **See [docs/PROVIDER_COMPARISON.md](docs/PROVIDER_COMPARISON.md) for help choosing the right provider for your needs.**
 
+### Uploaded Video Transcription
+
+The single-video mode can transcribe uploads through OpenAI without a local GPU:
+
+```yaml
+video_upload:
+  enabled: true
+  provider: "openai"
+  openai_model: "whisper-1"
+  openai_api_key_env: "OPENAI_API_KEY"
+  openai_workers: 2
+  openai_chunk_seconds: 1800
+  openai_silence_window_seconds: 30
+```
+
+`whisper-1` is required because the upload flow needs segment timestamps to
+produce seekable WebVTT. Audio is compressed and split near silence before API
+submission so long videos remain under the per-file upload limit. Set
+`provider: "local"` to use the existing faster-whisper subprocess instead.
+
 ### Two-Stage Retrieval
 
 RainRAG implements two-stage retrieval (Zhai & Lafferty, [SIGIR 2002](https://dl.acm.org/doi/10.1145/564376.564386)) to improve recall on broadcast-transcript corpora, where user queries are typically formal or terse but the source material is informal spoken language.
@@ -1175,6 +1195,17 @@ rainrag/
 - `enabled`: Enable video file serving (default: true)
 - `extensions`: List of supported video file extensions
 - `vtt_extensions`: List of supported VTT file extensions
+
+### Video Upload
+
+- `enabled`: Enable isolated upload, transcription, and Q&A sessions
+- `provider`: `"openai"` or `"local"`
+- `openai_model`: Timestamp-capable transcription model (`"whisper-1"`)
+- `openai_api_key_env`: Environment variable containing the API key
+- `openai_workers`: Maximum concurrent OpenAI transcriptions
+- `openai_chunk_seconds`: Target length for API audio chunks
+- `openai_silence_window_seconds`: Search window for silence near chunk boundaries
+- `livevtt_python`: Local faster-whisper interpreter, used only by `provider: "local"`
 
 ### Web Metadata
 

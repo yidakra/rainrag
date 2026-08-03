@@ -5,20 +5,20 @@ This module powers the "upload your own video" mode. Each uploaded video gets:
 * an ephemeral working directory under ``video_upload.tmp_root``,
 * an ephemeral Qdrant collection ``{prefix}{session_id}`` that holds ONLY that
   video's chunks (guaranteeing answers are scoped to the upload), and
-* a background job that runs transcription (via the livevtt venv subprocess),
+* a background job that runs OpenAI or local faster-whisper transcription,
   then the normal RainRAG ingest → embed → index pipeline into that collection.
 
 Sessions are ephemeral: a TTL reaper drops the collection and deletes the
 working directory once a session is older than ``session_ttl_seconds`` (or when
-explicitly deleted). Transcription runs one job per visible GPU — the device
-count is detected at startup — so uploads beyond that queue rather than
-oversubscribing GPU memory.
+explicitly deleted). A bounded provider pool keeps concurrent transcription
+within the configured API or GPU capacity.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -33,6 +33,7 @@ from rainrag.config import Config
 from rainrag.embed import Embedder
 from rainrag.index import QdrantIndexer
 from rainrag.ingest import Ingester
+from rainrag.openai_transcription import transcribe_media
 
 
 # Status values (kept as plain strings so they serialise directly to JSON).
@@ -43,25 +44,24 @@ STATUS_READY = "ready"
 STATUS_ERROR = "error"
 
 
-class _GpuPool:
-    """Hands out GPU slots to transcription jobs, one job per device.
+class _TranscriptionPool:
+    """Hands out bounded transcription slots.
 
-    Replaces a single global lock: with two GPUs visible, two uploads transcribe
-    at once instead of one waiting out the other. Jobs beyond the device count
-    still queue, so GPU memory is never oversubscribed.
+    Slot identifiers map to OpenAI worker slots or local GPU indices. Jobs beyond
+    provider capacity queue rather than oversubscribing that resource.
     """
 
-    def __init__(self, device_indices: list[int]):
-        self.devices = list(device_indices)
-        self._available = list(device_indices)
+    def __init__(self, slot_indices: list[int]):
+        self.slots = list(slot_indices)
+        self._available = list(slot_indices)
         self._condition = threading.Condition()
 
     @property
     def size(self) -> int:
-        return len(self.devices)
+        return len(self.slots)
 
     def acquire(self, timeout: float) -> int | None:
-        """Take a free device, or return None if none freed up within timeout."""
+        """Take a free slot, or return None if none freed up within timeout."""
         with self._condition:
             if not self._available:
                 self._condition.wait(timeout)
@@ -69,9 +69,9 @@ class _GpuPool:
                 return None
             return self._available.pop(0)
 
-    def release(self, device_index: int) -> None:
+    def release(self, slot_index: int) -> None:
         with self._condition:
-            self._available.append(device_index)
+            self._available.append(slot_index)
             self._condition.notify()
 
 
@@ -105,7 +105,7 @@ class VideoSession:
     # Language Whisper detected (or the configured override) and its confidence.
     language: str | None = None
     language_probability: float | None = None
-    # Sessions ahead of this one in the GPU queue; 0 means it is transcribing.
+    # Sessions ahead of this one in the provider queue; 0 means it is transcribing.
     queue_position: int = 0
     # Pixel dimensions of the upload, so the client can size its player to the
     # real aspect ratio instead of assuming 16:9. None when ffprobe is absent.
@@ -136,13 +136,13 @@ class VideoSessionManager:
         self.cfg = config.video_upload
         self._sessions: dict[str, VideoSession] = {}
         self._lock = threading.Lock()
-        # Sessions waiting on (or holding) a GPU, oldest first, so each one can
-        # report how many uploads are ahead of it instead of a blank progress bar.
-        self._gpu_queue: list[str] = []
-        # Live transcriber subprocesses, so cancelling frees the GPU immediately.
+        # Sessions waiting on (or holding) a provider slot, oldest first, so each
+        # can report how many uploads are ahead instead of a blank progress bar.
+        self._transcription_queue: list[str] = []
+        # Live local transcriber subprocesses, so cancellation stops them immediately.
         self._procs: dict[str, subprocess.Popen] = {}
-        # One transcription per GPU, across however many the box actually has.
-        self._gpu_pool = _GpuPool(self._resolve_devices())
+        # One slot per OpenAI worker or local GPU.
+        self._transcription_pool = _TranscriptionPool(self._resolve_devices())
 
         # Dedicated embedder/indexer for session indexing. The embedder loads
         # its own model lazily on first use; the indexer needs an explicit
@@ -222,17 +222,17 @@ class VideoSessionManager:
     def delete(self, session_id: str) -> bool:
         """Cancel any running work, then drop the collection + working dir.
 
-        Deleting a session that is still transcribing kills the transcriber so
-        the GPU is handed to the next queued upload right away rather than after
-        the abandoned video finishes.
+        A local transcriber subprocess is killed immediately. An in-flight API
+        request cannot be interrupted, but its result is discarded and its slot
+        is released as soon as the request returns.
         """
         with self._lock:
             session = self._sessions.pop(session_id, None)
             if session is not None:
                 session.cancelled = True
             proc = self._procs.get(session_id)
-            if session_id in self._gpu_queue:
-                self._gpu_queue.remove(session_id)
+            if session_id in self._transcription_queue:
+                self._transcription_queue.remove(session_id)
         if session is None:
             return False
         if proc is not None and proc.poll() is None:
@@ -256,7 +256,7 @@ class VideoSessionManager:
             self._sessions.clear()
             procs = list(self._procs.items())
             self._procs.clear()
-            self._gpu_queue.clear()
+            self._transcription_queue.clear()
 
         for session_id, proc in procs:
             if proc.poll() is None:
@@ -376,10 +376,10 @@ class VideoSessionManager:
             logger.exception(f"[video-session {session_id}] failed")
             self._update(session_id, status=STATUS_ERROR, stage="error", error=str(exc))
 
-    # ------------------------------------------------------------- GPU queueing
+    # ---------------------------------------------------- transcription queueing
 
     def _resolve_devices(self) -> list[int]:
-        """Decide which GPUs transcription may use.
+        """Resolve provider concurrency slots or local GPU devices.
 
         Defaults to every CUDA device the transcription environment can see, so
         a two-GPU box runs two uploads concurrently without being configured to.
@@ -387,6 +387,11 @@ class VideoSessionManager:
         unavailable we fall back to the single configured device rather than
         guessing high and failing every job assigned to a device that isn't there.
         """
+        if self.cfg.provider == "openai":
+            workers = max(1, self.cfg.openai_workers)
+            logger.info(f"Video upload: {workers} concurrent OpenAI transcription slot(s)")
+            return list(range(workers))
+
         if self.cfg.device != "cuda":
             return [self.cfg.device_index]
 
@@ -462,10 +467,10 @@ class VideoSessionManager:
             raise SessionCancelledError(session_id)
 
     def _queue_position(self, session_id: str) -> int:
-        """Number of sessions ahead in the GPU queue (0 = holds it or is next)."""
+        """Number of sessions ahead in the provider queue (0 = holds it or is next)."""
         with self._lock:
             try:
-                return self._gpu_queue.index(session_id)
+                return self._transcription_queue.index(session_id)
             except ValueError:
                 return 0
 
@@ -516,6 +521,13 @@ class VideoSessionManager:
         logger.info(f"[video-session {session.id}] source is {width}x{height}")
 
     def _transcribe(self, session: VideoSession) -> None:
+        """Dispatch transcription to the configured provider."""
+        if self.cfg.provider == "openai":
+            self._transcribe_openai(session)
+            return
+        self._transcribe_local(session)
+
+    def _transcribe_local(self, session: VideoSession) -> None:
         """Run the single-file transcriber subprocess under the livevtt venv."""
         video_path = Path(session.video_path)
         # Written without a language suffix: with auto-detection the language is
@@ -533,7 +545,7 @@ class VideoSessionManager:
         timeout = max(1800, self.cfg.session_ttl_seconds)
 
         with self._lock:
-            self._gpu_queue.append(session.id)
+            self._transcription_queue.append(session.id)
         device_index: int | None = None
         try:
             # Poll for a slot rather than blocking on one, so a queued session can
@@ -541,7 +553,7 @@ class VideoSessionManager:
             while device_index is None:
                 self._check_cancelled(session.id)
                 self._update(session.id, queue_position=self._queue_position(session.id))
-                device_index = self._gpu_pool.acquire(timeout=1.0)
+                device_index = self._transcription_pool.acquire(timeout=1.0)
 
             cmd = [
                 self.cfg.livevtt_python,
@@ -606,14 +618,102 @@ class VideoSessionManager:
                 raise RuntimeError(f"transcriber exited {proc.returncode}: {tail}")
         finally:
             with self._lock:
-                if session.id in self._gpu_queue:
-                    self._gpu_queue.remove(session.id)
+                if session.id in self._transcription_queue:
+                    self._transcription_queue.remove(session.id)
             if device_index is not None:
-                self._gpu_pool.release(device_index)
+                self._transcription_pool.release(device_index)
 
         if not vtt_path.exists():
             raise RuntimeError("transcription produced no VTT output")
         self._update(session.id, vtt_path=str(self._apply_language_suffix(vtt_path, progress_file)))
+
+    def _transcribe_openai(self, session: VideoSession) -> None:
+        """Generate a timestamped source-language VTT through OpenAI."""
+        api_key = os.environ.get(self.cfg.openai_api_key_env, "").strip()
+        if not api_key:
+            raise RuntimeError(
+                "OpenAI upload transcription requires an API key in env var "
+                f"{self.cfg.openai_api_key_env!r}"
+            )
+
+        video_path = Path(session.video_path)
+        vtt_path = Path(session.session_dir) / "source.vtt"
+        progress_file = Path(session.session_dir) / "progress.json"
+        self._update(
+            session.id,
+            status=STATUS_TRANSCRIBING,
+            stage="waiting_for_transcriber",
+            percent=0.0,
+        )
+
+        with self._lock:
+            self._transcription_queue.append(session.id)
+        worker_slot: int | None = None
+        try:
+            try:
+                while worker_slot is None:
+                    self._check_cancelled(session.id)
+                    self._update(session.id, queue_position=self._queue_position(session.id))
+                    worker_slot = self._transcription_pool.acquire(timeout=1.0)
+
+                self._update(session.id, stage="transcribing", percent=0.0, queue_position=0)
+                logger.info(
+                    f"[video-session {session.id}] transcribing via OpenAI slot {worker_slot}"
+                )
+
+                def report_progress(completed: int, total: int) -> None:
+                    self._check_cancelled(session.id)
+                    percent = min(90.0, completed / max(1, total) * 90.0)
+                    self._update(session.id, percent=percent)
+
+                language = (
+                    None if self.cfg.language.lower() in ("", "auto", "none") else self.cfg.language
+                )
+                result = transcribe_media(
+                    video_path,
+                    vtt_path,
+                    api_key=api_key,
+                    model=self.cfg.openai_model,
+                    language=language,
+                    chunk_seconds=self.cfg.openai_chunk_seconds,
+                    silence_window_seconds=self.cfg.openai_silence_window_seconds,
+                    progress_callback=report_progress,
+                )
+                self._check_cancelled(session.id)
+            finally:
+                with self._lock:
+                    if session.id in self._transcription_queue:
+                        self._transcription_queue.remove(session.id)
+                if worker_slot is not None:
+                    self._transcription_pool.release(worker_slot)
+
+            progress = {
+                "stage": "transcribing",
+                "percent": 90.0,
+                "total_seconds": round(result.duration_seconds, 1),
+                "detected_language": result.language,
+            }
+            progress_tmp = progress_file.with_suffix(".json.tmp")
+            progress_tmp.write_text(json.dumps(progress), encoding="utf-8")
+            progress_tmp.replace(progress_file)
+            self._update(
+                session.id,
+                percent=90.0,
+                duration_seconds=result.duration_seconds,
+                language=result.language,
+            )
+
+            if not vtt_path.exists():
+                raise RuntimeError("OpenAI transcription produced no VTT output")
+            self._update(
+                session.id,
+                vtt_path=str(self._apply_language_suffix(vtt_path, progress_file)),
+            )
+        finally:
+            # delete()/the TTL reaper may race the final API response and VTT write.
+            # If the writer recreated the directory, make cancellation cleanup final.
+            if self._is_cancelled(session.id):
+                shutil.rmtree(session.session_dir, ignore_errors=True)
 
     @staticmethod
     def _read_log_tail(log_file: Path, max_bytes: int = 64_000) -> str:
