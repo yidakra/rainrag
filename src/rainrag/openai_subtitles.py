@@ -180,10 +180,21 @@ def _split_audio(
     duration_seconds: float,
     boundaries: list[float],
 ) -> list[_AudioChunk]:
-    if not boundaries and audio_path.stat().st_size <= MAX_OPENAI_UPLOAD_BYTES:
+    size_bytes = audio_path.stat().st_size
+    if not boundaries and size_bytes <= MAX_OPENAI_UPLOAD_BYTES:
         return [_AudioChunk(path=audio_path, offset_seconds=0.0)]
 
     points = [0.0, *boundaries, duration_seconds]
+    if size_bytes > MAX_OPENAI_UPLOAD_BYTES:
+        size_safe_points = [points[0]]
+        for start, end in zip(points, points[1:], strict=False):
+            estimated_bytes = size_bytes * (end - start) / duration_seconds
+            part_count = int(estimated_bytes // MAX_OPENAI_UPLOAD_BYTES) + 1
+            size_safe_points.extend(
+                start + (end - start) * part / part_count for part in range(1, part_count + 1)
+            )
+        points = size_safe_points
+
     chunks: list[_AudioChunk] = []
     for index, (start, end) in enumerate(zip(points, points[1:], strict=False), start=1):
         chunk_path = output_dir / f"chunk-{index:04}.mp3"
@@ -270,11 +281,18 @@ def _format_timestamp(seconds: float) -> str:
 
 def _render_vtt(cues: list[_VttCue]) -> str:
     lines = ["WEBVTT", ""]
-    for index, cue in enumerate(sorted(cues, key=lambda item: item.start_seconds), start=1):
-        timing = f"{_format_timestamp(cue.start_seconds)} --> {_format_timestamp(cue.end_seconds)}"
+    ordered = sorted(cues, key=lambda item: item.start_seconds)
+    for position, cue in enumerate(ordered):
+        end_seconds = cue.end_seconds
+        if position + 1 < len(ordered):
+            end_seconds = min(
+                end_seconds,
+                max(cue.start_seconds, ordered[position + 1].start_seconds),
+            )
+        timing = f"{_format_timestamp(cue.start_seconds)} --> {_format_timestamp(end_seconds)}"
         if cue.settings:
             timing = f"{timing} {cue.settings}"
-        lines.extend([str(index), timing, cue.text, ""])
+        lines.extend([str(position + 1), timing, cue.text, ""])
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -287,10 +305,7 @@ def _translate_chunk(*, client: OpenAI, chunk: _AudioChunk, model: str) -> list[
             temperature=0,
         )
     content = response if isinstance(response, str) else str(getattr(response, "text", ""))
-    cues = _parse_vtt(content, offset_seconds=chunk.offset_seconds)
-    if not cues:
-        raise RuntimeError(f"OpenAI returned no WebVTT cues for {chunk.path.name}")
-    return cues
+    return _parse_vtt(content, offset_seconds=chunk.offset_seconds)
 
 
 def _translate_job(
@@ -324,6 +339,8 @@ def _translate_job(
         cues: list[_VttCue] = []
         for chunk in chunks:
             cues.extend(_translate_chunk(client=client, chunk=chunk, model=model))
+        if not cues:
+            raise RuntimeError(f"OpenAI returned no WebVTT cues for {job.video_hash}")
 
         job.output_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_output = job.output_path.with_suffix(f"{job.output_path.suffix}.tmp")

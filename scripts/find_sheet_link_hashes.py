@@ -32,10 +32,20 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rainrag.ingest import WebMetadataLoader
-from rainrag.openai_subtitles import OpenAISubtitleJob, translate_jobs
+from rainrag.openai_subtitles import (
+    DEFAULT_CHUNK_SECONDS,
+    DEFAULT_SILENCE_WINDOW_SECONDS,
+    OpenAISubtitleJob,
+    translate_jobs,
+)
 
 
 DRIVE_SHARE_EMAIL = "ard@tvrain.tv"
+EXIT_PARTIAL_TRANSLATION_FAILURE = 2
+
+
+def _translation_exit_code(failure_count: int) -> int:
+    return EXIT_PARTIAL_TRANSLATION_FAILURE if failure_count else 0
 
 
 def _column_to_index(column: str) -> int:
@@ -1039,13 +1049,13 @@ def main() -> int:
     parser.add_argument(
         "--openai-chunk-seconds",
         type=float,
-        default=1800.0,
+        default=float(DEFAULT_CHUNK_SECONDS),
         help="Target OpenAI audio chunk duration in seconds (default: 1800)",
     )
     parser.add_argument(
         "--openai-silence-window-seconds",
         type=float,
-        default=30.0,
+        default=DEFAULT_SILENCE_WINDOW_SECONDS,
         help="Window around each chunk boundary for a nearby silence (default: 30)",
     )
     parser.add_argument(
@@ -1080,6 +1090,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.openai_chunk_seconds <= 0:
+        parser.error("--openai-chunk-seconds must be positive")
+    if args.openai_silence_window_seconds < 0:
+        parser.error("--openai-silence-window-seconds cannot be negative")
     if args.generate_missing_en_vtt and not args.copy_en_vtt_to_dir:
         parser.error("--generate-missing-en-vtt requires --copy-en-vtt-to-dir")
 
@@ -1404,7 +1418,10 @@ def main() -> int:
                 f"(id: {folder_id}), shared with {DRIVE_SHARE_EMAIL}, "
                 f"and deleted local folder {out_dir}"
             )
-    return 1 if translation_failure_count else 0
+    # Sheet and Drive side effects have already committed at this point. Keep
+    # partial translation failures distinct from hard failures so callers do not
+    # blindly retry the entire export and create duplicate Drive folders.
+    return _translation_exit_code(translation_failure_count)
 
 
 if __name__ == "__main__":

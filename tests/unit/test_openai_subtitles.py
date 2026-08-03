@@ -36,6 +36,18 @@ def test_parse_and_render_vtt_offsets_chunk_timestamps() -> None:
     assert rendered.startswith("WEBVTT\n\n1\n")
 
 
+def test_render_vtt_clamps_overlapping_cues() -> None:
+    rendered = subtitles._render_vtt(
+        [
+            subtitles._VttCue(0.0, 5.0, "First"),
+            subtitles._VttCue(4.0, 6.0, "Second"),
+        ]
+    )
+
+    assert "00:00:00.000 --> 00:00:04.000" in rendered
+    assert "00:00:04.000 --> 00:00:06.000" in rendered
+
+
 def test_split_audio_reuses_small_single_chunk(tmp_path: Path) -> None:
     audio = tmp_path / "audio.mp3"
     audio.write_bytes(b"small")
@@ -100,6 +112,80 @@ def test_translate_job_merges_chunks_on_original_timeline(
     rendered = output.read_text(encoding="utf-8")
     assert "00:00:01.000 --> 00:00:02.500" in rendered
     assert "00:30:01.000 --> 00:30:02.500" in rendered
+    starts = [line for line in rendered.splitlines() if " --> " in line]
+    assert len(starts) == 4
+    assert starts == sorted(starts)
+    assert [line for line in rendered.splitlines() if line.isdigit()] == ["1", "2", "3", "4"]
+
+
+def test_translate_job_tolerates_a_silent_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "video.mp4"
+    video.touch()
+    output = tmp_path / "hash.en.vtt"
+    job = subtitles.OpenAISubtitleJob("hash", video, output)
+
+    def fake_extract(_video_path: Path, audio_path: Path) -> None:
+        audio_path.write_bytes(b"audio")
+
+    def fake_split(**kwargs: object) -> list[subtitles._AudioChunk]:
+        output_dir = Path(str(kwargs["output_dir"]))
+        chunks = [output_dir / "silent.mp3", output_dir / "speech.mp3"]
+        for chunk in chunks:
+            chunk.touch()
+        return [subtitles._AudioChunk(chunks[0], 0), subtitles._AudioChunk(chunks[1], 1800)]
+
+    monkeypatch.setattr(subtitles, "_extract_audio", fake_extract)
+    monkeypatch.setattr(subtitles, "_probe_duration", lambda _path: 3600.0)
+    monkeypatch.setattr(subtitles, "_detect_silence_centers", lambda _path: [1800.0])
+    monkeypatch.setattr(subtitles, "_split_audio", fake_split)
+    monkeypatch.setattr(subtitles, "OpenAI", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        subtitles,
+        "_translate_chunk",
+        lambda *, client, chunk, model: (
+            []
+            if chunk.offset_seconds == 0
+            else subtitles._parse_vtt(_SAMPLE_VTT, offset_seconds=chunk.offset_seconds)
+        ),
+    )
+
+    subtitles._translate_job(
+        job,
+        api_key="test-key",
+        model="whisper-1",
+        chunk_seconds=1800,
+        silence_window_seconds=30,
+    )
+
+    assert "00:30:01.000 --> 00:30:02.500" in output.read_text(encoding="utf-8")
+
+
+def test_translate_job_rejects_an_entirely_silent_video(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video = tmp_path / "video.mp4"
+    video.touch()
+    output = tmp_path / "hash.en.vtt"
+    job = subtitles.OpenAISubtitleJob("hash", video, output)
+
+    monkeypatch.setattr(subtitles, "_extract_audio", lambda _source, audio: audio.touch())
+    monkeypatch.setattr(subtitles, "_probe_duration", lambda _path: 30.0)
+    monkeypatch.setattr(
+        subtitles, "_split_audio", lambda **_kwargs: [subtitles._AudioChunk(video, 0)]
+    )
+    monkeypatch.setattr(subtitles, "OpenAI", lambda **_kwargs: object())
+    monkeypatch.setattr(subtitles, "_translate_chunk", lambda **_kwargs: [])
+
+    with pytest.raises(RuntimeError, match="no WebVTT cues for hash"):
+        subtitles._translate_job(
+            job,
+            api_key="test-key",
+            model="whisper-1",
+            chunk_seconds=1800,
+            silence_window_seconds=30,
+        )
 
 
 def test_translate_jobs_keeps_per_video_failures(
@@ -143,3 +229,26 @@ def test_split_audio_creates_every_requested_chunk(
 
     assert [chunk.offset_seconds for chunk in chunks] == [0, 10]
     assert all(chunk.path.exists() for chunk in chunks)
+
+
+def test_split_audio_adds_size_boundaries_for_oversized_single_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "audio.mp3"
+    audio.write_bytes(b"x" * 25)
+    monkeypatch.setattr(subtitles, "MAX_OPENAI_UPLOAD_BYTES", 10)
+
+    def fake_run(command: list[str], *, description: str) -> object:
+        Path(command[-1]).write_bytes(b"chunk")
+        return object()
+
+    monkeypatch.setattr(subtitles, "_run_command", fake_run)
+
+    chunks = subtitles._split_audio(
+        audio_path=audio,
+        output_dir=tmp_path,
+        duration_seconds=30,
+        boundaries=[],
+    )
+
+    assert [chunk.offset_seconds for chunk in chunks] == [0, 10, 20]
