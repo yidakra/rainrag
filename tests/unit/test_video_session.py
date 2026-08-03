@@ -562,6 +562,47 @@ class TestOpenAIUploadTranscription:
         assert Path(session.vtt_path).exists()
         assert manager._transcription_queue == []
 
+    def test_cancellation_removes_a_session_dir_recreated_by_the_final_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = _bare_manager()
+        manager.cfg = SimpleNamespace(
+            openai_api_key_env="OPENAI_API_KEY",
+            openai_model="whisper-1",
+            openai_chunk_seconds=1800.0,
+            openai_silence_window_seconds=30.0,
+            language="auto",
+        )
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        video = session_dir / "source.mov"
+        video.touch()
+        session = VideoSession(
+            id="s1",
+            filename="clip.mov",
+            session_dir=str(session_dir),
+            video_path=str(video),
+        )
+        manager._sessions[session.id] = session
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        def fake_transcribe(_media_path: Path, output_path: Path, **kwargs: object):
+            callback = kwargs["progress_callback"]
+            callback(1, 1)  # type: ignore[operator]
+            assert manager.delete(session.id) is True
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("WEBVTT\n\n", encoding="utf-8")
+            return OpenAITranscriptionResult("en", 2.0, 1, 1)
+
+        monkeypatch.setattr("rainrag.video_session.transcribe_media", fake_transcribe)
+
+        with pytest.raises(SessionCancelledError):
+            manager._transcribe_openai(session)
+
+        assert not session_dir.exists()
+        assert manager._transcription_queue == []
+        assert manager._transcription_pool.acquire(timeout=0) == 0
+
 
 class TestOrphanSweepScope:
     """The sweep must only remove paths this manager created.

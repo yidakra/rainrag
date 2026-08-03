@@ -194,10 +194,21 @@ def _split_audio(
     duration_seconds: float,
     boundaries: list[float],
 ) -> list[_AudioChunk]:
-    if not boundaries and audio_path.stat().st_size <= MAX_OPENAI_UPLOAD_BYTES:
+    size_bytes = audio_path.stat().st_size
+    if not boundaries and size_bytes <= MAX_OPENAI_UPLOAD_BYTES:
         return [_AudioChunk(path=audio_path, offset_seconds=0.0)]
 
     points = [0.0, *boundaries, duration_seconds]
+    if size_bytes > MAX_OPENAI_UPLOAD_BYTES:
+        size_safe_points = [points[0]]
+        for start, end in zip(points, points[1:], strict=False):
+            estimated_bytes = size_bytes * (end - start) / duration_seconds
+            part_count = int(estimated_bytes // MAX_OPENAI_UPLOAD_BYTES) + 1
+            size_safe_points.extend(
+                start + (end - start) * part / part_count for part in range(1, part_count + 1)
+            )
+        points = size_safe_points
+
     chunks: list[_AudioChunk] = []
     for index, (start, end) in enumerate(zip(points, points[1:], strict=False), start=1):
         chunk_path = output_dir / f"chunk-{index:04}.mp3"
@@ -280,10 +291,17 @@ def _format_timestamp(seconds: float) -> str:
 
 def _render_vtt(cues: list[TranscriptionCue]) -> str:
     lines = ["WEBVTT", ""]
-    for cue in sorted(cues, key=lambda item: item.start_seconds):
+    ordered = sorted(cues, key=lambda item: item.start_seconds)
+    for position, cue in enumerate(ordered):
+        end_seconds = cue.end_seconds
+        if position + 1 < len(ordered):
+            end_seconds = min(
+                end_seconds,
+                max(cue.start_seconds, ordered[position + 1].start_seconds),
+            )
         lines.extend(
             [
-                f"{_format_timestamp(cue.start_seconds)} --> {_format_timestamp(cue.end_seconds)}",
+                f"{_format_timestamp(cue.start_seconds)} --> {_format_timestamp(end_seconds)}",
                 cue.text,
                 "",
             ]
@@ -352,15 +370,17 @@ def transcribe_media(
                 response,
                 offset_seconds=chunk.offset_seconds,
             )
-            if not cues:
-                raise RuntimeError(f"OpenAI returned no timestamped cues for chunk {index}")
-            all_cues.extend(cues)
-            if detected_language:
-                chunk_duration = max(cue.end_seconds for cue in cues) - chunk.offset_seconds
-                language_durations[detected_language] += chunk_duration
-            prompt = " ".join(cue.text for cue in cues)[-800:] or None
+            if cues:
+                all_cues.extend(cues)
+                if detected_language:
+                    chunk_duration = max(cue.end_seconds for cue in cues) - chunk.offset_seconds
+                    language_durations[detected_language] += chunk_duration
+                prompt = " ".join(cue.text for cue in cues)[-800:] or None
             if progress_callback:
                 progress_callback(index, len(chunks))
+
+        if not all_cues:
+            raise RuntimeError("OpenAI returned no timestamped cues for the uploaded video")
 
         detected = language_hint
         if not detected and language_durations:

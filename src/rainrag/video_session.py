@@ -650,59 +650,70 @@ class VideoSessionManager:
             self._transcription_queue.append(session.id)
         worker_slot: int | None = None
         try:
-            while worker_slot is None:
+            try:
+                while worker_slot is None:
+                    self._check_cancelled(session.id)
+                    self._update(session.id, queue_position=self._queue_position(session.id))
+                    worker_slot = self._transcription_pool.acquire(timeout=1.0)
+
+                self._update(session.id, stage="transcribing", percent=0.0, queue_position=0)
+                logger.info(
+                    f"[video-session {session.id}] transcribing via OpenAI slot {worker_slot}"
+                )
+
+                def report_progress(completed: int, total: int) -> None:
+                    self._check_cancelled(session.id)
+                    percent = min(90.0, completed / max(1, total) * 90.0)
+                    self._update(session.id, percent=percent)
+
+                language = (
+                    None if self.cfg.language.lower() in ("", "auto", "none") else self.cfg.language
+                )
+                result = transcribe_media(
+                    video_path,
+                    vtt_path,
+                    api_key=api_key,
+                    model=self.cfg.openai_model,
+                    language=language,
+                    chunk_seconds=self.cfg.openai_chunk_seconds,
+                    silence_window_seconds=self.cfg.openai_silence_window_seconds,
+                    progress_callback=report_progress,
+                )
                 self._check_cancelled(session.id)
-                self._update(session.id, queue_position=self._queue_position(session.id))
-                worker_slot = self._transcription_pool.acquire(timeout=1.0)
+            finally:
+                with self._lock:
+                    if session.id in self._transcription_queue:
+                        self._transcription_queue.remove(session.id)
+                if worker_slot is not None:
+                    self._transcription_pool.release(worker_slot)
 
-            self._update(session.id, stage="transcribing", percent=0.0, queue_position=0)
-            logger.info(f"[video-session {session.id}] transcribing via OpenAI slot {worker_slot}")
-
-            def report_progress(completed: int, total: int) -> None:
-                self._check_cancelled(session.id)
-                percent = min(90.0, completed / max(1, total) * 90.0)
-                self._update(session.id, percent=percent)
-
-            language = (
-                None if self.cfg.language.lower() in ("", "auto", "none") else self.cfg.language
+            progress = {
+                "stage": "transcribing",
+                "percent": 90.0,
+                "total_seconds": round(result.duration_seconds, 1),
+                "detected_language": result.language,
+            }
+            progress_tmp = progress_file.with_suffix(".json.tmp")
+            progress_tmp.write_text(json.dumps(progress), encoding="utf-8")
+            progress_tmp.replace(progress_file)
+            self._update(
+                session.id,
+                percent=90.0,
+                duration_seconds=result.duration_seconds,
+                language=result.language,
             )
-            result = transcribe_media(
-                video_path,
-                vtt_path,
-                api_key=api_key,
-                model=self.cfg.openai_model,
-                language=language,
-                chunk_seconds=self.cfg.openai_chunk_seconds,
-                silence_window_seconds=self.cfg.openai_silence_window_seconds,
-                progress_callback=report_progress,
+
+            if not vtt_path.exists():
+                raise RuntimeError("OpenAI transcription produced no VTT output")
+            self._update(
+                session.id,
+                vtt_path=str(self._apply_language_suffix(vtt_path, progress_file)),
             )
-            self._check_cancelled(session.id)
         finally:
-            with self._lock:
-                if session.id in self._transcription_queue:
-                    self._transcription_queue.remove(session.id)
-            if worker_slot is not None:
-                self._transcription_pool.release(worker_slot)
-
-        progress = {
-            "stage": "transcribing",
-            "percent": 90.0,
-            "total_seconds": round(result.duration_seconds, 1),
-            "detected_language": result.language,
-        }
-        progress_tmp = progress_file.with_suffix(".json.tmp")
-        progress_tmp.write_text(json.dumps(progress), encoding="utf-8")
-        progress_tmp.replace(progress_file)
-        self._update(
-            session.id,
-            percent=90.0,
-            duration_seconds=result.duration_seconds,
-            language=result.language,
-        )
-
-        if not vtt_path.exists():
-            raise RuntimeError("OpenAI transcription produced no VTT output")
-        self._update(session.id, vtt_path=str(self._apply_language_suffix(vtt_path, progress_file)))
+            # delete()/the TTL reaper may race the final API response and VTT write.
+            # If the writer recreated the directory, make cancellation cleanup final.
+            if self._is_cancelled(session.id):
+                shutil.rmtree(session.session_dir, ignore_errors=True)
 
     @staticmethod
     def _read_log_tail(log_file: Path, max_bytes: int = 64_000) -> str:
