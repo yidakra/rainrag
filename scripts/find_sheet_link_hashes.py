@@ -48,6 +48,30 @@ def _translation_exit_code(failure_count: int) -> int:
     return EXIT_PARTIAL_TRANSLATION_FAILURE if failure_count else 0
 
 
+def _resolve_google_credentials(args: argparse.Namespace, *, want_write: bool) -> tuple[str, bool]:
+    """Return the access token and whether this run minted it from a service account."""
+    access_token = (args.google_access_token or "").strip()
+    if not access_token and args.google_access_token_env:
+        access_token = os.environ.get(args.google_access_token_env, "").strip()
+    if access_token:
+        return access_token, False
+
+    service_account_file = (args.service_account_file or "").strip()
+    if not service_account_file and args.service_account_env:
+        service_account_file = os.environ.get(args.service_account_env, "").strip()
+    if not service_account_file:
+        return "", False
+
+    return (
+        _mint_access_token_from_service_account(
+            service_account_file,
+            writable_sheets=want_write,
+            writable_drive=args.upload_copy_folder_to_drive,
+        ),
+        True,
+    )
+
+
 def _column_to_index(column: str) -> int:
     col = column.strip().upper()
     if not col or not col.isalpha():
@@ -742,6 +766,10 @@ def _upload_folder_to_drive(
 ) -> tuple[str, int]:
     if not local_dir.exists() or not local_dir.is_dir():
         raise RuntimeError(f"Local folder does not exist or is not a directory: {local_dir}")
+    files = sorted([p for p in local_dir.iterdir() if p.is_file()])
+    if not files:
+        raise RuntimeError(f"Refusing to create an empty Drive folder from {local_dir}")
+
     folder_id = _create_drive_folder(
         access_token=access_token,
         folder_name=folder_name,
@@ -754,7 +782,6 @@ def _upload_folder_to_drive(
             email=share_with_email,
             role="reader",
         )
-    files = sorted([p for p in local_dir.iterdir() if p.is_file()])
     for file_path in files:
         _upload_file_to_drive(access_token=access_token, folder_id=folder_id, file_path=file_path)
     return folder_id, len(files)
@@ -1098,19 +1125,10 @@ def main() -> int:
         parser.error("--generate-missing-en-vtt requires --copy-en-vtt-to-dir")
 
     want_write = bool(args.write_hashes_to_column)
-    access_token = (args.google_access_token or "").strip()
-    if not access_token and args.google_access_token_env:
-        access_token = os.environ.get(args.google_access_token_env, "").strip()
-    if not access_token:
-        service_account_file = (args.service_account_file or "").strip()
-        if not service_account_file and args.service_account_env:
-            service_account_file = os.environ.get(args.service_account_env, "").strip()
-        if service_account_file:
-            access_token = _mint_access_token_from_service_account(
-                service_account_file,
-                writable_sheets=want_write,
-                writable_drive=args.upload_copy_folder_to_drive,
-            )
+    access_token, using_service_account = _resolve_google_credentials(
+        args,
+        want_write=want_write,
+    )
 
     sheet_title_for_write: str | None = None
     spreadsheet_id_for_write: str | None = None
@@ -1325,6 +1343,7 @@ def main() -> int:
                             f"{len(missing_hashes)} "
                             f"(staged: {len(staged_videos)}, skipped: {skipped})"
                         )
+                        translation_failure_count += skipped
                         if staged_videos:
                             if args.translation_provider == "openai":
                                 api_key = os.environ.get(args.openai_api_key_env, "").strip()
@@ -1344,7 +1363,7 @@ def main() -> int:
                                     chunk_seconds=args.openai_chunk_seconds,
                                     silence_window_seconds=args.openai_silence_window_seconds,
                                 )
-                                translation_failure_count = len(batch_result.failures)
+                                translation_failure_count += len(batch_result.failures)
                                 for failed_hash, error in sorted(batch_result.failures.items()):
                                     print(
                                         f"OpenAI translation failed for {failed_hash}: {error}",
@@ -1392,12 +1411,14 @@ def main() -> int:
         print(
             f"Copied {copied} EN VTT files to {out_dir} using column D names (missing: {missing})"
         )
+        if args.generate_missing_en_vtt:
+            translation_failure_count += missing
         if args.upload_copy_folder_to_drive:
             if not access_token:
                 raise RuntimeError(
                     "Drive upload requires private-sheet auth (service account or google access token)"
                 )
-            if service_account_file and not ((args.drive_parent_folder_id or "").strip()):
+            if using_service_account and not ((args.drive_parent_folder_id or "").strip()):
                 raise RuntimeError(
                     "Service-account Drive uploads require --drive-parent-folder-id "
                     "(use a shared-drive folder or a folder shared with the service account)."

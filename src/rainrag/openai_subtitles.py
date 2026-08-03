@@ -14,6 +14,7 @@ from openai import OpenAI
 
 DEFAULT_CHUNK_SECONDS = 30 * 60
 DEFAULT_SILENCE_WINDOW_SECONDS = 30.0
+FFMPEG_TIMEOUT_SECONDS = 30 * 60
 MAX_OPENAI_UPLOAD_BYTES = 24 * 1024 * 1024
 _TIMING_RE = re.compile(
     r"^(?P<start>(?:\d{2}:)?\d{2}:\d{2}[.,]\d{3})\s+-->\s+"
@@ -51,9 +52,17 @@ class _VttCue:
 
 def _run_command(command: list[str], *, description: str) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(command, check=True, capture_output=True, text=True)
+        return subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=FFMPEG_TIMEOUT_SECONDS,
+        )
     except FileNotFoundError as exc:
         raise RuntimeError(f"{command[0]} is required for {description}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{description} timed out") from exc
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or "").strip()
         if len(detail) > 1200:

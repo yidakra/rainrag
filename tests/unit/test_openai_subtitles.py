@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,16 @@ First line
 00:00:03.000 --> 00:00:04.000
 Second line
 """
+
+
+def test_run_command_reports_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_timeout(*_args: object, **_kwargs: object) -> object:
+        raise subprocess.TimeoutExpired("ffmpeg", 1)
+
+    monkeypatch.setattr(subtitles.subprocess, "run", raise_timeout)
+
+    with pytest.raises(RuntimeError, match="audio extraction timed out"):
+        subtitles._run_command(["ffmpeg"], description="audio extraction")
 
 
 def test_choose_chunk_boundaries_prefers_nearby_silence() -> None:
