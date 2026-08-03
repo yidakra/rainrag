@@ -478,6 +478,43 @@ Restart Claude Desktop and you can now query your video transcripts directly fro
 
 **For detailed setup instructions** including Cursor and ChatGPT integration, see [docs/MCP_SETUP.md](docs/MCP_SETUP.md).
 
+### Google Sheet Hash and Subtitle Export
+
+`scripts/find_sheet_link_hashes.py` resolves every TV Rain link in a sheet column through
+the Library API, writes hashes back to the sheet, exports existing English VTT files, and
+can generate missing English subtitles through OpenAI. Put `OPENAI_API_KEY` and
+`LIBRARY_API_TOKEN` in `.env`; `.env` is loaded automatically and is ignored by Git.
+
+```bash
+uv run python scripts/find_sheet_link_hashes.py \
+  "https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit" \
+  --column H \
+  --write-hashes-to-column I \
+  --write-multivalue-format newline \
+  --metadata-source api \
+  --archive-root /mnt/vod/srv/storage/transcoded \
+  --copy-en-vtt-to-dir tmp/sheet_en_vtt \
+  --generate-missing-en-vtt \
+  --translation-provider openai \
+  --translation-workers 2 \
+  --upload-copy-folder-to-drive \
+  --drive-parent-folder-id SHARED_DRIVE_FOLDER_ID
+```
+
+OpenAI translation uses `whisper-1`. Audio is converted to mono 16 kHz MP3 and long
+videos are split near silence into 30-minute chunks. Up to two videos are translated
+concurrently, and each video's chunks are processed sequentially. Silence is not
+removed because doing so would desynchronize subtitle timestamps from the source
+video. Chunk timestamps are offset and merged back into one
+`<video_hash>.en.vtt` file.
+
+The script exits with status `0` on success and `2` when the sheet/Drive export
+succeeded but one or more OpenAI translations failed. Other non-zero failures are
+hard errors. Callers should not blindly retry status `2`, because the export side
+effects have already completed.
+
+Use `--translation-provider livevtt` to retain the local Faster-Whisper/GPU workflow.
+
 ### Python API
 
 You can also use RainRAG as a Python library:
