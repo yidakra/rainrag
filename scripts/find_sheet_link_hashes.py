@@ -21,15 +21,19 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
+
+from dotenv import load_dotenv
+
 
 # Allow running as `python scripts/find_sheet_link_hashes.py` without installing the package.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rainrag.ingest import WebMetadataLoader
+from rainrag.openai_subtitles import OpenAISubtitleJob, translate_jobs
+
 
 DRIVE_SHARE_EMAIL = "ard@tvrain.tv"
 
@@ -127,8 +131,7 @@ def _mint_access_token_from_service_account(
         from google.oauth2 import service_account
     except ImportError as exc:
         raise RuntimeError(
-            "google-auth is required for service-account mode. "
-            "Install it with: uv add google-auth"
+            "google-auth is required for service-account mode. Install it with: uv add google-auth"
         ) from exc
 
     if writable_drive:
@@ -188,7 +191,9 @@ def _fetch_sheet_values_private(
 ) -> list[tuple[int, str]]:
     spreadsheet_id = _parse_sheet_id(sheet_url)
     final_gid = gid if gid is not None else _parse_gid(sheet_url)
-    title = (sheet_name or "").strip() or _resolve_sheet_title(spreadsheet_id, final_gid, access_token)
+    title = (sheet_name or "").strip() or _resolve_sheet_title(
+        spreadsheet_id, final_gid, access_token
+    )
 
     if row is not None:
         range_a1 = f"'{title}'!{column.upper()}{row}"
@@ -502,14 +507,16 @@ def _pick_best_video(candidates: list[Path]) -> Path:
     return candidates[0]
 
 
-def _prepare_livevtt_staging(
+def _prepare_translation_staging(
     *,
     archive_root: Path,
     hashes: list[str],
     staging_input: Path,
-    video_exts: frozenset[str] = frozenset({".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".m2ts"}),
-) -> tuple[int, int]:
-    included = 0
+    video_exts: frozenset[str] = frozenset(
+        {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".m2ts"}
+    ),
+) -> tuple[dict[str, Path], int]:
+    staged: dict[str, Path] = {}
     skipped = 0
     for video_hash in hashes:
         try:
@@ -521,7 +528,9 @@ def _prepare_livevtt_staging(
         if not src_dir.exists() or not src_dir.is_dir():
             skipped += 1
             continue
-        candidates = [p for p in src_dir.iterdir() if p.is_file() and p.suffix.lower() in video_exts]
+        candidates = [
+            p for p in src_dir.iterdir() if p.is_file() and p.suffix.lower() in video_exts
+        ]
         if not candidates:
             skipped += 1
             continue
@@ -531,8 +540,26 @@ def _prepare_livevtt_staging(
         dst = dst_dir / src.name
         if not dst.exists():
             dst.symlink_to(src)
-        included += 1
-    return included, skipped
+        staged[video_hash] = dst
+    return staged, skipped
+
+
+def _build_openai_translation_jobs(
+    *,
+    staged_videos: dict[str, Path],
+    staging_output: Path,
+) -> list[OpenAISubtitleJob]:
+    jobs: list[OpenAISubtitleJob] = []
+    for video_hash, video_path in staged_videos.items():
+        rel_dir = WebMetadataLoader.hash_to_archive_dir(video_hash)
+        jobs.append(
+            OpenAISubtitleJob(
+                video_hash=video_hash,
+                video_path=video_path,
+                output_path=staging_output / rel_dir / f"{video_hash}.en.vtt",
+            )
+        )
+    return jobs
 
 
 def _run_livevtt_translate_missing(
@@ -565,9 +592,7 @@ def _run_livevtt_translate_missing(
         cmd.extend(["--gpus", gpus])
     proc = subprocess.run(cmd, cwd=str(livevtt_repo))
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"livevtt archive_transcriber failed with exit code {proc.returncode}"
-        )
+        raise RuntimeError(f"livevtt archive_transcriber failed with exit code {proc.returncode}")
 
 
 def _copy_generated_en_from_staging(
@@ -603,9 +628,7 @@ def _create_drive_folder(
     }
     if parent_folder_id:
         payload["parents"] = [parent_folder_id]
-    body = json.dumps(
-        payload
-    ).encode("utf-8")
+    body = json.dumps(payload).encode("utf-8")
     req = Request(
         url,
         data=body,
@@ -625,7 +648,9 @@ def _create_drive_folder(
     return folder_id
 
 
-def _share_drive_item_with_user(*, access_token: str, file_id: str, email: str, role: str = "reader") -> None:
+def _share_drive_item_with_user(
+    *, access_token: str, file_id: str, email: str, role: str = "reader"
+) -> None:
     url = (
         "https://www.googleapis.com/drive/v3/files/"
         f"{quote(file_id, safe='')}/permissions?supportsAllDrives=true"
@@ -692,7 +717,9 @@ def _upload_file_to_drive(*, access_token: str, folder_id: str, file_path: Path)
             detail = exc.read().decode("utf-8", errors="ignore")
         except Exception:
             detail = str(exc)
-        raise RuntimeError(f"Drive upload failed for {file_path.name}: HTTP {exc.code} {detail}") from exc
+        raise RuntimeError(
+            f"Drive upload failed for {file_path.name}: HTTP {exc.code} {detail}"
+        ) from exc
 
 
 def _upload_folder_to_drive(
@@ -785,6 +812,7 @@ def _search_hash_by_title(
 
 
 def main() -> int:
+    load_dotenv()
     parser = argparse.ArgumentParser(
         description=(
             "Read Google Sheet links from a column/row and resolve each link to a "
@@ -831,9 +859,7 @@ def main() -> int:
     parser.add_argument(
         "--sheet-name",
         default=None,
-        help=(
-            "Optional explicit tab name for private-sheet mode; if omitted, resolved from gid"
-        ),
+        help=("Optional explicit tab name for private-sheet mode; if omitted, resolved from gid"),
     )
     parser.add_argument(
         "--service-account-file",
@@ -975,20 +1001,25 @@ def main() -> int:
         "--generate-missing-en-vtt",
         action="store_true",
         help=(
-            "Generate missing English VTT files via livevtt archive_transcriber "
-            "before copying/exporting."
+            "Generate missing English VTT files before copying/exporting. Uses OpenAI by default."
         ),
+    )
+    parser.add_argument(
+        "--translation-provider",
+        choices=["openai", "livevtt"],
+        default="openai",
+        help="Translation backend for missing EN VTT files (default: openai)",
     )
     parser.add_argument(
         "--livevtt-repo-path",
         default="../livevtt",
-        help="Path to livevtt repo (default: ../livevtt)",
+        help="Path to livevtt repo when --translation-provider=livevtt (default: ../livevtt)",
     )
     parser.add_argument(
         "--translation-workers",
         type=int,
         default=2,
-        help="Worker count for livevtt archive_transcriber (default: 2)",
+        help="Concurrent translation worker count (default: 2)",
     )
     parser.add_argument(
         "--translation-gpus",
@@ -996,11 +1027,33 @@ def main() -> int:
         help="Optional comma-separated GPU ids for livevtt (e.g. 0 or 0,1)",
     )
     parser.add_argument(
+        "--openai-api-key-env",
+        default="OPENAI_API_KEY",
+        help="Env var containing the OpenAI API key (default: OPENAI_API_KEY)",
+    )
+    parser.add_argument(
+        "--openai-translation-model",
+        default="whisper-1",
+        help="OpenAI audio translation model (default: whisper-1)",
+    )
+    parser.add_argument(
+        "--openai-chunk-seconds",
+        type=float,
+        default=1800.0,
+        help="Target OpenAI audio chunk duration in seconds (default: 1800)",
+    )
+    parser.add_argument(
+        "--openai-silence-window-seconds",
+        type=float,
+        default=30.0,
+        help="Window around each chunk boundary for a nearby silence (default: 30)",
+    )
+    parser.add_argument(
         "--video-extensions",
         default=".mp4,.mkv,.webm,.mov,.avi,.m4v,.ts,.m2ts",
         help=(
             "Comma-separated list of video file extensions to consider when staging "
-            "for livevtt (default: .mp4,.mkv,.webm,.mov,.avi,.m4v,.ts,.m2ts)"
+            "for translation (default: .mp4,.mkv,.webm,.mov,.avi,.m4v,.ts,.m2ts)"
         ),
     )
     parser.add_argument(
@@ -1065,7 +1118,9 @@ def main() -> int:
         rows = _fetch_sheet_csv(args.sheet_url, args.gid)
         links = _iter_links(rows, args.column, args.row)
         if want_write:
-            raise RuntimeError("Writing hashes requires private-sheet auth (access token/service account)")
+            raise RuntimeError(
+                "Writing hashes requires private-sheet auth (access token/service account)"
+            )
     local_index: dict[str, str] = {}
     api_index: dict[str, str] = {}
     if args.metadata_source in {"local", "hybrid"}:
@@ -1131,7 +1186,9 @@ def main() -> int:
             title_error: str | None = None
             if not video_hash and args.title_fallback:
                 try:
-                    title_used = _fetch_page_title(url, timeout_seconds=args.title_fetch_timeout_seconds)
+                    title_used = _fetch_page_title(
+                        url, timeout_seconds=args.title_fetch_timeout_seconds
+                    )
                     if title_used:
                         video_hash, title_match_name = _search_hash_by_title(
                             title=title_used,
@@ -1225,6 +1282,7 @@ def main() -> int:
             f"{args.write_hashes_to_column.upper()} (rows with at least one resolved hash: {rows_with_any_hash})"
         )
 
+    translation_failure_count = 0
     if args.copy_en_vtt_to_dir:
         if not args.archive_root:
             raise RuntimeError("--archive-root is required when --copy-en-vtt-to-dir is set")
@@ -1238,12 +1296,11 @@ def main() -> int:
             )
             missing_hashes = _collect_missing_hashes(results=results, archive_root=archive_root)
             if missing_hashes:
-                livevtt_repo = Path(args.livevtt_repo_path).expanduser().resolve()
-                with tempfile.TemporaryDirectory(prefix="rainrag-livevtt-in-") as tmp_in:
-                    with tempfile.TemporaryDirectory(prefix="rainrag-livevtt-out-") as tmp_out:
+                with tempfile.TemporaryDirectory(prefix="rainrag-translation-in-") as tmp_in:
+                    with tempfile.TemporaryDirectory(prefix="rainrag-translation-out-") as tmp_out:
                         staging_input = Path(tmp_in)
                         staging_output = Path(tmp_out)
-                        included, skipped = _prepare_livevtt_staging(
+                        staged_videos, skipped = _prepare_translation_staging(
                             archive_root=archive_root,
                             hashes=missing_hashes,
                             staging_input=staging_input,
@@ -1251,22 +1308,51 @@ def main() -> int:
                         )
                         print(
                             "Missing EN VTT hashes: "
-                            f"{len(missing_hashes)} (staged: {included}, skipped: {skipped})"
+                            f"{len(missing_hashes)} "
+                            f"(staged: {len(staged_videos)}, skipped: {skipped})"
                         )
-                        if included > 0:
-                            _run_livevtt_translate_missing(
-                                livevtt_repo=livevtt_repo,
-                                staging_input=staging_input,
-                                staging_output=staging_output,
-                                workers=args.translation_workers,
-                                gpus=args.translation_gpus,
-                            )
+                        if staged_videos:
+                            if args.translation_provider == "openai":
+                                api_key = os.environ.get(args.openai_api_key_env, "").strip()
+                                if not api_key:
+                                    raise RuntimeError(
+                                        "OpenAI translation requires an API key in env var "
+                                        f"{args.openai_api_key_env!r}"
+                                    )
+                                batch_result = translate_jobs(
+                                    _build_openai_translation_jobs(
+                                        staged_videos=staged_videos,
+                                        staging_output=staging_output,
+                                    ),
+                                    api_key=api_key,
+                                    workers=args.translation_workers,
+                                    model=args.openai_translation_model,
+                                    chunk_seconds=args.openai_chunk_seconds,
+                                    silence_window_seconds=args.openai_silence_window_seconds,
+                                )
+                                translation_failure_count = len(batch_result.failures)
+                                for failed_hash, error in sorted(batch_result.failures.items()):
+                                    print(
+                                        f"OpenAI translation failed for {failed_hash}: {error}",
+                                        file=sys.stderr,
+                                    )
+                            else:
+                                livevtt_repo = Path(args.livevtt_repo_path).expanduser().resolve()
+                                _run_livevtt_translate_missing(
+                                    livevtt_repo=livevtt_repo,
+                                    staging_input=staging_input,
+                                    staging_output=staging_output,
+                                    workers=args.translation_workers,
+                                    gpus=args.translation_gpus,
+                                )
                             generated = _copy_generated_en_from_staging(
                                 archive_root=archive_root,
                                 staging_output=staging_output,
                                 hashes=missing_hashes,
                             )
-                            print(f"Generated EN VTT files via livevtt: {generated}")
+                            print(
+                                f"Generated EN VTT files via {args.translation_provider}: {generated}"
+                            )
         row_title: dict[int, str] = {}
         if access_token:
             d_rows = _fetch_sheet_values_private(
@@ -1277,7 +1363,7 @@ def main() -> int:
                 row=None,
                 sheet_name=sheet_title_for_write,
             )
-            row_title = {row_num: value for row_num, value in d_rows}
+            row_title = dict(d_rows)
         elif "rows" in locals():
             for i, cells in enumerate(rows, start=1):
                 if len(cells) >= 4:
@@ -1289,7 +1375,9 @@ def main() -> int:
             archive_root=archive_root,
             output_dir=out_dir,
         )
-        print(f"Copied {copied} EN VTT files to {out_dir} using column D names (missing: {missing})")
+        print(
+            f"Copied {copied} EN VTT files to {out_dir} using column D names (missing: {missing})"
+        )
         if args.upload_copy_folder_to_drive:
             if not access_token:
                 raise RuntimeError(
@@ -1316,7 +1404,7 @@ def main() -> int:
                 f"(id: {folder_id}), shared with {DRIVE_SHARE_EMAIL}, "
                 f"and deleted local folder {out_dir}"
             )
-    return 0
+    return 1 if translation_failure_count else 0
 
 
 if __name__ == "__main__":
