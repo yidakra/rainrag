@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import hmac
+import json
 import os
 import re
 import string
@@ -543,6 +544,61 @@ def _cleanup_hls_cache_best_effort() -> None:
             continue
 
 
+def _hls_codec_string(seg_path: Path) -> str | None:
+    """Return the HLS CODECS attribute string for a .ts segment, e.g. 'avc1.640028,mp4a.40.2'.
+
+    Runs ffprobe on the segment to discover the actual codec profile/level used
+    by the encoder (which varies because we copy streams rather than re-encode).
+    Returns None on any failure so callers can simply omit the CODECS attribute.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-show_streams",
+                "-of",
+                "json",
+                str(seg_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout:
+            return None
+        streams = json.loads(result.stdout).get("streams", [])
+    except Exception:
+        return None
+
+    video_codec: str | None = None
+    audio_codec: str | None = None
+
+    for s in streams:
+        codec_type = s.get("codec_type", "")
+        codec_name = s.get("codec_name", "")
+
+        if codec_type == "video" and video_codec is None:
+            if codec_name == "h264":
+                profile = s.get("profile", "")
+                level = s.get("level", 0)
+                level_hex = format(int(level), "02X")
+                if "High" in profile:
+                    video_codec = f"avc1.6400{level_hex}"
+                elif "Main" in profile:
+                    video_codec = f"avc1.4D40{level_hex}"
+                else:  # Baseline / Constrained Baseline
+                    video_codec = f"avc1.42E0{level_hex}"
+
+        elif codec_type == "audio" and audio_codec is None:
+            if codec_name == "aac":
+                audio_codec = "mp4a.40.2"
+
+    parts = [c for c in [video_codec, audio_codec] if c]
+    return ",".join(parts) if parts else None
+
+
 def _ensure_hls_variant_cache(video_file: Path, quality: str) -> tuple[str, Path]:
     """Generate segmented HLS files for a single quality, cached on disk."""
     cache_key = _hls_cache_key(video_file, quality)
@@ -550,6 +606,7 @@ def _ensure_hls_variant_cache(video_file: Path, quality: str) -> tuple[str, Path
     playlist_path = out_dir / "index.m3u8"
 
     if playlist_path.exists():
+        _write_codec_sidecar_if_missing(out_dir)
         return cache_key, playlist_path
     lock = _get_hls_generation_lock(cache_key)
     with lock:
@@ -611,7 +668,29 @@ def _ensure_hls_variant_cache(video_file: Path, quality: str) -> tuple[str, Path
 
     if not playlist_path.exists():
         raise HTTPException(status_code=500, detail="HLS playlist generation incomplete")
+    _write_codec_sidecar_if_missing(out_dir)
     return cache_key, playlist_path
+
+
+def _write_codec_sidecar_if_missing(out_dir: Path) -> None:
+    """Write codec.txt to out_dir if not already present.
+
+    Runs ffprobe on the first available segment.  Called both after fresh
+    generation and when a warm-cache hit is returned, so existing caches
+    get backfilled on first access.
+    """
+    codec_file = out_dir / "codec.txt"
+    if codec_file.exists():
+        return
+    seg = out_dir / "seg_00000.ts"
+    if not seg.exists():
+        return
+    codecs = _hls_codec_string(seg)
+    if codecs:
+        try:
+            codec_file.write_text(codecs, encoding="utf-8")
+        except OSError:
+            pass
 
 
 def _rewrite_hls_variant_playlist(
@@ -1821,9 +1900,13 @@ async def serve_hls_master(
     for quality in quality_order:
         if quality not in available:
             continue
-        lines.append(
-            f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth_map[quality]},RESOLUTION={resolution_map[quality]},NAME="{quality}"'
-        )
+        cache_key = _hls_cache_key(available[quality], quality)
+        codec_file = HLS_CACHE_ROOT / cache_key / "codec.txt"
+        codecs = codec_file.read_text(encoding="utf-8").strip() if codec_file.exists() else None
+        attrs = f'BANDWIDTH={bandwidth_map[quality]},RESOLUTION={resolution_map[quality]},NAME="{quality}"'
+        if codecs:
+            attrs += f',CODECS="{codecs}"'
+        lines.append(f"#EXT-X-STREAM-INF:{attrs}")
         lines.append(f"/hls/variant/{quality}/{encoded_path}{auth_q}")
 
     return Response(
