@@ -1222,7 +1222,9 @@ def _validate_video_url(url: str) -> None:
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(status_code=400, detail="Only http and https URLs are supported")
     if parsed.username or parsed.password:
-        raise HTTPException(status_code=400, detail="URLs with embedded credentials are not supported")
+        raise HTTPException(
+            status_code=400, detail="URLs with embedded credentials are not supported"
+        )
     hostname = parsed.hostname or ""
     try:
         addr = ipaddress.ip_address(hostname)
@@ -1282,7 +1284,9 @@ async def create_video_session_from_url(
         downloaded = work_path / "video.mp4"
         if not downloaded.exists():
             # yt-dlp may have chosen a different extension; find whatever it wrote.
-            candidates = sorted(f for f in work_path.iterdir() if f.is_file() and f.suffix != ".part")
+            candidates = sorted(
+                f for f in work_path.iterdir() if f.is_file() and f.suffix != ".part"
+            )
             if not candidates:
                 raise HTTPException(status_code=500, detail="Download produced no output file")
             downloaded = candidates[0]
