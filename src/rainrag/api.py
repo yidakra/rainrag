@@ -544,11 +544,28 @@ def _cleanup_hls_cache_best_effort() -> None:
             continue
 
 
-def _hls_codec_string(seg_path: Path) -> str | None:
-    """Return the HLS CODECS attribute string for a .ts segment, e.g. 'avc1.640028,mp4a.40.2'.
+# profile_idc + constraint-flags bytes for the H.264 profiles ffprobe reports.
+# Matched exactly, never by substring: "High" is a prefix of "High 10", which is
+# a different profile_idc (0x64 vs 0x6E) and would otherwise be misadvertised.
+# A profile absent from this table yields no CODECS attribute rather than a
+# guess, since a wrong codec string is worse for the player than none at all.
+_H264_PROFILE_BYTES = {
+    "Constrained Baseline": "42E0",
+    "Baseline": "4200",
+    "Main": "4D40",
+    "Extended": "5800",
+    "High": "6400",
+    "High 10": "6E00",
+    "High 4:2:2": "7A00",
+    "High 4:4:4 Predictive": "F400",
+}
 
-    Runs ffprobe on the segment to discover the actual codec profile/level used
-    by the encoder (which varies because we copy streams rather than re-encode).
+
+def _hls_codec_string(seg_path: Path) -> str | None:
+    """Return the HLS CODECS attribute string for a media file, e.g. 'avc1.640028,mp4a.40.2'.
+
+    Runs ffprobe to discover the actual codec profile/level used by the encoder
+    (which varies because we copy streams rather than re-encode).
     Returns None on any failure so callers can simply omit the CODECS attribute.
     """
     try:
@@ -581,15 +598,11 @@ def _hls_codec_string(seg_path: Path) -> str | None:
 
         if codec_type == "video" and video_codec is None:
             if codec_name == "h264":
-                profile = s.get("profile", "")
+                profile_bytes = _H264_PROFILE_BYTES.get(s.get("profile", ""))
                 level = s.get("level", 0)
-                level_hex = format(int(level), "02X")
-                if "High" in profile:
-                    video_codec = f"avc1.6400{level_hex}"
-                elif "Main" in profile:
-                    video_codec = f"avc1.4D40{level_hex}"
-                else:  # Baseline / Constrained Baseline
-                    video_codec = f"avc1.42E0{level_hex}"
+                # ffprobe reports level -99 when it cannot determine one.
+                if profile_bytes and isinstance(level, int) and 0 < level <= 255:
+                    video_codec = f"avc1.{profile_bytes}{level:02X}"
 
         elif codec_type == "audio" and audio_codec is None and codec_name == "aac":
             audio_codec = "mp4a.40.2"
@@ -671,6 +684,25 @@ def _ensure_hls_variant_cache(video_file: Path, quality: str) -> tuple[str, Path
     return cache_key, playlist_path
 
 
+def _write_codec_sidecar_atomic(codec_file: Path, codecs: str) -> None:
+    """Publish codec.txt atomically so readers never observe a partial write.
+
+    Concurrent master-playlist requests read this file while another request may
+    be writing it.  A plain write truncates first, so a reader could otherwise
+    pick up an empty or half-written string and emit a malformed CODECS value.
+    """
+    with suppress(OSError):
+        codec_file.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=str(codec_file.parent), suffix=".codec")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(codecs)
+            Path(tmp_name).replace(codec_file)
+        except OSError:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
+
+
 def _write_codec_sidecar_if_missing(out_dir: Path) -> None:
     """Write codec.txt to out_dir if not already present.
 
@@ -686,8 +718,7 @@ def _write_codec_sidecar_if_missing(out_dir: Path) -> None:
         return
     codecs = _hls_codec_string(seg)
     if codecs:
-        with suppress(OSError):
-            codec_file.write_text(codecs, encoding="utf-8")
+        _write_codec_sidecar_atomic(codec_file, codecs)
 
 
 def _hls_codecs_for_variant(video_file: Path, cache_key: str) -> str | None:
@@ -711,9 +742,7 @@ def _hls_codecs_for_variant(video_file: Path, cache_key: str) -> str | None:
         # Persist so later requests skip the probe entirely.  The cache dir may
         # not exist yet; _ensure_hls_variant_cache gates on index.m3u8 rather
         # than the directory, so pre-creating it is safe.
-        with suppress(OSError):
-            codec_dir.mkdir(parents=True, exist_ok=True)
-            codec_file.write_text(codecs, encoding="utf-8")
+        _write_codec_sidecar_atomic(codec_file, codecs)
     return codecs
 
 
@@ -1921,13 +1950,22 @@ async def serve_hls_master(
     encoded_path = quote(file_path, safe="/")
 
     qualities = [q for q in quality_order if q in available]
-    # Each probe spawns ffprobe (~230 ms), so resolve them off the event loop.
-    codec_map = await asyncio.to_thread(
-        lambda: {
-            q: _hls_codecs_for_variant(available[q], _hls_cache_key(available[q], q))
+    # Each probe spawns ffprobe, so keep them off the event loop -- and run them
+    # concurrently rather than in one worker: serially, five probes that each hit
+    # the 15 s ffprobe timeout would stall the response for 75 s.
+    probes = await asyncio.gather(
+        *(
+            asyncio.to_thread(
+                _hls_codecs_for_variant, available[q], _hls_cache_key(available[q], q)
+            )
             for q in qualities
-        }
+        ),
+        return_exceptions=True,
     )
+    codec_map = {
+        q: (result if isinstance(result, str) else None)
+        for q, result in zip(qualities, probes, strict=True)
+    }
 
     lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
     for quality in qualities:
