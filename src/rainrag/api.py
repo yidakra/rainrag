@@ -1212,6 +1212,100 @@ async def create_video_session(
     return session.public_dict()
 
 
+class _VideoUrlRequest(BaseModel):
+    url: str
+
+
+@app.post("/video-sessions/from-url")
+async def create_video_session_from_url(
+    body: _VideoUrlRequest,
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """Download a video from a URL via yt-dlp, then transcribe and index it."""
+    try:
+        import yt_dlp  # noqa: PLC0415
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="yt-dlp is not installed") from exc
+
+    verify_auth_token(authorization=authorization)
+    manager = _require_video_manager()
+
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+
+    max_bytes = manager.cfg.max_upload_mb * 1024 * 1024
+    tmp_root = Path(manager.cfg.tmp_root)
+    tmp_root.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_name = tempfile.mkstemp(dir=str(tmp_root), suffix=".upload")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+
+    ydl_opts = {
+        "outtmpl": str(tmp_path) + ".%(ext)s",
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        # Abort if the declared filesize exceeds the cap (best-effort; not all
+        # extractors provide this ahead of time).
+        "max_filesize": max_bytes,
+    }
+
+    try:
+        info: dict = await asyncio.to_thread(_yt_dlp_download, url, ydl_opts, tmp_path)
+    except HTTPException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
+        logger.exception("yt-dlp download failed for url=%s", url)
+        raise HTTPException(status_code=422, detail=f"Download failed: {exc}") from exc
+
+    # The actual output file has the extension appended by yt-dlp.
+    downloaded = Path(str(tmp_path) + ".mp4")
+    if not downloaded.exists():
+        # yt-dlp may have chosen a different extension; find whatever it wrote.
+        candidates = sorted(tmp_root.glob(tmp_path.name + ".*"))
+        if not candidates:
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail="Download produced no output file")
+        downloaded = candidates[0]
+
+    # Enforce size cap on actual downloaded file.
+    size = downloaded.stat().st_size
+    if size > max_bytes:
+        downloaded.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=413,
+            detail=f"Downloaded file ({size // (1024*1024)} MB) exceeds limit of {manager.cfg.max_upload_mb} MB",
+        )
+    if size == 0:
+        downloaded.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Downloaded file is empty")
+
+    # Use yt-dlp's reported title as the filename; fall back to URL basename.
+    title = info.get("title") or ""
+    original_filename = (title[:80].strip() or url.split("/")[-1] or "video") + ".mp4"
+
+    tmp_path.unlink(missing_ok=True)  # remove the placeholder mkstemp file
+    session = manager.create_session(downloaded, original_filename)
+    return session.public_dict()
+
+
+def _yt_dlp_download(url: str, ydl_opts: dict, placeholder: Path) -> dict:
+    """Run yt-dlp synchronously (called via asyncio.to_thread)."""
+    import yt_dlp  # noqa: PLC0415
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+    return info or {}
+
+
 @app.get("/video-sessions/{session_id}")
 async def get_video_session(
     session_id: str,

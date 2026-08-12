@@ -38,6 +38,8 @@ dependencies = [
     "argon2-cffi>=23.1.0,<24.0.0",
     # Redis for server-side session storage
     "redis>=5.0.0,<6.0.0",
+    # Video download from URLs (Telegram, YouTube, etc.)
+    "yt-dlp>=2026.1.0",
 ]
 
 [project.optional-dependencies]
