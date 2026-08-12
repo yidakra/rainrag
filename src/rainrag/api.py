@@ -690,6 +690,33 @@ def _write_codec_sidecar_if_missing(out_dir: Path) -> None:
             codec_file.write_text(codecs, encoding="utf-8")
 
 
+def _hls_codecs_for_variant(video_file: Path, cache_key: str) -> str | None:
+    """Return the CODECS string for one quality, probing the source if needed.
+
+    Prefers the codec.txt sidecar written next to generated segments.  On a cold
+    cache the segments do not exist yet, so we probe the source file instead:
+    ffmpeg generates HLS with ``-c copy``, so the segment codecs are identical
+    to the source (verified across all five quality variants).  Probing the
+    source means the very first playback -- the case this attribute exists to
+    protect -- still gets CODECS.
+    """
+    codec_dir = HLS_CACHE_ROOT / cache_key
+    codec_file = codec_dir / "codec.txt"
+    if codec_file.exists():
+        with suppress(OSError):
+            return codec_file.read_text(encoding="utf-8").strip() or None
+
+    codecs = _hls_codec_string(video_file)
+    if codecs:
+        # Persist so later requests skip the probe entirely.  The cache dir may
+        # not exist yet; _ensure_hls_variant_cache gates on index.m3u8 rather
+        # than the directory, so pre-creating it is safe.
+        with suppress(OSError):
+            codec_dir.mkdir(parents=True, exist_ok=True)
+            codec_file.write_text(codecs, encoding="utf-8")
+    return codecs
+
+
 def _rewrite_hls_variant_playlist(
     playlist_path: Path, cache_key: str, auth: str | None = None
 ) -> str:
@@ -1893,13 +1920,18 @@ async def serve_hls_master(
     auth_q = f"?{'&'.join(params)}" if params else ""
     encoded_path = quote(file_path, safe="/")
 
+    qualities = [q for q in quality_order if q in available]
+    # Each probe spawns ffprobe (~230 ms), so resolve them off the event loop.
+    codec_map = await asyncio.to_thread(
+        lambda: {
+            q: _hls_codecs_for_variant(available[q], _hls_cache_key(available[q], q))
+            for q in qualities
+        }
+    )
+
     lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
-    for quality in quality_order:
-        if quality not in available:
-            continue
-        cache_key = _hls_cache_key(available[quality], quality)
-        codec_file = HLS_CACHE_ROOT / cache_key / "codec.txt"
-        codecs = codec_file.read_text(encoding="utf-8").strip() if codec_file.exists() else None
+    for quality in qualities:
+        codecs = codec_map.get(quality)
         attrs = f'BANDWIDTH={bandwidth_map[quality]},RESOLUTION={resolution_map[quality]},NAME="{quality}"'
         if codecs:
             attrs += f',CODECS="{codecs}"'
