@@ -920,12 +920,16 @@ def render_adaptive_hls_player(
     html_block = f"""
 <video id="{html.escape(element_id)}" controls playsinline
        style="width: 100%; height: auto; border-radius: 8px;" preload="metadata"></video>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+<script
+  src="https://cdn.jsdelivr.net/npm/hls.js@1"
+  onload="window._hlsCdnLoaded=true; console.log('[HLS] hls.js CDN loaded, v'+(window.Hls&&window.Hls.version));"
+  onerror="window._hlsCdnError=true; console.error('[HLS] hls.js CDN FAILED to load');"></script>
 <script>
 (() => {{
   const video = document.getElementById("{html.escape(element_id)}");
   const hlsUrl = {json.dumps(hls_url)};
   const mp4Fallback = {json.dumps(mp4_fallback_url)};
+  console.log('[HLS] player init, hlsUrl=', hlsUrl);
   const resumeKey = `rainrag_resume_{html.escape(element_id)}`;
   const getSavedTime = () => {{
     try {{
@@ -965,9 +969,10 @@ def render_adaptive_hls_player(
     }}
   }};
   let fallbackTriggered = false;
-  const fallbackToMp4 = () => {{
+  const fallbackToMp4 = (reason) => {{
     if (fallbackTriggered) return;
     fallbackTriggered = true;
+    console.warn('[HLS] falling back to MP4, reason=', reason, 'readyState=', video.readyState, 'currentTime=', video.currentTime);
     video.src = mp4Fallback;
     video.load();
     video.addEventListener('loadedmetadata', applyStartTime, {{ once: true }});
@@ -977,19 +982,19 @@ def render_adaptive_hls_player(
     clearTimeout(playbackStartTimer);
   }};
   const fallbackTimer = setTimeout(() => {{
-    // If HLS is stalled (no fatal event), force MP4 fallback.
+    console.log('[HLS] fallbackTimer fired, readyState=', video.readyState, 'networkState=', video.networkState);
     if (video.readyState < 1) {{
-      fallbackToMp4();
+      fallbackToMp4('8s-timeout-readyState<1');
     }}
   }}, 8000);
   let playbackStartTimer = null;
   const armPlaybackWatchdog = () => {{
     if (playbackStartTimer) return;
     playbackStartTimer = setTimeout(() => {{
-      // Manifest may parse, but playback can still stall before first frame.
       const noPlaybackProgress = video.currentTime < 0.1 && video.paused;
+      console.log('[HLS] playbackStartTimer fired, currentTime=', video.currentTime, 'paused=', video.paused, 'noProgress=', noPlaybackProgress);
       if (noPlaybackProgress) {{
-        fallbackToMp4();
+        fallbackToMp4('5s-timeout-no-playback-progress');
       }}
     }}, 5000);
   }};
@@ -1003,6 +1008,7 @@ def render_adaptive_hls_player(
     }}
   }});
 
+  console.log('[HLS] hls.js available=', !!window.Hls, 'isSupported=', window.Hls && window.Hls.isSupported(), 'cdnLoaded=', !!window._hlsCdnLoaded, 'cdnError=', !!window._hlsCdnError);
   if (window.Hls && window.Hls.isSupported()) {{
     const hls = new window.Hls({{
       startLevel: 0,
@@ -1011,22 +1017,26 @@ def render_adaptive_hls_player(
     }});
     hls.loadSource(hlsUrl.split('#')[0]);
     hls.attachMedia(video);
-    hls.on(window.Hls.Events.MANIFEST_PARSED, () => {{
+    hls.on(window.Hls.Events.MANIFEST_PARSED, (_event, data) => {{
+      console.log('[HLS] MANIFEST_PARSED levels=', data && data.levels && data.levels.length);
       applyStartTime();
     }});
     hls.on(window.Hls.Events.ERROR, (_event, data) => {{
+      console.warn('[HLS] ERROR type=', data && data.type, 'details=', data && data.details, 'fatal=', data && data.fatal, 'url=', data && data.url);
       if (data && data.fatal) {{
         clearWatchdogs();
-        fallbackToMp4();
+        fallbackToMp4('hls.js-fatal-error:' + (data.details || 'unknown'));
       }}
     }});
   }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+    console.log('[HLS] using native HLS (Safari)');
     video.src = hlsUrl;
     video.addEventListener('loadedmetadata', () => clearWatchdogs(), {{ once: true }});
     video.addEventListener('loadedmetadata', applyStartTime, {{ once: true }});
   }} else {{
+    console.warn('[HLS] neither hls.js nor native HLS supported, falling back to MP4');
     clearWatchdogs();
-    fallbackToMp4();
+    fallbackToMp4('no-hls-support');
   }}
 }})();
 </script>
