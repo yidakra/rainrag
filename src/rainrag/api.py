@@ -10,7 +10,7 @@ import string
 import subprocess
 import tempfile
 import threading
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote
@@ -591,9 +591,8 @@ def _hls_codec_string(seg_path: Path) -> str | None:
                 else:  # Baseline / Constrained Baseline
                     video_codec = f"avc1.42E0{level_hex}"
 
-        elif codec_type == "audio" and audio_codec is None:
-            if codec_name == "aac":
-                audio_codec = "mp4a.40.2"
+        elif codec_type == "audio" and audio_codec is None and codec_name == "aac":
+            audio_codec = "mp4a.40.2"
 
     parts = [c for c in [video_codec, audio_codec] if c]
     return ",".join(parts) if parts else None
@@ -687,10 +686,8 @@ def _write_codec_sidecar_if_missing(out_dir: Path) -> None:
         return
     codecs = _hls_codec_string(seg)
     if codecs:
-        try:
+        with suppress(OSError):
             codec_file.write_text(codecs, encoding="utf-8")
-        except OSError:
-            pass
 
 
 def _rewrite_hls_variant_playlist(
