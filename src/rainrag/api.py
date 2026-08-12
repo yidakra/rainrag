@@ -1271,7 +1271,7 @@ async def create_video_session_from_url(
         }
 
         try:
-            info: dict = await asyncio.to_thread(_yt_dlp_download, url, ydl_opts)
+            info: dict | None = await asyncio.to_thread(_yt_dlp_download, url, ydl_opts)
         except ImportError as exc:
             raise HTTPException(status_code=500, detail="yt-dlp is not installed") from exc
         except HTTPException:
@@ -1279,6 +1279,16 @@ async def create_video_session_from_url(
         except Exception as exc:
             logger.exception("yt-dlp download failed for url={}", url)
             raise HTTPException(status_code=422, detail="Video download failed") from exc
+
+        if not info:
+            # Some extractors return None instead of raising when a page holds no
+            # downloadable media -- a Telegram post with only text or a photo, a
+            # deleted channel, or a video Telegram marks "not_supported" in its
+            # embed.  Without this guard the request falls through to the
+            # missing-output branch and reports a 500 for what is really a
+            # perfectly ordinary bad link.
+            logger.info("No downloadable media found at url={}", url)
+            raise HTTPException(status_code=422, detail="No downloadable video found at that link")
 
         # The actual output file has the extension appended by yt-dlp.
         downloaded = work_path / "video.mp4"
@@ -1310,13 +1320,16 @@ async def create_video_session_from_url(
     # TemporaryDirectory cleans up all yt-dlp artifacts on success and failure.
 
 
-def _yt_dlp_download(url: str, ydl_opts: dict) -> dict:
-    """Run yt-dlp synchronously (called via asyncio.to_thread)."""
+def _yt_dlp_download(url: str, ydl_opts: dict) -> dict | None:
+    """Run yt-dlp synchronously (called via asyncio.to_thread).
+
+    Returns None when the extractor found nothing to download; the caller turns
+    that into a 422 rather than letting it look like a server fault.
+    """
     import yt_dlp  # noqa: PLC0415
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-    return info or {}
+        return ydl.extract_info(url, download=True)
 
 
 @app.get("/video-sessions/{session_id}")
