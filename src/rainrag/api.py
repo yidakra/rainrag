@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import string
@@ -12,7 +13,7 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from loguru import logger
 from prometheus_client import Counter, Gauge
@@ -1212,6 +1213,25 @@ async def create_video_session(
     return session.public_dict()
 
 
+def _validate_video_url(url: str) -> None:
+    """Reject URLs that could enable SSRF or expose credentials in error messages."""
+    try:
+        parsed = urlsplit(url)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid URL") from exc
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only http and https URLs are supported")
+    if parsed.username or parsed.password:
+        raise HTTPException(status_code=400, detail="URLs with embedded credentials are not supported")
+    hostname = parsed.hostname or ""
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if not addr.is_global:
+            raise HTTPException(status_code=400, detail="URL targets a non-public address")
+    except ValueError:
+        pass  # hostname is a domain name — allow it
+
+
 class _VideoUrlRequest(BaseModel):
     url: str
 
@@ -1222,82 +1242,71 @@ async def create_video_session_from_url(
     authorization: Annotated[str | None, Header()] = None,
 ):
     """Download a video from a URL via yt-dlp, then transcribe and index it."""
-    try:
-        import yt_dlp  # noqa: PLC0415
-    except ImportError as exc:
-        raise HTTPException(status_code=500, detail="yt-dlp is not installed") from exc
-
     verify_auth_token(authorization=authorization)
     manager = _require_video_manager()
 
     url = body.url.strip()
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
+    _validate_video_url(url)
 
     max_bytes = manager.cfg.max_upload_mb * 1024 * 1024
     tmp_root = Path(manager.cfg.tmp_root)
     tmp_root.mkdir(parents=True, exist_ok=True)
 
-    fd, tmp_name = tempfile.mkstemp(dir=str(tmp_root), suffix=".upload")
-    os.close(fd)
-    tmp_path = Path(tmp_name)
+    with tempfile.TemporaryDirectory(dir=str(tmp_root), prefix="ytdlp_") as work_dir:
+        work_path = Path(work_dir)
+        ydl_opts = {
+            "outtmpl": str(work_path / "video.%(ext)s"),
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "merge_output_format": "mp4",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            # Abort if the declared filesize exceeds the cap (best-effort; not all
+            # extractors provide this ahead of time).
+            "max_filesize": max_bytes,
+        }
 
-    ydl_opts = {
-        "outtmpl": str(tmp_path) + ".%(ext)s",
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "merge_output_format": "mp4",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        # Abort if the declared filesize exceeds the cap (best-effort; not all
-        # extractors provide this ahead of time).
-        "max_filesize": max_bytes,
-    }
+        try:
+            info: dict = await asyncio.to_thread(_yt_dlp_download, url, ydl_opts)
+        except ImportError as exc:
+            raise HTTPException(status_code=500, detail="yt-dlp is not installed") from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("yt-dlp download failed for url={}", url)
+            raise HTTPException(status_code=422, detail="Video download failed") from exc
 
-    try:
-        info: dict = await asyncio.to_thread(_yt_dlp_download, url, ydl_opts, tmp_path)
-    except HTTPException:
-        tmp_path.unlink(missing_ok=True)
-        raise
-    except Exception as exc:
-        tmp_path.unlink(missing_ok=True)
-        logger.exception("yt-dlp download failed for url=%s", url)
-        raise HTTPException(status_code=422, detail=f"Download failed: {exc}") from exc
+        # The actual output file has the extension appended by yt-dlp.
+        downloaded = work_path / "video.mp4"
+        if not downloaded.exists():
+            # yt-dlp may have chosen a different extension; find whatever it wrote.
+            candidates = sorted(f for f in work_path.iterdir() if f.is_file() and f.suffix != ".part")
+            if not candidates:
+                raise HTTPException(status_code=500, detail="Download produced no output file")
+            downloaded = candidates[0]
 
-    # The actual output file has the extension appended by yt-dlp.
-    downloaded = Path(str(tmp_path) + ".mp4")
-    if not downloaded.exists():
-        # yt-dlp may have chosen a different extension; find whatever it wrote.
-        candidates = sorted(tmp_root.glob(tmp_path.name + ".*"))
-        if not candidates:
-            tmp_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=500, detail="Download produced no output file")
-        downloaded = candidates[0]
+        # Enforce size cap on actual downloaded file.
+        size = downloaded.stat().st_size
+        if size > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Downloaded file ({size // (1024 * 1024)} MB) exceeds limit of {manager.cfg.max_upload_mb} MB",
+            )
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Downloaded file is empty")
 
-    # Enforce size cap on actual downloaded file.
-    size = downloaded.stat().st_size
-    if size > max_bytes:
-        downloaded.unlink(missing_ok=True)
-        tmp_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=413,
-            detail=f"Downloaded file ({size // (1024*1024)} MB) exceeds limit of {manager.cfg.max_upload_mb} MB",
-        )
-    if size == 0:
-        downloaded.unlink(missing_ok=True)
-        tmp_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="Downloaded file is empty")
+        # Use yt-dlp's reported title as the filename; fall back to URL basename.
+        title = info.get("title") or ""
+        original_filename = (title[:80].strip() or url.split("/")[-1] or "video") + ".mp4"
 
-    # Use yt-dlp's reported title as the filename; fall back to URL basename.
-    title = info.get("title") or ""
-    original_filename = (title[:80].strip() or url.split("/")[-1] or "video") + ".mp4"
-
-    tmp_path.unlink(missing_ok=True)  # remove the placeholder mkstemp file
-    session = manager.create_session(downloaded, original_filename)
-    return session.public_dict()
+        session = manager.create_session(downloaded, original_filename)
+        return session.public_dict()
+    # TemporaryDirectory cleans up all yt-dlp artifacts on success and failure.
 
 
-def _yt_dlp_download(url: str, ydl_opts: dict, placeholder: Path) -> dict:
+def _yt_dlp_download(url: str, ydl_opts: dict) -> dict:
     """Run yt-dlp synchronously (called via asyncio.to_thread)."""
     import yt_dlp  # noqa: PLC0415
 
