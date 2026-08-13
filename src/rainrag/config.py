@@ -258,16 +258,41 @@ class VideoConfig(BaseModel):
 class VideoUploadConfig(BaseModel):
     """Configuration for the single-video upload / scoped-Q&A mode.
 
-    Transcription runs as a subprocess under an interpreter that has
-    faster-whisper installed (the livevtt virtualenv), keeping the heavy
-    CUDA/ctranslate2 stack out of the RainRAG environment.
+    OpenAI transcription is available without local accelerator dependencies.
+    The local provider runs faster-whisper in a separate interpreter, keeping
+    its heavy CUDA/ctranslate2 stack out of the RainRAG environment.
     """
 
-    # Off unless a deployment asks for it: the mode needs a GPU and a separate
-    # interpreter with faster-whisper, neither of which can be assumed. A config
-    # that omits this section would otherwise get a broken upload flow rather
-    # than no upload flow. config.yaml turns it on for this deployment.
+    # Off unless a deployment asks for it: OpenAI needs an API key and the local
+    # provider needs a separate faster-whisper environment. A config that omits
+    # this section should not expose an upload flow that cannot transcribe.
     enabled: bool = Field(default=False, description="Enable the video-upload mode")
+    provider: Literal["openai", "local"] = Field(
+        default="local", description="Transcription provider: openai or local"
+    )
+    openai_model: Literal["whisper-1"] = Field(
+        default="whisper-1",
+        description="OpenAI model used for timestamped upload transcription",
+    )
+    openai_api_key_env: str = Field(
+        default="OPENAI_API_KEY",
+        description="Environment variable containing the OpenAI API key",
+    )
+    openai_workers: int = Field(
+        default=2,
+        ge=1,
+        description="Maximum concurrent OpenAI upload transcriptions",
+    )
+    openai_chunk_seconds: float = Field(
+        default=1800.0,
+        gt=0,
+        description="Target duration for silence-aware OpenAI audio chunks",
+    )
+    openai_silence_window_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description="Window around chunk targets used to find nearby silence",
+    )
     livevtt_python: str = Field(
         default="/home/ubuntu/livevtt/.venv/bin/python",
         description="Python interpreter that has faster-whisper installed",

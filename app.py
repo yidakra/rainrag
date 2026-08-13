@@ -238,6 +238,7 @@ TRANSLATIONS = {
         "video_uploading": "Загрузка видео…",
         "video_queued": "В очереди на обработку…",
         "video_waiting_for_gpu": "Ожидание GPU…",
+        "video_waiting_for_transcriber": "Ожидание очереди распознавания…",
         "video_transcribing": "Распознавание речи…",
         "video_indexing": "Индексация транскрипта…",
         "video_ready": "Готово! Задайте вопрос по видео.",
@@ -362,6 +363,7 @@ TRANSLATIONS = {
         "video_uploading": "Uploading video…",
         "video_queued": "Queued for processing…",
         "video_waiting_for_gpu": "Waiting for GPU…",
+        "video_waiting_for_transcriber": "Waiting for a transcription slot…",
         "video_transcribing": "Transcribing…",
         "video_indexing": "Indexing transcript…",
         "video_ready": "Ready! Ask a question about the video.",
@@ -2185,11 +2187,17 @@ def render_video_mode(lang: str):
         st.markdown(f"#### {get_text('video_processing_title', lang)}")
         # Prefer the fine-grained stage label (e.g. waiting_for_gpu) when the
         # backend reports one we have a translation for; else fall back to status.
-        known_stages = ("queued", "waiting_for_gpu", "transcribing", "indexing")
+        known_stages = (
+            "queued",
+            "waiting_for_gpu",
+            "waiting_for_transcriber",
+            "transcribing",
+            "indexing",
+        )
         stage_key = stage if stage in known_stages else state
         st.caption(get_text(f"video_{stage_key}", lang))
         queue_position = int(status.get("queue_position") or 0)
-        if stage == "waiting_for_gpu" and queue_position > 0:
+        if stage in ("waiting_for_gpu", "waiting_for_transcriber") and queue_position > 0:
             st.caption(get_text("video_queue_position", lang).format(n=queue_position))
         if detected_language:
             st.caption(
