@@ -193,8 +193,8 @@ video_upload:
   livevtt_python: "/home/ubuntu/livevtt/.venv/bin/python"  # interpreter with faster-whisper
   transcribe_script: "scripts/transcribe_one.py"           # single-file transcriber
   model: "large-v3-turbo"        # faster-whisper model (turbo ~halves latency vs large-v3)
-  compute_type: "int8_float16"   # avoids CUDA OOM on large models
-  device: "cuda"
+  compute_type: "float32"   # avoids CUDA OOM on large models
+  device: "cpu"
   # Leave device_indices empty to use every GPU the transcription environment
   # can see (one concurrent upload per GPU). Set an explicit list to pin
   # transcription to specific devices, e.g. [0] to leave GPU 1 for other work.

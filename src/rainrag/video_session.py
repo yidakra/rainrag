@@ -540,8 +540,12 @@ class VideoSessionManager:
         if not script.is_absolute():
             script = Path.cwd() / script
 
-        self._update(session.id, status=STATUS_TRANSCRIBING, stage="waiting_for_gpu", percent=0.0)
-        # Safety cap so a hung transcription can't hold its GPU slot forever.
+        # The pool slot is a GPU only when the local path actually targets CUDA;
+        # with device: "cpu" it is just a concurrency slot, so don't claim a GPU.
+        on_gpu = str(self.cfg.device).lower().startswith("cuda")
+        waiting_stage = "waiting_for_gpu" if on_gpu else "waiting_for_slot"
+        self._update(session.id, status=STATUS_TRANSCRIBING, stage=waiting_stage, percent=0.0)
+        # Safety cap so a hung transcription can't hold its slot forever.
         timeout = max(1800, self.cfg.session_ttl_seconds)
 
         with self._lock:
@@ -582,7 +586,8 @@ class VideoSessionManager:
                 cmd.append("--no-multilingual")
 
             self._update(session.id, stage="transcribing", percent=0.0, queue_position=0)
-            logger.info(f"[video-session {session.id}] transcribing on GPU {device_index}")
+            where = f"GPU {device_index}" if on_gpu else f"CPU (slot {device_index})"
+            logger.info(f"[video-session {session.id}] transcribing on {where}")
             # Child output goes to a file, not a pipe: this loop only reads it
             # once the child has exited, so a pipe would deadlock the transcriber
             # as soon as it wrote past the OS buffer (~64 KB) -- which model
