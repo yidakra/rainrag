@@ -216,10 +216,12 @@ video_upload:
   # yt-dlp reaches Telegram by scraping the t.me embed page, which omits the
   # video element for most posts (~1 in 3 worked in testing). MTProto asks
   # Telegram directly and is not subject to that.
-  # Setup: get api_id/api_hash from https://my.telegram.org, export
-  # TELEGRAM_API_ID / TELEGRAM_API_HASH, run scripts/telegram_login.py once,
-  # then set this to true. The session file is a credential granting full
-  # access to that account -- prefer a dedicated number over a personal one.
+  # Setup: get api_id/api_hash from https://my.telegram.org, put
+  # TELEGRAM_API_ID / TELEGRAM_API_HASH in .env (systemd hands that file to the
+  # API service, so shell exports would not reach it), run
+  # scripts/telegram_login.py once, then set this to true. The session file is a
+  # credential granting full access to that account -- prefer a dedicated
+  # number over a personal one.
   telegram_enabled: false
   telegram_session_path: "./data/telegram.session"
   telegram_flood_sleep_threshold: 60  # absorb FloodWait pauses up to this many seconds
