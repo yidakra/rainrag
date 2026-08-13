@@ -1372,6 +1372,77 @@ async def create_video_session(
     return session.public_dict()
 
 
+def _telegram_ref_if_enabled(url: str, cfg: Any) -> Any:
+    """Return a parsed Telegram ref when this URL should go over MTProto, else None."""
+    if not getattr(cfg, "telegram_enabled", False):
+        return None
+    from rainrag.telegram_media import parse_telegram_url  # noqa: PLC0415
+
+    return parse_telegram_url(url)
+
+
+async def _create_session_from_telegram(
+    ref: Any, manager: Any, max_bytes: int, tmp_root: Path
+) -> dict[str, Any]:
+    """Download one Telegram video over MTProto and hand it to the session manager."""
+    from rainrag.telegram_media import (  # noqa: PLC0415
+        TelegramNotDownloadableError,
+        TelegramUnavailableError,
+        download_telegram_video,
+    )
+
+    cfg = manager.cfg
+    api_id_raw = os.getenv(cfg.telegram_api_id_env, "")
+    api_hash = os.getenv(cfg.telegram_api_hash_env, "")
+    if not api_id_raw or not api_hash:
+        raise HTTPException(
+            status_code=503,
+            detail="Telegram downloading is enabled but its API credentials are not configured",
+        )
+    try:
+        api_id = int(api_id_raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail="Telegram api_id must be an integer") from exc
+
+    with tempfile.TemporaryDirectory(dir=str(tmp_root), prefix="telegram_") as work_dir:
+        try:
+            downloaded = await download_telegram_video(
+                ref,
+                Path(work_dir),
+                api_id=api_id,
+                api_hash=api_hash,
+                session_path=cfg.telegram_session_path,
+                max_bytes=max_bytes,
+                flood_sleep_threshold=cfg.telegram_flood_sleep_threshold,
+            )
+        except TelegramNotDownloadableError as exc:
+            # An ordinary bad link, an empty post, or protected content.
+            logger.info("Telegram link not downloadable ({}): {}", ref.describe(), exc)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except TelegramUnavailableError as exc:
+            logger.warning("Telegram downloading unavailable: {}", exc)
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("Telegram download failed for {}", ref.describe())
+            raise HTTPException(status_code=422, detail="Video download failed") from exc
+
+        size = downloaded.stat().st_size
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Downloaded file is empty")
+        if size > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"Downloaded file ({size // (1024 * 1024)} MB) exceeds limit of "
+                    f"{cfg.max_upload_mb} MB"
+                ),
+            )
+
+        suffix = downloaded.suffix or ".mp4"
+        session = manager.create_session(downloaded, f"{ref.describe()}{suffix}")
+        return session.public_dict()
+
+
 def _validate_video_url(url: str) -> None:
     """Reject URLs that could enable SSRF or expose credentials in error messages."""
     try:
@@ -1414,6 +1485,12 @@ async def create_video_session_from_url(
     max_bytes = manager.cfg.max_upload_mb * 1024 * 1024
     tmp_root = Path(manager.cfg.tmp_root)
     tmp_root.mkdir(parents=True, exist_ok=True)
+
+    # Telegram links go over MTProto when configured: yt-dlp scrapes the t.me
+    # web embed, which omits the video element for most posts.
+    tg_ref = _telegram_ref_if_enabled(url, manager.cfg)
+    if tg_ref is not None:
+        return await _create_session_from_telegram(tg_ref, manager, max_bytes, tmp_root)
 
     with tempfile.TemporaryDirectory(dir=str(tmp_root), prefix="ytdlp_") as work_dir:
         work_path = Path(work_dir)

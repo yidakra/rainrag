@@ -237,3 +237,7 @@ secrets/*.secret
 
 # Pyright local configuration
 .pyrightconfig.local.json
+
+# Telegram MTProto session (credential - full account access)
+*.session
+*.session-journal
