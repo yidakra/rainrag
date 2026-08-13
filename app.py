@@ -253,6 +253,11 @@ TRANSLATIONS = {
         "video_jump_to": "Перейти к моменту:",
         "video_jump_to_fragment": "▶ Смотреть этот фрагмент",
         "video_download_transcript": "⬇ Скачать расшифровку (VTT)",
+        "video_url_label": "или введите ссылку на видео",
+        "video_url_placeholder": "https://t.me/...",
+        "video_url_button": "Загрузить по ссылке",
+        "video_url_downloading": "Скачиваем видео…",
+        "video_url_empty": "Введите ссылку на видео",
     },
     "en": {
         "title": "RainRAG - Video Transcript Search",
@@ -373,6 +378,11 @@ TRANSLATIONS = {
         "video_jump_to": "Jump to:",
         "video_jump_to_fragment": "▶ Play this fragment",
         "video_download_transcript": "⬇ Download transcript (VTT)",
+        "video_url_label": "or paste a video link",
+        "video_url_placeholder": "https://t.me/...",
+        "video_url_button": "Download from link",
+        "video_url_downloading": "Downloading video…",
+        "video_url_empty": "Please enter a video URL",
     },
 }
 
@@ -1171,6 +1181,18 @@ async def upload_video_api(data: bytes, filename: str, content_type: str) -> dic
         response = await client.post(
             f"{API_BASE}/video-sessions",
             files={"file": (filename, data, content_type or "application/octet-stream")},
+            headers=get_auth_headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def upload_video_url_api(url: str) -> dict[str, Any]:
+    """Ask the API to download a video from a URL and start a session."""
+    async with httpx.AsyncClient(timeout=httpx.Timeout(1800.0), verify=API_VERIFY_SSL) as client:
+        response = await client.post(
+            f"{API_BASE}/video-sessions/from-url",
+            json={"url": url},
             headers=get_auth_headers(),
         )
         response.raise_for_status()
@@ -2087,6 +2109,42 @@ def render_video_mode(lang: str):
                 except Exception as e:  # noqa: BLE001
                     st.session_state.video_upload_error = f"{get_text('error_general', lang)}: {e}"
                     st.rerun()
+
+        st.divider()
+        st.caption(get_text("video_url_label", lang))
+        url_col, btn_col = st.columns([5, 1], vertical_alignment="bottom")
+        with url_col:
+            video_url_input = st.text_input(
+                get_text("video_url_label", lang),
+                placeholder=get_text("video_url_placeholder", lang),
+                label_visibility="collapsed",
+                key="video_url_input",
+            )
+        with btn_col:
+            url_submit = st.button(get_text("video_url_button", lang), use_container_width=True)
+        if url_submit:
+            url_val = (video_url_input or "").strip()
+            if not url_val:
+                st.session_state.video_upload_error = get_text("video_url_empty", lang)
+                st.rerun()
+            else:
+                with st.spinner(get_text("video_url_downloading", lang)):
+                    try:
+                        result = asyncio.run(upload_video_url_api(url_val))
+                        st.session_state.video_session_id = result.get("id")
+                        st.session_state.video_messages = []
+                        st.rerun()
+                    except httpx.HTTPStatusError as e:
+                        detail = e.response.text
+                        st.session_state.video_upload_error = (
+                            f"{get_text('error_general', lang)}: {detail}"
+                        )
+                        st.rerun()
+                    except Exception as e:  # noqa: BLE001
+                        st.session_state.video_upload_error = (
+                            f"{get_text('error_general', lang)}: {e}"
+                        )
+                        st.rerun()
         return
 
     # --- Active session: fetch status ---
