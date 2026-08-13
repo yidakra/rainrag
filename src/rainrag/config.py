@@ -345,6 +345,35 @@ class VideoUploadConfig(BaseModel):
         default=21600, description="Session lifetime before automatic cleanup (seconds)"
     )
     max_upload_mb: int = Field(default=512, description="Maximum accepted upload size in megabytes")
+    telegram_enabled: bool = Field(
+        default=False,
+        description=(
+            "Fetch t.me links over MTProto instead of yt-dlp. Needs api_id/api_hash and a "
+            "one-time user login (scripts/telegram_login.py). yt-dlp only manages roughly a "
+            "third of public Telegram video posts, because Telegram often omits the video "
+            "element from the web embed it scrapes."
+        ),
+    )
+    telegram_api_id_env: str = Field(
+        default="TELEGRAM_API_ID", description="Env var holding the my.telegram.org api_id"
+    )
+    telegram_api_hash_env: str = Field(
+        default="TELEGRAM_API_HASH", description="Env var holding the my.telegram.org api_hash"
+    )
+    telegram_session_path: str = Field(
+        default="./data/telegram.session",
+        description=(
+            "Telethon session file. This grants full access to the logged-in account: "
+            "treat it as a credential and keep it out of version control."
+        ),
+    )
+    telegram_flood_sleep_threshold: int = Field(
+        default=60,
+        description=(
+            "Absorb Telegram FloodWait pauses up to this many seconds; longer waits surface "
+            "as an error instead of blocking the request."
+        ),
+    )
     sweep_orphans_on_start: bool = Field(
         default=True,
         description=(
