@@ -134,6 +134,13 @@ _hls_generation_locks_guard = threading.Lock()
 HLS_FFMPEG_TIMEOUT_SECONDS = int(os.getenv("RAINRAG_HLS_FFMPEG_TIMEOUT_SECONDS", "300"))
 HLS_CACHE_TTL_SECONDS = int(os.getenv("RAINRAG_HLS_CACHE_TTL_SECONDS", "86400"))
 HLS_CACHE_MAX_DIRS = int(os.getenv("RAINRAG_HLS_CACHE_MAX_DIRS", "512"))
+# Cap on ffprobe processes in flight for codec detection.  Each master-playlist
+# request probes up to five variants, and asyncio.to_thread draws on the shared
+# default executor, so a burst of cold requests could otherwise spawn dozens of
+# ffprobe processes at once and starve every other to_thread caller.
+HLS_PROBE_CONCURRENCY = max(1, int(os.getenv("RAINRAG_HLS_PROBE_CONCURRENCY", "4")))
+_hls_probe_semaphore: asyncio.Semaphore | None = None
+_hls_probe_semaphore_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _parse_csv_env(name: str, default: list[str]) -> list[str]:
@@ -720,6 +727,26 @@ def _write_codec_sidecar_if_missing(out_dir: Path) -> None:
     codecs = _hls_codec_string(seg)
     if codecs:
         _write_codec_sidecar_atomic(codec_file, codecs)
+
+
+def _get_hls_probe_semaphore() -> asyncio.Semaphore:
+    """Return the probe semaphore, rebuilding it if the event loop changed.
+
+    Bound to its loop on purpose: a semaphore created under one loop is unusable
+    from another, which tests (and anything calling asyncio.run) would hit.
+    """
+    global _hls_probe_semaphore, _hls_probe_semaphore_loop
+    loop = asyncio.get_running_loop()
+    if _hls_probe_semaphore is None or _hls_probe_semaphore_loop is not loop:
+        _hls_probe_semaphore = asyncio.Semaphore(HLS_PROBE_CONCURRENCY)
+        _hls_probe_semaphore_loop = loop
+    return _hls_probe_semaphore
+
+
+async def _probe_variant_codecs(video_file: Path, cache_key: str) -> str | None:
+    """Resolve one variant's CODECS string off the event loop, under the cap."""
+    async with _get_hls_probe_semaphore():
+        return await asyncio.to_thread(_hls_codecs_for_variant, video_file, cache_key)
 
 
 def _hls_codecs_for_variant(video_file: Path, cache_key: str) -> str | None:
@@ -2074,12 +2101,7 @@ async def serve_hls_master(
     # concurrently rather than in one worker: serially, five probes that each hit
     # the 15 s ffprobe timeout would stall the response for 75 s.
     probes = await asyncio.gather(
-        *(
-            asyncio.to_thread(
-                _hls_codecs_for_variant, available[q], _hls_cache_key(available[q], q)
-            )
-            for q in qualities
-        ),
+        *(_probe_variant_codecs(available[q], _hls_cache_key(available[q], q)) for q in qualities),
         return_exceptions=True,
     )
     codec_map = {
