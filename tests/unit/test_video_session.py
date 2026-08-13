@@ -1,9 +1,9 @@
 """Tests for single-video upload sessions.
 
-The manager talks to Qdrant and spawns GPU subprocesses in ``__init__``, so
+The manager talks to Qdrant and may spawn local subprocesses in ``__init__``, so
 these tests build instances with ``__new__`` and populate only the attributes
 the logic under test touches. That keeps coverage on the parts most likely to
-break — the GPU queue, cancellation, and language handling — without needing a
+break — the provider queue, cancellation, and language handling — without needing a
 live Qdrant or a CUDA device.
 """
 
@@ -16,13 +16,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from rainrag.openai_transcription import OpenAITranscriptionResult
 from rainrag.video_session import (
     STATUS_ERROR,
     STATUS_QUEUED,
     SessionCancelledError,
     VideoSession,
     VideoSessionManager,
-    _GpuPool,
+    _TranscriptionPool,
 )
 
 
@@ -31,9 +32,9 @@ def _bare_manager(devices: list[int] | None = None) -> VideoSessionManager:
     manager = VideoSessionManager.__new__(VideoSessionManager)
     manager._sessions = {}
     manager._lock = threading.Lock()
-    manager._gpu_queue = []
+    manager._transcription_queue = []
     manager._procs = {}
-    manager._gpu_pool = _GpuPool(devices if devices is not None else [0])
+    manager._transcription_pool = _TranscriptionPool(devices if devices is not None else [0])
     return manager
 
 
@@ -42,10 +43,12 @@ class _FakeVideoUploadConfig(SimpleNamespace):
 
     def __init__(self, **overrides) -> None:
         defaults = {
+            "provider": "local",
             "device": "cuda",
             "device_index": 0,
             "device_indices": [],
             "livevtt_python": "/nonexistent/python",
+            "openai_workers": 2,
         }
         super().__init__(**{**defaults, **overrides})
 
@@ -89,17 +92,17 @@ class TestVideoSessionState:
         assert public["queue_position"] == 2
 
 
-class TestGpuQueue:
+class TestTranscriptionQueue:
     def test_queue_position_reflects_order(self) -> None:
         manager = _bare_manager()
-        manager._gpu_queue = ["first", "second", "third"]
+        manager._transcription_queue = ["first", "second", "third"]
 
         assert manager._queue_position("first") == 0
         assert manager._queue_position("second") == 1
         assert manager._queue_position("third") == 2
 
     def test_queue_position_zero_when_not_queued(self) -> None:
-        """A session already holding the GPU is not reported as waiting."""
+        """A session already holding a provider slot is not reported as waiting."""
         manager = _bare_manager()
 
         assert manager._queue_position("unknown") == 0
@@ -242,19 +245,19 @@ class TestCancelledSessionsAreNotReportedAsFailures:
         assert "model load failed" in session.error
 
 
-class TestGpuPool:
+class TestTranscriptionPool:
     def test_hands_out_one_slot_per_device(self) -> None:
-        pool = _GpuPool([0, 1])
+        pool = _TranscriptionPool([0, 1])
 
         first = pool.acquire(timeout=0.1)
         second = pool.acquire(timeout=0.1)
 
         assert {first, second} == {0, 1}
-        # Both GPUs are busy, so a third job must wait rather than share one.
+        # Both slots are busy, so a third job must wait rather than share one.
         assert pool.acquire(timeout=0.1) is None
 
     def test_released_device_is_reused(self) -> None:
-        pool = _GpuPool([0, 1])
+        pool = _TranscriptionPool([0, 1])
         first = pool.acquire(timeout=0.1)
         pool.acquire(timeout=0.1)
 
@@ -264,15 +267,15 @@ class TestGpuPool:
         assert pool.acquire(timeout=0.1) == first
 
     def test_single_device_serialises(self) -> None:
-        pool = _GpuPool([0])
+        pool = _TranscriptionPool([0])
 
         assert pool.acquire(timeout=0.1) == 0
         assert pool.acquire(timeout=0.1) is None
         assert pool.size == 1
 
     def test_waiter_is_woken_by_a_release(self) -> None:
-        """A queued job must start as soon as a GPU frees up, not on a timeout."""
-        pool = _GpuPool([0])
+        """A queued job starts as soon as a slot frees up, not on a timeout."""
+        pool = _TranscriptionPool([0])
         held = pool.acquire(timeout=0.1)
         acquired: list[int | None] = []
 
@@ -288,6 +291,11 @@ class TestGpuPool:
 
 
 class TestDeviceResolution:
+    def test_openai_uses_configured_concurrency_without_probing_cuda(self) -> None:
+        manager = _device_manager(probe_result=8, provider="openai", openai_workers=2)
+
+        assert manager._resolve_devices() == [0, 1]
+
     def test_uses_every_detected_gpu_by_default(self) -> None:
         """Two GPUs means two concurrent transcriptions, with no configuration."""
         manager = _device_manager(probe_result=2)
@@ -489,6 +497,150 @@ class TestTranscriberOutputHandling:
 
     def test_log_tail_survives_a_missing_file(self, tmp_path: Path) -> None:
         assert VideoSessionManager._read_log_tail(tmp_path / "absent.log") == ""
+
+
+class TestOpenAIUploadTranscription:
+    def test_requires_configured_api_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = _bare_manager()
+        manager.cfg = SimpleNamespace(openai_api_key_env="MISSING_OPENAI_KEY")
+        session = VideoSession(
+            id="s1",
+            filename="clip.mov",
+            session_dir=str(tmp_path),
+            video_path=str(tmp_path / "source.mov"),
+        )
+        manager._sessions[session.id] = session
+        monkeypatch.delenv("MISSING_OPENAI_KEY", raising=False)
+
+        with pytest.raises(RuntimeError, match="requires an API key"):
+            manager._transcribe_openai(session)
+
+    def test_writes_timestamped_vtt_and_updates_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = _bare_manager(devices=[0, 1])
+        manager.cfg = SimpleNamespace(
+            openai_api_key_env="OPENAI_API_KEY",
+            openai_model="whisper-1",
+            openai_chunk_seconds=1800.0,
+            openai_silence_window_seconds=30.0,
+            language="auto",
+        )
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        video = session_dir / "source.mov"
+        video.touch()
+        session = VideoSession(
+            id="s1",
+            filename="clip.mov",
+            session_dir=str(session_dir),
+            video_path=str(video),
+        )
+        manager._sessions[session.id] = session
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        def fake_transcribe(media_path: Path, output_path: Path, **kwargs: object):
+            assert media_path == video
+            assert kwargs["model"] == "whisper-1"
+            output_path.write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello\n",
+                encoding="utf-8",
+            )
+            callback = kwargs["progress_callback"]
+            callback(1, 1)  # type: ignore[operator]
+            return OpenAITranscriptionResult("en", 2.0, 1, 1)
+
+        monkeypatch.setattr("rainrag.video_session.transcribe_media", fake_transcribe)
+
+        manager._transcribe_openai(session)
+
+        assert session.language == "en"
+        assert session.duration_seconds == 2.0
+        assert session.vtt_path.endswith("source.en.vtt")
+        assert Path(session.vtt_path).exists()
+        assert manager._transcription_queue == []
+
+    def test_cancellation_removes_a_session_dir_recreated_by_the_final_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = _bare_manager()
+        manager.cfg = SimpleNamespace(
+            openai_api_key_env="OPENAI_API_KEY",
+            openai_model="whisper-1",
+            openai_chunk_seconds=1800.0,
+            openai_silence_window_seconds=30.0,
+            language="auto",
+        )
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        video = session_dir / "source.mov"
+        video.touch()
+        session = VideoSession(
+            id="s1",
+            filename="clip.mov",
+            session_dir=str(session_dir),
+            video_path=str(video),
+        )
+        manager._sessions[session.id] = session
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        def fake_transcribe(_media_path: Path, output_path: Path, **kwargs: object):
+            callback = kwargs["progress_callback"]
+            callback(1, 1)  # type: ignore[operator]
+            assert manager.delete(session.id) is True
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("WEBVTT\n\n", encoding="utf-8")
+            return OpenAITranscriptionResult("en", 2.0, 1, 1)
+
+        monkeypatch.setattr("rainrag.video_session.transcribe_media", fake_transcribe)
+
+        with pytest.raises(SessionCancelledError):
+            manager._transcribe_openai(session)
+
+        assert not session_dir.exists()
+        assert manager._transcription_queue == []
+        assert manager._transcription_pool.acquire(timeout=0) == 0
+
+    def test_progress_callback_cancellation_releases_queue_and_worker(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = _bare_manager()
+        manager.cfg = SimpleNamespace(
+            openai_api_key_env="OPENAI_API_KEY",
+            openai_model="whisper-1",
+            openai_chunk_seconds=1800.0,
+            openai_silence_window_seconds=30.0,
+            language="auto",
+        )
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        video = session_dir / "source.mov"
+        video.touch()
+        session = VideoSession(
+            id="s1",
+            filename="clip.mov",
+            session_dir=str(session_dir),
+            video_path=str(video),
+        )
+        manager._sessions[session.id] = session
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        def fake_transcribe(_media_path: Path, _output_path: Path, **kwargs: object):
+            callback = kwargs["progress_callback"]
+            assert manager.delete(session.id) is True
+            callback(1, 2)  # type: ignore[operator]
+            raise AssertionError("cancelled progress callback unexpectedly returned")
+
+        monkeypatch.setattr("rainrag.video_session.transcribe_media", fake_transcribe)
+
+        with pytest.raises(SessionCancelledError):
+            manager._transcribe_openai(session)
+
+        assert not session_dir.exists()
+        assert manager._transcription_queue == []
+        assert manager._transcription_pool.acquire(timeout=0) == 0
 
 
 class TestOrphanSweepScope:

@@ -21,6 +21,7 @@ from rainrag.config import (
     ProcessingConfig,
     QdrantConfig,
     TwoStageConfig,
+    VideoUploadConfig,
     load_config,
 )
 
@@ -163,6 +164,30 @@ class TestOpenAIConfig:
         assert config.max_tokens == 1024
         assert config.temperature == 0.7
         assert config.top_k == 10
+
+
+class TestVideoUploadConfig:
+    """Tests for uploaded-video transcription provider configuration."""
+
+    def test_defaults_preserve_local_provider_compatibility(self) -> None:
+        config = VideoUploadConfig()
+
+        assert config.provider == "local"
+        assert config.openai_model == "whisper-1"
+        assert config.openai_api_key_env == "OPENAI_API_KEY"
+        assert config.openai_workers == 2
+
+    def test_openai_worker_count_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            VideoUploadConfig(openai_workers=0)
+
+    def test_timestamped_model_is_restricted(self) -> None:
+        with pytest.raises(ValidationError):
+            VideoUploadConfig(openai_model="gpt-4o-transcribe")  # type: ignore[arg-type]
+
+    def test_provider_is_restricted(self) -> None:
+        with pytest.raises(ValidationError):
+            VideoUploadConfig(provider="unknown")  # type: ignore[arg-type]
 
 
 class TestClaudeConfig:
