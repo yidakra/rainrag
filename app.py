@@ -238,6 +238,7 @@ TRANSLATIONS = {
         "video_uploading": "Загрузка видео…",
         "video_queued": "В очереди на обработку…",
         "video_waiting_for_gpu": "Ожидание GPU…",
+        "video_waiting_for_slot": "Ожидание очереди…",
         "video_waiting_for_transcriber": "Ожидание очереди распознавания…",
         "video_transcribing": "Распознавание речи…",
         "video_indexing": "Индексация транскрипта…",
@@ -358,6 +359,7 @@ TRANSLATIONS = {
         "video_uploading": "Uploading video…",
         "video_queued": "Queued for processing…",
         "video_waiting_for_gpu": "Waiting for GPU…",
+        "video_waiting_for_slot": "Waiting in queue…",
         "video_waiting_for_transcriber": "Waiting for a transcription slot…",
         "video_transcribing": "Transcribing…",
         "video_indexing": "Indexing transcript…",
@@ -912,6 +914,16 @@ def build_hls_master_url(video_url: str, start_time_seconds: float | None = None
     return hls_url
 
 
+def _js_string(value: str) -> str:
+    """Return a JS string literal safe to embed inside an inline <script> block.
+
+    json.dumps alone is not enough: it leaves ``<``, ``>`` and ``&`` intact, so a
+    value containing ``</script>`` would terminate the block early.  Archive
+    paths are derived from on-disk filenames, so they are not fully trusted.
+    """
+    return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
 def render_adaptive_hls_player(
     hls_url: str,
     mp4_fallback_url: str,
@@ -929,9 +941,19 @@ def render_adaptive_hls_player(
 <script>
 (() => {{
   const video = document.getElementById("{html.escape(element_id)}");
-  const hlsUrl = {json.dumps(hls_url)};
-  const mp4Fallback = {json.dumps(mp4_fallback_url)};
-  console.log('[HLS] player init, hlsUrl=', hlsUrl);
+  const hlsUrl = {_js_string(hls_url)};
+  const mp4Fallback = {_js_string(mp4_fallback_url)};
+  // These URLs carry the access token in a query parameter, so never log them
+  // whole -- the browser console is readable by anyone with the page open.
+  const safeUrl = (u) => {{
+    try {{
+      const parsed = new URL(u, window.location.href);
+      return parsed.origin + parsed.pathname;
+    }} catch (e) {{
+      return '<unparseable-url>';
+    }}
+  }};
+  console.log('[HLS] player init, hlsUrl=', safeUrl(hlsUrl));
   const resumeKey = `rainrag_resume_{html.escape(element_id)}`;
   const getSavedTime = () => {{
     try {{
@@ -974,6 +996,9 @@ def render_adaptive_hls_player(
   const fallbackToMp4 = (reason) => {{
     if (fallbackTriggered) return;
     fallbackTriggered = true;
+    // Stop both watchdogs: whichever one did not fire is still armed, and would
+    // otherwise log a second, misleading timeout after MP4 is already selected.
+    clearWatchdogs();
     console.warn('[HLS] falling back to MP4, reason=', reason, 'readyState=', video.readyState, 'currentTime=', video.currentTime);
     video.src = mp4Fallback;
     video.load();
@@ -992,10 +1017,16 @@ def render_adaptive_hls_player(
   let playbackStartTimer = null;
   const armPlaybackWatchdog = () => {{
     if (playbackStartTimer) return;
+    const armedAt = video.currentTime;
     playbackStartTimer = setTimeout(() => {{
-      const noPlaybackProgress = video.currentTime < 0.1 && video.paused;
-      console.log('[HLS] playbackStartTimer fired, currentTime=', video.currentTime, 'paused=', video.paused, 'noProgress=', noPlaybackProgress);
-      if (noPlaybackProgress) {{
+      // Decide on buffer health, not on `paused`.  When 'play' fires before
+      // 'playing', paused is already false while startup may still be stalled,
+      // so a paused-only test misses it.  Conversely a viewer who pauses at
+      // zero is not stalled and must not be dropped to MP4.  readyState < 3
+      // (below HAVE_FUTURE_DATA) means the player genuinely cannot continue.
+      const stalled = video.currentTime <= armedAt + 0.1 && video.readyState < 3;
+      console.log('[HLS] playbackStartTimer fired, currentTime=', video.currentTime, 'armedAt=', armedAt, 'paused=', video.paused, 'readyState=', video.readyState, 'stalled=', stalled);
+      if (stalled) {{
         fallbackToMp4('5s-timeout-no-playback-progress');
       }}
     }}, 5000);
@@ -1024,7 +1055,7 @@ def render_adaptive_hls_player(
       applyStartTime();
     }});
     hls.on(window.Hls.Events.ERROR, (_event, data) => {{
-      console.warn('[HLS] ERROR type=', data && data.type, 'details=', data && data.details, 'fatal=', data && data.fatal, 'url=', data && data.url);
+      console.warn('[HLS] ERROR type=', data && data.type, 'details=', data && data.details, 'fatal=', data && data.fatal, 'url=', data && data.url ? safeUrl(data.url) : undefined);
       if (data && data.fatal) {{
         clearWatchdogs();
         fallbackToMp4('hls.js-fatal-error:' + (data.details || 'unknown'));
@@ -2142,6 +2173,7 @@ def render_video_mode(lang: str):
         known_stages = (
             "queued",
             "waiting_for_gpu",
+            "waiting_for_slot",
             "waiting_for_transcriber",
             "transcribing",
             "indexing",
@@ -2149,7 +2181,10 @@ def render_video_mode(lang: str):
         stage_key = stage if stage in known_stages else state
         st.caption(get_text(f"video_{stage_key}", lang))
         queue_position = int(status.get("queue_position") or 0)
-        if stage in ("waiting_for_gpu", "waiting_for_transcriber") and queue_position > 0:
+        if (
+            stage in ("waiting_for_gpu", "waiting_for_slot", "waiting_for_transcriber")
+            and queue_position > 0
+        ):
             st.caption(get_text("video_queue_position", lang).format(n=queue_position))
         if detected_language:
             st.caption(
