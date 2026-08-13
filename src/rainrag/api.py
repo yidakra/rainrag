@@ -4,13 +4,14 @@ import asyncio
 import hashlib
 import hmac
 import ipaddress
+import json
 import os
 import re
 import string
 import subprocess
 import tempfile
 import threading
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
@@ -133,6 +134,13 @@ _hls_generation_locks_guard = threading.Lock()
 HLS_FFMPEG_TIMEOUT_SECONDS = int(os.getenv("RAINRAG_HLS_FFMPEG_TIMEOUT_SECONDS", "300"))
 HLS_CACHE_TTL_SECONDS = int(os.getenv("RAINRAG_HLS_CACHE_TTL_SECONDS", "86400"))
 HLS_CACHE_MAX_DIRS = int(os.getenv("RAINRAG_HLS_CACHE_MAX_DIRS", "512"))
+# Cap on ffprobe processes in flight for codec detection.  Each master-playlist
+# request probes up to five variants, and asyncio.to_thread draws on the shared
+# default executor, so a burst of cold requests could otherwise spawn dozens of
+# ffprobe processes at once and starve every other to_thread caller.
+HLS_PROBE_CONCURRENCY = max(1, int(os.getenv("RAINRAG_HLS_PROBE_CONCURRENCY", "4")))
+_hls_probe_semaphore: asyncio.Semaphore | None = None
+_hls_probe_semaphore_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _parse_csv_env(name: str, default: list[str]) -> list[str]:
@@ -544,6 +552,73 @@ def _cleanup_hls_cache_best_effort() -> None:
             continue
 
 
+# profile_idc + constraint-flags bytes for the H.264 profiles ffprobe reports.
+# Matched exactly, never by substring: "High" is a prefix of "High 10", which is
+# a different profile_idc (0x64 vs 0x6E) and would otherwise be misadvertised.
+# A profile absent from this table yields no CODECS attribute rather than a
+# guess, since a wrong codec string is worse for the player than none at all.
+_H264_PROFILE_BYTES = {
+    "Constrained Baseline": "42E0",
+    "Baseline": "4200",
+    "Main": "4D40",
+    "Extended": "5800",
+    "High": "6400",
+    "High 10": "6E00",
+    "High 4:2:2": "7A00",
+    "High 4:4:4 Predictive": "F400",
+}
+
+
+def _hls_codec_string(seg_path: Path) -> str | None:
+    """Return the HLS CODECS attribute string for a media file, e.g. 'avc1.640028,mp4a.40.2'.
+
+    Runs ffprobe to discover the actual codec profile/level used by the encoder
+    (which varies because we copy streams rather than re-encode).
+    Returns None on any failure so callers can simply omit the CODECS attribute.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-show_streams",
+                "-of",
+                "json",
+                str(seg_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout:
+            return None
+        streams = json.loads(result.stdout).get("streams", [])
+    except Exception:
+        return None
+
+    video_codec: str | None = None
+    audio_codec: str | None = None
+
+    for s in streams:
+        codec_type = s.get("codec_type", "")
+        codec_name = s.get("codec_name", "")
+
+        if codec_type == "video" and video_codec is None:
+            if codec_name == "h264":
+                profile_bytes = _H264_PROFILE_BYTES.get(s.get("profile", ""))
+                level = s.get("level", 0)
+                # ffprobe reports level -99 when it cannot determine one.
+                if profile_bytes and isinstance(level, int) and 0 < level <= 255:
+                    video_codec = f"avc1.{profile_bytes}{level:02X}"
+
+        elif codec_type == "audio" and audio_codec is None and codec_name == "aac":
+            audio_codec = "mp4a.40.2"
+
+    parts = [c for c in [video_codec, audio_codec] if c]
+    return ",".join(parts) if parts else None
+
+
 def _ensure_hls_variant_cache(video_file: Path, quality: str) -> tuple[str, Path]:
     """Generate segmented HLS files for a single quality, cached on disk."""
     cache_key = _hls_cache_key(video_file, quality)
@@ -551,6 +626,7 @@ def _ensure_hls_variant_cache(video_file: Path, quality: str) -> tuple[str, Path
     playlist_path = out_dir / "index.m3u8"
 
     if playlist_path.exists():
+        _write_codec_sidecar_if_missing(out_dir)
         return cache_key, playlist_path
     lock = _get_hls_generation_lock(cache_key)
     with lock:
@@ -612,7 +688,90 @@ def _ensure_hls_variant_cache(video_file: Path, quality: str) -> tuple[str, Path
 
     if not playlist_path.exists():
         raise HTTPException(status_code=500, detail="HLS playlist generation incomplete")
+    _write_codec_sidecar_if_missing(out_dir)
     return cache_key, playlist_path
+
+
+def _write_codec_sidecar_atomic(codec_file: Path, codecs: str) -> None:
+    """Publish codec.txt atomically so readers never observe a partial write.
+
+    Concurrent master-playlist requests read this file while another request may
+    be writing it.  A plain write truncates first, so a reader could otherwise
+    pick up an empty or half-written string and emit a malformed CODECS value.
+    """
+    with suppress(OSError):
+        codec_file.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=str(codec_file.parent), suffix=".codec")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(codecs)
+            Path(tmp_name).replace(codec_file)
+        except OSError:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
+
+
+def _write_codec_sidecar_if_missing(out_dir: Path) -> None:
+    """Write codec.txt to out_dir if not already present.
+
+    Runs ffprobe on the first available segment.  Called both after fresh
+    generation and when a warm-cache hit is returned, so existing caches
+    get backfilled on first access.
+    """
+    codec_file = out_dir / "codec.txt"
+    if codec_file.exists():
+        return
+    seg = out_dir / "seg_00000.ts"
+    if not seg.exists():
+        return
+    codecs = _hls_codec_string(seg)
+    if codecs:
+        _write_codec_sidecar_atomic(codec_file, codecs)
+
+
+def _get_hls_probe_semaphore() -> asyncio.Semaphore:
+    """Return the probe semaphore, rebuilding it if the event loop changed.
+
+    Bound to its loop on purpose: a semaphore created under one loop is unusable
+    from another, which tests (and anything calling asyncio.run) would hit.
+    """
+    global _hls_probe_semaphore, _hls_probe_semaphore_loop
+    loop = asyncio.get_running_loop()
+    if _hls_probe_semaphore is None or _hls_probe_semaphore_loop is not loop:
+        _hls_probe_semaphore = asyncio.Semaphore(HLS_PROBE_CONCURRENCY)
+        _hls_probe_semaphore_loop = loop
+    return _hls_probe_semaphore
+
+
+async def _probe_variant_codecs(video_file: Path, cache_key: str) -> str | None:
+    """Resolve one variant's CODECS string off the event loop, under the cap."""
+    async with _get_hls_probe_semaphore():
+        return await asyncio.to_thread(_hls_codecs_for_variant, video_file, cache_key)
+
+
+def _hls_codecs_for_variant(video_file: Path, cache_key: str) -> str | None:
+    """Return the CODECS string for one quality, probing the source if needed.
+
+    Prefers the codec.txt sidecar written next to generated segments.  On a cold
+    cache the segments do not exist yet, so we probe the source file instead:
+    ffmpeg generates HLS with ``-c copy``, so the segment codecs are identical
+    to the source (verified across all five quality variants).  Probing the
+    source means the very first playback -- the case this attribute exists to
+    protect -- still gets CODECS.
+    """
+    codec_dir = HLS_CACHE_ROOT / cache_key
+    codec_file = codec_dir / "codec.txt"
+    if codec_file.exists():
+        with suppress(OSError):
+            return codec_file.read_text(encoding="utf-8").strip() or None
+
+    codecs = _hls_codec_string(video_file)
+    if codecs:
+        # Persist so later requests skip the probe entirely.  The cache dir may
+        # not exist yet; _ensure_hls_variant_cache gates on index.m3u8 rather
+        # than the directory, so pre-creating it is safe.
+        _write_codec_sidecar_atomic(codec_file, codecs)
+    return codecs
 
 
 def _rewrite_hls_variant_playlist(
@@ -1937,13 +2096,26 @@ async def serve_hls_master(
     auth_q = f"?{'&'.join(params)}" if params else ""
     encoded_path = quote(file_path, safe="/")
 
+    qualities = [q for q in quality_order if q in available]
+    # Each probe spawns ffprobe, so keep them off the event loop -- and run them
+    # concurrently rather than in one worker: serially, five probes that each hit
+    # the 15 s ffprobe timeout would stall the response for 75 s.
+    probes = await asyncio.gather(
+        *(_probe_variant_codecs(available[q], _hls_cache_key(available[q], q)) for q in qualities),
+        return_exceptions=True,
+    )
+    codec_map = {
+        q: (result if isinstance(result, str) else None)
+        for q, result in zip(qualities, probes, strict=True)
+    }
+
     lines = ["#EXTM3U", "#EXT-X-VERSION:3"]
-    for quality in quality_order:
-        if quality not in available:
-            continue
-        lines.append(
-            f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth_map[quality]},RESOLUTION={resolution_map[quality]},NAME="{quality}"'
-        )
+    for quality in qualities:
+        codecs = codec_map.get(quality)
+        attrs = f'BANDWIDTH={bandwidth_map[quality]},RESOLUTION={resolution_map[quality]},NAME="{quality}"'
+        if codecs:
+            attrs += f',CODECS="{codecs}"'
+        lines.append(f"#EXT-X-STREAM-INF:{attrs}")
         lines.append(f"/hls/variant/{quality}/{encoded_path}{auth_q}")
 
     return Response(
