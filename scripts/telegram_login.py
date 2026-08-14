@@ -68,20 +68,36 @@ def main() -> int:
     session_path = os.getenv("TELEGRAM_SESSION_PATH", DEFAULT_SESSION)
     Path(session_path).parent.mkdir(parents=True, exist_ok=True)
 
-    with TelegramClient(session_path, api_id, api_hash) as client:
-        me = client.get_me()
-        who = getattr(me, "username", None) or getattr(me, "phone", "unknown")
-        print(f"Logged in as {who}.")
+    def secure_session(announce: bool = False) -> None:
+        """Restrict the session file to its owner.
 
-    # Telethon creates the session world-readable. It authenticates as the full
-    # account, so tighten it to owner-only rather than leaving a credential
-    # readable by every user on the box.
-    for candidate in (Path(session_path), Path(f"{session_path}.session")):
-        if candidate.exists():
-            candidate.chmod(0o600)
-            print(f"Session written to {candidate} (mode 600)")
+        The file authenticates as the whole account, and Telethon creates it
+        world-readable.  Runs on every exit path -- a login abandoned at the
+        code prompt has usually created the file already.
+        """
+        for candidate in (Path(session_path), Path(f"{session_path}.session")):
+            if candidate.exists():
+                candidate.chmod(0o600)
+                if announce:
+                    print(f"Session written to {candidate} (mode 600)")
 
-    print("Set video_upload.telegram_enabled: true in config.yaml to use it.")
+    # Close the window entirely: with this umask the file is created 0600 rather
+    # than created world-readable and tightened a moment later.
+    previous_umask = os.umask(0o077)
+    try:
+        secure_session()  # an earlier interrupted run may have left one behind
+        with TelegramClient(session_path, api_id, api_hash) as client:
+            me = client.get_me()
+            who = getattr(me, "username", None) or getattr(me, "phone", "unknown")
+            print(f"Logged in as {who}.")
+    finally:
+        os.umask(previous_umask)
+        # Also covers KeyboardInterrupt at the phone/code prompt.
+        secure_session(announce=True)
+
+    print("Set video_upload.telegram_enabled: true in config.yaml, then restart")
+    print("the API service so it picks up the credentials: ")
+    print("    sudo systemctl restart rainrag-api")
     return 0
 
 
