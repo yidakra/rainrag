@@ -72,8 +72,16 @@ def main() -> int:
         me = client.get_me()
         who = getattr(me, "username", None) or getattr(me, "phone", "unknown")
         print(f"Logged in as {who}.")
-        print(f"Session written to {session_path}")
-        print("Set video_upload.telegram_enabled: true in config.yaml to use it.")
+
+    # Telethon creates the session world-readable. It authenticates as the full
+    # account, so tighten it to owner-only rather than leaving a credential
+    # readable by every user on the box.
+    for candidate in (Path(session_path), Path(f"{session_path}.session")):
+        if candidate.exists():
+            candidate.chmod(0o600)
+            print(f"Session written to {candidate} (mode 600)")
+
+    print("Set video_upload.telegram_enabled: true in config.yaml to use it.")
     return 0
 
 

@@ -408,7 +408,12 @@ def transcribe_media(
                 progress_callback(index, len(chunks))
 
         if not all_cues:
-            raise RuntimeError("OpenAI returned no timestamped cues for the uploaded video")
+            # Whisper returns an empty segment list for audio it finds no speech
+            # in -- music-only clips reach here routinely. Phrase it the way the
+            # local provider does (video_session._index), so the same condition
+            # does not read as a provider fault in one path and a plain fact in
+            # the other.
+            raise RuntimeError("no speech detected in the video")
 
         detected = language_hint
         if not detected and language_durations:

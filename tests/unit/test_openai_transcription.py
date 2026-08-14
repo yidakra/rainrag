@@ -260,7 +260,8 @@ def test_transcribe_media_rejects_an_entirely_silent_video(
     monkeypatch.setattr(transcription, "_probe_duration", lambda _path: 30.0)
     monkeypatch.setattr(transcription, "OpenAI", lambda **_kwargs: FakeClient())
 
-    with pytest.raises(RuntimeError, match="no timestamped cues for the uploaded video"):
+    # Same wording as the local provider: this is "no speech", not a fault.
+    with pytest.raises(RuntimeError, match="no speech detected in the video"):
         transcription.transcribe_media(media, output, api_key="test-key")
 
     assert not output.exists()
