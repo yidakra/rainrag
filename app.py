@@ -266,6 +266,8 @@ TRANSLATIONS = {
         "video_jump_to": "Перейти к моменту:",
         "video_jump_to_fragment": "▶ Смотреть этот фрагмент",
         "video_download_transcript": "⬇ Скачать расшифровку (VTT)",
+        "video_show_transcript": "📄 Расшифровка",
+        "video_transcript_unavailable": "Расшифровку пока не удалось загрузить",
         "video_url_label": "или вставьте ссылку на видео",
         "video_upload_limit": "Максимальный размер файла — {mb} МБ",
         "video_url_placeholder": "YouTube, Telegram, VK, OK.ru, Дзен, Rutube, X…",
@@ -395,6 +397,8 @@ TRANSLATIONS = {
         "video_jump_to": "Jump to:",
         "video_jump_to_fragment": "▶ Play this fragment",
         "video_download_transcript": "⬇ Download transcript (VTT)",
+        "video_show_transcript": "📄 Transcript",
+        "video_transcript_unavailable": "The transcript could not be loaded yet",
         "video_url_label": "or paste a video link",
         "video_upload_limit": "Maximum file size is {mb} MB",
         "video_url_placeholder": "YouTube, Telegram, VK, OK.ru, Dzen, Rutube, X…",
@@ -2306,16 +2310,32 @@ def render_video_mode(lang: str):
         )
     st.success(get_text("video_ready", lang))
 
-    # Sessions are ephemeral, so this is the only way to keep the transcript.
-    transcript_url = append_auth_query(build_asset_url(f"/video-sessions/{session_id}/transcript"))
+    # Reading the transcript is often the first thing a journalist wants, before
+    # they have a question to ask -- so show it inline rather than making a
+    # download the only way to see it. Fetched once and cached: the session is
+    # ready, so the text will not change under us.
     download_name = f"{Path(status.get('filename') or 'transcript').stem}.vtt"
-    st.markdown(
-        f'<a href="{html.escape(transcript_url)}" download="{html.escape(download_name)}" '
-        f'style="display: inline-block; padding: 0.4rem 0.8rem; background-color: #0084ff; '
-        f'color: white; text-decoration: none; border-radius: 0.25rem; margin-bottom: 0.5rem;">'
-        f"{get_text('video_download_transcript', lang)}</a>",
-        unsafe_allow_html=True,
-    )
+    transcript_key = f"video_transcript_{session_id}"
+    if transcript_key not in st.session_state:
+        st.session_state[transcript_key] = fetch_vtt_content(
+            f"/video-sessions/{session_id}/transcript"
+        )
+    transcript_text = st.session_state[transcript_key]
+
+    if transcript_text:
+        with st.expander(get_text("video_show_transcript", lang)):
+            render_vtt_viewer(transcript_text)
+        # Sessions are ephemeral, so downloading is the only way to keep it.
+        st.download_button(
+            get_text("video_download_transcript", lang),
+            data=transcript_text,
+            file_name=download_name,
+            mime="text/vtt",
+            use_container_width=True,
+            key=f"download_transcript_{session_id}",
+        )
+    else:
+        st.caption(get_text("video_transcript_unavailable", lang))
 
     for idx, message in enumerate(st.session_state.video_messages):
         render_message_bubble(message, lang, video_session_key=f"{session_id}_{idx}")
