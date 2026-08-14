@@ -345,6 +345,16 @@ class VideoUploadConfig(BaseModel):
         default=21600, description="Session lifetime before automatic cleanup (seconds)"
     )
     max_upload_mb: int = Field(default=512, description="Maximum accepted upload size in megabytes")
+    yt_dlp_cookies_path: str = Field(
+        default="",
+        description=(
+            "Optional cookies.txt (Netscape format) handed to yt-dlp. Needed for sites that "
+            "no longer serve video anonymously -- X restricted guest access, and YouTube "
+            "sometimes requires a signed-in session. Export it from a logged-in browser. "
+            "Treat the file as a credential: it authenticates as that account. Missing or "
+            "unreadable files are ignored, so the endpoint keeps working for other sites."
+        ),
+    )
     telegram_enabled: bool = Field(
         default=False,
         description=(

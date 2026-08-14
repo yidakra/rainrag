@@ -212,6 +212,12 @@ video_upload:
   # The Streamlit client buffers the whole file in memory before sending, so this
   # cap also bounds UI memory per concurrent upload. Raise with that in mind.
   max_upload_mb: 512                  # reject uploads larger than this
+  # Optional cookies.txt (Netscape format) passed to yt-dlp. Needed for sites
+  # that no longer serve video anonymously -- X (Twitter) restricted guest
+  # access, and YouTube occasionally demands a signed-in session. Export from a
+  # logged-in browser. This file authenticates as that account, so treat it as a
+  # credential (chmod 600). Leave empty to send no cookies.
+  yt_dlp_cookies_path: ""
   # --- Telegram (MTProto) video import ---
   # yt-dlp reaches Telegram by scraping the t.me embed page, which omits the
   # video element for most posts (~1 in 3 worked in testing). MTProto asks

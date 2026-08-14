@@ -1372,6 +1372,28 @@ async def create_video_session(
     return session.public_dict()
 
 
+def _yt_dlp_cookiefile(cfg: Any) -> str | None:
+    """Return a usable yt-dlp cookie file path, or None.
+
+    Several sites no longer serve video to anonymous clients -- X in particular
+    restricted guest access, and YouTube sometimes demands a signed-in session.
+    A cookies.txt exported from a logged-in browser is yt-dlp's supported way
+    through. Missing or unreadable files are ignored rather than fatal: losing
+    cookies should degrade those sites, not take the whole endpoint down.
+    """
+    path = (getattr(cfg, "yt_dlp_cookies_path", "") or "").strip()
+    if not path:
+        return None
+    candidate = Path(path)
+    if not candidate.is_file():
+        logger.warning("yt-dlp cookies file not found at {}; continuing without it", path)
+        return None
+    if not os.access(candidate, os.R_OK):
+        logger.warning("yt-dlp cookies file at {} is not readable; continuing without it", path)
+        return None
+    return str(candidate)
+
+
 def _telegram_ref_if_enabled(url: str, cfg: Any) -> Any:
     """Return a parsed Telegram ref when this URL should go over MTProto, else None."""
     if not getattr(cfg, "telegram_enabled", False):
@@ -1496,7 +1518,13 @@ async def create_video_session_from_url(
         work_path = Path(work_dir)
         ydl_opts = {
             "outtmpl": str(work_path / "video.%(ext)s"),
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            # Prefer a merged mp4, then any split video+audio pair, then whatever
+            # exists. Sites like Coub publish only video-only mp4 plus mp3 audio,
+            # which the old chain could not satisfy at all.
+            "format": (
+                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/"
+                "bestvideo*+bestaudio/best/bestvideo*/bestaudio"
+            ),
             "merge_output_format": "mp4",
             "noplaylist": True,
             "quiet": True,
@@ -1505,6 +1533,9 @@ async def create_video_session_from_url(
             # extractors provide this ahead of time).
             "max_filesize": max_bytes,
         }
+        cookies = _yt_dlp_cookiefile(manager.cfg)
+        if cookies:
+            ydl_opts["cookiefile"] = cookies
 
         try:
             info: dict | None = await asyncio.to_thread(_yt_dlp_download, url, ydl_opts)
