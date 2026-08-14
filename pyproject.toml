@@ -40,6 +40,9 @@ dependencies = [
     "redis>=5.0.0,<6.0.0",
     # MTProto client for Telegram video downloads (see scripts/telegram_login.py)
     "telethon>=1.44.0,<2.0.0",
+    # TLS impersonation for yt-dlp; some sites (Dailymotion) refuse plain
+    # requests. yt-dlp supports curl_cffi 0.10.x-0.15.x, not 0.16+.
+    "curl-cffi>=0.10.0,<0.16.0",
     # Video download from URLs (Telegram, YouTube, etc.)
     "yt-dlp>=2026.1.0",
 ]

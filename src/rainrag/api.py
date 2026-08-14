@@ -1518,7 +1518,13 @@ async def create_video_session_from_url(
         work_path = Path(work_dir)
         ydl_opts = {
             "outtmpl": str(work_path / "video.%(ext)s"),
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            # Prefer a merged mp4, then any split video+audio pair, then whatever
+            # exists. Sites like Coub publish only video-only mp4 plus mp3 audio,
+            # which the old chain could not satisfy at all.
+            "format": (
+                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/"
+                "bestvideo*+bestaudio/best/bestvideo*/bestaudio"
+            ),
             "merge_output_format": "mp4",
             "noplaylist": True,
             "quiet": True,
