@@ -6,3 +6,9 @@
 # Address/port/headless come from CLI flags at launch and override values here.
 [server]
 maxUploadSize = 512
+
+[client]
+# Hide Streamlit's developer toolbar. Without this the app shows a "Deploy"
+# button to every journalist, which is both confusing and not something they
+# can act on. "viewer" keeps the hamburger menu but drops the dev affordances.
+toolbarMode = "viewer"

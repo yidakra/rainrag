@@ -52,6 +52,16 @@ except (ValueError, TypeError):
     session_timeout_minutes = 480
     logger.warning("Invalid RAINRAG_SESSION_TIMEOUT, using default 480")
 
+# Upload cap shown to the user. Read from Streamlit's own server.maxUploadSize
+# (kept in sync with config.yaml video_upload.max_upload_mb) because Streamlit's
+# built-in dropzone caption reports a different, larger number.
+try:
+    from streamlit import config as _st_config
+
+    MAX_UPLOAD_MB = int(_st_config.get_option("server.maxUploadSize"))
+except Exception:  # pragma: no cover - fall back to the documented default
+    MAX_UPLOAD_MB = 512
+
 # Maximum failed login attempts before temporary lockout
 _max_attempts = 5
 try:
@@ -166,6 +176,8 @@ TRANSLATIONS = {
         "auth_invalid": "Неверный токен доступа",
         "health_check_failed": "Не удалось подключиться к API",
         "video_label": "Видео",
+        "video_quality_label": "Качество",
+        "video_quality_auto": "Авто",
         "vtt_label": "Субтитры",
         "download_vtt": "Скачать VTT",
         "view_vtt": "Просмотр VTT",
@@ -254,8 +266,9 @@ TRANSLATIONS = {
         "video_jump_to": "Перейти к моменту:",
         "video_jump_to_fragment": "▶ Смотреть этот фрагмент",
         "video_download_transcript": "⬇ Скачать расшифровку (VTT)",
-        "video_url_label": "или введите ссылку на видео",
-        "video_url_placeholder": "https://t.me/...",
+        "video_url_label": "или вставьте ссылку на видео",
+        "video_upload_limit": "Максимальный размер файла — {mb} МБ",
+        "video_url_placeholder": "YouTube, Telegram, VK, OK.ru, Дзен, Rutube, X…",
         "video_url_button": "Загрузить по ссылке",
         "video_url_downloading": "Скачиваем видео…",
         "video_url_empty": "Введите ссылку на видео",
@@ -292,6 +305,8 @@ TRANSLATIONS = {
         "auth_invalid": "Invalid access token",
         "health_check_failed": "Failed to connect to API",
         "video_label": "Video",
+        "video_quality_label": "Quality",
+        "video_quality_auto": "Auto",
         "vtt_label": "Subtitles",
         "download_vtt": "Download VTT",
         "view_vtt": "View VTT",
@@ -381,7 +396,8 @@ TRANSLATIONS = {
         "video_jump_to_fragment": "▶ Play this fragment",
         "video_download_transcript": "⬇ Download transcript (VTT)",
         "video_url_label": "or paste a video link",
-        "video_url_placeholder": "https://t.me/...",
+        "video_upload_limit": "Maximum file size is {mb} MB",
+        "video_url_placeholder": "YouTube, Telegram, VK, OK.ru, Dzen, Rutube, X…",
         "video_url_button": "Download from link",
         "video_url_downloading": "Downloading video…",
         "video_url_empty": "Please enter a video URL",
@@ -866,6 +882,36 @@ def build_asset_url(path_or_url: str) -> str:
     if path_or_url.startswith("/"):
         return f"{ASSET_BASE_URL}{path_or_url}"
     return f"{ASSET_BASE_URL}/{path_or_url}"
+
+
+def render_vtt_viewer(vtt_content: str) -> None:
+    """Show subtitle text in a scrollable, theme-aware box.
+
+    Uses st.code rather than a hand-rolled <div>: the previous markup needed
+    unsafe_allow_html, and one of the two copies interpolated the subtitle text
+    without escaping it, so a crafted VTT could inject markup into the page.
+    Rendering through a native widget removes that class of bug rather than
+    relying on both call sites remembering to escape. It also follows the active
+    Streamlit theme instead of hard-coding dark colours into a light UI.
+    """
+    st.code(vtt_content, language=None, height=400, wrap_lines=True)
+
+
+def render_quality_selector(key: str, lang: str) -> str | None:
+    """Render the video quality picker and return the chosen quality, or None for auto.
+
+    Shared by the content-search and name-search result cards so the option list
+    and its translations cannot drift apart between them.
+    """
+    auto_label = get_text("video_quality_auto", lang)
+    choice = st.selectbox(
+        get_text("video_quality_label", lang),
+        options=[auto_label, "1080p", "720p", "480p", "360p", "180p"],
+        index=0,
+        key=key,
+        label_visibility="collapsed",
+    )
+    return None if choice == auto_label else choice
 
 
 def build_video_source_urls(
@@ -1647,15 +1693,10 @@ def render_message_bubble(message: dict[str, Any], lang: str, video_session_key:
                     video_url = group[0].get("video_url")
                     if video_url:
                         st.markdown(f"**{get_text('video_label', lang)}:**")
-                        quality_choice = st.selectbox(
-                            "Quality",
-                            options=["Auto", "1080p", "720p", "480p", "360p", "180p"],
-                            index=0,
-                            key=f"context_video_quality_{group_idx}",
-                            label_visibility="collapsed",
+                        preferred_quality = render_quality_selector(
+                            f"context_video_quality_{group_idx}", lang
                         )
                         start_time_seconds = group[0].get("start_time_seconds")
-                        preferred_quality = None if quality_choice == "Auto" else quality_choice
                         source_urls = build_video_source_urls(
                             video_url,
                             start_time_seconds,
@@ -1668,7 +1709,7 @@ def render_message_bubble(message: dict[str, Any], lang: str, video_session_key:
 
                         try:
                             rendered_hls = False
-                            if quality_choice == "Auto":
+                            if preferred_quality is None:
                                 hls_url = build_hls_master_url(video_url, start_time_seconds)
                                 if hls_url:
                                     render_adaptive_hls_player(
@@ -1746,12 +1787,7 @@ def render_message_bubble(message: dict[str, Any], lang: str, video_session_key:
                         # VTT content viewer (scrollable)
                         vtt_content = fetch_vtt_content(vtt_url)
                         if vtt_content:
-                            # Display VTT in a scrollable container
-                            # Use dark background that works in both light and dark modes
-                            st.markdown(
-                                f'<div style="height: 400px; overflow-y: auto; border: 1px solid #4a4a4a; border-radius: 0.25rem; padding: 0.5rem; background-color: #1e1e1e; color: #e0e0e0; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap;">{vtt_content}</div>',
-                                unsafe_allow_html=True,
-                            )
+                            render_vtt_viewer(vtt_content)
                         else:
                             st.error(get_text("vtt_error", lang))
                     else:
@@ -1802,7 +1838,9 @@ def render_message_bubble(message: dict[str, Any], lang: str, video_session_key:
                                     rel_score = rel_chunk.get("score", 0.0)
                                     rel_text = html.escape(rel_chunk.get("text", "")[:150])
                                     st.markdown(
-                                        f"{rel_idx}. `{rel_filename}` (Score: {rel_score:.3f})<br>_{rel_text}..._",
+                                        f"{rel_idx}. `{rel_filename}` "
+                                        f"({get_text('score_label', lang)}: {rel_score:.3f})"
+                                        f"<br>_{rel_text}..._",
                                         unsafe_allow_html=True,
                                     )
                             else:
@@ -1855,14 +1893,7 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
                 video_url = v
                 break
         if video_url:
-            quality_choice = st.selectbox(
-                "Quality",
-                options=["Auto", "1080p", "720p", "480p", "360p", "180p"],
-                index=0,
-                key=f"name_video_quality_{idx}",
-                label_visibility="collapsed",
-            )
-            preferred_quality = None if quality_choice == "Auto" else quality_choice
+            preferred_quality = render_quality_selector(f"name_video_quality_{idx}", lang)
             source_urls = build_video_source_urls(video_url, preferred_quality=preferred_quality)
             source_tags = "\n".join(
                 f'<source src="{html.escape(url)}" type="video/mp4">' for url in source_urls
@@ -1879,7 +1910,7 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
                         f'<track kind="subtitles" src="{t_full}"'
                         f' srclang="{t_lang}" label="{track_labels[t_lang]}"{default_attr}>\n'
                     )
-            if quality_choice == "Auto":
+            if preferred_quality is None:
                 hls_url = build_hls_master_url(video_url)
                 if hls_url:
                     render_adaptive_hls_player(
@@ -1934,11 +1965,7 @@ def render_name_search_result(result: dict[str, Any], idx: int, lang: str):
 
                 vtt_content = st.session_state[cache_key]
                 if vtt_content:
-                    # Escape content to prevent XSS via malformed/malicious VTT markup
-                    st.markdown(
-                        f'<div style="height: 400px; overflow-y: auto; border: 1px solid #4a4a4a; border-radius: 0.25rem; padding: 0.5rem; background-color: #1e1e1e; color: #e0e0e0; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap;">{html.escape(vtt_content)}</div>',
-                        unsafe_allow_html=True,
-                    )
+                    render_vtt_viewer(vtt_content)
                 else:
                     st.error(get_text("vtt_error", lang))
         else:
@@ -2128,6 +2155,10 @@ def render_video_mode(lang: str):
             label_visibility="collapsed",
             key=f"video_uploader_{st.session_state.get('video_uploader_seq', 0)}",
         )
+        # Streamlit's own dropzone caption reports a limit that does not match
+        # server.maxUploadSize, so state the real cap ourselves rather than let a
+        # journalist upload a file the API will reject with 413.
+        st.caption(get_text("video_upload_limit", lang).format(mb=MAX_UPLOAD_MB))
         if uploaded is not None:
             with st.spinner(get_text("video_uploading", lang)):
                 try:
