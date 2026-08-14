@@ -268,6 +268,7 @@ TRANSLATIONS = {
         "video_download_transcript": "⬇ Скачать расшифровку (VTT)",
         "video_show_transcript": "📄 Расшифровка",
         "video_transcript_unavailable": "Расшифровку пока не удалось загрузить",
+        "video_transcript_retry": "Попробовать ещё раз",
         "video_url_label": "или вставьте ссылку на видео",
         "video_upload_limit": "Максимальный размер файла — {mb} МБ",
         "video_url_placeholder": "YouTube, Telegram, VK, OK.ru, Дзен, Rutube, X…",
@@ -399,6 +400,7 @@ TRANSLATIONS = {
         "video_download_transcript": "⬇ Download transcript (VTT)",
         "video_show_transcript": "📄 Transcript",
         "video_transcript_unavailable": "The transcript could not be loaded yet",
+        "video_transcript_retry": "Try again",
         "video_url_label": "or paste a video link",
         "video_upload_limit": "Maximum file size is {mb} MB",
         "video_url_placeholder": "YouTube, Telegram, VK, OK.ru, Dzen, Rutube, X…",
@@ -898,7 +900,11 @@ def render_vtt_viewer(vtt_content: str) -> None:
     relying on both call sites remembering to escape. It also follows the active
     Streamlit theme instead of hard-coding dark colours into a light UI.
     """
-    st.code(vtt_content, language=None, height=400, wrap_lines=True)
+    # height belongs on the container, not st.code: st.code gained a height
+    # argument well after the 1.40 floor declared in pyproject, so calling it
+    # there raises TypeError. st.container(height=...) works across the range.
+    with st.container(height=400):
+        st.code(vtt_content, language=None, wrap_lines=True)
 
 
 def render_quality_selector(key: str, lang: str) -> str | None:
@@ -2133,6 +2139,10 @@ def _reset_video_session(delete_remote: bool = True) -> None:
             asyncio.run(delete_video_session_api(session_id))
         except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
             logger.warning(f"Failed to delete video session {session_id}: {exc}")
+    if session_id:
+        # A whole VTT is held per session; without this each processed video
+        # leaves one behind in session_state for the life of the browser session.
+        st.session_state.pop(f"video_transcript_{session_id}", None)
     st.session_state.video_session_id = None
     st.session_state.video_messages = []
     st.session_state.video_upload_error = None
@@ -2316,11 +2326,13 @@ def render_video_mode(lang: str):
     # ready, so the text will not change under us.
     download_name = f"{Path(status.get('filename') or 'transcript').stem}.vtt"
     transcript_key = f"video_transcript_{session_id}"
-    if transcript_key not in st.session_state:
-        st.session_state[transcript_key] = fetch_vtt_content(
-            f"/video-sessions/{session_id}/transcript"
-        )
-    transcript_text = st.session_state[transcript_key]
+    # Cache only a successful fetch. Storing None would turn a transient network
+    # blip into a permanently empty transcript for the life of the session.
+    transcript_text = st.session_state.get(transcript_key)
+    if not transcript_text:
+        transcript_text = fetch_vtt_content(f"/video-sessions/{session_id}/transcript")
+        if transcript_text:
+            st.session_state[transcript_key] = transcript_text
 
     if transcript_text:
         with st.expander(get_text("video_show_transcript", lang)):
@@ -2336,6 +2348,12 @@ def render_video_mode(lang: str):
         )
     else:
         st.caption(get_text("video_transcript_unavailable", lang))
+        if st.button(
+            get_text("video_transcript_retry", lang),
+            key=f"retry_transcript_{session_id}",
+            use_container_width=True,
+        ):
+            st.rerun()
 
     for idx, message in enumerate(st.session_state.video_messages):
         render_message_bubble(message, lang, video_session_key=f"{session_id}_{idx}")
