@@ -33,6 +33,19 @@ def disable_api_startup_init(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RAINRAG_SKIP_API_STARTUP_INIT", "1")
 
 
+@pytest.fixture(autouse=True)
+def unauthenticated_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run tests as if no API token were configured.
+
+    verify_auth_token reads RAINRAG_AUTH_TOKEN at call time, so a deployment
+    that has one set in .env made every unauthenticated request in the suite
+    return 401 -- four tests asserting 404/200 failed on the server while
+    passing in CI, purely because CI has no .env. Tests that care about auth
+    set the variable themselves.
+    """
+    monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
+
+
 @pytest.fixture
 def temp_dir() -> Generator[Path, None, None]:
     """Create a temporary directory for testing."""
