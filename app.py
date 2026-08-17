@@ -1666,6 +1666,13 @@ def render_video_session_context(message_key: str, chunks: list[dict[str, Any]],
             st.markdown("---")
 
 
+# Streamlit's default chat avatars are Material Symbols glyphs ("face",
+# "smart_toy"). Browsers that block web fonts for fingerprinting protection --
+# Brave Shields does this by default -- render those ligature names as literal
+# text in a coloured box. Emoji come from the system font and always resolve.
+CHAT_AVATARS = {"user": "🧑", "assistant": "🤖"}
+
+
 def render_message_bubble(message: dict[str, Any], lang: str, video_session_key: str | None = None):
     """Render a message bubble with appropriate styling.
 
@@ -1675,7 +1682,7 @@ def render_message_bubble(message: dict[str, Any], lang: str, video_session_key:
     role = message["role"]
     content = message["content"]
 
-    with st.chat_message(role):
+    with st.chat_message(role, avatar=CHAT_AVATARS.get(role)):
         st.markdown(content)
 
     # Show context if available
