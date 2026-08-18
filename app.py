@@ -1666,6 +1666,13 @@ def render_video_session_context(message_key: str, chunks: list[dict[str, Any]],
             st.markdown("---")
 
 
+# Streamlit's default chat avatars are Material Symbols glyphs ("face",
+# "smart_toy"). Browsers that block web fonts for fingerprinting protection --
+# Brave Shields does this by default -- render those ligature names as literal
+# text in a coloured box. Emoji come from the system font and always resolve.
+CHAT_AVATARS = {"user": "🧑", "assistant": "🤖"}
+
+
 def render_message_bubble(message: dict[str, Any], lang: str, video_session_key: str | None = None):
     """Render a message bubble with appropriate styling.
 
@@ -1675,7 +1682,7 @@ def render_message_bubble(message: dict[str, Any], lang: str, video_session_key:
     role = message["role"]
     content = message["content"]
 
-    with st.chat_message(role):
+    with st.chat_message(role, avatar=CHAT_AVATARS.get(role)):
         st.markdown(content)
 
     # Show context if available
@@ -2622,6 +2629,34 @@ def main():
     st.markdown(
         """
         <style>
+        /* Streamlit draws its icons as Material Symbols ligatures, so a browser
+           that blocks web fonts -- Brave Shields does by default -- prints the
+           ligature name ("keyboard_arrow_right") instead of the glyph, on top of
+           the label. Substitute plain Unicode arrows, which come from the system
+           font and render everywhere. Scoped to the only two icons this app
+           shows, because data-testid="stIconMaterial" is shared by every
+           Streamlit icon and a blanket rule would clobber unrelated ones. */
+        [data-testid="stExpander"] summary [data-testid="stIconMaterial"],
+        [data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"] {
+            font-size: 0 !important;
+        }
+        /* Literal characters rather than CSS hex escapes: Python reads a
+           backslash-digit sequence in a normal string as an octal escape,
+           which silently produced the wrong glyph here. */
+        [data-testid="stExpander"] summary [data-testid="stIconMaterial"]::after {
+            content: "▸";  /* collapsed */
+            font-size: 1rem;
+            line-height: 1;
+        }
+        details[open] summary [data-testid="stIconMaterial"]::after {
+            content: "▾";  /* expanded */
+        }
+        [data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"]::after {
+            content: "«";  /* collapse sidebar */
+            font-size: 1rem;
+            line-height: 1;
+        }
+
         /* Button styling */
         .stButton > button {
             border-radius: 8px;
