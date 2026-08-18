@@ -2629,6 +2629,34 @@ def main():
     st.markdown(
         """
         <style>
+        /* Streamlit draws its icons as Material Symbols ligatures, so a browser
+           that blocks web fonts -- Brave Shields does by default -- prints the
+           ligature name ("keyboard_arrow_right") instead of the glyph, on top of
+           the label. Substitute plain Unicode arrows, which come from the system
+           font and render everywhere. Scoped to the only two icons this app
+           shows, because data-testid="stIconMaterial" is shared by every
+           Streamlit icon and a blanket rule would clobber unrelated ones. */
+        [data-testid="stExpander"] summary [data-testid="stIconMaterial"],
+        [data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"] {
+            font-size: 0 !important;
+        }
+        /* Literal characters rather than CSS hex escapes: Python reads a
+           backslash-digit sequence in a normal string as an octal escape,
+           which silently produced the wrong glyph here. */
+        [data-testid="stExpander"] summary [data-testid="stIconMaterial"]::after {
+            content: "▸";  /* collapsed */
+            font-size: 1rem;
+            line-height: 1;
+        }
+        details[open] summary [data-testid="stIconMaterial"]::after {
+            content: "▾";  /* expanded */
+        }
+        [data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"]::after {
+            content: "«";  /* collapse sidebar */
+            font-size: 1rem;
+            line-height: 1;
+        }
+
         /* Button styling */
         .stButton > button {
             border-radius: 8px;
