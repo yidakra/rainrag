@@ -997,6 +997,11 @@ class RAGQueryEngine:
                     "end_time": hit_payload.get("end_time"),
                     "start_time_seconds": hit_payload.get("start_time_seconds"),
                     "language": hit_payload.get("language", ""),
+                    # The API projects these straight onto ContextChunk, so a
+                    # payload key missing here silently becomes a null response.
+                    "date": hit_payload.get("date"),
+                    "duration_seconds": hit_payload.get("duration_seconds"),
+                    **{field: hit_payload.get(field) for field in WEB_METADATA_PAYLOAD_FIELDS},
                 }
                 related_chunks.append(chunk_data)
 

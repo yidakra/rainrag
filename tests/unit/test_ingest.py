@@ -3,6 +3,7 @@
 import json
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -1204,3 +1205,40 @@ class TestStaleMetadataCacheWarning:
 
         (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
         assert warn_if_metadata_cache_predates_taxonomy(tmp_path) is False
+
+
+class TestStaleCacheWarningIsLocalModeOnly:
+    """api/hybrid refetch stale entries, so only local mode needs the warning."""
+
+    @staticmethod
+    def _stale_cache(tmp_path: Path) -> Path:
+        cache = tmp_path / "web_metadata"
+        cache.mkdir()
+        (cache / "legacy.json").write_text(json.dumps({"name": "Выпуск"}), encoding="utf-8")
+        return cache
+
+    def _build(self, test_config: Config, tmp_path: Path, source: str, monkeypatch) -> list[str]:
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            "rainrag.ingest.logger.warning", lambda message, *a, **k: warnings.append(str(message))
+        )
+        monkeypatch.setattr(
+            "rainrag.web_metadata_api.WebMetadataAPIClient.from_env",
+            classmethod(lambda cls, **kwargs: MagicMock()),
+        )
+        test_config.web_metadata.enabled = True
+        test_config.web_metadata.source = source
+        test_config.web_metadata.path = str(self._stale_cache(tmp_path))
+        Ingester(test_config)
+        return warnings
+
+    def test_local_mode_warns(self, test_config: Config, tmp_path: Path, monkeypatch):
+        warnings = self._build(test_config, tmp_path, "local", monkeypatch)
+        assert any("predate the library taxonomy" in w for w in warnings)
+
+    @pytest.mark.parametrize("source", ["api", "hybrid"])
+    def test_api_modes_stay_quiet_because_they_refetch(
+        self, test_config: Config, tmp_path: Path, monkeypatch, source
+    ):
+        warnings = self._build(test_config, tmp_path, source, monkeypatch)
+        assert not any("predate the library taxonomy" in w for w in warnings)

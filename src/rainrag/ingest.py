@@ -1664,7 +1664,9 @@ class Ingester:
                 source=source,
                 api_client=api_client,
             )
-            warn_if_metadata_cache_predates_taxonomy(web_metadata_path)
+            # Only local mode is stuck with a stale cache; the API modes refetch.
+            if source == "local":
+                warn_if_metadata_cache_predates_taxonomy(web_metadata_path)
         else:
             self.web_metadata_loader = None
 
