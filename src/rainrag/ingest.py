@@ -20,6 +20,55 @@ from tqdm import tqdm
 from rainrag.config import Config
 
 
+# The library CMS returns tag categories as English slugs. `theme`/`person`/
+# `location` are the taxonomy proper; `lite` is the Дождь Lite section rubric
+# (only 9 distinct values, yet ~73% of all tag volume), so it is dropped —
+# keeping it would swamp the real tags in every list it appears in.
+TAXONOMY_TAG_CATEGORIES = ("theme", "person", "location")
+
+# Every web-metadata key carried on a Qdrant payload. Shared so the indexer,
+# the query engine and the API cannot drift apart as fields are added.
+WEB_METADATA_PAYLOAD_FIELDS = (
+    "web_title",
+    "web_date",
+    "web_date_ts",
+    "web_description",
+    "web_url",
+    "web_program",
+    "web_presenters",
+    "web_tags",
+    "web_tags_theme",
+    "web_tags_person",
+    "web_tags_location",
+    "web_tag_ids",
+    "web_stories",
+)
+
+
+def document_web_fields(web_metadata: dict[str, Any]) -> dict[str, Any]:
+    """Map cleaned web metadata onto ``Document`` keyword arguments.
+
+    Kept in one place because three call sites build Documents (chunked,
+    unchunked and speech-free) and they must stay in step.
+    """
+    fields: dict[str, Any] = {
+        key: web_metadata.get(key)
+        for key in ("web_title", "web_date", "web_date_ts", "web_description", "web_url")
+    }
+    fields["web_program"] = web_metadata.get("web_program")
+    for key in (
+        "web_presenters",
+        "web_tags",
+        "web_tags_theme",
+        "web_tags_person",
+        "web_tags_location",
+        "web_tag_ids",
+        "web_stories",
+    ):
+        fields[key] = web_metadata.get(key) or []
+    return fields
+
+
 class Document(BaseModel):
     """Parsed document model."""
 
@@ -48,6 +97,21 @@ class Document(BaseModel):
     web_date_ts: float | None = None  # Timestamp from web metadata
     web_description: str | None = None  # Description from web metadata
     web_url: str | None = None  # URL from web metadata
+
+    # Library CMS taxonomy. Coverage is uneven by era: program/presenters are
+    # populated throughout, tags only through 2025-09, stories only through 2022.
+    # Treat every one of these as optional at query time.
+    web_program: str | None = None  # Programme / cycle name (CMS `teleshow`)
+    web_presenters: list[str] = Field(default_factory=list)  # Hosts (CMS `presentors`)
+    web_tags: list[str] = Field(default_factory=list)  # All taxonomy tag names
+    web_tags_theme: list[str] = Field(default_factory=list)  # category=theme
+    web_tags_person: list[str] = Field(default_factory=list)  # category=person (incl. orgs)
+    web_tags_location: list[str] = Field(default_factory=list)  # category=location
+    # Stable CMS tag ids, for joining to the master tag list. Not positionally
+    # aligned with web_tags: names are deduped, ids are not, and the CMS files
+    # some tags (e.g. Украина) under both theme and location with distinct ids.
+    web_tag_ids: list[int] = Field(default_factory=list)
+    web_stories: list[str] = Field(default_factory=list)  # Event arcs (CMS `stories`)
 
     # Content hash for incremental processing
     content_hash: str | None = None  # SHA-256 hash of embedded text for change detection
@@ -1018,20 +1082,31 @@ class WebMetadataLoader:
             Dictionary containing web metadata, or None if not found
         """
         if self.source == "local":
+            # No API to refetch from; Ingester warns up front if the cache is stale.
             return self._load_local(video_hash)
 
-        if self.source == "api":
-            # Try local cache first even in API mode to avoid redundant calls
-            cached = self._load_local(video_hash)
-            if cached is not None:
-                return cached
-            return self._fetch_api(video_hash)
-
-        # hybrid: local first, then API
+        # Both API modes prefer the local cache to avoid redundant calls, but a
+        # file cached before the API exposed the taxonomy would silently index
+        # without tags, so refetch those.
         local = self._load_local(video_hash)
-        if local is not None:
+        if local is not None and not self._predates_taxonomy(local):
             return local
-        return self._fetch_api(video_hash)
+
+        fresh = self._fetch_api(video_hash)
+        if fresh is not None:
+            return fresh
+        # The refetch failed; stale metadata still beats none at all.
+        return local
+
+    @staticmethod
+    def _predates_taxonomy(data: dict[str, Any]) -> bool:
+        """True for cache files written before the API exposed the taxonomy.
+
+        The library API always emits a ``tags`` key now — empty for the many
+        untagged articles, but present — so a missing key means the file was
+        cached by an older build and cannot be trusted to be complete.
+        """
+        return "tags" not in data
 
     def extract_clean_metadata(self, raw_metadata: dict[str, Any]) -> dict[str, Any]:
         """
@@ -1083,13 +1158,115 @@ class WebMetadataLoader:
             except (ValueError, AttributeError) as e:
                 logger.debug(f"Could not parse web date {date_active_start}: {e}")
 
+        tags_by_category = self._extract_tags(raw_metadata.get("tags"))
+
         return {
             "web_title": title if title else None,
             "web_date": web_date,
             "web_date_ts": web_date_ts,
             "web_description": description,
             "web_url": url if url else None,
+            "web_program": self._extract_program(raw_metadata.get("teleshow")),
+            "web_presenters": self._extract_people(raw_metadata.get("presentors")),
+            "web_tags": self._dedupe(
+                name for category in TAXONOMY_TAG_CATEGORIES for name in tags_by_category[category]
+            ),
+            "web_tags_theme": tags_by_category["theme"],
+            "web_tags_person": tags_by_category["person"],
+            "web_tags_location": tags_by_category["location"],
+            "web_tag_ids": self._extract_tag_ids(raw_metadata.get("tags")),
+            "web_stories": self._extract_names(raw_metadata.get("stories")),
         }
+
+    @staticmethod
+    def _dedupe(names: Any) -> list[str]:
+        """Collapse duplicates while preserving first-seen order."""
+        return list(dict.fromkeys(names))
+
+    @staticmethod
+    def _extract_program(teleshow: Any) -> str | None:
+        """Pull the programme name out of the CMS `teleshow` object."""
+        if not isinstance(teleshow, dict):
+            return None
+        name = str(teleshow.get("name") or "").strip()
+        return name or None
+
+    @classmethod
+    def _extract_people(cls, people: Any) -> list[str]:
+        """Render CMS person objects as "Firstname Lastname".
+
+        The article endpoint splits names into ``firstname``/``lastname`` while
+        the site embeds a single ``name``; accept either.
+        """
+        if not isinstance(people, list):
+            return []
+        rendered: list[str] = []
+        for person in people:
+            if isinstance(person, str):
+                name = person.strip()
+            elif isinstance(person, dict):
+                name = str(person.get("name") or "").strip() or " ".join(
+                    part
+                    for key in ("firstname", "lastname")
+                    if (part := str(person.get(key) or "").strip())
+                )
+            else:
+                continue
+            if name:
+                rendered.append(name)
+        return cls._dedupe(rendered)
+
+    @classmethod
+    def _extract_names(cls, items: Any) -> list[str]:
+        """Pull `name` out of a list of CMS objects (tolerating bare strings)."""
+        if not isinstance(items, list):
+            return []
+        names: list[str] = []
+        for item in items:
+            if isinstance(item, str):
+                name = item.strip()
+            elif isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+            else:
+                continue
+            if name:
+                names.append(name)
+        return cls._dedupe(names)
+
+    @classmethod
+    def _extract_tags(cls, tags: Any) -> dict[str, list[str]]:
+        """Group tag names by taxonomy category, dropping the `lite` rubric."""
+        grouped: dict[str, list[str]] = {category: [] for category in TAXONOMY_TAG_CATEGORIES}
+        if not isinstance(tags, list):
+            return grouped
+        for tag in tags:
+            if not isinstance(tag, dict):
+                continue
+            category = str(tag.get("category") or "").strip().lower()
+            if category not in grouped:
+                continue
+            name = str(tag.get("name") or "").strip()
+            if name:
+                grouped[category].append(name)
+        return {category: cls._dedupe(names) for category, names in grouped.items()}
+
+    @staticmethod
+    def _extract_tag_ids(tags: Any) -> list[int]:
+        """Collect stable CMS tag ids for taxonomy tags, for joins to the master list."""
+        if not isinstance(tags, list):
+            return []
+        ids: list[int] = []
+        for tag in tags:
+            if not isinstance(tag, dict):
+                continue
+            if str(tag.get("category") or "").strip().lower() not in TAXONOMY_TAG_CATEGORIES:
+                continue
+            try:
+                tag_id = int(tag["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            ids.append(tag_id)
+        return list(dict.fromkeys(ids))
 
     @staticmethod
     def _clean_html_text(text: str | None) -> str:
@@ -1373,6 +1550,43 @@ class FileManifest:
         return h.hexdigest()
 
 
+def warn_if_metadata_cache_predates_taxonomy(metadata_path: Path, sample_size: int = 50) -> bool:
+    """Warn when every sampled cache file was written before `tags` existed.
+
+    The library API gained ``tags``/``stories`` in August 2026, and cached
+    ``{hash}.json`` files written earlier simply have no such key. A local cache
+    also wins over the API in ``api`` mode, so a stale cache yields a silently
+    tag-free reindex — which reads as "the API has no tags" rather than "refresh
+    the cache". Returns True when a warning was emitted.
+    """
+    if not metadata_path.is_dir():
+        return False
+
+    sampled = 0
+    for cache_file in metadata_path.glob("*.json"):
+        if sampled >= sample_size:
+            break
+        try:
+            article = json.loads(cache_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(article, dict):
+            continue
+        sampled += 1
+        if "tags" in article:
+            return False
+
+    if sampled == 0:
+        return False
+
+    logger.warning(
+        f"None of {sampled} sampled web metadata files in {metadata_path} carry a 'tags' key, "
+        + "so they predate the library taxonomy. Tag, story and programme fields will be empty. "
+        + "Refresh the cache with `rainrag sync-metadata` before reindexing."
+    )
+    return True
+
+
 class Ingester:
     """Main ingestion class for crawling and parsing VTT files."""
 
@@ -1450,6 +1664,7 @@ class Ingester:
                 source=source,
                 api_client=api_client,
             )
+            warn_if_metadata_cache_predates_taxonomy(web_metadata_path)
         else:
             self.web_metadata_loader = None
 
@@ -1581,11 +1796,7 @@ class Ingester:
             total_chunks=None,
             start_time_seconds=None,
             end_time_seconds=None,
-            web_title=web_metadata.get("web_title"),
-            web_date=web_metadata.get("web_date"),
-            web_date_ts=web_metadata.get("web_date_ts"),
-            web_description=web_metadata.get("web_description"),
-            web_url=web_metadata.get("web_url"),
+            **document_web_fields(web_metadata),
             is_speech_free=True,
         )
 
@@ -1763,11 +1974,7 @@ class Ingester:
                     total_chunks=total_chunks,
                     start_time_seconds=chunk.start_seconds,
                     end_time_seconds=chunk.end_seconds,
-                    web_title=web_metadata.get("web_title"),
-                    web_date=web_metadata.get("web_date"),
-                    web_date_ts=web_metadata.get("web_date_ts"),
-                    web_description=web_metadata.get("web_description"),
-                    web_url=web_metadata.get("web_url"),
+                    **document_web_fields(web_metadata),
                     content_hash=compute_content_hash(text),
                 )
                 documents.append(doc)
@@ -1832,11 +2039,7 @@ class Ingester:
                 is_chunk=False,
                 start_time_seconds=start_seconds,
                 end_time_seconds=end_seconds,
-                web_title=web_metadata.get("web_title"),
-                web_date=web_metadata.get("web_date"),
-                web_date_ts=web_metadata.get("web_date_ts"),
-                web_description=web_metadata.get("web_description"),
-                web_url=web_metadata.get("web_url"),
+                **document_web_fields(web_metadata),
                 content_hash=compute_content_hash(text),
             )
 
@@ -1879,11 +2082,22 @@ class Ingester:
         if not web_metadata:
             return None
 
+        def joined(key: str) -> str | None:
+            values = web_metadata.get(key) or []
+            return ", ".join(values) if values else None
+
         field_map = {
             "title": ("Title", web_metadata.get("web_title")),
             "date": ("Date", web_metadata.get("web_date")),
             "description": ("Description", web_metadata.get("web_description")),
             "url": ("URL", web_metadata.get("web_url")),
+            # Opt-in via web_metadata.fields. Adding any of these changes the
+            # embedded text, so it invalidates content hashes and forces a full
+            # re-embed of the corpus — not just a payload refresh.
+            "program": ("Program", web_metadata.get("web_program")),
+            "presenters": ("Presenters", joined("web_presenters")),
+            "tags": ("Tags", joined("web_tags")),
+            "stories": ("Stories", joined("web_stories")),
         }
 
         unknowns = [field for field in self.config.web_metadata.fields if field not in field_map]
