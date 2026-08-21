@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Summarise how the video-import feature is actually being used.
+"""Summarise how RainRAG is actually being used.
 
 Reads the ``[usage]`` lines the API writes to the journal and prints counts by
-platform, outcome and day. Intended for the question "is anyone using this, and
-what breaks when they do?" without anyone having to learn journalctl.
+platform, outcome and day, for both questions asked of the archive and videos
+imported into it. Intended for the question "is anyone using this, and what
+breaks when they do?" without anyone having to learn journalctl.
 
     scripts/usage_report.py                # last 7 days
     scripts/usage_report.py --days 30
@@ -117,8 +118,76 @@ def main() -> int:
     args = ap.parse_args()
 
     events = parse(read_journal(args.days, args.unit))
-    imports = [e for e in events if e.get("event") == "video_import"]
+    report_queries([e for e in events if e.get("event") == "query"], args)
+    return report_imports([e for e in events if e.get("event") == "video_import"], args)
 
+
+def report_queries(queries: list[dict[str, str]], args: argparse.Namespace) -> None:
+    """Print the question-answering side: volume, failures, latency, tokens."""
+    print(f"Questions asked, last {args.days} day(s): {len(queries)} attempt(s)")
+    if not queries:
+        print("  none recorded (nobody asked, or the API predates query usage logging)\n")
+        return
+
+    ok = sum(1 for e in queries if e.get("outcome") == "ok")
+    print(
+        f"  succeeded: {ok}    failed: {len(queries) - ok}    "
+        f"success rate: {100 * ok / len(queries):.0f}%"
+    )
+
+    modes = Counter(e.get("mode", "?") for e in queries)
+    print("  " + ", ".join(f"{k}: {v}" for k, v in modes.most_common()))
+
+    bad = Counter(e["outcome"] for e in queries if e.get("outcome") != "ok")
+    if bad:
+        labels = {
+            "http_429": "server busy, too many at once",
+            "http_504": "timed out generating the answer",
+            "http_500": "unexpected fault -- worth chasing",
+            "http_503": "query engine not initialised",
+            "http_404": "session gone",
+        }
+        print("  failures:")
+        for outcome, count in bad.most_common():
+            print(f"    {outcome:<10} {count:>3}  {labels.get(outcome, '')}")
+
+    # Latency is the complaint users actually voice ("it hangs"), so show the
+    # slow tail rather than just an average that hides it.
+    times = sorted(float(e["seconds"]) for e in queries if _is_number(e.get("seconds")))
+    if times:
+        p50 = times[len(times) // 2]
+        p95 = times[min(len(times) - 1, int(len(times) * 0.95))]
+        print(f"  time: median {p50:.1f}s, p95 {p95:.1f}s, slowest {times[-1]:.1f}s")
+
+    docs = [int(e["docs"]) for e in queries if e.get("docs", "").isdigit()]
+    if docs:
+        empty = sum(1 for d in docs if d == 0)
+        note = f", {empty} retrieved nothing" if empty else ""
+        print(f"  retrieval: {sum(docs) / len(docs):.1f} chunks average{note}")
+
+    tokens_in = sum(int(e["tokens_in"]) for e in queries if e.get("tokens_in", "").isdigit())
+    tokens_out = sum(int(e["tokens_out"]) for e in queries if e.get("tokens_out", "").isdigit())
+    if tokens_in or tokens_out:
+        measured = sum(1 for e in queries if e.get("tokens_in", "").isdigit())
+        print(
+            f"  tokens: {tokens_in:,} in, {tokens_out:,} out "
+            f"(measured on {measured}/{len(queries)} attempts)"
+        )
+    print()
+
+
+def _is_number(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
+def report_imports(imports: list[dict[str, str]], args: argparse.Namespace) -> int:
+    """Print the video-import side."""
     print(f"Video imports, last {args.days} day(s): {len(imports)} attempt(s)")
     if not imports:
         print("\nNo attempts recorded. Either nobody used it, or the API predates usage logging.")
