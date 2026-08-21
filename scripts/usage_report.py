@@ -138,7 +138,10 @@ def report_queries(queries: list[dict[str, str]], args: argparse.Namespace) -> N
     modes = Counter(e.get("mode", "?") for e in queries)
     print("  " + ", ".join(f"{k}: {v}" for k, v in modes.most_common()))
 
-    bad = Counter(e["outcome"] for e in queries if e.get("outcome") != "ok")
+    # .get throughout: parse() accepts any key=value sequence, so a truncated or
+    # rotated journal line can yield an event with no outcome at all. The report
+    # must survive that rather than crash on it.
+    bad = Counter(e.get("outcome", "?") for e in queries if e.get("outcome") != "ok")
     if bad:
         labels = {
             "http_429": "server busy, too many at once",

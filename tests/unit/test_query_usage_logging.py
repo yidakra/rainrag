@@ -114,6 +114,20 @@ class TestAccumulateTokenUsage:
         )
         assert sink == {}
 
+    def test_float_counts_are_rounded_not_dropped(self):
+        sink: dict[str, int] = {}
+        accumulate_token_usage(
+            sink, SimpleNamespace(usage=SimpleNamespace(prompt_tokens=12.0, completion_tokens=3.6))
+        )
+        assert sink == {"tokens_in": 12, "tokens_out": 4, "llm_calls_measured": 1}
+
+    def test_string_counts_are_ignored(self):
+        sink: dict[str, int] = {}
+        accumulate_token_usage(
+            sink, SimpleNamespace(usage=SimpleNamespace(prompt_tokens="12", completion_tokens="3"))
+        )
+        assert sink == {}
+
 
 class TestRecordQueryUsage:
     def test_records_docs_and_tokens(self):
@@ -209,7 +223,10 @@ class TestDeliberateStatusCodesSurvive:
         monkeypatch.setattr("rainrag.api.QUERY_TIMEOUT_SECONDS", 0.1)
 
         def slow_query(**kwargs):
-            time.sleep(3)
+            # Comfortably past the 0.1s timeout without adding seconds to the
+            # suite: the thread is not interruptible, so this keeps running in
+            # the executor after the response is returned.
+            time.sleep(1)
             return {}
 
         with patch("rainrag.api.query_engine") as mock_engine:

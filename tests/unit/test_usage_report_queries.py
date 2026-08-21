@@ -56,6 +56,12 @@ class TestCounts:
         out = _report([_query(), _query()], capsys)
         assert "failures:" not in out
 
+    def test_event_missing_an_outcome_does_not_crash_the_report(self, capsys):
+        """A truncated or rotated journal line can lack fields entirely."""
+        out = _report([{"event": "query"}, _query()], capsys)
+        assert "succeeded: 1" in out
+        assert "failed: 1" in out
+
 
 class TestLatency:
     def test_reports_median_and_tail(self, capsys):

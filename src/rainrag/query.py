@@ -42,10 +42,15 @@ _TOKEN_USAGE_ATTRS: tuple[tuple[str, str, str], ...] = (
 
 
 def _coerce_token_count(value: Any) -> int:
-    """Return a non-negative int, or 0 for anything unusable (None, Mock, str)."""
-    if isinstance(value, bool) or not isinstance(value, int):
+    """Return a non-negative int, or 0 for anything unusable (None, Mock, str).
+
+    Floats are rounded rather than rejected: the counts are integers everywhere
+    we have seen, but a provider returning 12.0 should be counted, not dropped.
+    bool is excluded explicitly -- it is an int subclass, and True is not 1 token.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
-    return value if value > 0 else 0
+    return round(value) if value > 0 else 0
 
 
 def accumulate_token_usage(sink: dict[str, int] | None, response: Any) -> None:
