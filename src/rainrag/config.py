@@ -345,6 +345,15 @@ class VideoUploadConfig(BaseModel):
         default=21600, description="Session lifetime before automatic cleanup (seconds)"
     )
     max_upload_mb: int = Field(default=512, description="Maximum accepted upload size in megabytes")
+    max_video_height: int = Field(
+        default=720,
+        description=(
+            "Cap imported video height. Nothing downstream needs more -- audio is "
+            "transcribed and video plays in a browser panel -- and best-quality "
+            "downloads cost roughly 7x the bandwidth, pushing long videos over "
+            "max_upload_mb. Set 0 to disable the cap."
+        ),
+    )
     yt_dlp_cookies_path: str = Field(
         default="",
         description=(
