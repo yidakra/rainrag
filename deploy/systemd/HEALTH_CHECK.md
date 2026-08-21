@@ -31,8 +31,8 @@ How the signal reaches you, mechanically:
 ## Install
 
 ```bash
-sudo cp /home/ubuntu/rainrag/deploy/rainrag-health.service /etc/systemd/system/
-sudo cp /home/ubuntu/rainrag/deploy/rainrag-health.timer   /etc/systemd/system/
+sudo cp /home/ubuntu/rainrag/deploy/systemd/rainrag-health.service /etc/systemd/system/
+sudo cp /home/ubuntu/rainrag/deploy/systemd/rainrag-health.timer   /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now rainrag-health.timer
 ```

@@ -1,6 +1,6 @@
 [Unit]
 Description=RainRAG health check (quiet unless something is broken)
-Documentation=file:///home/ubuntu/rainrag/deploy/README.md
+Documentation=file:///home/ubuntu/rainrag/deploy/systemd/HEALTH_CHECK.md
 After=network.target
 
 [Service]
