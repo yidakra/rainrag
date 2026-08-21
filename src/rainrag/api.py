@@ -1527,7 +1527,7 @@ def _telegram_ref_if_enabled(url: str, cfg: Any) -> Any:
 
 
 async def _create_session_from_telegram(
-    ref: Any, manager: Any, max_bytes: int, tmp_root: Path
+    ref: Any, manager: Any, max_bytes: int, tmp_root: Path, usage: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Download one Telegram video over MTProto and hand it to the session manager."""
     from rainrag.telegram_media import (  # noqa: PLC0415
@@ -1572,6 +1572,9 @@ async def _create_session_from_telegram(
             raise HTTPException(status_code=422, detail="Video download failed") from exc
 
         size = downloaded.stat().st_size
+        if usage is not None:
+            # Set before the size checks so an over-limit download is still counted.
+            usage["bytes"] = size
         if size == 0:
             raise HTTPException(status_code=400, detail="Downloaded file is empty")
         if size > max_bytes:
@@ -1639,7 +1642,7 @@ async def create_video_session_from_url(
         tg_ref = _telegram_ref_if_enabled(url, manager.cfg)
         if tg_ref is not None:
             usage["via"] = "mtproto"
-            return await _create_session_from_telegram(tg_ref, manager, max_bytes, tmp_root)
+            return await _create_session_from_telegram(tg_ref, manager, max_bytes, tmp_root, usage)
         usage["via"] = "yt-dlp"
 
         with tempfile.TemporaryDirectory(dir=str(tmp_root), prefix="ytdlp_") as work_dir:
@@ -1672,7 +1675,11 @@ async def create_video_session_from_url(
             except HTTPException:
                 raise
             except Exception as exc:
-                logger.exception("yt-dlp download failed for url={}", url)
+                # The URL is user-supplied and may carry a query-string secret;
+                # the uvicorn filter does not cover this logger.
+                logger.exception(
+                    "yt-dlp download failed for url={}", _redact_query_credentials(url)
+                )
                 raise HTTPException(status_code=422, detail="Video download failed") from exc
 
             if not info:
@@ -1682,7 +1689,7 @@ async def create_video_session_from_url(
                 # embed.  Without this guard the request falls through to the
                 # missing-output branch and reports a 500 for what is really a
                 # perfectly ordinary bad link.
-                logger.info("No downloadable media found at url={}", url)
+                logger.info("No downloadable media found at url={}", _redact_query_credentials(url))
                 raise HTTPException(
                     status_code=422, detail="No downloadable video found at that link"
                 )
