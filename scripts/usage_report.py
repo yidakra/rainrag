@@ -137,13 +137,28 @@ def main() -> int:
     if vias:
         print("Backend: " + ", ".join(f"{k} {v}" for k, v in vias.most_common()))
 
+    # Why things failed matters more than how often: "blocked" and "geo" are the
+    # platform refusing us, not users pasting bad links, and they call for
+    # different action.
+    reasons = Counter(e["reason"] for e in imports if e.get("reason"))
+    if reasons:
+        labels = {
+            "blocked": "platform throttled or refused us (retryable)",
+            "geo": "region-locked (will not work from this server)",
+            "no_media": "nothing downloadable at the link",
+            "failed": "download failed for another reason",
+        }
+        print("\nWhy failures happened:")
+        for reason, count in reasons.most_common():
+            print(f"  {reason:<10} {count:>3}  {labels.get(reason, '')}")
+
     if args.failures:
         failed = [e for e in imports if e.get("outcome") != "ok"]
         print(f"\nFailed attempts ({len(failed)}):")
         for e in failed:
             print(
                 f"  {e.get('date', '?')}  {e.get('source', '?'):<10} {e.get('outcome', '?'):<10} "
-                f"{e.get('seconds', '?')}s  via={e.get('via', '-')}"
+                f"{e.get('reason', '-'):<9} {e.get('seconds', '?')}s  via={e.get('via', '-')}"
             )
 
     return 0
