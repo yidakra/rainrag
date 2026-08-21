@@ -31,8 +31,25 @@ USAGE_RE = re.compile(r"\[usage\] (?P<fields>event=\S+(?: \S+=\S*)*)")
 DATE_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})")
 
 
-def read_journal(days: int, unit: str) -> list[str]:
-    """Return journal lines for the unit over the last N days."""
+class JournalError(RuntimeError):
+    """The journal could not be read."""
+
+
+class JournalUnavailableError(JournalError):
+    """There is no journalctl on this host at all (e.g. a laptop, a container).
+
+    Separate from JournalError so callers can tell "no systemd here" (nothing is
+    wrong, there is just nothing to read) from "systemd is here and refused us"
+    (something is wrong).
+    """
+
+
+def journal_lines(since: str, unit: str, timeout: float = 120) -> list[str]:
+    """Return journal lines for the unit since a journalctl time expression.
+
+    Raises JournalError instead of exiting, so callers that have other work to do
+    -- scripts/health_check.py runs four more checks -- can carry on.
+    """
     try:
         proc = subprocess.run(
             [
@@ -40,23 +57,31 @@ def read_journal(days: int, unit: str) -> list[str]:
                 "-u",
                 unit,
                 "--since",
-                f"{days} days ago",
+                since,
                 "--no-pager",
                 "-o",
                 "short-iso",
             ],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=timeout,
             check=False,
         )
-    except FileNotFoundError:
-        sys.exit("journalctl not found; this script expects a systemd host.")
-    except subprocess.TimeoutExpired:
-        sys.exit("journalctl timed out.")
+    except FileNotFoundError as exc:
+        raise JournalUnavailableError("journalctl not found; this expects a systemd host.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise JournalError("journalctl timed out.") from exc
     if proc.returncode != 0 and not proc.stdout:
-        sys.exit(f"journalctl failed: {proc.stderr.strip()[:200]}")
+        raise JournalError(f"journalctl failed: {proc.stderr.strip()[:200]}")
     return proc.stdout.splitlines()
+
+
+def read_journal(days: int, unit: str) -> list[str]:
+    """Return journal lines for the unit over the last N days, or exit on failure."""
+    try:
+        return journal_lines(f"{days} days ago", unit)
+    except JournalError as exc:
+        sys.exit(str(exc))
 
 
 def parse(lines: list[str]) -> list[dict[str, str]]:
