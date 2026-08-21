@@ -1495,6 +1495,47 @@ async def create_video_session(
     return session.public_dict()
 
 
+# Failures a user can act on, separated from ones they cannot. A journalist told
+# "no downloadable video found" when YouTube actually throttled us will conclude
+# the tool is broken and stop trying -- which is what happened on 2026-08-19,
+# when the first real YouTube import got HTTP 403 from the media host and the
+# user was shown a message about their link being bad.
+# Throttling and bot checks: the platform refused us, and a retry may well work.
+_BLOCKED_MARKERS = (
+    "http error 403",
+    "sign in to confirm",
+    "not a bot",
+    "http error 429",
+    "too many requests",
+    "rate limit",
+)
+# Region locks: also a refusal, but retrying changes nothing from this server,
+# so telling the user "try again later" would send them in circles.
+_GEO_MARKERS = (
+    "available from your location",
+    "blocked it in your country",
+    "not available in your country",
+    "geo restricted",
+    "geo-restricted",
+)
+
+
+def _download_failure_kind(exc: BaseException) -> str:
+    """Classify a downloader failure as 'geo', 'blocked' or 'failed'.
+
+    Separating these is the difference between advice a journalist can act on
+    and advice that wastes their time. It also makes a rise in platform
+    throttling visible in the usage report rather than looking like users
+    pasting bad links.
+    """
+    text = str(exc).lower()
+    if any(m in text for m in _GEO_MARKERS):
+        return "geo"
+    if any(m in text for m in _BLOCKED_MARKERS):
+        return "blocked"
+    return "failed"
+
+
 def _yt_dlp_cookiefile(cfg: Any) -> str | None:
     """Return a usable yt-dlp cookie file path, or None.
 
@@ -1680,6 +1721,20 @@ async def create_video_session_from_url(
                 logger.exception(
                     "yt-dlp download failed for url={}", _redact_query_credentials(url)
                 )
+                kind = _download_failure_kind(exc)
+                usage["reason"] = kind
+                if kind == "blocked":
+                    # 503, not 422: nothing is wrong with the link, and the
+                    # request is worth repeating later.
+                    raise HTTPException(
+                        status_code=503,
+                        detail="The video platform refused the download; try again later",
+                    ) from exc
+                if kind == "geo":
+                    raise HTTPException(
+                        status_code=451,
+                        detail="This video is not available in the server's region",
+                    ) from exc
                 raise HTTPException(status_code=422, detail="Video download failed") from exc
 
             if not info:
@@ -1690,6 +1745,7 @@ async def create_video_session_from_url(
                 # missing-output branch and reports a 500 for what is really a
                 # perfectly ordinary bad link.
                 logger.info("No downloadable media found at url={}", _redact_query_credentials(url))
+                usage["reason"] = "no_media"
                 raise HTTPException(
                     status_code=422, detail="No downloadable video found at that link"
                 )

@@ -275,6 +275,11 @@ TRANSLATIONS = {
         "video_url_button": "Загрузить по ссылке",
         "video_url_downloading": "Скачиваем видео…",
         "video_url_empty": "Введите ссылку на видео",
+        "video_error_bad_link": "Проверьте ссылку — она не похожа на адрес видео.",
+        "video_error_no_media": "По этой ссылке не нашлось видео. Возможно, в посте только текст или фото, либо запись удалена.",
+        "video_error_too_large": "Видео слишком большое. Максимум — 512 МБ.",
+        "video_error_blocked": "Платформа временно не отдаёт это видео (ограничение с их стороны). Попробуйте позже или пришлите другую ссылку.",
+        "video_error_geo": "Это видео недоступно в регионе сервера — скачать его не получится.",
     },
     "en": {
         "title": "RainRAG - Video Transcript Search",
@@ -407,6 +412,11 @@ TRANSLATIONS = {
         "video_url_button": "Download from link",
         "video_url_downloading": "Downloading video…",
         "video_url_empty": "Please enter a video URL",
+        "video_error_bad_link": "That does not look like a video link — please check it.",
+        "video_error_no_media": "No video was found at that link. The post may contain only text or a photo, or it may have been deleted.",
+        "video_error_too_large": "That video is too large. The limit is 512 MB.",
+        "video_error_blocked": "The platform is temporarily refusing this download (a limit on their side). Try again later, or send a different link.",
+        "video_error_geo": "This video is not available in the server region, so it cannot be downloaded.",
     },
 }
 
@@ -2160,6 +2170,34 @@ def _reset_video_session(delete_remote: bool = True) -> None:
     st.session_state.video_uploader_seq = int(st.session_state.get("video_uploader_seq", 0)) + 1
 
 
+def import_error_message(exc: httpx.HTTPStatusError, lang: str) -> str:
+    """Turn an import failure into something a journalist can act on.
+
+    Previously this surfaced ``response.text`` directly, so the user was shown
+    the raw JSON body in English -- "Произошла ошибка: {"detail":"No
+    downloadable video found at that link"}" -- which reads as a broken tool
+    rather than an explanation. Map on status instead, and fall back to the
+    parsed detail rather than the envelope.
+    """
+    status = exc.response.status_code
+    key = {
+        400: "video_error_bad_link",
+        413: "video_error_too_large",
+        422: "video_error_no_media",
+        451: "video_error_geo",
+        503: "video_error_blocked",
+    }.get(status)
+    if key:
+        return get_text(key, lang)
+    try:
+        detail = exc.response.json().get("detail")
+    except Exception:  # noqa: BLE001 - any malformed body falls back below
+        detail = None
+    if isinstance(detail, str) and detail:
+        return f"{get_text('error_general', lang)}: {detail}"
+    return f"{get_text('error_general', lang)}: HTTP {status}"
+
+
 def render_video_mode(lang: str):
     """Upload a single video, transcribe it, and chat scoped to that video."""
     session_id = st.session_state.get("video_session_id")
@@ -2194,10 +2232,7 @@ def render_video_mode(lang: str):
                     st.session_state.video_messages = []
                     st.rerun()
                 except httpx.HTTPStatusError as e:
-                    detail = e.response.text
-                    st.session_state.video_upload_error = (
-                        f"{get_text('error_general', lang)}: {detail}"
-                    )
+                    st.session_state.video_upload_error = import_error_message(e, lang)
                     st.rerun()
                 except Exception as e:  # noqa: BLE001
                     st.session_state.video_upload_error = f"{get_text('error_general', lang)}: {e}"
