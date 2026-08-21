@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import hashlib
 import hmac
 import html
 import json
@@ -1198,6 +1199,24 @@ def render_html5_video_player(
     st.markdown(html_block, unsafe_allow_html=True)
 
 
+# Media URLs put their credential in the query string, because <video> and HLS
+# segment requests cannot send an Authorization header. That URL then lives in
+# page HTML and browser history, so embedding the standing secret means a shared
+# bookmark grants archive access indefinitely. Mint a short-lived signed token
+# instead, using the same shared secret the API verifies with.
+MEDIA_TOKEN_TTL_SECONDS = int(os.getenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", str(12 * 3600)))
+
+
+def issue_media_token() -> str:
+    """Mint a time-limited token for media URLs, or "" when auth is disabled."""
+    if not AUTH_TOKEN:
+        return ""
+    expires = int(time.time()) + MEDIA_TOKEN_TTL_SECONDS
+    payload = str(expires)
+    signature = hmac.new(AUTH_TOKEN.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"v1.{payload}.{signature}"
+
+
 def append_auth_query(url: str) -> str:
     """Append auth token query param for browser media requests when configured."""
     if not AUTH_TOKEN:
@@ -1205,7 +1224,7 @@ def append_auth_query(url: str) -> str:
 
     parts = urlsplit(url)
     query_params = dict(parse_qsl(parts.query, keep_blank_values=True))
-    query_params.setdefault("auth", AUTH_TOKEN)
+    query_params.setdefault("auth", issue_media_token())
     return urlunsplit(
         (parts.scheme, parts.netloc, parts.path, urlencode(query_params), parts.fragment)
     )
