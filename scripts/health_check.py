@@ -32,7 +32,9 @@ Run by hand with --verbose to see every check, including the passing ones.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
+import stat
 import sys
 import time
 from collections import Counter
@@ -58,7 +60,7 @@ from scripts.usage_report import (  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-DEFAULT_API_URL = "http://localhost:8001/openapi.json"
+DEFAULT_API_URL = "http://localhost:8001/health"
 DEFAULT_STREAMLIT_PORTS = (7860, 7861)
 DEFAULT_UNIT = "rainrag-api"
 DEFAULT_DISK_PATHS = ("/tmp/rainrag_hls_cache", str(REPO_ROOT / "data"))
@@ -193,6 +195,14 @@ def evaluate_session_file(path: str, *, mode: int | None, telegram_enabled: bool
             )
         return CheckResult("session", SKIP, f"{path} absent, telegram_enabled is false")
 
+    if not stat.S_ISREG(mode):
+        return CheckResult(
+            "session",
+            FAIL,
+            f"{path} is not a regular file; Telethon cannot use it as a session "
+            "database, so t.me imports will fail",
+        )
+
     perms = mode & 0o777
     if perms & 0o077:
         return CheckResult(
@@ -232,19 +242,48 @@ def render(results: list[CheckResult], *, verbose: bool) -> str:
 # --------------------------------------------------------------------------- #
 
 
+def evaluate_readiness(name: str, url: str, status: int, body: bytes) -> CheckResult:
+    """Judge an HTTP response, including a readiness status if the body carries one.
+
+    A 200 is not enough for the API: /health answers 200 with
+    status="degraded" when Qdrant or the embedding model is unavailable, so the
+    service is reachable and useless at the same time. Anything that reports a
+    status other than "healthy" is a failure. Endpoints with no such field (the
+    Streamlit ports) are judged on the status code alone.
+    """
+    if status != 200:
+        return CheckResult(name, FAIL, f"{url} returned HTTP {status}")
+    try:
+        payload = json.loads(body or b"{}")
+    except (ValueError, TypeError):
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("status"), str):
+        reported = payload["status"]
+        if reported != "healthy":
+            missing = [
+                key for key in ("qdrant_connected", "model_loaded") if payload.get(key) is False
+            ]
+            detail = f"{url} -> 200 but reports {reported!r}"
+            if missing:
+                detail += f" ({', '.join(missing)} false)"
+            return CheckResult(name, FAIL, detail)
+        return CheckResult(name, OK, f"{url} -> 200, {reported}")
+    return CheckResult(name, OK, f"{url} -> 200")
+
+
 def probe_http(name: str, url: str, timeout: float) -> CheckResult:
-    """GET a URL once and insist on 200."""
+    """GET a URL once and judge the response."""
     try:
         with urlopen(url, timeout=timeout) as response:  # noqa: S310 - fixed localhost URLs
             status = response.status
+            body = response.read(8192)
     except HTTPError as exc:
+        # /health answers 503 when the query engine never initialised.
         return CheckResult(name, FAIL, f"{url} returned HTTP {exc.code}")
     except (URLError, TimeoutError, OSError) as exc:
         reason = getattr(exc, "reason", exc)
         return CheckResult(name, FAIL, f"{url} unreachable ({reason})")
-    if status != 200:
-        return CheckResult(name, FAIL, f"{url} returned HTTP {status}")
-    return CheckResult(name, OK, f"{url} -> 200")
+    return evaluate_readiness(name, url, status, body)
 
 
 def check_http(
@@ -367,7 +406,13 @@ def telegram_enabled(config_path: str) -> bool:
             data = yaml.safe_load(handle) or {}
     except (OSError, yaml.YAMLError):
         return False
-    section = data.get("video_upload") or {}
+    # A hand-edited config can parse to a scalar or a list; .get() on that raises
+    # and would abort every other check with a traceback.
+    if not isinstance(data, dict):
+        return False
+    section = data.get("video_upload")
+    if not isinstance(section, dict):
+        return False
     return bool(section.get("telegram_enabled", False))
 
 

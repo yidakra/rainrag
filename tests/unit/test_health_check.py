@@ -153,22 +153,29 @@ def test_parsed_journal_lines_feed_the_decision() -> None:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("mode", [0o600, 0o400, 0o200])
-def test_tight_session_permissions_are_fine(mode: int) -> None:
-    result = hc.evaluate_session_file("/x/telegram.session", mode=mode, telegram_enabled=True)
+@pytest.mark.parametrize("perms", [0o600, 0o400, 0o200])
+def test_tight_session_permissions_are_fine(perms: int) -> None:
+    # st_mode, not bare permission bits: that is what Path.stat() hands back.
+    result = hc.evaluate_session_file(
+        "/x/telegram.session", mode=stat.S_IFREG | perms, telegram_enabled=True
+    )
     assert result.status == hc.OK
 
 
-@pytest.mark.parametrize("mode", [0o644, 0o640, 0o604, 0o660, 0o666, 0o700 | 0o001])
-def test_loose_session_permissions_alarm(mode: int) -> None:
-    result = hc.evaluate_session_file("/x/telegram.session", mode=mode, telegram_enabled=True)
+@pytest.mark.parametrize("perms", [0o644, 0o640, 0o604, 0o660, 0o666, 0o700 | 0o001])
+def test_loose_session_permissions_alarm(perms: int) -> None:
+    result = hc.evaluate_session_file(
+        "/x/telegram.session", mode=stat.S_IFREG | perms, telegram_enabled=True
+    )
     assert result.failed
     assert "0600" in result.detail
 
 
 def test_loose_permissions_alarm_even_when_telegram_is_disabled() -> None:
     """The file is a credential whether or not the feature is switched on."""
-    result = hc.evaluate_session_file("/x/telegram.session", mode=0o644, telegram_enabled=False)
+    result = hc.evaluate_session_file(
+        "/x/telegram.session", mode=stat.S_IFREG | 0o644, telegram_enabled=False
+    )
     assert result.failed
 
 
@@ -419,3 +426,70 @@ def test_verbose_header_counts_skips_separately() -> None:
         hc.CheckResult("imports", hc.SKIP, "no journal"),
     ]
     assert "all 1 check(s) fine, 1 skipped" in hc.render(results, verbose=True)
+
+
+class TestReadinessNotJustStatusCode:
+    """A 200 is not enough: /health answers 200 while reporting "degraded"."""
+
+    def test_healthy_body_passes(self):
+        r = hc.evaluate_readiness("api", "/health", 200, b'{"status":"healthy"}')
+        assert not r.failed
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"status":"degraded","qdrant_connected":false,"model_loaded":true}',
+            b'{"status":"degraded","qdrant_connected":true,"model_loaded":false}',
+            b'{"status":"starting"}',
+        ],
+    )
+    def test_non_healthy_status_fails(self, body: bytes):
+        assert hc.evaluate_readiness("api", "/health", 200, body).failed
+
+    def test_names_the_unavailable_component(self):
+        r = hc.evaluate_readiness(
+            "api", "/health", 200, b'{"status":"degraded","qdrant_connected":false}'
+        )
+        assert "qdrant_connected" in r.detail
+
+    @pytest.mark.parametrize("body", [b"", b"<html>not json", b"[]", b'{"no_status":1}'])
+    def test_bodies_without_a_status_field_are_judged_on_the_code(self, body: bytes):
+        """Streamlit serves HTML; it must not be required to report readiness."""
+        assert not hc.evaluate_readiness("streamlit", "/", 200, body).failed
+
+    def test_non_200_still_fails(self):
+        assert hc.evaluate_readiness("api", "/health", 503, b"").failed
+
+
+class TestSessionMustBeARegularFile:
+    def test_directory_at_the_session_path_fails(self):
+        r = hc.evaluate_session_file("/x/s", mode=stat.S_IFDIR | 0o700, telegram_enabled=True)
+        assert r.failed and "regular file" in r.detail
+
+    def test_fifo_at_the_session_path_fails(self):
+        r = hc.evaluate_session_file("/x/s", mode=stat.S_IFIFO | 0o600, telegram_enabled=True)
+        assert r.failed
+
+    def test_regular_file_at_0600_still_passes(self):
+        r = hc.evaluate_session_file("/x/s", mode=stat.S_IFREG | 0o600, telegram_enabled=True)
+        assert not r.failed
+
+
+class TestConfigThatIsNotAMapping:
+    """A hand-edited config must not abort every other check with a traceback."""
+
+    @pytest.mark.parametrize("text", ["just a string\n", "- a\n- b\n", "42\n", ""])
+    def test_non_mapping_document_is_false_not_a_crash(self, tmp_path, text: str):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(text)
+        assert hc.telegram_enabled(str(cfg)) is False
+
+    def test_non_mapping_video_upload_section(self, tmp_path):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("video_upload: not-a-mapping\n")
+        assert hc.telegram_enabled(str(cfg)) is False
+
+    def test_a_real_mapping_still_reads_true(self, tmp_path):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("video_upload:\n  telegram_enabled: true\n")
+        assert hc.telegram_enabled(str(cfg)) is True

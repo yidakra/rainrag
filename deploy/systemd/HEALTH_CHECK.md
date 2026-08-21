@@ -68,7 +68,7 @@ same either way.
 
 | Check | Fails when | Protects against |
 | --- | --- | --- |
-| `api` | `http://localhost:8001/openapi.json` is not 200 within `--timeout` (5s) | the FastAPI process being down — every search in the UI errors |
+| `api` | `http://localhost:8001/health` is not 200 within `--timeout` (5s) | the FastAPI process being down — every search in the UI errors |
 | `streamlit` | either port 7860 or 7861 is not 200 | the two UIs are separate units, so one can die while the other lives |
 | `imports` | over `--window-hours` (24), with at least `--min-attempts` (3) attempts, the failed share exceeds `--failure-threshold` (50%) | silent breakage of video import: yt-dlp getting blocked, Telegram credentials expiring, a platform changing its player |
 | `disk` | the filesystem behind `/tmp/rainrag_hls_cache` or `./data` is over `--disk-threshold` (90%) used | HLS segments and downloaded video accumulate; a full disk breaks imports in a confusing way |
