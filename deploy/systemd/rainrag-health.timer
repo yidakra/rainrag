@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the RainRAG health check every 30 minutes
+
+[Timer]
+OnCalendar=*:0/30
+# Spread the run over a few minutes so the probe never lands on the same second
+# as the hourly incremental-update job, and so restarts do not sync it to :00.
+RandomizedDelaySec=3m
+# No Persistent=: a missed health check has nothing to catch up on. The next run
+# reports the state of the world now, which is all anyone wants to know.
+Unit=rainrag-health.service
+
+[Install]
+WantedBy=timers.target
