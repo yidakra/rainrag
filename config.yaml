@@ -212,6 +212,13 @@ video_upload:
   # The Streamlit client buffers the whole file in memory before sending, so this
   # cap also bounds UI memory per concurrent upload. Raise with that in mind.
   max_upload_mb: 512                  # reject uploads larger than this
+  # Cap imported video height. Nothing downstream needs more: the audio is
+  # transcribed and the video plays in a browser panel. Best-quality downloads
+  # cost roughly 7x the bandwidth -- a ten-minute 4K clip is ~709 MB, over
+  # max_upload_mb, so it was rejected as too large when a 97 MB copy would do.
+  # Sites that report no height (Coub) fall back to uncapped selection.
+  # Set 0 to disable.
+  max_video_height: 720
   # Optional cookies.txt (Netscape format) passed to yt-dlp. Needed for sites
   # that no longer serve video anonymously -- X (Twitter) restricted guest
   # access, and YouTube occasionally demands a signed-in session. Export from a

@@ -1536,6 +1536,39 @@ def _download_failure_kind(exc: BaseException) -> str:
     return "failed"
 
 
+def yt_dlp_format_selector(max_height: int | None) -> str:
+    """Build a yt-dlp format string, preferring a capped resolution.
+
+    Nothing downstream benefits from 4K: the audio is transcribed and the video
+    is played in a browser panel. Asking for best quality cost about seven times
+    the bandwidth and pushed long videos over the upload limit -- a ten-minute
+    4K clip weighs ~709 MB against a 512 MB cap, so it was rejected as too
+    large when a 97 MB copy would have been fine.
+
+    The capped preferences come first, then the uncapped ones as a fallback:
+    some sites report no height at all (Coub publishes a video-only mp4 with no
+    dimensions), and a height filter would otherwise match nothing and fail the
+    download outright.
+    """
+    tiers: list[str] = []
+    if max_height:
+        tiers += [
+            f"bestvideo[ext=mp4][height<={max_height}]+bestaudio[ext=m4a]",
+            f"best[ext=mp4][height<={max_height}]",
+            f"bestvideo*[height<={max_height}]+bestaudio",
+            f"best[height<={max_height}]",
+        ]
+    tiers += [
+        "bestvideo[ext=mp4]+bestaudio[ext=m4a]",
+        "best[ext=mp4]",
+        "bestvideo*+bestaudio",
+        "best",
+        "bestvideo*",
+        "bestaudio",
+    ]
+    return "/".join(tiers)
+
+
 def _yt_dlp_cookiefile(cfg: Any) -> str | None:
     """Return a usable yt-dlp cookie file path, or None.
 
@@ -1693,10 +1726,7 @@ async def create_video_session_from_url(
                 # Prefer a merged mp4, then any split video+audio pair, then whatever
                 # exists. Sites like Coub publish only video-only mp4 plus mp3 audio,
                 # which the old chain could not satisfy at all.
-                "format": (
-                    "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/"
-                    "bestvideo*+bestaudio/best/bestvideo*/bestaudio"
-                ),
+                "format": yt_dlp_format_selector(getattr(manager.cfg, "max_video_height", 720)),
                 "merge_output_format": "mp4",
                 "noplaylist": True,
                 "quiet": True,
