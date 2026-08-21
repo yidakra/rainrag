@@ -5,19 +5,142 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
 import string
 import subprocess
 import tempfile
 import threading
-from contextlib import asynccontextmanager, suppress
+import time
+from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
 
 from loguru import logger
 from prometheus_client import Counter, Gauge
+
+
+# --- Credential hygiene and usage accounting ---------------------------------
+# Media URLs carry the access token as a query parameter, because <video> and
+# HLS requests cannot send an Authorization header. Uvicorn's access log records
+# the full request line, so without this the live token is written to the
+# journal on every segment fetch -- 227 copies were found there before this
+# existed, indefinitely readable by anyone who can read logs.
+_SENSITIVE_QUERY_RE = re.compile(r"((?:auth|token|api_key|access_token)=)[^&\s\"']+", re.IGNORECASE)
+
+
+def _redact_query_credentials(text: str) -> str:
+    """Replace credential query-parameter values with a placeholder."""
+    return _SENSITIVE_QUERY_RE.sub(r"\1<redacted>", text)
+
+
+class _RedactCredentialsFilter(logging.Filter):
+    """Scrub credential query parameters out of log records.
+
+    Attached to uvicorn's access logger, whose message is built from args
+    rather than a preformatted string, so both are covered.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                _redact_query_credentials(a) if isinstance(a, str) else a for a in record.args
+            )
+        if isinstance(record.msg, str):
+            record.msg = _redact_query_credentials(record.msg)
+        return True
+
+
+def install_log_redaction() -> None:
+    """Attach the redaction filter to uvicorn's loggers, at most once."""
+    for name in ("uvicorn.access", "uvicorn.error", "uvicorn"):
+        log = logging.getLogger(name)
+        if not any(isinstance(f, _RedactCredentialsFilter) for f in log.filters):
+            log.addFilter(_RedactCredentialsFilter())
+
+
+install_log_redaction()
+
+
+# Hosts we can name in usage reports. Anything else is counted as "other", so a
+# new site shows up in the numbers without needing a code change.
+_SOURCE_HOSTS = (
+    ("t.me", "telegram"),
+    ("telegram.me", "telegram"),
+    ("telegram.dog", "telegram"),
+    ("youtube.com", "youtube"),
+    ("youtu.be", "youtube"),
+    ("x.com", "x"),
+    ("twitter.com", "x"),
+    ("vk.com", "vk"),
+    ("vkvideo.ru", "vk"),
+    ("ok.ru", "ok"),
+    ("dzen.ru", "dzen"),
+    ("rutube.ru", "rutube"),
+    ("coub.com", "coub"),
+    ("dailymotion.com", "dailymotion"),
+    ("vimeo.com", "vimeo"),
+)
+
+
+def usage_source(url: str) -> str:
+    """Classify a URL into a short platform label for usage reporting."""
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return "invalid"
+    if not host:
+        return "invalid"
+    host = host.removeprefix("www.")
+    for suffix, label in _SOURCE_HOSTS:
+        if host == suffix or host.endswith("." + suffix):
+            return label
+    return "other"
+
+
+def log_usage(event: str, **fields: Any) -> None:
+    """Emit one machine-readable line per user action.
+
+    Deliberately a flat "key=value" line on a single log record: the operators
+    who need these numbers read them with journalctl and scripts/usage_report.py,
+    not a metrics stack. Never pass a raw URL -- callers pass usage_source(url)
+    so a private t.me link does not end up in the journal.
+    """
+    rendered = " ".join(f"{k}={v}" for k, v in fields.items() if v is not None and v != "")
+    logger.info("[usage] event={} {}", event, rendered)
+
+
+@contextmanager
+def usage_span(event: str, **fields: Any) -> Any:
+    """Emit exactly one usage line for an attempt, however it ends.
+
+    Yields a dict the caller can add facts to (bytes downloaded, which backend
+    served it). Recording on the way out means a future early-return cannot
+    quietly stop being counted, which is the usual way this sort of accounting
+    rots.
+    """
+    started = time.monotonic()
+    extra: dict[str, Any] = {}
+    outcome = "ok"
+    try:
+        yield extra
+    except HTTPException as exc:
+        # 4xx here are ordinary user outcomes (bad link, too large), not faults.
+        outcome = f"http_{exc.status_code}"
+        raise
+    except Exception:
+        outcome = "error"
+        raise
+    finally:
+        log_usage(
+            event,
+            outcome=outcome,
+            seconds=f"{time.monotonic() - started:.1f}",
+            **fields,
+            **extra,
+        )
 
 
 # Constants loaded once at import time (avoids repeated getenv calls per request)
@@ -1496,94 +1619,102 @@ async def create_video_session_from_url(
     authorization: Annotated[str | None, Header()] = None,
 ):
     """Download a video from a URL via yt-dlp, then transcribe and index it."""
-    verify_auth_token(authorization=authorization)
-    manager = _require_video_manager()
+    # One usage line per attempt, whatever the outcome: the span records it on
+    # the way out, so a new early-return cannot silently stop being counted.
+    with usage_span("video_import", source=usage_source((body.url or "").strip())) as usage:
+        verify_auth_token(authorization=authorization)
+        manager = _require_video_manager()
 
-    url = body.url.strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="URL is required")
-    _validate_video_url(url)
+        url = body.url.strip()
+        if not url:
+            raise HTTPException(status_code=400, detail="URL is required")
+        _validate_video_url(url)
 
-    max_bytes = manager.cfg.max_upload_mb * 1024 * 1024
-    tmp_root = Path(manager.cfg.tmp_root)
-    tmp_root.mkdir(parents=True, exist_ok=True)
+        max_bytes = manager.cfg.max_upload_mb * 1024 * 1024
+        tmp_root = Path(manager.cfg.tmp_root)
+        tmp_root.mkdir(parents=True, exist_ok=True)
 
-    # Telegram links go over MTProto when configured: yt-dlp scrapes the t.me
-    # web embed, which omits the video element for most posts.
-    tg_ref = _telegram_ref_if_enabled(url, manager.cfg)
-    if tg_ref is not None:
-        return await _create_session_from_telegram(tg_ref, manager, max_bytes, tmp_root)
+        # Telegram links go over MTProto when configured: yt-dlp scrapes the t.me
+        # web embed, which omits the video element for most posts.
+        tg_ref = _telegram_ref_if_enabled(url, manager.cfg)
+        if tg_ref is not None:
+            usage["via"] = "mtproto"
+            return await _create_session_from_telegram(tg_ref, manager, max_bytes, tmp_root)
+        usage["via"] = "yt-dlp"
 
-    with tempfile.TemporaryDirectory(dir=str(tmp_root), prefix="ytdlp_") as work_dir:
-        work_path = Path(work_dir)
-        ydl_opts = {
-            "outtmpl": str(work_path / "video.%(ext)s"),
-            # Prefer a merged mp4, then any split video+audio pair, then whatever
-            # exists. Sites like Coub publish only video-only mp4 plus mp3 audio,
-            # which the old chain could not satisfy at all.
-            "format": (
-                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/"
-                "bestvideo*+bestaudio/best/bestvideo*/bestaudio"
-            ),
-            "merge_output_format": "mp4",
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            # Abort if the declared filesize exceeds the cap (best-effort; not all
-            # extractors provide this ahead of time).
-            "max_filesize": max_bytes,
-        }
-        cookies = _yt_dlp_cookiefile(manager.cfg)
-        if cookies:
-            ydl_opts["cookiefile"] = cookies
+        with tempfile.TemporaryDirectory(dir=str(tmp_root), prefix="ytdlp_") as work_dir:
+            work_path = Path(work_dir)
+            ydl_opts = {
+                "outtmpl": str(work_path / "video.%(ext)s"),
+                # Prefer a merged mp4, then any split video+audio pair, then whatever
+                # exists. Sites like Coub publish only video-only mp4 plus mp3 audio,
+                # which the old chain could not satisfy at all.
+                "format": (
+                    "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/"
+                    "bestvideo*+bestaudio/best/bestvideo*/bestaudio"
+                ),
+                "merge_output_format": "mp4",
+                "noplaylist": True,
+                "quiet": True,
+                "no_warnings": True,
+                # Abort if the declared filesize exceeds the cap (best-effort; not all
+                # extractors provide this ahead of time).
+                "max_filesize": max_bytes,
+            }
+            cookies = _yt_dlp_cookiefile(manager.cfg)
+            if cookies:
+                ydl_opts["cookiefile"] = cookies
 
-        try:
-            info: dict | None = await asyncio.to_thread(_yt_dlp_download, url, ydl_opts)
-        except ImportError as exc:
-            raise HTTPException(status_code=500, detail="yt-dlp is not installed") from exc
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.exception("yt-dlp download failed for url={}", url)
-            raise HTTPException(status_code=422, detail="Video download failed") from exc
+            try:
+                info: dict | None = await asyncio.to_thread(_yt_dlp_download, url, ydl_opts)
+            except ImportError as exc:
+                raise HTTPException(status_code=500, detail="yt-dlp is not installed") from exc
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.exception("yt-dlp download failed for url={}", url)
+                raise HTTPException(status_code=422, detail="Video download failed") from exc
 
-        if not info:
-            # Some extractors return None instead of raising when a page holds no
-            # downloadable media -- a Telegram post with only text or a photo, a
-            # deleted channel, or a video Telegram marks "not_supported" in its
-            # embed.  Without this guard the request falls through to the
-            # missing-output branch and reports a 500 for what is really a
-            # perfectly ordinary bad link.
-            logger.info("No downloadable media found at url={}", url)
-            raise HTTPException(status_code=422, detail="No downloadable video found at that link")
+            if not info:
+                # Some extractors return None instead of raising when a page holds no
+                # downloadable media -- a Telegram post with only text or a photo, a
+                # deleted channel, or a video Telegram marks "not_supported" in its
+                # embed.  Without this guard the request falls through to the
+                # missing-output branch and reports a 500 for what is really a
+                # perfectly ordinary bad link.
+                logger.info("No downloadable media found at url={}", url)
+                raise HTTPException(
+                    status_code=422, detail="No downloadable video found at that link"
+                )
 
-        # The actual output file has the extension appended by yt-dlp.
-        downloaded = work_path / "video.mp4"
-        if not downloaded.exists():
-            # yt-dlp may have chosen a different extension; find whatever it wrote.
-            candidates = sorted(
-                f for f in work_path.iterdir() if f.is_file() and f.suffix != ".part"
-            )
-            if not candidates:
-                raise HTTPException(status_code=500, detail="Download produced no output file")
-            downloaded = candidates[0]
+            # The actual output file has the extension appended by yt-dlp.
+            downloaded = work_path / "video.mp4"
+            if not downloaded.exists():
+                # yt-dlp may have chosen a different extension; find whatever it wrote.
+                candidates = sorted(
+                    f for f in work_path.iterdir() if f.is_file() and f.suffix != ".part"
+                )
+                if not candidates:
+                    raise HTTPException(status_code=500, detail="Download produced no output file")
+                downloaded = candidates[0]
 
-        # Enforce size cap on actual downloaded file.
-        size = downloaded.stat().st_size
-        if size > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Downloaded file ({size // (1024 * 1024)} MB) exceeds limit of {manager.cfg.max_upload_mb} MB",
-            )
-        if size == 0:
-            raise HTTPException(status_code=400, detail="Downloaded file is empty")
+            # Enforce size cap on actual downloaded file.
+            size = downloaded.stat().st_size
+            usage["bytes"] = size
+            if size > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Downloaded file ({size // (1024 * 1024)} MB) exceeds limit of {manager.cfg.max_upload_mb} MB",
+                )
+            if size == 0:
+                raise HTTPException(status_code=400, detail="Downloaded file is empty")
 
-        # Use yt-dlp's reported title as the filename; fall back to URL basename.
-        title = info.get("title") or ""
-        original_filename = (title[:80].strip() or url.split("/")[-1] or "video") + ".mp4"
+            # Use yt-dlp's reported title as the filename; fall back to URL basename.
+            title = info.get("title") or ""
+            original_filename = (title[:80].strip() or url.split("/")[-1] or "video") + ".mp4"
 
-        session = manager.create_session(downloaded, original_filename)
-        return session.public_dict()
+            session = manager.create_session(downloaded, original_filename)
+            return session.public_dict()
     # TemporaryDirectory cleans up all yt-dlp artifacts on success and failure.
 
 
