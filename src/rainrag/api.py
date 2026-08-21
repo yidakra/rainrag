@@ -143,6 +143,43 @@ def usage_span(event: str, **fields: Any) -> Any:
         )
 
 
+def _record_query_usage(usage: dict[str, Any], result: Any, docs: int | None = None) -> None:
+    """Copy the measurable facts about a finished query onto its usage span.
+
+    Never raises: ``result`` is a Mock in a good part of the test suite and an
+    arbitrary provider payload in production. Nothing here is worth failing a
+    query that already succeeded.
+    """
+    try:
+        if docs is None:
+            docs = int(result.get("num_documents") or 0)
+        usage["docs"] = docs
+        tokens_in = int(result.get("cost.llm_tokens_in") or 0)
+        tokens_out = int(result.get("cost.llm_tokens_out") or 0)
+    except Exception:
+        return
+    # Omit zeros: a provider that reports no usage should leave the field out
+    # rather than log a confident "0 tokens".
+    if tokens_in:
+        usage["tokens_in"] = tokens_in
+    if tokens_out:
+        usage["tokens_out"] = tokens_out
+
+
+def _llm_provider_name() -> str | None:
+    """Best-effort name of the configured LLM provider, for usage lines.
+
+    Returns None rather than raising when the engine is absent or stubbed: a
+    usage line is accounting, and accounting must never be the thing that fails
+    a user's query. usage_span drops None fields.
+    """
+    try:
+        provider = query_engine.config.llm.provider
+    except Exception:
+        return None
+    return provider if isinstance(provider, str) else None
+
+
 # Constants loaded once at import time (avoids repeated getenv calls per request)
 # Guard against invalid env values (float() would otherwise raise and prevent
 # the module from importing).
@@ -1268,162 +1305,181 @@ async def query(
     if query_engine is None:
         raise HTTPException(status_code=503, detail="Query engine not initialized")
 
-    try:
-        logger.info(f"Received query: {request.question[:100]}... (language: {request.language})")
-
-        # Concurrency control: bounded active query slots to avoid thread/task explosion.
-        acquired = False
+    with usage_span(
+        "query",
+        mode="corpus",
+        provider=_llm_provider_name(),
+        lang=request.language,
+        top_k=request.top_k,
+    ) as usage:
         try:
-            await asyncio.wait_for(_get_query_semaphore().acquire(), timeout=5.0)
-            acquired = True
-        except asyncio.TimeoutError as exc:
-            logger.warning(
-                "Too many concurrent queries (%d). Rejecting request (question=%r)",
-                MAX_CONCURRENT_QUERIES,
-                request.question[:100],
+            logger.info(
+                f"Received query: {request.question[:100]}... (language: {request.language})"
             )
-            raise HTTPException(
-                status_code=429,
-                detail="Server busy: too many concurrent queries. Please retry shortly.",
-            ) from exc
 
-        active_query_incremented = False
-        try:
+            # Concurrency control: bounded active query slots to avoid thread/task explosion.
+            acquired = False
             try:
-                ACTIVE_QUERIES.inc()
-                active_query_incremented = True
-            except Exception:
-                logger.exception("Failed to increment active query gauge")
+                await asyncio.wait_for(_get_query_semaphore().acquire(), timeout=5.0)
+                acquired = True
+            except asyncio.TimeoutError as exc:
+                # loguru formats with {}, not %-style: the old form logged the
+                # literal "(%d)" and dropped both arguments.
+                logger.warning(
+                    "Too many concurrent queries ({}). Rejecting request.",
+                    MAX_CONCURRENT_QUERIES,
+                )
+                raise HTTPException(
+                    status_code=429,
+                    detail="Server busy: too many concurrent queries. Please retry shortly.",
+                ) from exc
 
-            background_task = None
+            active_query_incremented = False
             try:
-                # Execute query in a worker thread so the event loop remains responsive
-                # (health checks/UI should not freeze while a long LLM call is running).
-                # Use module-level constant to avoid repeated environment lookups.
-                query_callable = query_engine.query
+                try:
+                    ACTIVE_QUERIES.inc()
+                    active_query_incremented = True
+                except Exception:
+                    logger.exception("Failed to increment active query gauge")
 
-                # ASGI unit tests often patch query_engine.query with Mock objects.
-                # Running a Mock via asyncio.to_thread can deadlock test-loop shutdown.
-                if _is_mock_like(query_callable):
-                    result = query_callable(
-                        question=request.question,
-                        top_k=request.top_k,
-                        language=request.language,
-                        date_from=request.date_from,
-                        date_to=request.date_to,
-                    )
-                else:
-                    background_task = asyncio.create_task(
-                        asyncio.to_thread(
-                            query_callable,
+                background_task = None
+                try:
+                    # Execute query in a worker thread so the event loop remains responsive
+                    # (health checks/UI should not freeze while a long LLM call is running).
+                    # Use module-level constant to avoid repeated environment lookups.
+                    query_callable = query_engine.query
+
+                    # ASGI unit tests often patch query_engine.query with Mock objects.
+                    # Running a Mock via asyncio.to_thread can deadlock test-loop shutdown.
+                    if _is_mock_like(query_callable):
+                        result = query_callable(
                             question=request.question,
                             top_k=request.top_k,
                             language=request.language,
                             date_from=request.date_from,
                             date_to=request.date_to,
                         )
-                    )
-                    try:
-                        result = await asyncio.wait_for(
-                            background_task, timeout=QUERY_TIMEOUT_SECONDS
+                    else:
+                        background_task = asyncio.create_task(
+                            asyncio.to_thread(
+                                query_callable,
+                                question=request.question,
+                                top_k=request.top_k,
+                                language=request.language,
+                                date_from=request.date_from,
+                                date_to=request.date_to,
+                            )
                         )
-                    except asyncio.TimeoutError as exc:
-                        if not background_task.done():
-                            background_task.cancel()
-                            try:
-                                await asyncio.wait_for(background_task, timeout=2.0)
-                            except (asyncio.TimeoutError, asyncio.CancelledError) as cancel_exc:
-                                logger.warning(
-                                    "Background query task did not stop after cancellation (%s: %s)",
-                                    type(cancel_exc).__name__,
-                                    cancel_exc,
-                                )
-
                         try:
-                            QUERY_TIMEOUT_COUNTER.inc()
+                            result = await asyncio.wait_for(
+                                background_task, timeout=QUERY_TIMEOUT_SECONDS
+                            )
+                        except asyncio.TimeoutError as exc:
+                            if not background_task.done():
+                                background_task.cancel()
+                                try:
+                                    await asyncio.wait_for(background_task, timeout=2.0)
+                                except (asyncio.TimeoutError, asyncio.CancelledError) as cancel_exc:
+                                    logger.warning(
+                                        "Background query task did not stop after "
+                                        "cancellation ({}: {})",
+                                        type(cancel_exc).__name__,
+                                        cancel_exc,
+                                    )
+
+                            try:
+                                QUERY_TIMEOUT_COUNTER.inc()
+                            except Exception:
+                                logger.exception("Failed to increment timeout metric")
+
+                            logger.warning(
+                                "Query timed out (question={!r}, top_k={}, language={}, timeout={})",
+                                request.question[:100],
+                                request.top_k,
+                                request.language,
+                                QUERY_TIMEOUT_SECONDS,
+                            )
+                            raise HTTPException(
+                                status_code=504,
+                                detail=(
+                                    "Query timed out while generating answer. "
+                                    "Please try a shorter or more specific question."
+                                ),
+                            ) from exc
+                finally:
+                    if active_query_incremented:
+                        try:
+                            ACTIVE_QUERIES.dec()
                         except Exception:
-                            logger.exception("Failed to increment timeout metric")
+                            logger.exception("Failed to decrement active query gauge")
 
-                        logger.warning(
-                            "Query timed out (question={!r}, top_k={}, language={}, timeout={})",
-                            request.question[:100],
-                            request.top_k,
-                            request.language,
-                            QUERY_TIMEOUT_SECONDS,
-                        )
-                        raise HTTPException(
-                            status_code=504,
-                            detail=(
-                                "Query timed out while generating answer. "
-                                "Please try a shorter or more specific question."
-                            ),
-                        ) from exc
             finally:
-                if active_query_incremented:
-                    try:
-                        ACTIVE_QUERIES.dec()
-                    except Exception:
-                        logger.exception("Failed to decrement active query gauge")
+                if acquired:
+                    _get_query_semaphore().release()
 
-        finally:
-            if acquired:
-                _get_query_semaphore().release()
+            # Format response with video and VTT URLs
+            context_chunks = []
+            for doc in result["retrieved_documents"]:
+                vtt_path = doc["path"]
 
-        # Format response with video and VTT URLs
-        context_chunks = []
-        for doc in result["retrieved_documents"]:
-            vtt_path = doc["path"]
+                # Generate URLs for video and VTT files
+                video_url, vtt_url = generate_media_urls(vtt_path, doc.get("start_time"))
 
-            # Generate URLs for video and VTT files
-            video_url, vtt_url = generate_media_urls(vtt_path, doc.get("start_time"))
+                # Get group ID for grouping multilingual versions
+                group_id = get_video_base_name(vtt_path)
 
-            # Get group ID for grouping multilingual versions
-            group_id = get_video_base_name(vtt_path)
-
-            context_chunks.append(
-                ContextChunk(
-                    text=doc["text"],
-                    filename=doc["path"],
-                    language=doc.get("language", "unknown"),
-                    score=doc["score"],
-                    rank=doc["rank"],
-                    doc_id=doc.get("doc_id", ""),
-                    rerank_score=doc.get("rerank_score"),
-                    original_score=doc.get("original_score"),
-                    video_url=video_url,
-                    vtt_url=vtt_url,
-                    group_id=group_id,
-                    date=doc.get("date"),
-                    duration_seconds=doc.get("duration_seconds"),
-                    start_time=doc.get("start_time"),
-                    end_time=doc.get("end_time"),
-                    web_title=doc.get("web_title"),
-                    web_date=doc.get("web_date"),
-                    web_date_ts=doc.get("web_date_ts"),
-                    web_description=doc.get("web_description"),
-                    web_url=doc.get("web_url"),
+                context_chunks.append(
+                    ContextChunk(
+                        text=doc["text"],
+                        filename=doc["path"],
+                        language=doc.get("language", "unknown"),
+                        score=doc["score"],
+                        rank=doc["rank"],
+                        doc_id=doc.get("doc_id", ""),
+                        rerank_score=doc.get("rerank_score"),
+                        original_score=doc.get("original_score"),
+                        video_url=video_url,
+                        vtt_url=vtt_url,
+                        group_id=group_id,
+                        date=doc.get("date"),
+                        duration_seconds=doc.get("duration_seconds"),
+                        start_time=doc.get("start_time"),
+                        end_time=doc.get("end_time"),
+                        web_title=doc.get("web_title"),
+                        web_date=doc.get("web_date"),
+                        web_date_ts=doc.get("web_date_ts"),
+                        web_description=doc.get("web_description"),
+                        web_url=doc.get("web_url"),
+                    )
                 )
+
+            response = QueryResponse(
+                answer=result["answer"],
+                context=context_chunks,
+                question=result["question"],
+                num_documents=result["num_documents"],
+                metadata_fallback_hits=int(result.get("metadata_fallback_hits") or 0),
             )
 
-        response = QueryResponse(
-            answer=result["answer"],
-            context=context_chunks,
-            question=result["question"],
-            num_documents=result["num_documents"],
-            metadata_fallback_hits=int(result.get("metadata_fallback_hits") or 0),
-        )
+            logger.info(f"Query completed successfully. Retrieved {len(context_chunks)} documents")
 
-        logger.info(f"Query completed successfully. Retrieved {len(context_chunks)} documents")
+            _record_query_usage(usage, result, len(context_chunks))
 
-        return response
+            return response
 
-    except Exception as e:
-        import traceback
+        except HTTPException:
+            # 429 (busy) and 504 (timeout) are raised deliberately above, with
+            # wording meant for the user. Without this clause the handler below
+            # rewrapped them as 500, so a timeout reached the browser as an
+            # internal error and the usage line recorded it as one.
+            raise
+        except Exception as e:
+            import traceback
 
-        error_details = traceback.format_exc()
-        logger.error(f"Query failed: {e}")
-        logger.error(f"Full traceback:\n{error_details}")
-        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+            error_details = traceback.format_exc()
+            logger.error(f"Query failed: {e}")
+            logger.error(f"Full traceback:\n{error_details}")
+            raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 
 # ---------------------------------------------------------------------------
@@ -2000,43 +2056,51 @@ async def query_video_session(
             detail=f"Session not ready (status={session.status})",
         )
 
-    # Concurrency control shared with the main /query path.
-    try:
-        await asyncio.wait_for(_get_query_semaphore().acquire(), timeout=5.0)
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(
-            status_code=429,
-            detail="Server busy: too many concurrent queries. Please retry shortly.",
-        ) from exc
-
-    try:
-        task = asyncio.create_task(
-            asyncio.to_thread(
-                query_engine.query,
-                question=request.question,
-                top_k=request.top_k,
-                language=request.language,
-                collection_name=session.collection_name,
-                single_video=True,
-            )
-        )
+    with usage_span(
+        "query",
+        mode="session",
+        provider=_llm_provider_name(),
+        lang=request.language,
+        top_k=request.top_k,
+    ) as usage:
+        # Concurrency control shared with the main /query path.
         try:
-            result = await asyncio.wait_for(task, timeout=QUERY_TIMEOUT_SECONDS)
+            await asyncio.wait_for(_get_query_semaphore().acquire(), timeout=5.0)
         except asyncio.TimeoutError as exc:
-            if not task.done():
-                task.cancel()
             raise HTTPException(
-                status_code=504, detail="Query timed out while generating answer."
+                status_code=429,
+                detail="Server busy: too many concurrent queries. Please retry shortly.",
             ) from exc
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("Video-session query failed")
-        raise HTTPException(status_code=500, detail=f"Query failed: {exc}") from exc
-    finally:
-        _get_query_semaphore().release()
 
-    return _build_query_response(result, media_urls=False)
+        try:
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    query_engine.query,
+                    question=request.question,
+                    top_k=request.top_k,
+                    language=request.language,
+                    collection_name=session.collection_name,
+                    single_video=True,
+                )
+            )
+            try:
+                result = await asyncio.wait_for(task, timeout=QUERY_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError as exc:
+                if not task.done():
+                    task.cancel()
+                raise HTTPException(
+                    status_code=504, detail="Query timed out while generating answer."
+                ) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Video-session query failed")
+            raise HTTPException(status_code=500, detail=f"Query failed: {exc}") from exc
+        finally:
+            _get_query_semaphore().release()
+
+        _record_query_usage(usage, result)
+        return _build_query_response(result, media_urls=False)
 
 
 class RelatedChunksRequest(BaseModel):

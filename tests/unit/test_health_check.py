@@ -64,6 +64,24 @@ def test_no_attempts_is_quiet() -> None:
     assert result.status == hc.OK
 
 
+def test_query_events_do_not_count_towards_the_import_rate() -> None:
+    """Queries and imports share the [usage] channel but not this check.
+
+    Questions are asked far more often than videos are imported, so letting
+    query events into this calculation would swamp the import signal it exists
+    to watch -- and a burst of query timeouts would read as import breakage.
+    """
+    events = [
+        {"event": "query", "outcome": "http_504"},
+        {"event": "query", "outcome": "http_500"},
+        {"event": "query", "outcome": "http_500"},
+        {"event": "query", "outcome": "http_429"},
+    ]
+    result = hc.evaluate_failure_rate(events, min_attempts=3, threshold=0.5)
+    assert result.status == hc.OK
+    assert "no import attempts" in result.detail
+
+
 def test_single_failure_does_not_alarm() -> None:
     """One journalist pasting one dead link is 100% failure and is not an incident."""
     events = [_import_event("http_422", "no_media")]
