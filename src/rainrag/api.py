@@ -1098,6 +1098,57 @@ app.add_middleware(
 )
 
 
+# --- Expiring media tokens ----------------------------------------------------
+# <video> and HLS segment requests cannot carry an Authorization header, so the
+# credential has to travel in the query string -- which means it lands in page
+# HTML, browser history and anything that records URLs. Handing out the standing
+# secret there means one shared bookmark grants archive access forever. These
+# tokens carry an expiry and are signed with the same secret, so a leaked URL
+# stops working on its own.
+#
+# The signature deliberately covers only the expiry, not the path. The HLS chain
+# already threads one credential from master playlist to variant to segment, and
+# a path-bound signature would need re-signing at every hop -- more moving parts
+# in the one code path that breaks video for every viewer if it is wrong. The
+# tradeoff is explicit: a leaked token works for any media path until it expires,
+# rather than for one path forever.
+MEDIA_TOKEN_TTL_SECONDS = int(os.getenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", str(12 * 3600)))
+
+
+def _media_token_secret() -> str | None:
+    """The shared secret media tokens are signed with, or None when auth is off."""
+    return os.getenv("RAINRAG_AUTH_TOKEN") or None
+
+
+def issue_media_token(ttl_seconds: int | None = None, *, secret: str | None = None) -> str:
+    """Mint a time-limited token for use as the ``auth`` query parameter."""
+    key = secret if secret is not None else _media_token_secret()
+    if not key:
+        return ""
+    expires = int(time.time()) + int(
+        ttl_seconds if ttl_seconds is not None else MEDIA_TOKEN_TTL_SECONDS
+    )
+    payload = str(expires)
+    signature = hmac.new(key.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"v1.{payload}.{signature}"
+
+
+def _media_token_is_valid(token: str, secret: str) -> bool:
+    """True when the token is well-formed, correctly signed and unexpired."""
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != "v1":
+        return False
+    _, payload, signature = parts
+    expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    if not hmac.compare_digest(signature, expected):
+        return False
+    try:
+        expires = int(payload)
+    except ValueError:
+        return False
+    return time.time() < expires
+
+
 def verify_auth_token(authorization: str | None = None, access_token: str | None = None) -> bool:
     """Verify authentication token if configured."""
     required_token = os.getenv("RAINRAG_AUTH_TOKEN")
@@ -1106,10 +1157,14 @@ def verify_auth_token(authorization: str | None = None, access_token: str | None
     if not required_token:
         return True
 
-    # Allow explicit query token for browser media requests where custom headers
-    # are not available on <video>/<a> elements.
-    if access_token and hmac.compare_digest(access_token, required_token):
-        return True
+    # Browser media requests cannot set headers, so they pass a credential in the
+    # query string. An expiring signed token is preferred; the standing secret is
+    # still accepted so API clients and existing integrations keep working.
+    if access_token:
+        if _media_token_is_valid(access_token, required_token):
+            return True
+        if hmac.compare_digest(access_token, required_token):
+            return True
 
     # Check if authorization header is provided
     if not authorization:
