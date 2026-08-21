@@ -96,9 +96,7 @@ class TestAuthDisabled:
 
 
 class TestVerifyAuthTokenIntegration:
-    def test_media_token_is_accepted_as_the_query_credential(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_media_token_is_accepted_as_the_query_credential(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("RAINRAG_AUTH_TOKEN", SECRET)
         assert verify_auth_token(access_token=issue_media_token(secret=SECRET)) is True
 
