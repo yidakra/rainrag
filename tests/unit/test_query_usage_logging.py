@@ -121,6 +121,20 @@ class TestAccumulateTokenUsage:
         )
         assert sink == {"tokens_in": 12, "tokens_out": 4, "llm_calls_measured": 1}
 
+    @pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+    def test_non_finite_counts_never_raise(self, bad):
+        """A raise here would report a successful answer as a provider failure.
+
+        Every call site is inside a provider try/except that rewraps any
+        exception as "<provider> API error", so counting tokens must not be
+        able to fail the query it is counting. round(inf) raises OverflowError.
+        """
+        sink: dict[str, int] = {}
+        accumulate_token_usage(
+            sink, SimpleNamespace(usage=SimpleNamespace(prompt_tokens=bad, completion_tokens=1))
+        )
+        assert sink.get("tokens_in", 0) == 0
+
     def test_string_counts_are_ignored(self):
         sink: dict[str, int] = {}
         accumulate_token_usage(
@@ -214,6 +228,43 @@ class TestQueryUsageLine:
         assert len(lines) == 1, lines
         assert "outcome=http_500" in lines[0]
         assert "boom" not in lines[0]
+
+
+class TestSessionQueryUsageLine:
+    """The uploaded-video path is wrapped separately and derives docs differently."""
+
+    def test_session_query_emits_its_own_usage_line(self, test_client, usage_lines):
+        session = SimpleNamespace(status="ready", collection_name="session_abc")
+        manager = SimpleNamespace(get=lambda _sid: session)
+
+        with patch("rainrag.api.query_engine") as mock_engine:
+            with patch("rainrag.api.video_session_manager", manager):
+                mock_engine.config.llm.provider = "openai"
+                mock_engine.query.return_value = {
+                    "question": "q",
+                    "answer": "a",
+                    "retrieved_documents": [],
+                    "num_documents": 2,
+                    "metadata_fallback_hits": 0,
+                    "cost.llm_tokens_in": 800,
+                    "cost.llm_tokens_out": 60,
+                }
+                resp = test_client.post(
+                    "/video-sessions/abc/query",
+                    json={"question": "what was said", "language": "en"},
+                )
+
+        assert resp.status_code == 200, resp.text
+        lines = _only_usage(usage_lines)
+        assert len(lines) == 1, lines
+        line = lines[0]
+        assert "event=query" in line
+        assert "mode=session" in line
+        assert "outcome=ok" in line
+        # docs is derived from num_documents here, not from a chunk count.
+        assert "docs=2" in line
+        assert "tokens_in=800" in line
+        assert "what was said" not in line
 
 
 class TestDeliberateStatusCodesSurvive:

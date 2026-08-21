@@ -50,6 +50,9 @@ def _coerce_token_count(value: Any) -> int:
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
+    # inf passes "> 0" and then blows up in round(); nan fails it and is dropped.
+    if isinstance(value, float) and not _math.isfinite(value):
+        return 0
     return round(value) if value > 0 else 0
 
 
@@ -63,18 +66,25 @@ def accumulate_token_usage(sink: dict[str, int] | None, response: Any) -> None:
     """
     if sink is None or response is None:
         return
-    for container, in_field, out_field in _TOKEN_USAGE_ATTRS:
-        usage = getattr(response, container, None)
-        if usage is None:
-            continue
-        tokens_in = _coerce_token_count(getattr(usage, in_field, None))
-        tokens_out = _coerce_token_count(getattr(usage, out_field, None))
-        if not tokens_in and not tokens_out:
-            continue
-        sink["tokens_in"] = sink.get("tokens_in", 0) + tokens_in
-        sink["tokens_out"] = sink.get("tokens_out", 0) + tokens_out
-        sink["llm_calls_measured"] = sink.get("llm_calls_measured", 0) + 1
-        return
+    # Total by construction. Every call site sits inside a provider try/except
+    # that turns any exception into "Mistral API error: ...", so an exception
+    # raised while counting tokens would report a successful answer as a failed
+    # query. Counting must never be able to do that.
+    try:
+        for container, in_field, out_field in _TOKEN_USAGE_ATTRS:
+            usage = getattr(response, container, None)
+            if usage is None:
+                continue
+            tokens_in = _coerce_token_count(getattr(usage, in_field, None))
+            tokens_out = _coerce_token_count(getattr(usage, out_field, None))
+            if not tokens_in and not tokens_out:
+                continue
+            sink["tokens_in"] = sink.get("tokens_in", 0) + tokens_in
+            sink["tokens_out"] = sink.get("tokens_out", 0) + tokens_out
+            sink["llm_calls_measured"] = sink.get("llm_calls_measured", 0) + 1
+            return
+    except Exception:  # pragma: no cover - defensive, see above
+        logger.debug("Token usage accounting failed; continuing without counts")
 
 
 class RAGQueryEngine:
