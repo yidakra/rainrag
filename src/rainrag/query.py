@@ -29,6 +29,49 @@ except ImportError:
 from rainrag.config import Config
 
 
+# Each provider reports token counts under a different attribute, and every one
+# of them is optional -- a stubbed client in a test, or a provider that omits
+# usage on some responses, must never break answer generation. Accounting is
+# strictly best-effort: on any surprise we record nothing and move on.
+_TOKEN_USAGE_ATTRS: tuple[tuple[str, str, str], ...] = (
+    # (container attribute, input-token field, output-token field)
+    ("usage", "prompt_tokens", "completion_tokens"),  # OpenAI, Mistral
+    ("usage", "input_tokens", "output_tokens"),  # Anthropic
+    ("usage_metadata", "prompt_token_count", "candidates_token_count"),  # Gemini
+)
+
+
+def _coerce_token_count(value: Any) -> int:
+    """Return a non-negative int, or 0 for anything unusable (None, Mock, str)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value if value > 0 else 0
+
+
+def accumulate_token_usage(sink: dict[str, int] | None, response: Any) -> None:
+    """Add one LLM response's token counts to ``sink``.
+
+    Accumulates rather than overwrites: a single user question can involve
+    several LLM calls (query rewriting and HyDE run before the answer), and the
+    number a journalist or an operator cares about is what the whole question
+    cost, not what the last call cost.
+    """
+    if sink is None or response is None:
+        return
+    for container, in_field, out_field in _TOKEN_USAGE_ATTRS:
+        usage = getattr(response, container, None)
+        if usage is None:
+            continue
+        tokens_in = _coerce_token_count(getattr(usage, in_field, None))
+        tokens_out = _coerce_token_count(getattr(usage, out_field, None))
+        if not tokens_in and not tokens_out:
+            continue
+        sink["tokens_in"] = sink.get("tokens_in", 0) + tokens_in
+        sink["tokens_out"] = sink.get("tokens_out", 0) + tokens_out
+        sink["llm_calls_measured"] = sink.get("llm_calls_measured", 0) + 1
+        return
+
+
 class RAGQueryEngine:
     """
     RAG Query Engine that retrieves relevant documents and generates answers.
@@ -1019,7 +1062,9 @@ class RAGQueryEngine:
             logger.error(f"Error finding related chunks: {e}")
             return []
 
-    def _rewrite_query_for_retrieval(self, query: str, language: str = "en") -> list[str]:
+    def _rewrite_query_for_retrieval(
+        self, query: str, language: str = "en", usage_sink: dict[str, int] | None = None
+    ) -> list[str]:
         """
         Stage 2a: Rewrite the user query into transcript-register variants.
 
@@ -1059,6 +1104,7 @@ class RAGQueryEngine:
             raw = self.generate_answer(
                 messages,
                 temperature=self.config.two_stage.query_rewrite_temperature,
+                usage_sink=usage_sink,
             )
             variants = [line.strip() for line in raw.splitlines() if line.strip()][:n]
             logger.debug(f"[Two-Stage] Query variants: {variants}")
@@ -1068,7 +1114,9 @@ class RAGQueryEngine:
 
         return [query] + variants
 
-    def _generate_hyde_embedding(self, query: str, language: str = "en") -> list[float]:
+    def _generate_hyde_embedding(
+        self, query: str, language: str = "en", usage_sink: dict[str, int] | None = None
+    ) -> list[float]:
         """
         Stage 2b: Hypothetical Document Embedding (HyDE).
 
@@ -1107,6 +1155,7 @@ class RAGQueryEngine:
             hypothetical_doc = self.generate_answer(
                 messages,
                 temperature=self.config.two_stage.hyde_temperature,
+                usage_sink=usage_sink,
             )
             logger.debug(f"[Two-Stage] HyDE passage: {hypothetical_doc[:120]}...")
             return self.embed_query(hypothetical_doc)
@@ -1648,7 +1697,10 @@ Question: {query}"""
         ]
 
     def generate_answer(
-        self, messages: list[dict[str, str]], temperature: float | None = None
+        self,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+        usage_sink: dict[str, int] | None = None,
     ) -> str:
         """
         Generate an answer using configured LLM provider.
@@ -1659,6 +1711,9 @@ Question: {query}"""
                 here when you need a different temperature for an intermediate step
                 (e.g. query rewriting) while keeping the main answer at the configured
                 temperature (typically 0 for deterministic journalist output).
+            usage_sink: Optional dict that token counts are accumulated into. Pass the
+                same dict to every call made for one user question to get that
+                question's total cost. Left as None, nothing is recorded.
 
         Returns:
             The generated answer text
@@ -1678,6 +1733,7 @@ Question: {query}"""
                     if temperature is not None
                     else self.config.mistral.temperature,
                 )
+                accumulate_token_usage(usage_sink, mistral_response)
                 if (
                     mistral_response
                     and mistral_response.choices
@@ -1712,6 +1768,7 @@ Question: {query}"""
                     if temperature is not None
                     else self.config.openai.temperature,
                 )
+                accumulate_token_usage(usage_sink, openai_response)
                 if (
                     openai_response
                     and openai_response.choices
@@ -1756,6 +1813,7 @@ Question: {query}"""
                     system=system_message,
                     messages=cast(Any, claude_messages),
                 )
+                accumulate_token_usage(usage_sink, claude_response)
                 if claude_response and claude_response.content and len(claude_response.content) > 0:
                     content_block = claude_response.content[0]
                     # Check if it's a text block with text attribute
@@ -1820,6 +1878,7 @@ Question: {query}"""
                         else self.config.gemini.temperature,
                     ),
                 )
+                accumulate_token_usage(usage_sink, response)
                 if response and response.text:
                     answer = response.text.strip()
                 else:
@@ -1882,6 +1941,10 @@ Question: {query}"""
 
         logger.info(f"Processing query: {question[:100]}... (language: {language})")
 
+        # Token counts for every LLM call this question makes -- rewriting and
+        # HyDE included, since they are part of what the question actually cost.
+        token_usage: dict[str, int] = {}
+
         # Step 0: Detect temporal context (if no explicit date filter provided)
         temporal_context = None
         if not date_from and not date_to:
@@ -1904,7 +1967,9 @@ Question: {query}"""
         # a handful of chunks, so the whole of Stage 2 is skipped there.
         two_stage_enabled = self.config.two_stage.enabled and not single_video
         if two_stage_enabled and self.config.two_stage.query_rewrite_enabled:
-            query_variants = self._rewrite_query_for_retrieval(question, language)
+            query_variants = self._rewrite_query_for_retrieval(
+                question, language, usage_sink=token_usage
+            )
         else:
             query_variants = [question]
 
@@ -1913,7 +1978,7 @@ Question: {query}"""
         embed_calls = 1
 
         if two_stage_enabled and self.config.two_stage.hyde_enabled:
-            hyde_vector = self._generate_hyde_embedding(question, language)
+            hyde_vector = self._generate_hyde_embedding(question, language, usage_sink=token_usage)
             embed_calls += 1
             alpha = self.config.two_stage.hyde_alpha
             blended = (1.0 - alpha) * np.array(primary_vector) + alpha * np.array(hyde_vector)
@@ -2025,7 +2090,7 @@ Question: {query}"""
         )
 
         # Step 7: Generate the answer
-        answer = self.generate_answer(messages)
+        answer = self.generate_answer(messages, usage_sink=token_usage)
 
         # Track API call counts for transparency (cost estimates currently
         # only include the main answer generation + embedding). These counts
@@ -2050,6 +2115,11 @@ Question: {query}"""
             "cost.llm_hyde_calls": llm_hyde_calls,
             "cost.embed_calls_count": embed_calls,
             "cost.reranker_calls_count": reranker_calls,
+            # Measured counts, as opposed to the call counts above. A provider
+            # that reports no usage leaves these at 0 rather than guessing.
+            "cost.llm_tokens_in": token_usage.get("tokens_in", 0),
+            "cost.llm_tokens_out": token_usage.get("tokens_out", 0),
+            "cost.llm_calls_measured": token_usage.get("llm_calls_measured", 0),
             "metadata_fallback_hits": metadata_fallback_hits,
         }
 
