@@ -10,6 +10,7 @@ Two things are being protected here:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -226,7 +227,10 @@ class TestDeliberateStatusCodesSurvive:
     def test_busy_surfaces_as_429(self, test_client, usage_lines):
         class ExhaustedSemaphore:
             async def acquire(self):
-                raise TimeoutError
+                # asyncio.TimeoutError only became an alias of the builtin
+                # TimeoutError in 3.11; on 3.10 they are distinct types and the
+                # handler catches the asyncio one.
+                raise asyncio.TimeoutError
 
             def release(self):
                 pass
