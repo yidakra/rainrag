@@ -402,3 +402,65 @@ def test_get_video_base_name_grouping():
     # Both should have the same base name for grouping
     assert base_name_en == base_name_ru
     assert "test_hash" in base_name_en
+
+
+def test_context_chunk_carries_library_taxonomy():
+    """Taxonomy on the Qdrant payload must reach the API response model."""
+    from rainrag.api import ContextChunk, _web_metadata_kwargs
+
+    doc = {
+        "web_title": "Выпуск",
+        "web_program": "Здесь и сейчас",
+        "web_presenters": ["Анна Монгайт"],
+        "web_tags": ["Война", "Украина"],
+        "web_tags_theme": ["Война", "Украина"],
+        "web_tags_person": [],
+        "web_tags_location": ["Украина"],
+        "web_tag_ids": [1197, 258, 1248],
+        "web_stories": ["Болотное дело"],
+    }
+    chunk = ContextChunk(
+        filename="a.vtt",
+        language="ru",
+        text="t",
+        score=1.0,
+        rank=1,
+        doc_id="d",
+        **_web_metadata_kwargs(doc),
+    )
+    assert chunk.web_program == "Здесь и сейчас"
+    assert chunk.web_presenters == ["Анна Монгайт"]
+    assert chunk.web_tags == ["Война", "Украина"]
+    assert chunk.web_tags_location == ["Украина"]
+    assert chunk.web_tag_ids == [1197, 258, 1248]
+    assert chunk.web_stories == ["Болотное дело"]
+
+
+def test_context_chunk_taxonomy_defaults_for_legacy_payloads():
+    """Points indexed before these fields existed have no such keys at all."""
+    from rainrag.api import ContextChunk, _web_metadata_kwargs
+
+    chunk = ContextChunk(
+        filename="a.vtt",
+        language="ru",
+        text="t",
+        score=1.0,
+        rank=1,
+        doc_id="d",
+        **_web_metadata_kwargs({"web_title": "Выпуск"}),
+    )
+    assert chunk.web_title == "Выпуск"
+    assert chunk.web_program is None
+    assert chunk.web_tags == []
+    assert chunk.web_presenters == []
+    assert chunk.web_tag_ids == []
+
+
+def test_web_metadata_kwargs_covers_the_shared_field_list():
+    """The projection must not silently drop a field added to the payload tuple."""
+    from rainrag.api import ContextChunk, _web_metadata_kwargs
+    from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS
+
+    kwargs = _web_metadata_kwargs({})
+    assert set(kwargs) == set(WEB_METADATA_PAYLOAD_FIELDS)
+    assert set(WEB_METADATA_PAYLOAD_FIELDS) <= set(ContextChunk.model_fields)

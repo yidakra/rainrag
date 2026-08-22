@@ -27,6 +27,7 @@ except ImportError:
     SentenceTransformer = None
 
 from rainrag.config import Config
+from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS
 
 
 class RAGQueryEngine:
@@ -316,13 +317,7 @@ class RAGQueryEngine:
 
             doc_was_enriched = False
 
-            for field in (
-                "web_title",
-                "web_date",
-                "web_date_ts",
-                "web_description",
-                "web_url",
-            ):
+            for field in WEB_METADATA_PAYLOAD_FIELDS:
                 if not doc.get(field) and metadata.get(field) is not None:
                     doc[field] = metadata[field]
                     doc_was_enriched = True
@@ -495,11 +490,7 @@ class RAGQueryEngine:
                         "chunk_index": payload.get("chunk_index"),
                         "total_chunks": payload.get("total_chunks"),
                         "video_id": payload.get("video_id"),
-                        "web_title": payload.get("web_title"),
-                        "web_date": payload.get("web_date"),
-                        "web_date_ts": payload.get("web_date_ts"),
-                        "web_description": payload.get("web_description"),
-                        "web_url": payload.get("web_url"),
+                        **{field: payload.get(field) for field in WEB_METADATA_PAYLOAD_FIELDS},
                         "is_speech_free": payload.get("is_speech_free", False),
                     }
                     self.bm25_corpus.append(doc)
@@ -1006,6 +997,11 @@ class RAGQueryEngine:
                     "end_time": hit_payload.get("end_time"),
                     "start_time_seconds": hit_payload.get("start_time_seconds"),
                     "language": hit_payload.get("language", ""),
+                    # The API projects these straight onto ContextChunk, so a
+                    # payload key missing here silently becomes a null response.
+                    "date": hit_payload.get("date"),
+                    "duration_seconds": hit_payload.get("duration_seconds"),
+                    **{field: hit_payload.get(field) for field in WEB_METADATA_PAYLOAD_FIELDS},
                 }
                 related_chunks.append(chunk_data)
 
@@ -1308,11 +1304,7 @@ class RAGQueryEngine:
                     "chunk_index": hit_payload.get("chunk_index"),
                     "total_chunks": hit_payload.get("total_chunks"),
                     "video_id": hit_payload.get("video_id"),
-                    "web_title": hit_payload.get("web_title"),
-                    "web_date": hit_payload.get("web_date"),
-                    "web_date_ts": hit_payload.get("web_date_ts"),
-                    "web_description": hit_payload.get("web_description"),
-                    "web_url": hit_payload.get("web_url"),
+                    **{field: hit_payload.get(field) for field in WEB_METADATA_PAYLOAD_FIELDS},
                     "is_speech_free": hit_payload.get("is_speech_free", False),
                 }
                 vector_documents.append(doc)

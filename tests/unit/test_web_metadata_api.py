@@ -27,6 +27,16 @@ SAMPLE_ARTICLE = {
     "teleshow": {"id": 1, "name": "Test Show"},
     "authors": [],
     "presentors": [],
+    # The live API always emits these, empty or not; their absence marks a cache
+    # file written before the taxonomy shipped.
+    "tags": [{"id": 258, "name": "Украина", "category": "theme"}],
+    "stories": [],
+    "tableOfContents": [],
+}
+
+# A cache file from before the taxonomy existed: no `tags` key at all.
+LEGACY_CACHED_ARTICLE = {
+    key: value for key, value in SAMPLE_ARTICLE.items() if key not in ("tags", "stories")
 }
 
 
@@ -261,3 +271,85 @@ class TestWebMetadataLoaderSources:
 
         # Should not raise, just return None
         assert loader.load_metadata("broken") is None
+
+
+class TestStaleCacheRefetch:
+    """A cache file predating the taxonomy must not silently index without tags."""
+
+    def test_api_mode_refetches_a_legacy_cache_entry(self, meta_dir: Path) -> None:
+        (meta_dir / "legacy.json").write_text(json.dumps(LEGACY_CACHED_ARTICLE), encoding="utf-8")
+        mock_api = MagicMock()
+        mock_api.fetch_by_hash.return_value = SAMPLE_ARTICLE
+        loader = WebMetadataLoader(meta_dir, source="api", api_client=mock_api)
+
+        result = loader.load_metadata("legacy")
+
+        mock_api.fetch_by_hash.assert_called_once_with("legacy")
+        assert result is not None and result["tags"]
+        # The refreshed article replaces the legacy file on disk.
+        assert "tags" in json.loads((meta_dir / "legacy.json").read_text(encoding="utf-8"))
+
+    def test_hybrid_mode_refetches_a_legacy_cache_entry(self, meta_dir: Path) -> None:
+        (meta_dir / "legacy.json").write_text(json.dumps(LEGACY_CACHED_ARTICLE), encoding="utf-8")
+        mock_api = MagicMock()
+        mock_api.fetch_by_hash.return_value = SAMPLE_ARTICLE
+        loader = WebMetadataLoader(meta_dir, source="hybrid", api_client=mock_api)
+
+        assert loader.load_metadata("legacy")["tags"]
+        mock_api.fetch_by_hash.assert_called_once_with("legacy")
+
+    def test_failed_refetch_falls_back_to_the_legacy_entry(self, meta_dir: Path) -> None:
+        """Stale title/date/programme still beats indexing nothing."""
+        (meta_dir / "legacy.json").write_text(json.dumps(LEGACY_CACHED_ARTICLE), encoding="utf-8")
+        mock_api = MagicMock()
+        mock_api.fetch_by_hash.return_value = None
+        loader = WebMetadataLoader(meta_dir, source="hybrid", api_client=mock_api)
+
+        result = loader.load_metadata("legacy")
+
+        assert result is not None
+        assert result["name"] == "Test article title"
+        assert "tags" not in result
+
+    def test_local_mode_warns_up_front_about_a_stale_cache(
+        self, meta_dir: Path, monkeypatch
+    ) -> None:
+        """Local mode cannot refetch, so the stale cache is reported once per run."""
+        from rainrag.ingest import warn_if_metadata_cache_predates_taxonomy
+
+        for name in ("a", "b", "c"):
+            (meta_dir / f"{name}.json").write_text(
+                json.dumps(LEGACY_CACHED_ARTICLE), encoding="utf-8"
+            )
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            "rainrag.ingest.logger.warning", lambda message, *a, **k: warnings.append(str(message))
+        )
+
+        assert warn_if_metadata_cache_predates_taxonomy(meta_dir) is True
+        assert len(warnings) == 1
+        assert "sync-metadata" in warnings[0]
+
+    def test_no_warning_when_any_sampled_file_is_current(self, meta_dir: Path) -> None:
+        from rainrag.ingest import warn_if_metadata_cache_predates_taxonomy
+
+        (meta_dir / "legacy.json").write_text(json.dumps(LEGACY_CACHED_ARTICLE), encoding="utf-8")
+        (meta_dir / "current.json").write_text(json.dumps(SAMPLE_ARTICLE), encoding="utf-8")
+
+        assert warn_if_metadata_cache_predates_taxonomy(meta_dir) is False
+
+    def test_no_warning_for_an_empty_or_missing_cache_dir(self, meta_dir: Path) -> None:
+        from rainrag.ingest import warn_if_metadata_cache_predates_taxonomy
+
+        assert warn_if_metadata_cache_predates_taxonomy(meta_dir) is False
+        assert warn_if_metadata_cache_predates_taxonomy(meta_dir / "nope") is False
+
+    def test_a_current_cache_entry_is_not_refetched(self, meta_dir: Path) -> None:
+        """An article with no tags still has the key, so it is not stale."""
+        untagged = {**SAMPLE_ARTICLE, "tags": []}
+        (meta_dir / "untagged.json").write_text(json.dumps(untagged), encoding="utf-8")
+        mock_api = MagicMock()
+        loader = WebMetadataLoader(meta_dir, source="hybrid", api_client=mock_api)
+
+        assert loader.load_metadata("untagged") is not None
+        mock_api.fetch_by_hash.assert_not_called()
