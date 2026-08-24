@@ -107,11 +107,17 @@ are all flags; thresholds accept `50`, `50%` or `0.5`. Change them in
 ## Where the import data comes from
 
 The API logs one machine-readable line per import
-(`[usage] event=video_import outcome=http_503 ... reason=blocked`).
+(`[usage] event=video_import outcome=http_503 ... reason=blocked`) and one per
+question asked
+(`[usage] event=query outcome=ok seconds=30.6 mode=corpus provider=mistral docs=5 tokens_in=1913 tokens_out=1346`).
+Neither line ever carries the question text or the pasted URL.
 `scripts/health_check.py` reads those through the same parser
 `scripts/usage_report.py` uses, so the two tools can never disagree about what a
 failure is. For the human-readable breakdown, run
 `scripts/usage_report.py --days 7`.
+
+The failure-rate check counts imports only. Questions are asked far more often
+than videos are imported, so mixing them would swamp the import signal.
 
 `--journal-file FILE` reads `[usage]` lines from a file instead of `journalctl`,
 which is how the failure-rate path gets tested without waiting for real
