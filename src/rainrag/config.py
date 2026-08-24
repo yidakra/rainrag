@@ -618,7 +618,11 @@ class WebMetadataConfig(BaseModel):
     )
     fields: list[str] = Field(
         default=["title", "date", "description", "url"],
-        description="Web metadata fields to append to document text",
+        description=(
+            "Web metadata fields to append to document text. Accepted: title, date, "
+            "description, url, program, presenters, tags, stories. Changing this list "
+            "changes the embedded text and so forces a full re-embed, not just a reindex"
+        ),
     )
     require_web_metadata: bool = Field(
         default=False,

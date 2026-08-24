@@ -713,3 +713,89 @@ def test_query_fills_missing_web_metadata_with_fallback_loader(
         assert doc2["web_title"] == "Recovered Web Title"
         assert result2["metadata_fallback_hits"] == 1
         assert fallback_loader.load_metadata.call_count == 1
+
+
+class TestRelatedChunksCarryPayloadMetadata:
+    """`find_related_chunks` must project everything the API reads back out."""
+
+    @staticmethod
+    def _engine_with_hits(hybrid_config, source_payload, hit_payload):
+        engine = RAGQueryEngine(hybrid_config)
+        client = MagicMock()
+
+        source_point = MagicMock()
+        source_point.payload = source_payload
+        source_point.vector = [0.1, 0.2, 0.3]
+
+        hit = MagicMock()
+        hit.payload = hit_payload
+        hit.score = 0.87
+
+        source_result = MagicMock()
+        source_result.points = [source_point]
+        neighbour_result = MagicMock()
+        neighbour_result.points = [hit]
+        client.query_points.side_effect = [source_result, neighbour_result]
+
+        engine.qdrant_client = client
+        return engine
+
+    def test_taxonomy_and_dates_reach_the_caller(self, hybrid_config):
+        from rainrag.api import ContextChunk, _web_metadata_kwargs
+        from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS
+
+        hit_payload = {
+            "doc_id": "neighbour",
+            "text": "текст",
+            "path": "/a.ru.vtt",
+            "language": "ru",
+            "date": "2013-06-09",
+            "duration_seconds": 300.0,
+            "web_title": "Выпуск",
+            "web_program": "Репортаж Дождя",
+            "web_presenters": ["Анна Монгайт"],
+            "web_tags": ["Сергей Собянин"],
+            "web_tags_person": ["Сергей Собянин"],
+            "web_tag_ids": [139],
+            "web_stories": ["Болотное дело"],
+        }
+        engine = self._engine_with_hits(hybrid_config, {"video_id": "v1"}, hit_payload)
+
+        related = engine.find_related_chunks("source", top_k=1)
+
+        assert len(related) == 1
+        chunk_data = related[0]
+        for field in WEB_METADATA_PAYLOAD_FIELDS:
+            assert field in chunk_data, f"{field} dropped before reaching the API"
+        assert chunk_data["web_program"] == "Репортаж Дождя"
+        assert chunk_data["web_tags"] == ["Сергей Собянин"]
+        assert chunk_data["date"] == "2013-06-09"
+        assert chunk_data["duration_seconds"] == 300.0
+
+        # The API projects chunk_data straight onto its response model.
+        chunk = ContextChunk(
+            filename="a.ru.vtt",
+            language="ru",
+            text=chunk_data["text"],
+            score=chunk_data["score"],
+            rank=1,
+            doc_id=chunk_data["doc_id"],
+            date=chunk_data.get("date"),
+            **_web_metadata_kwargs(chunk_data),
+        )
+        assert chunk.web_tags == ["Сергей Собянин"]
+        assert chunk.web_program == "Репортаж Дождя"
+        assert chunk.date == "2013-06-09"
+
+    def test_legacy_payloads_without_taxonomy_stay_empty(self, hybrid_config):
+        engine = self._engine_with_hits(
+            hybrid_config,
+            {"video_id": "v1"},
+            {"doc_id": "neighbour", "text": "текст", "path": "/a.ru.vtt", "language": "ru"},
+        )
+
+        chunk_data = engine.find_related_chunks("source", top_k=1)[0]
+
+        assert chunk_data["web_tags"] is None
+        assert chunk_data["web_program"] is None
+        assert chunk_data["date"] is None
