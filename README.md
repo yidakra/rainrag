@@ -14,6 +14,7 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 - **Vector Search**: Uses Qdrant for efficient similarity search
 - **Web UI**: Streamlit-based chat interface with FastAPI backend
 - **MCP Server**: Deploy as Model Context Protocol server for Claude Desktop, ChatGPT, and Cursor integration
+- **Slack Connector**: Query the archive from Slack via mentions, DMs, or the `/rainrag` slash command
 - **Video Playback**: Inline video player for retrieved content
 - **Subtitle Access**: Download and view VTT files directly in the UI
 - **Network Access**: Accessible from other devices on the same network with optional token authentication
@@ -497,6 +498,23 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 Restart Claude Desktop and you can now query your video transcripts directly from Claude!
 
 **For detailed setup instructions** including Cursor and ChatGPT integration, see [docs/MCP_SETUP.md](docs/MCP_SETUP.md).
+
+#### 8. Run Slack Connector
+
+Let journalists query the archive directly from Slack — mention the bot in a
+channel, DM it, or use the `/rainrag` slash command:
+
+```bash
+# Requires SLACK_SIGNING_SECRET and SLACK_BOT_TOKEN in the environment
+rainrag slack --host 127.0.0.1 --port 8002
+```
+
+The connector forwards questions to the RainRAG API (like the Streamlit UI
+does) and posts answers back to Slack with source attributions. Answers follow
+the question's language (Russian or English), and `from:`/`to:` date filters
+work inline: `@RainRAG протесты from:2020-01-01 to:2020-12-31`.
+
+**For Slack app creation and webhook configuration**, see [docs/SLACK_SETUP.md](docs/SLACK_SETUP.md).
 
 ### Google Sheet Hash and Subtitle Export
 
