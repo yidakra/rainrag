@@ -1,3 +1,6 @@
+# Assumes the ubuntu user and /home/ubuntu/rainrag, matching the other
+# rainrag-* units. Edit User/Group and the paths below to fit your
+# deployment before enabling.
 [Unit]
 Description=RainRAG Slack Connector
 After=network.target rainrag-api.service

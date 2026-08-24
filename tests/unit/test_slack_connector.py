@@ -131,6 +131,15 @@ class TestParseQuestion:
         assert "from:yesterday" in question
         assert date_from is None
 
+    def test_invalid_calendar_date_stays_in_question(self):
+        # Shaped like a date but not a real one: must not be stripped or
+        # forwarded as a filter the backend would reject.
+        question, date_from, date_to = parse_question("news from:2024-02-31 to:2024-13-01")
+        assert "from:2024-02-31" in question
+        assert "to:2024-13-01" in question
+        assert date_from is None
+        assert date_to is None
+
     def test_empty_after_mention(self):
         question, _, _ = parse_question("<@U0123ABCD>")
         assert question == ""

@@ -23,7 +23,7 @@ receives Slack webhooks and forwards questions to the existing RainRAG API
 dependency — webhook signatures are verified with a stdlib HMAC and answers
 are posted with one `chat.postMessage` call via httpx.
 
-```
+```text
 Slack ──HTTPS──▶ nginx /slack/ ──▶ connector :8002 ──▶ RainRAG API :8001
   ◀── chat.postMessage / response_url ──┘
 ```
@@ -60,7 +60,9 @@ Run it:
 # Directly
 rainrag slack --host 127.0.0.1 --port 8002
 
-# Or as a service
+# Or as a service. The unit assumes the ubuntu user and /home/ubuntu/rainrag
+# (same convention as rainrag-api.service) -- edit User/Group and the paths
+# to match your deployment before enabling.
 sudo cp deploy/systemd/rainrag-slack.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now rainrag-slack

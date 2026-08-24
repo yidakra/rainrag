@@ -26,6 +26,7 @@ import re
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from datetime import date
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -186,6 +187,12 @@ def parse_question(raw_text: str) -> tuple[str, str | None, str | None]:
 
     def _capture(match: re.Match[str]) -> str:
         nonlocal date_from, date_to
+        try:
+            date.fromisoformat(match.group(2))
+        except ValueError:
+            # Shaped like a date but not one (from:2024-02-31): keep it in
+            # the question rather than forward a filter the backend rejects.
+            return match.group(0)
         if match.group(1).lower() == "from":
             date_from = match.group(2)
         else:
