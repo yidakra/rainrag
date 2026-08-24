@@ -277,6 +277,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
+from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS
 from rainrag.query import RAGQueryEngine
 from rainrag.video_session import VideoSessionManager
 
@@ -375,6 +376,17 @@ class ContextChunk(BaseModel):
     web_date_ts: float | None = None
     web_description: str | None = None
     web_url: str | None = None
+
+    # Library CMS taxonomy. Empty for uploaded sessions and for archive videos
+    # whose era was never tagged, so clients must treat these as optional.
+    web_program: str | None = None
+    web_presenters: list[str] = Field(default_factory=list)
+    web_tags: list[str] = Field(default_factory=list)
+    web_tags_theme: list[str] = Field(default_factory=list)
+    web_tags_person: list[str] = Field(default_factory=list)
+    web_tags_location: list[str] = Field(default_factory=list)
+    web_tag_ids: list[int] = Field(default_factory=list)
+    web_stories: list[str] = Field(default_factory=list)
 
 
 class QueryResponse(BaseModel):
@@ -1035,6 +1047,27 @@ def generate_media_urls(
     return video_url, vtt_url
 
 
+def _web_metadata_kwargs(doc: dict[str, Any]) -> dict[str, Any]:
+    """Project a retrieved document's web metadata onto ContextChunk kwargs.
+
+    List-valued taxonomy fields are absent from older payloads indexed before
+    they existed, so they fall back to empty rather than None.
+    """
+    kwargs: dict[str, Any] = {}
+    for field in WEB_METADATA_PAYLOAD_FIELDS:
+        value = doc.get(field)
+        if field in _SCALAR_WEB_METADATA_FIELDS:
+            kwargs[field] = value
+        else:
+            kwargs[field] = value or []
+    return kwargs
+
+
+_SCALAR_WEB_METADATA_FIELDS = frozenset(
+    {"web_title", "web_date", "web_date_ts", "web_description", "web_url", "web_program"}
+)
+
+
 def get_video_base_name(vtt_path: str) -> str:
     """
     Extract the base name from a VTT file path for grouping.
@@ -1445,11 +1478,7 @@ async def query(
                         duration_seconds=doc.get("duration_seconds"),
                         start_time=doc.get("start_time"),
                         end_time=doc.get("end_time"),
-                        web_title=doc.get("web_title"),
-                        web_date=doc.get("web_date"),
-                        web_date_ts=doc.get("web_date_ts"),
-                        web_description=doc.get("web_description"),
-                        web_url=doc.get("web_url"),
+                        **_web_metadata_kwargs(doc),
                     )
                 )
 
@@ -1541,11 +1570,7 @@ def _build_query_response(result: dict[str, Any], *, media_urls: bool = True) ->
                 duration_seconds=doc.get("duration_seconds"),
                 start_time=doc.get("start_time"),
                 end_time=doc.get("end_time"),
-                web_title=doc.get("web_title"),
-                web_date=doc.get("web_date"),
-                web_date_ts=doc.get("web_date_ts"),
-                web_description=doc.get("web_description"),
-                web_url=doc.get("web_url"),
+                **_web_metadata_kwargs(doc),
             )
         )
     return QueryResponse(
@@ -2398,11 +2423,7 @@ async def get_related_chunks(
                 duration_seconds=doc.get("duration_seconds"),
                 start_time=doc.get("start_time"),
                 end_time=doc.get("end_time"),
-                web_title=doc.get("web_title"),
-                web_date=doc.get("web_date"),
-                web_date_ts=doc.get("web_date_ts"),
-                web_description=doc.get("web_description"),
-                web_url=doc.get("web_url"),
+                **_web_metadata_kwargs(doc),
             )
             related_chunks.append(chunk)
 

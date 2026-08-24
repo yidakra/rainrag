@@ -3,6 +3,7 @@
 import json
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -964,3 +965,280 @@ class TestConfig:
 
         # Should fall back to max_seq_length minus buffer
         assert max_tokens == 462
+
+
+class TestLibraryTaxonomyExtraction:
+    """Extraction of the library CMS taxonomy fields into cleaned metadata."""
+
+    @staticmethod
+    def _clean(tmp_path: Path, **article) -> dict:
+        article.setdefault("name", "Выпуск")
+        return WebMetadataLoader(tmp_path).extract_clean_metadata(article)
+
+    def test_program_and_presenters_are_extracted(self, tmp_path):
+        cleaned = self._clean(
+            tmp_path,
+            teleshow={"id": 2320, "name": "Женщины сверху", "active": True},
+            presentors=[
+                {"id": 363, "firstname": "Анна", "lastname": "Монгайт"},
+                {"id": 12, "firstname": "Тихон", "lastname": ""},
+            ],
+        )
+        assert cleaned["web_program"] == "Женщины сверху"
+        assert cleaned["web_presenters"] == ["Анна Монгайт", "Тихон"]
+
+    def test_presenters_accept_the_single_name_shape(self, tmp_path):
+        """The site embeds one `name`; the article endpoint splits it in two."""
+        cleaned = self._clean(tmp_path, presentors=[{"name": "Анна Монгайт"}])
+        assert cleaned["web_presenters"] == ["Анна Монгайт"]
+
+    def test_lite_rubric_is_dropped_from_tags(self, tmp_path):
+        cleaned = self._clean(
+            tmp_path,
+            tags=[
+                {"id": 1, "name": "Спорт", "category": "lite"},
+                {"id": 2, "name": "Война", "category": "theme"},
+            ],
+        )
+        assert cleaned["web_tags"] == ["Война"]
+        assert cleaned["web_tag_ids"] == [2]
+
+    def test_tags_are_grouped_by_category(self, tmp_path):
+        cleaned = self._clean(
+            tmp_path,
+            tags=[
+                {"id": 258, "name": "Украина", "category": "theme"},
+                {"id": 139, "name": "Сергей Собянин", "category": "person"},
+                {"id": 476, "name": "Египет", "category": "location"},
+            ],
+        )
+        assert cleaned["web_tags_theme"] == ["Украина"]
+        assert cleaned["web_tags_person"] == ["Сергей Собянин"]
+        assert cleaned["web_tags_location"] == ["Египет"]
+        assert cleaned["web_tags"] == ["Украина", "Сергей Собянин", "Египет"]
+
+    def test_name_duplicated_across_categories_collapses_but_keeps_both_ids(self, tmp_path):
+        """The CMS files Украина under both theme and location with distinct ids."""
+        cleaned = self._clean(
+            tmp_path,
+            tags=[
+                {"id": 258, "name": "Украина", "category": "theme"},
+                {"id": 1248, "name": "Украина", "category": "location"},
+            ],
+        )
+        assert cleaned["web_tags"] == ["Украина"]
+        assert cleaned["web_tag_ids"] == [258, 1248]
+
+    def test_unknown_categories_are_ignored(self, tmp_path):
+        cleaned = self._clean(tmp_path, tags=[{"id": 9, "name": "Нечто", "category": "brand-new"}])
+        assert cleaned["web_tags"] == []
+        assert cleaned["web_tag_ids"] == []
+
+    def test_stories_are_extracted(self, tmp_path):
+        cleaned = self._clean(
+            tmp_path, stories=[{"id": 320563, "name": "Коронавирус"}, {"id": 1, "name": ""}]
+        )
+        assert cleaned["web_stories"] == ["Коронавирус"]
+
+    def test_missing_taxonomy_yields_empty_values_not_none(self, tmp_path):
+        """The vast majority of the archive has no tags; that must not be an error."""
+        cleaned = self._clean(tmp_path, preview_text="Текст")
+        assert cleaned["web_program"] is None
+        assert cleaned["web_presenters"] == []
+        assert cleaned["web_tags"] == []
+        assert cleaned["web_tag_ids"] == []
+        assert cleaned["web_stories"] == []
+
+    @pytest.mark.parametrize("junk", [None, "not-a-list", 42, [None, 7, "плоская строка"]])
+    def test_malformed_payloads_do_not_raise(self, tmp_path, junk):
+        cleaned = self._clean(tmp_path, tags=junk, stories=junk, presentors=junk, teleshow=junk)
+        assert isinstance(cleaned["web_tags"], list)
+        assert isinstance(cleaned["web_stories"], list)
+        assert isinstance(cleaned["web_presenters"], list)
+        assert cleaned["web_program"] is None
+
+    def test_tag_ids_survive_string_encoding(self, tmp_path):
+        cleaned = self._clean(
+            tmp_path,
+            tags=[
+                {"id": "258", "name": "Украина", "category": "theme"},
+                {"id": None, "name": "Война", "category": "theme"},
+            ],
+        )
+        assert cleaned["web_tag_ids"] == [258]
+        assert cleaned["web_tags"] == ["Украина", "Война"]
+
+
+class TestTaxonomyReachesThePayload:
+    """The fields must survive Document construction and payload building."""
+
+    def test_document_web_fields_covers_every_payload_field(self, tmp_path):
+        from rainrag.index import _build_payload
+        from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS, document_web_fields
+
+        cleaned = WebMetadataLoader(tmp_path).extract_clean_metadata(
+            {
+                "name": "Выпуск",
+                "teleshow": {"name": "Здесь и сейчас"},
+                "presentors": [{"firstname": "Анна", "lastname": "Монгайт"}],
+                "tags": [{"id": 258, "name": "Украина", "category": "theme"}],
+                "stories": [{"id": 1, "name": "Болотное дело"}],
+            }
+        )
+        doc = Document(
+            id="d", path="/a.vtt", language="ru", text="t", length=1, **document_web_fields(cleaned)
+        )
+        payload = _build_payload(doc)
+        for field in WEB_METADATA_PAYLOAD_FIELDS:
+            assert field in payload, f"{field} missing from the Qdrant payload"
+        assert payload["web_program"] == "Здесь и сейчас"
+        assert payload["web_presenters"] == ["Анна Монгайт"]
+        assert payload["web_tags"] == ["Украина"]
+        assert payload["web_stories"] == ["Болотное дело"]
+
+    def test_untagged_document_defaults_to_empty_lists(self):
+        from rainrag.index import _build_payload
+
+        payload = _build_payload(Document(id="d", path="/a.vtt", language="ru", text="t", length=1))
+        assert payload["web_tags"] == []
+        assert payload["web_program"] is None
+
+
+class TestTaxonomyInEmbeddedText:
+    """Taxonomy is opt-in for the embedded text block."""
+
+    @staticmethod
+    def _ingester(config: Config, fields: list[str]) -> Ingester:
+        config.web_metadata.fields = fields
+        config.web_metadata.append_label = "[Web]"
+        return Ingester(config)
+
+    def test_taxonomy_is_absent_unless_requested(self, test_config: Config):
+        ingester = self._ingester(test_config, ["title"])
+        block = ingester._build_web_metadata_block(
+            {"web_title": "Выпуск", "web_tags": ["Война"], "web_program": "Здесь и сейчас"}
+        )
+        assert block == "[Web]\nTitle: Выпуск"
+
+    def test_requested_taxonomy_is_rendered(self, test_config: Config):
+        ingester = self._ingester(test_config, ["program", "presenters", "tags", "stories"])
+        block = ingester._build_web_metadata_block(
+            {
+                "web_program": "Здесь и сейчас",
+                "web_presenters": ["Анна Монгайт", "Тихон Дзядко"],
+                "web_tags": ["Война", "Украина"],
+                "web_stories": ["Болотное дело"],
+            }
+        )
+        assert block == (
+            "[Web]\nProgram: Здесь и сейчас\nPresenters: Анна Монгайт, Тихон Дзядко\n"
+            "Tags: Война, Украина\nStories: Болотное дело"
+        )
+
+    def test_empty_taxonomy_lists_emit_no_lines(self, test_config: Config):
+        ingester = self._ingester(test_config, ["title", "tags", "stories"])
+        block = ingester._build_web_metadata_block({"web_title": "Выпуск", "web_tags": []})
+        assert block == "[Web]\nTitle: Выпуск"
+
+    def test_taxonomy_fields_are_not_warned_about_as_unknown(
+        self, test_config: Config, monkeypatch
+    ):
+        """Config accepts the new names, so the unknown-field warning must stay silent.
+
+        ingest logs through loguru, which does not reach caplog; capture the call.
+        """
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            "rainrag.ingest.logger.warning", lambda message, *a, **k: warnings.append(str(message))
+        )
+        ingester = self._ingester(test_config, ["program", "presenters", "tags", "stories"])
+        ingester._build_web_metadata_block({"web_program": "Здесь и сейчас"})
+        assert warnings == []
+
+    def test_a_genuinely_unknown_field_still_warns(self, test_config: Config, monkeypatch):
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            "rainrag.ingest.logger.warning", lambda message, *a, **k: warnings.append(str(message))
+        )
+        ingester = self._ingester(test_config, ["not_a_field"])
+        ingester._build_web_metadata_block({"web_title": "Выпуск"})
+        assert any("Unrecognized web metadata fields" in w for w in warnings)
+
+
+class TestStaleMetadataCacheWarning:
+    """A cache written before the API exposed tags must not fail silently."""
+
+    @staticmethod
+    def _write(directory: Path, name: str, article: dict) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{name}.json").write_text(json.dumps(article), encoding="utf-8")
+
+    def test_warns_when_no_sampled_file_has_a_tags_key(self, tmp_path):
+        from rainrag.ingest import warn_if_metadata_cache_predates_taxonomy
+
+        for i in range(3):
+            self._write(tmp_path, f"hash{i}", {"name": "Выпуск", "teleshow": {"name": "П"}})
+        assert warn_if_metadata_cache_predates_taxonomy(tmp_path) is True
+
+    def test_silent_when_any_file_carries_tags(self, tmp_path):
+        from rainrag.ingest import warn_if_metadata_cache_predates_taxonomy
+
+        self._write(tmp_path, "old", {"name": "Выпуск"})
+        self._write(tmp_path, "new", {"name": "Выпуск", "tags": []})
+        assert warn_if_metadata_cache_predates_taxonomy(tmp_path) is False
+
+    def test_an_empty_tags_list_still_counts_as_fresh(self, tmp_path):
+        """Untagged-but-current articles legitimately return an empty list."""
+        from rainrag.ingest import warn_if_metadata_cache_predates_taxonomy
+
+        self._write(tmp_path, "only", {"name": "Выпуск", "tags": []})
+        assert warn_if_metadata_cache_predates_taxonomy(tmp_path) is False
+
+    def test_silent_on_empty_or_missing_directory(self, tmp_path):
+        from rainrag.ingest import warn_if_metadata_cache_predates_taxonomy
+
+        assert warn_if_metadata_cache_predates_taxonomy(tmp_path) is False
+        assert warn_if_metadata_cache_predates_taxonomy(tmp_path / "nope") is False
+
+    def test_unreadable_files_are_skipped_not_counted(self, tmp_path):
+        from rainrag.ingest import warn_if_metadata_cache_predates_taxonomy
+
+        (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+        assert warn_if_metadata_cache_predates_taxonomy(tmp_path) is False
+
+
+class TestStaleCacheWarningIsLocalModeOnly:
+    """api/hybrid refetch stale entries, so only local mode needs the warning."""
+
+    @staticmethod
+    def _stale_cache(tmp_path: Path) -> Path:
+        cache = tmp_path / "web_metadata"
+        cache.mkdir()
+        (cache / "legacy.json").write_text(json.dumps({"name": "Выпуск"}), encoding="utf-8")
+        return cache
+
+    def _build(self, test_config: Config, tmp_path: Path, source: str, monkeypatch) -> list[str]:
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            "rainrag.ingest.logger.warning", lambda message, *a, **k: warnings.append(str(message))
+        )
+        monkeypatch.setattr(
+            "rainrag.web_metadata_api.WebMetadataAPIClient.from_env",
+            classmethod(lambda cls, **kwargs: MagicMock()),
+        )
+        test_config.web_metadata.enabled = True
+        test_config.web_metadata.source = source
+        test_config.web_metadata.path = str(self._stale_cache(tmp_path))
+        Ingester(test_config)
+        return warnings
+
+    def test_local_mode_warns(self, test_config: Config, tmp_path: Path, monkeypatch):
+        warnings = self._build(test_config, tmp_path, "local", monkeypatch)
+        assert any("predate the library taxonomy" in w for w in warnings)
+
+    @pytest.mark.parametrize("source", ["api", "hybrid"])
+    def test_api_modes_stay_quiet_because_they_refetch(
+        self, test_config: Config, tmp_path: Path, monkeypatch, source
+    ):
+        warnings = self._build(test_config, tmp_path, source, monkeypatch)
+        assert not any("predate the library taxonomy" in w for w in warnings)
