@@ -32,6 +32,7 @@ Restartable by construction:
 from __future__ import annotations
 
 import argparse
+import functools
 import re
 import sys
 import time
@@ -43,6 +44,10 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 _HASH_RE = re.compile(r"^[a-f0-9]{40}$")
+
+# The run is hours long and usually redirected to a log file, where stdout is
+# block-buffered -- an operator tailing the log would see nothing until exit.
+print = functools.partial(print, flush=True)
 
 
 def load_line_set(path: Path) -> set[str]:
