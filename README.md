@@ -501,18 +501,25 @@ Restart Claude Desktop and you can now query your video transcripts directly fro
 
 #### 8. Run Slack Connector
 
-Let journalists query the archive directly from Slack — mention the bot in a
-channel, DM it, or use the `/rainrag` slash command:
+The full RainRAG feature set directly in Slack — mention the bot in a channel,
+DM it, or use the `/rainrag` slash command:
 
 ```bash
 # Requires SLACK_SIGNING_SECRET and SLACK_BOT_TOKEN in the environment
 rainrag slack --host 127.0.0.1 --port 8002
 ```
 
-The connector forwards questions to the RainRAG API (like the Streamlit UI
-does) and posts answers back to Slack with source attributions. Answers follow
-the question's language (Russian or English), and `from:`/`to:` date filters
-work inline: `@RainRAG протесты from:2020-01-01 to:2020-12-31`.
+The connector forwards requests to the RainRAG API (like the Streamlit UI
+does) and is at feature parity with it:
+
+- Q&A with source attributions, transcript excerpts, timecodes and scores
+- The top match's footage posted as an inline clip that plays in Slack, plus
+  expiring-token links to the full video at the right timecode and its VTT
+- "Related" buttons to explore similar fragments
+- `name: <title>` search, `status` health summary
+- `video: <url>` (or an attached file) to transcribe a video and ask
+  questions about it in the same thread
+- Inline `from:`/`to:` date filters, `top:N` depth and `lang:ru|en` override
 
 **For Slack app creation and webhook configuration**, see [docs/SLACK_SETUP.md](docs/SLACK_SETUP.md).
 

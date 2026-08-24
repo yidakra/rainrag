@@ -464,3 +464,39 @@ def test_web_metadata_kwargs_covers_the_shared_field_list():
     kwargs = _web_metadata_kwargs({})
     assert set(kwargs) == set(WEB_METADATA_PAYLOAD_FIELDS)
     assert set(WEB_METADATA_PAYLOAD_FIELDS) <= set(ContextChunk.model_fields)
+
+
+def test_video_clip_endpoint_validation(test_client, temp_dir: Path, archive_with_videos: Path):
+    """Range and containment checks on /video-clip, without reaching ffmpeg."""
+    test_cfg = make_test_config(str(archive_with_videos))
+    clip_url = "/video-clip/test_videos/3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd_720p.mp4"
+
+    with override_api_config(test_cfg):
+        # end must be greater than start
+        response = test_client.get(clip_url, params={"start": 10, "end": 5})
+        assert response.status_code == 400
+
+        # span capped at CLIP_MAX_SECONDS
+        response = test_client.get(clip_url, params={"start": 0, "end": 100000})
+        assert response.status_code == 400
+
+        # same path containment as /video
+        response = test_client.get("/video-clip/../../../etc/passwd", params={"start": 0, "end": 5})
+        assert response.status_code in [400, 403, 404]
+
+        # missing file
+        response = test_client.get(
+            "/video-clip/test_videos/nope.mp4", params={"start": 0, "end": 5}
+        )
+        assert response.status_code == 404
+
+
+def test_video_clip_endpoint_disabled(test_client, temp_dir: Path, archive_with_videos: Path):
+    """Clip extraction is off whenever video serving is off."""
+    test_cfg = make_test_config(str(archive_with_videos), video_enabled=False)
+    with override_api_config(test_cfg):
+        response = test_client.get(
+            "/video-clip/test_videos/3b10f9b81a130d9ed9bb81c3f4a304c9f3641dfd_720p.mp4",
+            params={"start": 0, "end": 5},
+        )
+        assert response.status_code == 404
