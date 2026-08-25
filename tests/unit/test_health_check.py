@@ -511,3 +511,27 @@ class TestConfigThatIsNotAMapping:
         cfg = tmp_path / "c.yaml"
         cfg.write_text("video_upload:\n  telegram_enabled: true\n")
         assert hc.telegram_enabled(str(cfg)) is True
+
+
+# --------------------------------------------------------------------------- #
+# Slack connector check
+# --------------------------------------------------------------------------- #
+
+
+def test_ok_status_counts_as_healthy() -> None:
+    """The Slack connector's /health says "ok" where the API says "healthy"."""
+    result = hc.evaluate_readiness(
+        "slack", "http://x/health", 200, b'{"status": "ok", "bot_token_configured": true}'
+    )
+    assert result.status == hc.OK
+
+
+def test_degraded_status_still_fails() -> None:
+    result = hc.evaluate_readiness("api", "http://x/health", 200, b'{"status": "degraded"}')
+    assert result.status == hc.FAIL
+
+
+def test_slack_check_is_skipped_by_default() -> None:
+    """Deployments without the connector must stay green: empty default = no check."""
+    args = hc.build_parser().parse_args([])
+    assert args.slack_url == ""

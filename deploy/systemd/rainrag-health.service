@@ -11,7 +11,7 @@ WorkingDirectory=/home/ubuntu/rainrag
 # The script only reads config.yaml and stats data/telegram.session; it needs no
 # secrets, so no EnvironmentFile here on purpose.
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/ubuntu/rainrag/.venv/bin/python3 /home/ubuntu/rainrag/scripts/health_check.py
+ExecStart=/home/ubuntu/rainrag/.venv/bin/python3 /home/ubuntu/rainrag/scripts/health_check.py --slack-url http://127.0.0.1:8002/health
 
 # A healthy run exits 0 and prints nothing, so this unit leaves no journal entry
 # at all. A problem exits 1, which marks the unit failed: `systemctl list-units

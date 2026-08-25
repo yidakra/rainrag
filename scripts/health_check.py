@@ -259,7 +259,9 @@ def evaluate_readiness(name: str, url: str, status: int, body: bytes) -> CheckRe
         payload = None
     if isinstance(payload, dict) and isinstance(payload.get("status"), str):
         reported = payload["status"]
-        if reported != "healthy":
+        # Two vocabularies for the same thing: the API's /health says
+        # "healthy", the Slack connector's says "ok". Both mean ready.
+        if reported not in ("healthy", "ok"):
             missing = [
                 key for key in ("qdrant_connected", "model_loaded") if payload.get(key) is False
             ]
@@ -465,6 +467,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--api-url", default=DEFAULT_API_URL, help="API URL expected to return 200"
     )
     targets.add_argument(
+        "--slack-url",
+        default="",
+        help="Slack connector health URL; empty (the default) skips the check, "
+        "so deployments without the connector stay green",
+    )
+    targets.add_argument(
         "--streamlit-port",
         type=int,
         action="append",
@@ -511,6 +519,9 @@ def main(argv: list[str] | None = None) -> int:
             events, min_attempts=args.min_attempts, threshold=args.failure_threshold
         )
     )
+
+    if args.slack_url:
+        results.append(check_http("slack", args.slack_url, args.timeout))
 
     results.append(check_disk(disk_paths, args.disk_threshold))
     results.append(check_session(args.session_file, args.config))

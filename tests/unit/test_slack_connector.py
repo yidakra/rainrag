@@ -55,6 +55,9 @@ def slack_env(monkeypatch):
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test-token")
     monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("RAINRAG_ASSET_URL", raising=False)
+    # Any Slack API call a test forgets to mock must fail fast and offline,
+    # never reach slack.com: port 9 (discard) refuses connections instantly.
+    monkeypatch.setattr(slack_connector, "SLACK_API_BASE", "http://127.0.0.1:9")
     _seen_events.clear()
     _video_threads.clear()
     yield
@@ -314,8 +317,10 @@ class TestFormatAnswer:
         # Duplicate group_id collapses to one source line.
         assert rendered.count("Вечернее шоу") == 1
         assert "<https://tvrain.tv/x|Вечернее шоу (2021-05-01)>" in rendered
-        # Source without web_url is shown unlinked.
-        assert "archive/abc.ru.vtt (2020-01-01)" in rendered
+        # Source without web_url is shown unlinked, and without an article its
+        # label is a humane fallback, never the raw archive path.
+        assert "Эфир из архива (2020-01-01)" in rendered
+        assert "archive/abc.ru.vtt" not in rendered
 
     def test_long_answer_split_across_blocks(self):
         result = {"answer": "слово " * 2000, "context": []}
@@ -671,9 +676,12 @@ class TestProcessEventQuestion:
         asyncio.run(slack_connector.process_event_question(event))
         assert mock_post.call_args.args[3] is None
 
+    @patch("src.rainrag.slack_connector.update_slack_message", new_callable=AsyncMock)
     @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
     @patch("src.rainrag.slack_connector.query_rainrag", new_callable=AsyncMock)
-    def test_context_message_follows_answer(self, mock_query, mock_post):
+    def test_context_message_follows_answer(self, mock_query, mock_post, mock_update):
+        mock_post.return_value = "1.1"
+        mock_update.return_value = True
         mock_query.return_value = {
             "answer": "ответ",
             "context": [{"doc_id": "d1", "text": "фрагмент", "filename": "a.vtt"}],
@@ -681,14 +689,19 @@ class TestProcessEventQuestion:
         }
         event = {"type": "app_mention", "channel": "C1", "ts": "1.0", "text": "<@U1> вопрос"}
         asyncio.run(slack_connector.process_event_question(event))
-        assert mock_post.call_count == 2  # answer + context excerpts
+        # Placeholder post, edited into the answer; context is its own message.
+        assert mock_post.call_count == 2
+        assert mock_update.await_args.args[2] == "ответ"
         context_blocks = mock_post.call_args_list[1].args[2]
         assert any(b.get("type") == "actions" for b in context_blocks)
 
+    @patch("src.rainrag.slack_connector.update_slack_message", new_callable=AsyncMock)
     @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
     @patch("src.rainrag.slack_connector.query_rainrag", new_callable=AsyncMock)
-    def test_context_message_disabled_by_env(self, mock_query, mock_post, monkeypatch):
+    def test_context_message_disabled_by_env(self, mock_query, mock_post, mock_update, monkeypatch):
         monkeypatch.setenv("RAINRAG_SLACK_SHOW_CONTEXT", "false")
+        mock_post.return_value = "1.1"
+        mock_update.return_value = True
         mock_query.return_value = {
             "answer": "ответ",
             "context": [{"doc_id": "d1", "text": "фрагмент"}],
@@ -696,7 +709,9 @@ class TestProcessEventQuestion:
         }
         event = {"type": "app_mention", "channel": "C1", "ts": "1.0", "text": "<@U1> вопрос"}
         asyncio.run(slack_connector.process_event_question(event))
+        # Only the placeholder is posted; the answer arrives as its edit.
         assert mock_post.call_count == 1
+        mock_update.assert_awaited_once()
 
     @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
     @patch("src.rainrag.slack_connector.query_rainrag", new_callable=AsyncMock)
@@ -787,7 +802,8 @@ class TestProcessEventQuestion:
         }
         asyncio.run(slack_connector.process_event_question(event))
         assert mock_session_query.call_args.args[0] == "sess-42"
-        assert mock_post.call_args_list[0].args[3] == "100.0"  # stays in the session thread
+        # Every message (the placeholder included) stays in the session thread.
+        assert all(c.args[3] == "100.0" for c in mock_post.call_args_list)
 
     @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
     @patch("src.rainrag.slack_connector.query_rainrag", new_callable=AsyncMock)
@@ -858,17 +874,21 @@ class TestClips:
 
     @patch("src.rainrag.slack_connector.upload_clip_to_slack", new_callable=AsyncMock)
     @patch("src.rainrag.slack_connector.fetch_video_clip", new_callable=AsyncMock)
+    @patch("src.rainrag.slack_connector.update_slack_message", new_callable=AsyncMock)
     @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
     @patch("src.rainrag.slack_connector.query_rainrag", new_callable=AsyncMock)
     def test_clip_failure_does_not_break_answer(
-        self, mock_query, mock_post, mock_fetch, mock_upload
+        self, mock_query, mock_post, mock_update, mock_fetch, mock_upload
     ):
+        mock_post.return_value = "1.1"
+        mock_update.return_value = True
         mock_query.return_value = {"answer": "ответ", "context": [self.CHUNK], "num_documents": 1}
         mock_fetch.return_value = None  # clip fetch failed / too large
         event = {"type": "app_mention", "channel": "C1", "ts": "1.0", "text": "<@U1> вопрос"}
         asyncio.run(slack_connector.process_event_question(event))
         mock_upload.assert_not_called()
-        assert mock_post.call_count == 2  # answer + context still delivered
+        # Placeholder (edited into the answer) + context: nothing lost.
+        assert mock_post.call_count == 2
 
     @patch("src.rainrag.slack_connector.fetch_video_clip", new_callable=AsyncMock)
     @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
@@ -996,3 +1016,109 @@ class TestVideoSessionFlows:
         asyncio.run(slack_connector.process_event_question(event))
         assert video_session_for_thread("D1", "100.0") is None
         assert "истекла" in mock_post.call_args.args[1]
+
+
+# ============================================================================
+# Placeholder -> chat.update answer flow
+# ============================================================================
+
+
+class TestPlaceholderUpdateFlow:
+    def _event(self):
+        return {"channel": "C1", "ts": "111.222", "type": "app_mention", "text": "<@U1> вопрос"}
+
+    @patch("src.rainrag.slack_connector._dispatch", new_callable=AsyncMock)
+    @patch("src.rainrag.slack_connector.update_slack_message", new_callable=AsyncMock)
+    @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
+    def test_placeholder_posted_then_edited_into_the_answer(
+        self, mock_post, mock_update, mock_dispatch
+    ):
+        mock_post.return_value = "111.333"
+        mock_update.return_value = True
+
+        async def dispatch(parsed, send, **kwargs):
+            await send("ответ", [{"type": "section"}])
+            await send("контекст", None)
+
+        mock_dispatch.side_effect = dispatch
+        asyncio.run(slack_connector.process_event_question(self._event()))
+
+        # One placeholder post, edited by the first reply; the second reply is
+        # a fresh message (context must not overwrite the answer).
+        assert mock_post.await_count == 2
+        assert mock_post.await_args_list[0].args[1] == slack_connector._BUSY_TEXT
+        mock_update.assert_awaited_once()
+        assert mock_update.await_args.args[1] == "111.333"
+        assert mock_update.await_args.args[2] == "ответ"
+        assert mock_post.await_args_list[1].args[1] == "контекст"
+
+    @patch("src.rainrag.slack_connector._dispatch", new_callable=AsyncMock)
+    @patch("src.rainrag.slack_connector.update_slack_message", new_callable=AsyncMock)
+    @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
+    def test_failed_edit_falls_back_to_a_fresh_post(self, mock_post, mock_update, mock_dispatch):
+        """A deleted placeholder must not swallow the answer."""
+        mock_post.return_value = "111.333"
+        mock_update.return_value = False
+
+        async def dispatch(parsed, send, **kwargs):
+            await send("ответ", None)
+
+        mock_dispatch.side_effect = dispatch
+        asyncio.run(slack_connector.process_event_question(self._event()))
+
+        assert mock_post.await_count == 2  # placeholder + fallback answer
+        assert mock_post.await_args_list[1].args[1] == "ответ"
+
+    @patch("src.rainrag.slack_connector._dispatch", new_callable=AsyncMock)
+    @patch("src.rainrag.slack_connector.update_slack_message", new_callable=AsyncMock)
+    @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
+    def test_failed_placeholder_degrades_to_plain_posts(
+        self, mock_post, mock_update, mock_dispatch
+    ):
+        mock_post.return_value = None  # placeholder post failed
+
+        async def dispatch(parsed, send, **kwargs):
+            await send("ответ", None)
+
+        mock_dispatch.side_effect = dispatch
+        asyncio.run(slack_connector.process_event_question(self._event()))
+
+        mock_update.assert_not_awaited()
+        assert mock_post.await_args_list[1].args[1] == "ответ"
+
+    @patch("src.rainrag.slack_connector._handle_video_file", new_callable=AsyncMock)
+    @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
+    def test_video_uploads_get_no_placeholder(self, mock_post, mock_handle):
+        """Uploads announce their own progress; a dangling 'searching' would lie."""
+        event = {
+            "channel": "C1",
+            "ts": "1.2",
+            "type": "message",
+            "channel_type": "im",
+            "text": "",
+            "files": [{"name": "x.mp4", "mimetype": "video/mp4"}],
+        }
+        asyncio.run(slack_connector.process_event_question(event))
+        mock_handle.assert_awaited_once()
+        mock_post.assert_not_awaited()
+
+
+# ============================================================================
+# Human source labels for articleless videos
+# ============================================================================
+
+
+class TestChunkTitleFallback:
+    def test_web_title_wins(self):
+        assert slack_connector._chunk_title({"web_title": "Вечер"}, "ru") == "Вечер"
+
+    def test_raw_archive_path_is_never_shown(self):
+        doc = {"filename": "/data/archive/ab/cd/abcdef.ru.vtt"}
+        assert slack_connector._chunk_title(doc, "ru") == "Эфир из архива"
+        assert slack_connector._chunk_title(doc, "en") == "Archive broadcast"
+
+    def test_source_line_uses_fallback_with_date(self):
+        lines = slack_connector._source_lines(
+            [{"filename": "/data/archive/x.ru.vtt", "date": "2022-07-27"}], "ru"
+        )
+        assert lines == ["• Эфир из архива (2022-07-27)"]
