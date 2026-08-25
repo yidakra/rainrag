@@ -491,6 +491,28 @@ def test_video_clip_endpoint_validation(test_client, temp_dir: Path, archive_wit
         assert response.status_code == 404
 
 
+def test_video_clip_sibling_directory_rejected(
+    test_client, temp_dir: Path, archive_with_videos: Path
+):
+    """Containment must be a path test, not a string-prefix test.
+
+    A sibling directory whose name shares the root's prefix (archive vs
+    archive_backup) passed the old startswith check; is_relative_to rejects it.
+    The dot segments are percent-encoded so the HTTP client does not normalize
+    them away before the route sees the path.
+    """
+    sibling = archive_with_videos.parent / f"{archive_with_videos.name}_backup"
+    sibling.mkdir()
+    (sibling / "x.mp4").write_bytes(b"video")
+
+    test_cfg = make_test_config(str(archive_with_videos))
+    with override_api_config(test_cfg):
+        response = test_client.get(
+            f"/video-clip/%2E%2E/{sibling.name}/x.mp4", params={"start": 0, "end": 5}
+        )
+        assert response.status_code == 403
+
+
 def test_video_clip_endpoint_disabled(test_client, temp_dir: Path, archive_with_videos: Path):
     """Clip extraction is off whenever video serving is off."""
     test_cfg = make_test_config(str(archive_with_videos), video_enabled=False)

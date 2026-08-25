@@ -1288,12 +1288,14 @@ async def _handle_video_file(
         fd, tmp_name = tempfile.mkstemp(suffix=".slackupload")
         tmp_path = Path(tmp_name)
         written = 0
-        async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT_SECONDS) as client:
-            async with client.stream(
-                "GET", download_url, headers={"Authorization": f"Bearer {token}"}
-            ) as response:
-                response.raise_for_status()
-                with os.fdopen(fd, "wb") as out:
+        # fdopen wraps the descriptor before any network I/O: a request that
+        # fails early (expired URL, connect timeout) must not leak the fd.
+        with os.fdopen(fd, "wb") as out:
+            async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT_SECONDS) as client:
+                async with client.stream(
+                    "GET", download_url, headers={"Authorization": f"Bearer {token}"}
+                ) as response:
+                    response.raise_for_status()
                     async for chunk in response.aiter_bytes(1024 * 1024):
                         written += len(chunk)
                         if written > max_bytes:

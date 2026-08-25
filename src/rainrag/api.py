@@ -2484,9 +2484,11 @@ def _resolve_archive_video_path(file_path: str) -> Path:
     ).resolve()
     full_path = (video_root / file_path).resolve()
 
-    # Security check: ensure the path is within video_root
+    # Security check: ensure the path is within video_root. is_relative_to,
+    # not a string prefix test: /data/videos_backup must not pass for a root
+    # of /data/videos.
     try:
-        if not str(full_path).startswith(str(video_root)):
+        if not full_path.is_relative_to(video_root):
             raise HTTPException(status_code=403, detail="Access denied")
     except HTTPException:
         raise
@@ -2586,7 +2588,10 @@ def _cleanup_clip_cache_best_effort() -> None:
     except OSError:
         return
     for f in survivors[:overflow]:
-        f.unlink(missing_ok=True)
+        # Same best-effort contract as the TTL loop above: cleanup must never
+        # fail the clip request that triggered it.
+        with suppress(OSError):
+            f.unlink(missing_ok=True)
 
 
 def _ensure_clip_cache(video_file: Path, start: float, end: float) -> Path:
