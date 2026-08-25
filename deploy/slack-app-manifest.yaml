@@ -29,6 +29,7 @@ oauth_config:
       - app_mentions:read # see mentions in channels
       - im:history # read DMs sent to the bot
       - chat:write # post answers
+      - commands # required by the /rainrag slash command
       - files:read # download attached videos for import
       - files:write # post inline clips of retrieved footage
 settings:
