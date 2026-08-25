@@ -895,6 +895,36 @@ class TestClips:
 
 
 # ============================================================================
+# Slack file-host pinning
+# ============================================================================
+
+
+class TestSlackHostPinning:
+    def test_slack_hosts_accepted(self):
+        assert slack_connector._is_slack_host("https://files.slack.com/files-pri/T1-F1/x.mp4")
+        assert slack_connector._is_slack_host("https://slack.com/f")
+
+    def test_non_slack_hosts_rejected(self):
+        assert not slack_connector._is_slack_host("https://evil.example/files.slack.com/x")
+        # Suffix match must require the dot: notslack.com is not a subdomain.
+        assert not slack_connector._is_slack_host("https://notslack.com/x")
+        assert not slack_connector._is_slack_host("not a url")
+
+    @patch("src.rainrag.slack_connector.create_video_session_from_file", new_callable=AsyncMock)
+    @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
+    def test_bot_token_never_sent_to_foreign_host(self, mock_post, mock_create):
+        file_info = {
+            "name": "clip.mp4",
+            "mimetype": "video/mp4",
+            "size": 1024,
+            "url_private_download": "https://evil.example/grab-token",
+        }
+        asyncio.run(slack_connector._handle_video_file(file_info, "D1", "1.0", "en"))
+        mock_create.assert_not_called()
+        assert "failed" in mock_post.call_args.args[1]
+
+
+# ============================================================================
 # Video session flows
 # ============================================================================
 

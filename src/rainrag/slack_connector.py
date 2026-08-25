@@ -1220,6 +1220,15 @@ async def _handle_video_url(url: str, channel: str, thread_root: str, language: 
     await _watch_video_session(session["id"], channel, thread_root, language)
 
 
+def _is_slack_host(url: str) -> bool:
+    """True when the URL points at Slack itself (slack.com or a subdomain)."""
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "slack.com" or host.endswith(".slack.com")
+
+
 def _is_video_file(file_info: dict[str, Any]) -> bool:
     if (file_info.get("mimetype") or "").startswith("video/"):
         return True
@@ -1241,6 +1250,16 @@ async def _handle_video_file(
     token = _bot_token()
     download_url = file_info.get("url_private_download") or file_info.get("url_private")
     if not token or not download_url:
+        await post_slack_message(channel, _error_text(language), thread_ts=thread_root)
+        return
+    if not _is_slack_host(download_url):
+        # Defense in depth: events are already signature-verified, but the bot
+        # token goes into this request's Authorization header, so never send
+        # it anywhere but Slack's own file hosts.
+        logger.warning(
+            "Refusing file download from non-Slack host: {}",
+            (urlsplit(download_url).hostname or "?"),
+        )
         await post_slack_message(channel, _error_text(language), thread_ts=thread_root)
         return
 
