@@ -139,6 +139,10 @@ def report_queries(
     """Print the question-answering side: volume, failures, latency, tokens."""
     print(f"Questions asked, last {args.days} day(s): {len(queries)} attempt(s)")
     if not queries:
+        # --unit rainrag-slack alone selects slack_query events but no query
+        # events; the observed Slack usage must not vanish with them.
+        if via_slack:
+            print(f"  via Slack: {via_slack}")
         print("  none recorded (nobody asked, or the API predates query usage logging)\n")
         return
 

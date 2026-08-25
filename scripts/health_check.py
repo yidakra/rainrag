@@ -263,7 +263,10 @@ def evaluate_readiness(name: str, url: str, status: int, body: bytes) -> CheckRe
         # "healthy", the Slack connector's says "ok". Both mean ready.
         if reported not in ("healthy", "ok"):
             missing = [
-                key for key in ("qdrant_connected", "model_loaded") if payload.get(key) is False
+                key
+                for key in payload
+                if payload.get(key) is False
+                and (key in ("qdrant_connected", "model_loaded") or key.endswith("_configured"))
             ]
             detail = f"{url} -> 200 but reports {reported!r}"
             if missing:

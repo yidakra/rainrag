@@ -162,3 +162,9 @@ class TestMultiUnitJournal:
         monkeypatch.setattr(ur.subprocess, "run", fake_run)
         ur.journal_lines("1 hour ago", "rainrag-api")
         assert captured["cmd"].count("-u") == 1
+
+    def test_slack_only_selection_keeps_attribution(self, capsys):
+        """--unit rainrag-slack yields slack_query events but no query events."""
+        ur.report_queries([], argparse.Namespace(days=7), via_slack=4)
+        out = capsys.readouterr().out
+        assert "via Slack: 4" in out

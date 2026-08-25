@@ -535,3 +535,14 @@ def test_slack_check_is_skipped_by_default() -> None:
     """Deployments without the connector must stay green: empty default = no check."""
     args = hc.build_parser().parse_args([])
     assert args.slack_url == ""
+
+
+def test_degraded_detail_names_the_false_configured_flags() -> None:
+    result = hc.evaluate_readiness(
+        "slack",
+        "http://x/health",
+        200,
+        b'{"status": "degraded", "signing_secret_configured": true, "bot_token_configured": false}',
+    )
+    assert result.status == hc.FAIL
+    assert "bot_token_configured" in result.detail

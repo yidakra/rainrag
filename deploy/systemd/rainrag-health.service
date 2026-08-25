@@ -1,7 +1,9 @@
 [Unit]
 Description=RainRAG health check (quiet unless something is broken)
 Documentation=file:///home/ubuntu/rainrag/deploy/systemd/HEALTH_CHECK.md
-After=network.target
+# Ordering only (not Requires): the check must run when these are down --
+# reporting that is its job -- but at boot it should not race their startup.
+After=network.target rainrag-api.service rainrag-slack.service
 
 [Service]
 Type=oneshot

@@ -1086,6 +1086,20 @@ class TestPlaceholderUpdateFlow:
         mock_update.assert_not_awaited()
         assert mock_post.await_args_list[1].args[1] == "ответ"
 
+    @patch("src.rainrag.slack_connector._handle_video_url", new_callable=AsyncMock)
+    @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
+    def test_video_url_imports_get_no_placeholder(self, mock_post, mock_handle):
+        """video: never replies through send(), so a placeholder would dangle."""
+        event = {
+            "channel": "C1",
+            "ts": "1.2",
+            "type": "app_mention",
+            "text": "<@U1> video: https://youtu.be/abc",
+        }
+        asyncio.run(slack_connector.process_event_question(event))
+        mock_handle.assert_awaited_once()
+        mock_post.assert_not_awaited()
+
     @patch("src.rainrag.slack_connector._handle_video_file", new_callable=AsyncMock)
     @patch("src.rainrag.slack_connector.post_slack_message", new_callable=AsyncMock)
     def test_video_uploads_get_no_placeholder(self, mock_post, mock_handle):
@@ -1172,3 +1186,16 @@ class TestMarkdownToMrkdwn:
         )
         assert blocks[0]["text"]["text"].startswith("*Вывод*: закон")
         assert text.startswith("*Вывод*")
+
+
+class TestHealthEndpointReadiness:
+    def test_configured_reports_ok(self, client):
+        data = client.get("/health").json()
+        assert data["status"] == "ok"
+
+    def test_missing_credentials_report_degraded(self, client, monkeypatch):
+        """A monitor that reads "ok" from a bot with no token sleeps through an outage."""
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+        data = client.get("/health").json()
+        assert data["status"] == "degraded"
+        assert data["bot_token_configured"] is False

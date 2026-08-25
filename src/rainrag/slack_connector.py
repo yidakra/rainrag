@@ -1523,7 +1523,10 @@ async def process_event_question(event: dict[str, Any]) -> None:
         await _handle_video_file(video_files[0], channel, thread_root, language)
         return
 
-    placeholder_ts = await post_slack_message(channel, _BUSY_TEXT, None, reply_thread)
+    # video: imports post their own progress messages and never reply through
+    # send(), so a placeholder would linger as "searching..." forever.
+    if parsed.mode != "video":
+        placeholder_ts = await post_slack_message(channel, _BUSY_TEXT, None, reply_thread)
 
     # A message inside a thread bound to a video session queries that video.
     # `send` already replies into that thread: thread_root is the thread's
@@ -1562,11 +1565,18 @@ app = FastAPI(
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    """Liveness plus configuration sanity, without leaking secret values."""
+    """Liveness plus configuration sanity, without leaking secret values.
+
+    Reports "degraded" when either Slack credential is missing: the process is
+    up but cannot verify webhooks or post replies, and a monitor that calls
+    that "ok" would sleep through a dead bot.
+    """
+    signing = bool(os.getenv("SLACK_SIGNING_SECRET"))
+    token = bool(_bot_token())
     return {
-        "status": "ok",
-        "signing_secret_configured": bool(os.getenv("SLACK_SIGNING_SECRET")),
-        "bot_token_configured": bool(_bot_token()),
+        "status": "ok" if signing and token else "degraded",
+        "signing_secret_configured": signing,
+        "bot_token_configured": token,
         "api_url": _api_base(),
         "asset_url_configured": bool(_asset_base()),
     }
