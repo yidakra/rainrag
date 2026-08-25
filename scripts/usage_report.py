@@ -126,6 +126,7 @@ def main() -> int:
 
     units = args.unit or ["rainrag-api", "rainrag-slack"]
     events = parse(read_journal(args.days, units))
+    report_feedback([e for e in events if e.get("event") == "slack_feedback"], args)
     # Every Slack question also reaches the API and is counted there as a
     # regular query event; slack_query is attribution, not additional volume.
     via_slack = sum(1 for e in events if e.get("event") == "slack_query")
@@ -195,6 +196,24 @@ def report_queries(
             f"  tokens: {tokens_in:,} in, {tokens_out:,} out "
             f"(measured on {measured}/{len(queries)} attempts)"
         )
+    print()
+
+
+def report_feedback(feedback: list[dict[str, str]], args: argparse.Namespace) -> None:
+    """Print the answer-feedback tally: journalists' 👍/👎 on Slack answers.
+
+    Retractions subtract: a thumbs-up later removed was not an endorsement.
+    Silent when there is no feedback at all -- the section should not train
+    readers to skip it before anyone has ever reacted.
+    """
+    if not feedback:
+        return
+    tallies = Counter(e.get("verdict", "?") for e in feedback)
+    up = tallies.get("up", 0) - tallies.get("retracted_up", 0)
+    down = tallies.get("down", 0) - tallies.get("retracted_down", 0)
+    print(f"Answer feedback, last {args.days} day(s): {up} 👍  {down} 👎")
+    if up + down:
+        print(f"  approval: {100 * up / (up + down):.0f}% of {up + down} rated answer(s)")
     print()
 
 

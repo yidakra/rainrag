@@ -117,6 +117,17 @@ _HELP_TEXT = (
 
 _BUSY_TEXT = "Ищу в архиве… / Searching the archive…"
 
+# Reactions that count as answer feedback. Kept deliberately narrow: a
+# tapback vocabulary everyone already knows, not sentiment analysis of the
+# whole emoji palette. Slack sends the base name without skin-tone suffixes
+# for these, and "+1"/"thumbsup" are aliases of the same glyph.
+_FEEDBACK_REACTIONS = {
+    "+1": "up",
+    "thumbsup": "up",
+    "-1": "down",
+    "thumbsdown": "down",
+}
+
 
 # --- Configuration -------------------------------------------------------------
 # Secrets are read per-request rather than at import time so a unit test (or a
@@ -1679,6 +1690,32 @@ async def health() -> dict[str, Any]:
     }
 
 
+def record_answer_feedback(event: dict[str, Any], bot_user_id: str | None) -> bool:
+    """Log a journalist's 👍/👎 on one of the bot's answers as a usage event.
+
+    Returns True when the event was consumed as feedback. Only reactions on
+    the bot's own messages count (item_user is the reacted message's author),
+    and only the small thumbs vocabulary -- a 🎉 on a colleague's joke in the
+    same channel is not an answer rating. The user id is deliberately not
+    logged, matching the rule that usage lines carry no personal content.
+    """
+    item_user = event.get("item_user")
+    if not bot_user_id or item_user != bot_user_id:
+        return False
+    verdict = _FEEDBACK_REACTIONS.get(str(event.get("reaction") or ""))
+    if verdict is None:
+        return False
+    retracted = event.get("type") == "reaction_removed"
+    _log_usage(
+        "slack_feedback",
+        "ok",
+        time.monotonic(),
+        verdict=f"retracted_{verdict}" if retracted else verdict,
+        reaction=event.get("reaction"),
+    )
+    return True
+
+
 @app.post("/slack/events")
 async def slack_events(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
     """Slack Events API webhook: URL verification, mentions and DMs."""
@@ -1716,6 +1753,12 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks) -> J
         return JSONResponse({"ok": True})
 
     event_type = event.get("type")
+
+    if event_type in ("reaction_added", "reaction_removed"):
+        authorizations = payload.get("authorizations") or [{}]
+        record_answer_feedback(event, authorizations[0].get("user_id"))
+        return JSONResponse({"ok": True})
+
     is_mention = event_type == "app_mention"
     is_dm = event_type == "message" and event.get("channel_type") == "im"
     if not (is_mention or is_dm):

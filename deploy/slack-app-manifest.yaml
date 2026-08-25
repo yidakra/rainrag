@@ -30,6 +30,7 @@ oauth_config:
       - im:history # read DMs sent to the bot
       - chat:write # post answers
       - commands # required by the /rainrag slash command
+      - reactions:read # journalists' 👍/👎 on answers feed the usage report
       - files:read # download attached videos for import
       - files:write # post inline clips of retrieved footage
 settings:
@@ -38,6 +39,8 @@ settings:
     bot_events:
       - app_mention
       - message.im
+      - reaction_added
+      - reaction_removed
   interactivity:
     is_enabled: true
     request_url: https://rag.tvrain.tv/slack/interactive
