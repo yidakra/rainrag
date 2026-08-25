@@ -7,6 +7,7 @@ import ipaddress
 import json
 import logging
 import os
+import queue
 import re
 import string
 import subprocess
@@ -272,7 +273,7 @@ ACTIVE_QUERIES: Gauge = _create_active_queries_gauge()
 
 from fastapi import FastAPI, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -1518,6 +1519,145 @@ async def query(
             logger.error(f"Query failed: {e}")
             logger.error(f"Full traceback:\n{error_details}")
             raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+def _sse(event: str, data: Any) -> str:
+    """One server-sent event. data is JSON so every client parses it the same way."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+class _StreamAbortedError(Exception):
+    """Internal: ends the SSE generator after an error event has been sent.
+
+    Raised inside usage_span so the usage line records outcome=error, caught
+    before it reaches Starlette so the (already started, already 200) response
+    just ends instead of producing a traceback in the log.
+    """
+
+
+@app.post("/query/stream")
+async def query_stream(
+    request: QueryRequest,
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """Stream a query as server-sent events.
+
+    The blocking /query holds the connection silently for the full 30-60s an
+    answer takes, nearly all of it the LLM call. This endpoint sends what is
+    ready when it is ready, as SSE events:
+
+        context  retrieval finished: the full QueryResponse shape with an
+                 empty answer -- sources are showable before the LLM starts
+        delta    {"text": ...} -- one increment of the answer
+        done     the complete QueryResponse, identical to what /query returns
+        error    {"status": ..., "detail": ...} -- terminal; no done follows
+
+    Same auth, concurrency slot, timeout budget and usage accounting as /query.
+    """
+    verify_auth_token(authorization=authorization)
+
+    if query_engine is None:
+        raise HTTPException(status_code=503, detail="Query engine not initialized")
+
+    try:
+        await asyncio.wait_for(_get_query_semaphore().acquire(), timeout=5.0)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Server busy: too many concurrent queries. Please retry shortly.",
+        ) from exc
+
+    engine = query_engine
+
+    async def event_source() -> Any:
+        # The queue decouples the sync generator (worker thread) from this
+        # async generator. Bounded so a slow client applies backpressure to
+        # the thread instead of buffering the whole answer in memory.
+        events: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=256)
+
+        def run_pipeline() -> None:
+            try:
+                for kind, payload in engine.query_stream(
+                    question=request.question,
+                    top_k=request.top_k,
+                    language=request.language,
+                    date_from=request.date_from,
+                    date_to=request.date_to,
+                ):
+                    events.put((kind, payload))
+            except Exception as exc:  # noqa: BLE001 - forwarded to the client as an event
+                events.put(("pipeline_error", exc))
+            finally:
+                events.put(("finished", None))
+
+        try:
+            with usage_span(
+                "query",
+                mode="corpus",
+                transport="stream",
+                provider=_llm_provider_name(),
+                lang=request.language,
+                top_k=request.top_k,
+            ) as usage:
+                worker = threading.Thread(target=run_pipeline, daemon=True)
+                worker.start()
+                deadline = time.monotonic() + QUERY_TIMEOUT_SECONDS
+
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        yield _sse(
+                            "error",
+                            {
+                                "status": 504,
+                                "detail": (
+                                    "Query timed out while generating answer. "
+                                    "Please try a shorter or more specific question."
+                                ),
+                            },
+                        )
+                        usage["reason"] = "timeout"
+                        # The worker thread cannot be cancelled; it finishes
+                        # into a queue nobody reads and the daemon flag keeps
+                        # it from blocking shutdown.
+                        raise _StreamAbortedError
+                    try:
+                        kind, payload = await asyncio.to_thread(
+                            events.get, True, min(remaining, 1.0)
+                        )
+                    except queue.Empty:
+                        continue
+
+                    if kind == "context":
+                        response = _build_query_response(payload)
+                        yield _sse("context", response.model_dump(mode="json"))
+                    elif kind == "delta":
+                        yield _sse("delta", {"text": payload})
+                    elif kind == "done":
+                        response = _build_query_response(payload)
+                        _record_query_usage(usage, payload)
+                        yield _sse("done", response.model_dump(mode="json"))
+                    elif kind == "pipeline_error":
+                        logger.error(f"Streaming query failed: {payload}")
+                        yield _sse("error", {"status": 500, "detail": f"Query failed: {payload}"})
+                        raise _StreamAbortedError from payload
+                    elif kind == "finished":
+                        break
+        except _StreamAbortedError:
+            return
+        finally:
+            _get_query_semaphore().release()
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            # nginx buffers proxied responses by default, which would collect
+            # the whole stream and defeat its purpose.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

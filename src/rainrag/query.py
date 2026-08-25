@@ -1899,7 +1899,7 @@ Question: {query}"""
         else:
             raise ValueError(f"Unknown LLM provider: {self.config.llm.provider}")
 
-    def query(
+    def _prepare_query(
         self,
         question: str,
         top_k: int | None = None,
@@ -1911,7 +1911,7 @@ Question: {query}"""
         single_video: bool = False,
     ) -> dict[str, Any]:
         """
-        Execute the complete query pipeline.
+        Run the retrieval side of the pipeline: everything up to answer generation.
 
         Args:
             question: The user's question
@@ -2096,8 +2096,26 @@ Question: {query}"""
             question, documents, language=language, single_video=single_video
         )
 
-        # Step 7: Generate the answer
-        answer = self.generate_answer(messages, usage_sink=token_usage)
+        # Everything the answer step and the result assembly need, in one bag.
+        # query() and query_stream() share this so the blocking and streaming
+        # paths cannot drift apart.
+        return {
+            "question": question,
+            "messages": messages,
+            "documents": documents,
+            "query_variants": query_variants,
+            "variant_retrieved_ids": variant_retrieved_ids,
+            "embed_calls": embed_calls,
+            "metadata_fallback_hits": metadata_fallback_hits,
+            "two_stage_enabled": two_stage_enabled,
+            "token_usage": token_usage,
+        }
+
+    def _assemble_result(self, prep: dict[str, Any], answer: str) -> dict[str, Any]:
+        """Package a prepared query and its generated answer into the result dict."""
+        two_stage_enabled = prep["two_stage_enabled"]
+        documents = prep["documents"]
+        token_usage = prep["token_usage"]
 
         # Track API call counts for transparency (cost estimates currently
         # only include the main answer generation + embedding). These counts
@@ -2111,24 +2129,192 @@ Question: {query}"""
         reranker_calls = 1 if self.config.reranker.enabled and bool(documents) else 0
 
         return {
-            "question": question,
+            "question": prep["question"],
             "answer": answer,
             "retrieved_documents": documents,
             "num_documents": len(documents),
-            "query_variants": query_variants,
-            "variant_retrieved_ids": variant_retrieved_ids,
+            "query_variants": prep["query_variants"],
+            "variant_retrieved_ids": prep["variant_retrieved_ids"],
             "cost.llm_calls_count": llm_calls,
             "cost.llm_query_rewrite_calls": llm_query_rewrite_calls,
             "cost.llm_hyde_calls": llm_hyde_calls,
-            "cost.embed_calls_count": embed_calls,
+            "cost.embed_calls_count": prep["embed_calls"],
             "cost.reranker_calls_count": reranker_calls,
             # Measured counts, as opposed to the call counts above. A provider
             # that reports no usage leaves these at 0 rather than guessing.
             "cost.llm_tokens_in": token_usage.get("tokens_in", 0),
             "cost.llm_tokens_out": token_usage.get("tokens_out", 0),
             "cost.llm_calls_measured": token_usage.get("llm_calls_measured", 0),
-            "metadata_fallback_hits": metadata_fallback_hits,
+            "metadata_fallback_hits": prep["metadata_fallback_hits"],
         }
+
+    def generate_answer_stream(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float | None = None,
+        usage_sink: dict[str, int] | None = None,
+    ) -> Any:
+        """Generate an answer, yielding text increments as the provider emits them.
+
+        Providers without a streaming implementation here fall back to one
+        blocking generate_answer call yielded as a single increment -- the
+        consumer contract (join the deltas, get the answer) holds either way.
+        A provider error before the first increment also falls back, because
+        nothing has been shown yet and a complete answer beats a stack trace;
+        after the first increment errors propagate, since silently switching
+        to a second, differently-worded answer mid-render would be worse.
+        """
+        provider = self.config.llm.provider
+        stream_impl = {
+            "mistral": self._stream_answer_mistral,
+            "openai": self._stream_answer_openai,
+        }.get(provider)
+        if stream_impl is None:
+            yield self.generate_answer(messages, temperature, usage_sink=usage_sink)
+            return
+
+        emitted_any = False
+        try:
+            for delta in stream_impl(messages, temperature, usage_sink):
+                emitted_any = True
+                yield delta
+        except Exception as exc:
+            if emitted_any:
+                raise
+            logger.warning(
+                "Streaming failed before any output ({}: {}); falling back to blocking",
+                type(exc).__name__,
+                exc,
+            )
+            yield self.generate_answer(messages, temperature, usage_sink=usage_sink)
+
+    def _stream_answer_mistral(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float | None,
+        usage_sink: dict[str, int] | None,
+    ) -> Any:
+        assert self.mistral_client is not None, "Mistral client not initialized"
+        stream = self.mistral_client.chat.stream(
+            model=self.config.mistral.model_name,
+            messages=cast(Any, messages),
+            max_tokens=self.config.mistral.max_tokens,
+            temperature=temperature if temperature is not None else self.config.mistral.temperature,
+        )
+        for event in stream:
+            chunk = getattr(event, "data", event)
+            accumulate_token_usage(usage_sink, chunk)
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            content = getattr(getattr(choices[0], "delta", None), "content", None)
+            if isinstance(content, str) and content:
+                yield content
+
+    def _stream_answer_openai(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float | None,
+        usage_sink: dict[str, int] | None,
+    ) -> Any:
+        assert self.openai_client is not None, "OpenAI client not initialized"
+        stream = self.openai_client.chat.completions.create(
+            model=self.config.openai.model_name,
+            messages=cast(Any, messages),
+            max_tokens=self.config.openai.max_tokens,
+            temperature=temperature if temperature is not None else self.config.openai.temperature,
+            stream=True,
+            # Without this the stream carries no token counts at all.
+            stream_options={"include_usage": True},
+        )
+        for chunk in stream:
+            accumulate_token_usage(usage_sink, chunk)
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            content = getattr(getattr(choices[0], "delta", None), "content", None)
+            if isinstance(content, str) and content:
+                yield content
+
+    def query(
+        self,
+        question: str,
+        top_k: int | None = None,
+        language: str = "en",
+        date_from: str | None = None,
+        date_to: str | None = None,
+        exclude_speech_free: bool = False,
+        collection_name: str | None = None,
+        single_video: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Execute the complete query pipeline.
+
+        Retrieval and result assembly live in _prepare_query/_assemble_result,
+        shared with query_stream(); this method is the blocking composition of
+        the two around a single generate_answer call.
+
+        Returns:
+            Dictionary containing the answer and metadata
+        """
+        prep = self._prepare_query(
+            question,
+            top_k=top_k,
+            language=language,
+            date_from=date_from,
+            date_to=date_to,
+            exclude_speech_free=exclude_speech_free,
+            collection_name=collection_name,
+            single_video=single_video,
+        )
+
+        # Step 7: Generate the answer
+        answer = self.generate_answer(prep["messages"], usage_sink=prep["token_usage"])
+
+        return self._assemble_result(prep, answer)
+
+    def query_stream(
+        self,
+        question: str,
+        top_k: int | None = None,
+        language: str = "en",
+        date_from: str | None = None,
+        date_to: str | None = None,
+        exclude_speech_free: bool = False,
+        collection_name: str | None = None,
+        single_video: bool = False,
+    ) -> Any:
+        """Execute the query pipeline, yielding progress as it happens.
+
+        Yields (kind, payload) tuples, in order:
+
+          ("context", partial result dict)   retrieval finished; ``answer`` is
+                                             empty, everything else is final
+          ("delta", str)                     one increment of the answer text
+          ("done", full result dict)         identical shape to query()'s return
+
+        The retrieved context arrives seconds in while the LLM call -- the
+        bulk of the 30-60s a query takes -- is still running, and the answer
+        renders as it is written instead of landing as a wall after silence.
+        """
+        prep = self._prepare_query(
+            question,
+            top_k=top_k,
+            language=language,
+            date_from=date_from,
+            date_to=date_to,
+            exclude_speech_free=exclude_speech_free,
+            collection_name=collection_name,
+            single_video=single_video,
+        )
+        yield "context", self._assemble_result(prep, "")
+
+        parts: list[str] = []
+        for delta in self.generate_answer_stream(prep["messages"], usage_sink=prep["token_usage"]):
+            parts.append(delta)
+            yield "delta", delta
+
+        yield "done", self._assemble_result(prep, "".join(parts))
 
 
 def run_query(config_path: str, question: str, top_k: int | None = None) -> dict[str, Any]:
