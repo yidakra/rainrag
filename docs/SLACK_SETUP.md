@@ -74,6 +74,7 @@ connector is running, so hit **Retry** under Event Subscriptions at the end.
    - `chat:write` — post answers
    - `files:read` — download video files journalists attach for import
    - `files:write` — post video clips of retrieved footage into threads
+   - `reactions:read` — count 👍/👎 on answers as quality feedback
 4. Click **Install to Workspace** and copy the **Bot User OAuth Token**
    (`xoxb-...`).
 5. Under **Basic Information**, copy the **Signing Secret**.
@@ -127,6 +128,7 @@ Back in the Slack app settings:
 2. Under **Subscribe to bot events**, add:
    - `app_mention`
    - `message.im`
+   - `reaction_added` and `reaction_removed` (👍/👎 feedback)
 3. **Interactivity & Shortcuts** → enable, set Request URL to
    `https://rag.tvrain.tv/slack/interactive` (powers the "Related" buttons).
 4. **Slash Commands** → create `/rainrag` with Request URL
@@ -134,6 +136,11 @@ Back in the Slack app settings:
 5. Reinstall the app if Slack prompts you to.
 
 Invite the bot to the channels where journalists work: `/invite @RainRAG`.
+
+React 👍 or 👎 on any of the bot's answers to rate it: the verdicts land in
+the usage journal (never with the reactor's identity) and
+`scripts/usage_report.py` shows the running approval rate. Removing a
+reaction retracts the vote.
 
 ## Options
 

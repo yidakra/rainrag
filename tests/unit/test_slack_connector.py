@@ -1363,3 +1363,90 @@ class TestHandleAskStreamingIntegration:
             asyncio.run(slack_connector._handle_ask(parse_message("q"), send))
         mock_stream.assert_not_called()
         mock_blocking.assert_awaited_once()
+
+
+# ============================================================================
+# Reaction feedback
+# ============================================================================
+
+
+@pytest.fixture
+def usage_lines():
+    """Capture loguru output; caplog sees nothing because loguru bypasses stdlib logging."""
+    from loguru import logger as _logger
+
+    captured: list[str] = []
+    sink_id = _logger.add(
+        lambda message: captured.append(message.record["message"]), level="INFO", format="{message}"
+    )
+    try:
+        yield captured
+    finally:
+        _logger.remove(sink_id)
+
+
+def reaction_body(event: dict, bot_user: str = "UBOT") -> bytes:
+    return json.dumps(
+        {
+            "type": "event_callback",
+            "event_id": f"Ev{event.get('reaction')}{event.get('type')}",
+            "authorizations": [{"user_id": bot_user}],
+            "event": event,
+        }
+    ).encode()
+
+
+def _reaction(reaction: str, *, item_user: str = "UBOT", removed: bool = False) -> dict:
+    return {
+        "type": "reaction_removed" if removed else "reaction_added",
+        "user": "UHUMAN",
+        "reaction": reaction,
+        "item_user": item_user,
+        "item": {"type": "message", "channel": "C1", "ts": "1.0"},
+    }
+
+
+class TestRecordAnswerFeedback:
+    def test_thumbs_up_on_bot_answer_counts(self):
+        assert slack_connector.record_answer_feedback(_reaction("+1"), "UBOT") is True
+
+    def test_thumbs_down_counts(self):
+        assert slack_connector.record_answer_feedback(_reaction("thumbsdown"), "UBOT") is True
+
+    def test_reaction_on_someone_elses_message_is_ignored(self):
+        """A 👍 on a colleague's joke is not an answer rating."""
+        assert (
+            slack_connector.record_answer_feedback(_reaction("+1", item_user="UHUMAN"), "UBOT")
+            is False
+        )
+
+    def test_non_feedback_emoji_ignored(self):
+        assert slack_connector.record_answer_feedback(_reaction("tada"), "UBOT") is False
+
+    def test_missing_bot_user_id_ignores_everything(self):
+        assert slack_connector.record_answer_feedback(_reaction("+1"), None) is False
+
+    def test_usage_line_carries_verdict_but_no_user(self, usage_lines):
+        slack_connector.record_answer_feedback(_reaction("+1"), "UBOT")
+        line = next(ln for ln in usage_lines if "slack_feedback" in ln)
+        assert "verdict=up" in line
+        assert "UHUMAN" not in line
+
+    def test_removal_is_a_retraction(self, usage_lines):
+        slack_connector.record_answer_feedback(_reaction("-1", removed=True), "UBOT")
+        line = next(ln for ln in usage_lines if "slack_feedback" in ln)
+        assert "verdict=retracted_down" in line
+
+
+class TestReactionWebhookRouting:
+    def test_reaction_event_is_consumed_by_the_endpoint(self, client, usage_lines):
+        body = reaction_body(_reaction("+1"))
+        response = client.post("/slack/events", content=body, headers=sign(body))
+        assert response.status_code == 200
+        assert any("slack_feedback" in ln for ln in usage_lines)
+
+    @patch("src.rainrag.slack_connector.process_event_question", new_callable=AsyncMock)
+    def test_reaction_never_reaches_question_processing(self, mock_process, client):
+        body = reaction_body(_reaction("+1"))
+        client.post("/slack/events", content=body, headers=sign(body))
+        mock_process.assert_not_called()
