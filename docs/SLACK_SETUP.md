@@ -93,8 +93,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now rainrag-slack
 ```
 
-Expose it through nginx — `deploy/nginx/rag.tvrain.tv.conf` already includes
-the `/slack/` location block proxying to port 8002.
+Expose it through nginx by adding the `/slack/` location block from
+`deploy/nginx/slack-location.conf` to the existing `server { listen 443 ... }`
+block for `rag.tvrain.tv` (in `/etc/nginx/`), then `sudo nginx -t && sudo
+systemctl reload nginx`. The live server config is deliberately not kept in
+the repo — cert paths and the internal-IP vhost differ per deployment, and a
+stale full copy is a footgun.
 
 Check it's alive:
 
