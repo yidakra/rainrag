@@ -58,6 +58,9 @@ def slack_env(monkeypatch):
     # Any Slack API call a test forgets to mock must fail fast and offline,
     # never reach slack.com: port 9 (discard) refuses connections instantly.
     monkeypatch.setattr(slack_connector, "SLACK_API_BASE", "http://127.0.0.1:9")
+    # Same for the RainRAG API: on the production box localhost:8001 is the
+    # real deployment, and an unmocked streaming call would actually reach it.
+    monkeypatch.setenv("RAINRAG_API_URL", "http://127.0.0.1:9")
     _seen_events.clear()
     _video_threads.clear()
     yield
@@ -1199,3 +1202,164 @@ class TestHealthEndpointReadiness:
         data = client.get("/health").json()
         assert data["status"] == "degraded"
         assert data["bot_token_configured"] is False
+
+
+# ============================================================================
+# Progressive answer streaming
+# ============================================================================
+
+
+def _stream_events(*, deltas: list[str], done: dict | None):
+    async def gen(*args, **kwargs):
+        yield "context", {"answer": "", "context": []}
+        for d in deltas:
+            yield "delta", {"text": d}
+        if done is not None:
+            yield "done", done
+
+    return gen
+
+
+class TestStreamAsk:
+    RESULT = {"answer": "готовый ответ", "context": [], "num_documents": 0}
+
+    def test_returns_done_and_edits_progressively(self, monkeypatch):
+        monkeypatch.setattr(slack_connector, "STREAM_EDIT_SECONDS", 0.0001)
+        edits: list[str] = []
+
+        async def edit(text: str) -> bool:
+            edits.append(text)
+            return True
+
+        with patch(
+            "src.rainrag.slack_connector.query_rainrag_stream",
+            new=_stream_events(deltas=["го", "тово"], done=self.RESULT),
+        ):
+            result = asyncio.run(slack_connector._stream_ask(parse_message("вопрос"), "ru", edit))
+        assert result == self.RESULT
+        assert edits  # placeholder repainted at least once
+        assert edits[-1].endswith("…")
+
+    def test_zero_interval_disables_progressive_edits(self, monkeypatch):
+        monkeypatch.setattr(slack_connector, "STREAM_EDIT_SECONDS", 0)
+        edits: list[str] = []
+
+        async def edit(text: str) -> bool:
+            edits.append(text)
+            return True
+
+        with patch(
+            "src.rainrag.slack_connector.query_rainrag_stream",
+            new=_stream_events(deltas=["a", "b"], done=self.RESULT),
+        ):
+            result = asyncio.run(
+                slack_connector._stream_ask(parse_message("q lang:en"), "en", edit)
+            )
+        assert result == self.RESULT
+        assert edits == []
+
+    def test_transport_failure_returns_none_for_fallback(self):
+        async def edit(text: str) -> bool:
+            return True
+
+        async def broken(*args, **kwargs):
+            raise httpx.ConnectError("refused")
+            yield  # pragma: no cover - makes this an async generator
+
+        with patch("src.rainrag.slack_connector.query_rainrag_stream", new=broken):
+            result = asyncio.run(slack_connector._stream_ask(parse_message("вопрос"), "ru", edit))
+        assert result is None
+
+    def test_stream_without_done_returns_none(self):
+        async def edit(text: str) -> bool:
+            return True
+
+        with patch(
+            "src.rainrag.slack_connector.query_rainrag_stream",
+            new=_stream_events(deltas=["полов"], done=None),
+        ):
+            result = asyncio.run(slack_connector._stream_ask(parse_message("вопрос"), "ru", edit))
+        assert result is None
+
+    def test_error_event_raises_instead_of_retrying(self):
+        """The API already failed the query; the blocking fallback would just fail again."""
+
+        async def gen(*args, **kwargs):
+            yield "error", {"status": 504, "detail": "timed out"}
+
+        async def edit(text: str) -> bool:
+            return True
+
+        with patch("src.rainrag.slack_connector.query_rainrag_stream", new=gen):
+            with pytest.raises(RuntimeError, match="timed out"):
+                asyncio.run(slack_connector._stream_ask(parse_message("вопрос"), "ru", edit))
+
+
+class TestHandleAskStreamingIntegration:
+    def test_streamed_result_skips_blocking_query(self, monkeypatch):
+        monkeypatch.setattr(slack_connector, "STREAM_EDIT_SECONDS", 0)
+        sent: list[tuple] = []
+
+        async def send(text, blocks):
+            sent.append((text, blocks))
+
+        async def edit(text: str) -> bool:
+            return True
+
+        result = {"answer": "из стрима", "context": [], "num_documents": 0}
+        with (
+            patch(
+                "src.rainrag.slack_connector.query_rainrag_stream",
+                new=_stream_events(deltas=["из стрима"], done=result),
+            ),
+            patch(
+                "src.rainrag.slack_connector.query_rainrag", new_callable=AsyncMock
+            ) as mock_blocking,
+        ):
+            asyncio.run(slack_connector._handle_ask(parse_message("вопрос"), send, edit=edit))
+        mock_blocking.assert_not_awaited()
+        assert "из стрима" in sent[0][0]
+
+    def test_stream_failure_falls_back_to_blocking(self):
+        sent: list[tuple] = []
+
+        async def send(text, blocks):
+            sent.append((text, blocks))
+
+        async def edit(text: str) -> bool:
+            return True
+
+        async def broken(*args, **kwargs):
+            raise httpx.ConnectError("no stream endpoint")
+            yield  # pragma: no cover
+
+        with (
+            patch("src.rainrag.slack_connector.query_rainrag_stream", new=broken),
+            patch(
+                "src.rainrag.slack_connector.query_rainrag", new_callable=AsyncMock
+            ) as mock_blocking,
+        ):
+            mock_blocking.return_value = {"answer": "запасной", "context": [], "num_documents": 0}
+            asyncio.run(slack_connector._handle_ask(parse_message("вопрос"), send, edit=edit))
+        mock_blocking.assert_awaited_once()
+        assert "запасной" in sent[0][0]
+
+    def test_no_edit_capability_goes_straight_to_blocking(self):
+        """Slash commands have no placeholder to edit; they must not stream."""
+        sent: list[tuple] = []
+
+        async def send(text, blocks):
+            sent.append((text, blocks))
+
+        with (
+            patch(
+                "src.rainrag.slack_connector.query_rainrag_stream", new_callable=AsyncMock
+            ) as mock_stream,
+            patch(
+                "src.rainrag.slack_connector.query_rainrag", new_callable=AsyncMock
+            ) as mock_blocking,
+        ):
+            mock_blocking.return_value = {"answer": "a", "context": [], "num_documents": 0}
+            asyncio.run(slack_connector._handle_ask(parse_message("q"), send))
+        mock_stream.assert_not_called()
+        mock_blocking.assert_awaited_once()

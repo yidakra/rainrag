@@ -53,6 +53,8 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from rainrag.sse import astream_query
+
 
 SLACK_API_BASE = os.getenv("SLACK_API_BASE", "https://slack.com/api").rstrip("/")
 
@@ -94,6 +96,12 @@ _VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v")
 CLIP_CHUNKS = int(os.getenv("RAINRAG_SLACK_CLIP_CHUNKS", "1"))
 CLIP_MAX_MB = int(os.getenv("RAINRAG_SLACK_CLIP_MAX_MB", "50"))
 CLIP_FETCH_TIMEOUT_SECONDS = float(os.getenv("RAINRAG_SLACK_CLIP_FETCH_TIMEOUT_SECONDS", "180"))
+
+# Progressive answers: while the LLM writes, the busy placeholder is edited to
+# show the text so far, at most once per this many seconds (chat.update is
+# Tier-3 rate limited, ~50/min workspace-wide). 0 disables the progressive
+# edits; the final answer still arrives either way.
+STREAM_EDIT_SECONDS = float(os.getenv("RAINRAG_SLACK_STREAM_EDIT_SECONDS", "2.0"))
 
 _HELP_TEXT = (
     "Задайте вопрос по архиву Дождя — я найду ответ в транскриптах эфиров.\n"
@@ -436,14 +444,13 @@ def public_media_url(path: str | None) -> str | None:
 # --- RainRAG API client -----------------------------------------------------------
 
 
-async def query_rainrag(
+def _query_payload(
     question: str,
     language: str,
-    top_k: int | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    top_k: int | None,
+    date_from: str | None,
+    date_to: str | None,
 ) -> dict[str, Any]:
-    """Run one question through the RainRAG API and return its JSON response."""
     payload: dict[str, Any] = {"question": question, "language": language}
     if top_k is None:
         top_k = _default_top_k()
@@ -453,6 +460,35 @@ async def query_rainrag(
         payload["date_from"] = date_from
     if date_to:
         payload["date_to"] = date_to
+    return payload
+
+
+async def query_rainrag_stream(
+    question: str,
+    language: str,
+    top_k: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> Any:
+    """Stream one question through /query/stream, yielding (event, data) pairs."""
+    async for item in astream_query(
+        _api_base(),
+        _query_payload(question, language, top_k, date_from, date_to),
+        _api_headers(),
+        timeout=QUERY_HTTP_TIMEOUT_SECONDS,
+    ):
+        yield item
+
+
+async def query_rainrag(
+    question: str,
+    language: str,
+    top_k: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
+    """Run one question through the RainRAG API and return its JSON response."""
+    payload = _query_payload(question, language, top_k, date_from, date_to)
 
     async with httpx.AsyncClient(timeout=QUERY_HTTP_TIMEOUT_SECONDS) as client:
         response = await client.post(f"{_api_base()}/query", json=payload, headers=_api_headers())
@@ -1092,6 +1128,8 @@ async def post_response_url(
 # --- Question processing (background) -------------------------------------------
 
 SendFn = Callable[[str, "list[dict[str, Any]] | None"], Awaitable[None]]
+# Progressive-edit capability: update the busy placeholder with partial text.
+EditFn = Callable[[str], Awaitable[bool]]
 
 
 def _log_usage(event: str, outcome: str, started: float, **fields: Any) -> None:
@@ -1107,26 +1145,72 @@ def _log_usage(event: str, outcome: str, started: float, **fields: Any) -> None:
     )
 
 
+async def _stream_ask(parsed: ParsedMessage, language: str, edit: EditFn) -> dict[str, Any] | None:
+    """Stream an answer, editing the placeholder as text arrives.
+
+    Returns the final result dict, or None when streaming failed and the
+    caller should fall back to the blocking query. Progressive edits are
+    throttled to STREAM_EDIT_SECONDS and always best-effort: a failed edit
+    never fails the query, the final answer just lands in one piece.
+    """
+    parts: list[str] = []
+    last_edit = 0.0
+    try:
+        async for kind, payload in query_rainrag_stream(
+            parsed.text, language, parsed.top_k, parsed.date_from, parsed.date_to
+        ):
+            if kind == "delta":
+                parts.append(str(payload.get("text") or ""))
+                now = time.monotonic()
+                if STREAM_EDIT_SECONDS > 0 and now - last_edit >= STREAM_EDIT_SECONDS and parts:
+                    last_edit = now
+                    await edit(markdown_to_mrkdwn("".join(parts)) + " …")
+            elif kind == "done":
+                return payload
+            elif kind == "error":
+                # The API already turned the failure into a message; surfacing
+                # it through the blocking fallback would just fail again.
+                detail = payload.get("detail") or "query failed"
+                raise RuntimeError(f"stream error event: {detail}")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        # Transport-level failure (older API without the endpoint, network).
+        # Nothing irreversible has happened: the placeholder shows stale
+        # partial text at worst, and the fallback answer will overwrite it.
+        logger.warning(
+            "Streaming query failed ({}: {}); falling back to blocking", type(exc).__name__, exc
+        )
+        return None
+    return None
+
+
 async def _handle_ask(
     parsed: ParsedMessage,
     send: SendFn,
     channel: str | None = None,
     thread_root: str | None = None,
+    edit: EditFn | None = None,
 ) -> None:
     """Archive Q&A: answer, transcript-context message, then inline clips.
 
     Clips need a channel to upload into, so they only happen on the events
     path (mentions/DMs); slash commands answer ephemerally, where Slack has
-    nowhere to attach a file.
+    nowhere to attach a file. When the caller can edit its placeholder
+    (mentions/DMs again), the answer streams into it as it is written.
     """
     language = _resolve_language(parsed)
     started = time.monotonic()
     outcome = "ok"
     docs = 0
     try:
-        result = await query_rainrag(
-            parsed.text, language, parsed.top_k, parsed.date_from, parsed.date_to
-        )
+        result = None
+        if edit is not None:
+            result = await _stream_ask(parsed, language, edit)
+        if result is None:
+            result = await query_rainrag(
+                parsed.text, language, parsed.top_k, parsed.date_from, parsed.date_to
+            )
         docs = int(result.get("num_documents") or 0)
         text, blocks = format_answer(result, language)
         await send(text, blocks)
@@ -1457,6 +1541,7 @@ async def _dispatch(
     channel: str | None = None,
     thread_root: str | None = None,
     reply_thread: str | None = None,
+    edit: EditFn | None = None,
 ) -> None:
     """Route a parsed message to its handler. Video import needs a thread to
     bind, so it is only reachable from events (mentions/DMs), not slash
@@ -1482,7 +1567,7 @@ async def _dispatch(
     else:
         # Clips follow the same threading as the text replies (reply_thread is
         # None for top-level DM answers), not the video-binding root.
-        await _handle_ask(parsed, send, channel=channel, thread_root=reply_thread)
+        await _handle_ask(parsed, send, channel=channel, thread_root=reply_thread, edit=edit)
 
 
 async def process_event_question(event: dict[str, Any]) -> None:
@@ -1513,6 +1598,13 @@ async def process_event_question(event: dict[str, Any]) -> None:
             # still beats a swallowed answer.
         await post_slack_message(channel, text, blocks, reply_thread)
 
+    async def edit_placeholder(text: str) -> bool:
+        # Peeks at the placeholder without consuming it: progressive edits
+        # repaint the same message, and send() still owns the final one.
+        if placeholder_ts is None:
+            return False
+        return await update_slack_message(channel, placeholder_ts, text, None)
+
     parsed = parse_message(event.get("text", ""))
 
     # An attached video starts an upload session regardless of the text.
@@ -1538,7 +1630,12 @@ async def process_event_question(event: dict[str, Any]) -> None:
             return
 
     await _dispatch(
-        parsed, send, channel=channel, thread_root=thread_root, reply_thread=reply_thread
+        parsed,
+        send,
+        channel=channel,
+        thread_root=thread_root,
+        reply_thread=reply_thread,
+        edit=edit_placeholder,
     )
 
 

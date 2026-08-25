@@ -1281,6 +1281,37 @@ async def query_rag(
         return response.json()
 
 
+def stream_rag(
+    question: str,
+    language: str,
+    top_k: int,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> Any:
+    """Stream a query as (event, data) pairs from the API's SSE endpoint.
+
+    Yields ("context", …) when retrieval finishes, ("delta", {"text": …}) as
+    the answer is written, then ("done", full response) — the done payload is
+    shape-identical to query_rag()'s return. Raises httpx.HTTPStatusError
+    before the first event on 401/404/429, so the caller can fall back to the
+    blocking endpoint while nothing has been rendered.
+    """
+    from rainrag.sse import stream_query
+
+    payload: dict[str, Any] = {"question": question, "language": language, "top_k": top_k}
+    if date_from:
+        payload["date_from"] = date_from
+    if date_to:
+        payload["date_to"] = date_to
+    yield from stream_query(
+        API_BASE,
+        payload,
+        get_api_headers(),
+        timeout=REQUEST_TIMEOUT,
+        verify=API_VERIFY_SSL,
+    )
+
+
 async def search_by_name_api(query: str) -> dict[str, Any]:
     """Call the /search-by-name endpoint and return the parsed response."""
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=API_VERIFY_SSL) as client:
@@ -2894,15 +2925,53 @@ def main():
                     date_to = (
                         st.session_state.date_to.isoformat() if st.session_state.date_to else None
                     )
-                response = asyncio.run(
-                    query_rag(
+                # Stream the answer as it is written; the sources arrive as a
+                # separate early event, and the collected result is
+                # shape-identical to the blocking endpoint's response.
+                stream_state: dict[str, Any] = {}
+
+                def _answer_deltas() -> Any:
+                    for kind, payload in stream_rag(
                         user_input,
                         st.session_state.language,
                         st.session_state.top_k,
                         date_from=date_from,
                         date_to=date_to,
-                    )
-                )
+                    ):
+                        if kind == "delta":
+                            yield payload.get("text") or ""
+                        elif kind == "done":
+                            stream_state["done"] = payload
+                        elif kind == "error":
+                            stream_state["error"] = payload
+                            return
+
+                response = None
+                try:
+                    st.write_stream(_answer_deltas())
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code in (404, 405):
+                        # API predates /query/stream; the blocking endpoint
+                        # still answers everything.
+                        response = asyncio.run(
+                            query_rag(
+                                user_input,
+                                st.session_state.language,
+                                st.session_state.top_k,
+                                date_from=date_from,
+                                date_to=date_to,
+                            )
+                        )
+                    else:
+                        raise
+
+                if response is None:
+                    error = stream_state.get("error")
+                    if error is not None:
+                        raise RuntimeError(error.get("detail") or "query failed")
+                    response = stream_state.get("done")
+                    if response is None:
+                        raise RuntimeError("answer stream ended unexpectedly")
 
                 # Add assistant response to chat
                 assistant_message: dict[str, Any] = {
