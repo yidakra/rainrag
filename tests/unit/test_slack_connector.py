@@ -1122,3 +1122,53 @@ class TestChunkTitleFallback:
             [{"filename": "/data/archive/x.ru.vtt", "date": "2022-07-27"}], "ru"
         )
         assert lines == ["• Эфир из архива (2022-07-27)"]
+
+
+# ============================================================================
+# Markdown -> mrkdwn conversion
+# ============================================================================
+
+
+class TestMarkdownToMrkdwn:
+    def test_double_asterisk_bold_becomes_single(self):
+        assert (
+            slack_connector.markdown_to_mrkdwn("**Видео от 2021-12-09** (длительность: 82:41)")
+            == "*Видео от 2021-12-09* (длительность: 82:41)"
+        )
+
+    def test_multiple_bold_spans_on_one_line(self):
+        assert slack_connector.markdown_to_mrkdwn("a **b** c **d**") == "a *b* c *d*"
+
+    def test_double_underscore_bold(self):
+        assert slack_connector.markdown_to_mrkdwn("__важно__") == "*важно*"
+
+    def test_headings_become_bold_lines(self):
+        assert slack_connector.markdown_to_mrkdwn("### Вывод\nтекст") == "*Вывод*\nтекст"
+
+    def test_markdown_links_become_slack_links(self):
+        assert (
+            slack_connector.markdown_to_mrkdwn("[сюжет](https://tvrain.tv/x)")
+            == "<https://tvrain.tv/x|сюжет>"
+        )
+
+    def test_single_asterisk_emphasis_is_left_alone(self):
+        # mrkdwn already renders *this* as bold; touching it would double-wrap.
+        assert slack_connector.markdown_to_mrkdwn("уже *жирный*") == "уже *жирный*"
+
+    def test_math_like_double_asterisks_survive(self):
+        # ** followed by whitespace is not a bold marker; degrade to punctuation.
+        assert slack_connector.markdown_to_mrkdwn("2 ** 3 равно 8") == "2 ** 3 равно 8"
+
+    def test_quoted_transcript_cannot_smuggle_a_mention(self):
+        """Escaping runs before conversion inserts the only angle brackets."""
+        out = slack_connector.markdown_to_mrkdwn("цитата: <!channel> и **суть**")
+        assert "<!channel>" not in out
+        assert "&lt;!channel&gt;" in out
+        assert "*суть*" in out
+
+    def test_answer_blocks_are_converted(self):
+        text, blocks = slack_connector.format_answer(
+            {"answer": "**Вывод**: закон принят в 2012 году.", "context": []}, "ru"
+        )
+        assert blocks[0]["text"]["text"].startswith("*Вывод*: закон")
+        assert text.startswith("*Вывод*")
