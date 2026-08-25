@@ -1,0 +1,45 @@
+# Slack app manifest for the RainRAG connector.
+#
+# Use instead of the click-through in docs/SLACK_SETUP.md section 1:
+# api.slack.com/apps -> Create New App -> From a manifest -> paste this.
+# Then copy the Signing Secret and (after installing to the workspace) the
+# Bot User OAuth Token into .env as SLACK_SIGNING_SECRET / SLACK_BOT_TOKEN.
+#
+# Slack verifies the event request URL by sending a challenge, which the
+# connector only answers once it is running with the signing secret set --
+# so on first creation the URL shows as unverified. Finish the server-side
+# setup, then hit "Retry" under Event Subscriptions.
+display_information:
+  name: RainRAG
+  description: Спросите архив Дождя — ответы с источниками, таймкодами и видео
+  background_color: "#590f52"
+features:
+  bot_user:
+    display_name: RainRAG
+    always_online: true
+  slash_commands:
+    - command: /rainrag
+      url: https://rag.tvrain.tv/slack/commands
+      description: Ask the TV Rain archive
+      usage_hint: "когда впервые обсуждали закон об иноагентах? [top:N] [from:YYYY-MM-DD] [lang:ru|en]"
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read # see mentions in channels
+      - im:history # read DMs sent to the bot
+      - chat:write # post answers
+      - files:read # download attached videos for import
+      - files:write # post inline clips of retrieved footage
+settings:
+  event_subscriptions:
+    request_url: https://rag.tvrain.tv/slack/events
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: true
+    request_url: https://rag.tvrain.tv/slack/interactive
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

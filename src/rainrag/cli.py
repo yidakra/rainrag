@@ -1,5 +1,6 @@
 """CLI interface for RainRAG using Typer."""
 
+import os
 from pathlib import Path
 
 import typer
@@ -591,6 +592,52 @@ def mcp(
     except Exception as e:
         logger.exception(f"MCP server failed: {e}")
         typer.echo(f"MCP server failed: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def slack(
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind the connector to"),
+    port: int = typer.Option(8002, "--port", help="Port to bind the connector to"),
+) -> None:
+    """
+    Run the Slack connector service.
+
+    Receives Slack Events API webhooks (mentions, DMs) and the /rainrag slash
+    command, answers questions through the RainRAG query API, and posts the
+    results back to Slack.
+
+    Required environment variables:
+    - SLACK_SIGNING_SECRET: verifies that webhooks come from Slack
+    - SLACK_BOT_TOKEN: posts answers via chat.postMessage
+
+    Optional environment variables:
+    - RAINRAG_API_URL: RainRAG API base URL (default: http://localhost:8001)
+    - RAINRAG_AUTH_TOKEN: bearer token for the RainRAG API, if configured
+
+    See docs/SLACK_SETUP.md for the full Slack app configuration.
+
+    Examples:
+        rainrag slack
+        rainrag slack --host 0.0.0.0 --port 8002
+    """
+    for var in ("SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN"):
+        if not os.getenv(var):
+            typer.echo(f"Warning: {var} is not set; the connector will not work without it.")
+
+    try:
+        from rainrag.slack_connector import run_server
+
+        typer.echo("Starting Slack connector...")
+        typer.echo(f"   Address: {host}:{port}")
+        typer.echo("")
+        run_server(host=host, port=port)
+    except KeyboardInterrupt:
+        typer.echo("\n\nSlack connector stopped")
+        raise typer.Exit(code=0)
+    except Exception as e:
+        logger.exception(f"Slack connector failed: {e}")
+        typer.echo(f"Slack connector failed: {e}", err=True)
         raise typer.Exit(code=1)
 
 

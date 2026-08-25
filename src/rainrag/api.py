@@ -303,6 +303,15 @@ HLS_PROBE_CONCURRENCY = max(1, int(os.getenv("RAINRAG_HLS_PROBE_CONCURRENCY", "4
 _hls_probe_semaphore: asyncio.Semaphore | None = None
 _hls_probe_semaphore_loop: asyncio.AbstractEventLoop | None = None
 
+# Clip extraction (/video-clip): chat clients (the Slack connector) fetch just
+# the retrieved chunk's time span as a small standalone mp4 instead of linking
+# the whole broadcast. Cut with -c copy so it is a remux, not a re-encode.
+CLIP_CACHE_ROOT = Path(os.getenv("RAINRAG_CLIP_CACHE_DIR", "/tmp/rainrag_clip_cache"))
+CLIP_MAX_SECONDS = int(os.getenv("RAINRAG_CLIP_MAX_SECONDS", "300"))
+CLIP_FFMPEG_TIMEOUT_SECONDS = int(os.getenv("RAINRAG_CLIP_FFMPEG_TIMEOUT_SECONDS", "120"))
+CLIP_CACHE_TTL_SECONDS = int(os.getenv("RAINRAG_CLIP_CACHE_TTL_SECONDS", "86400"))
+CLIP_CACHE_MAX_FILES = int(os.getenv("RAINRAG_CLIP_CACHE_MAX_FILES", "256"))
+
 
 def _parse_csv_env(name: str, default: list[str]) -> list[str]:
     """Parse comma-separated env values into a de-duplicated list."""
@@ -2461,6 +2470,48 @@ async def root():
     }
 
 
+def _resolve_archive_video_path(file_path: str) -> Path:
+    """Resolve a client-supplied video path to a safe file under video_root.
+
+    Shared by /video and /video-clip so both apply identical containment,
+    directory-fallback and extension checks.
+    """
+    if config is None or not config.video.enabled:
+        raise HTTPException(status_code=404, detail="Video serving is disabled")
+
+    video_root = Path(
+        config.paths.video_root if config.paths.video_root else config.paths.archive_root
+    ).resolve()
+    full_path = (video_root / file_path).resolve()
+
+    # Security check: ensure the path is within video_root. is_relative_to,
+    # not a string prefix test: /data/videos_backup must not pass for a root
+    # of /data/videos.
+    try:
+        if not full_path.is_relative_to(video_root):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Path resolution error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
+    # If a directory is passed, choose best available video file in that directory.
+    if full_path.exists() and full_path.is_dir():
+        selected = _select_media_file_from_directory(full_path, kind="video")
+        if selected is None:
+            raise HTTPException(status_code=404, detail="Video directory is empty")
+        full_path = selected
+
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    if full_path.suffix.lower() not in config.video.extensions:
+        raise HTTPException(status_code=400, detail="Invalid video file type")
+
+    return full_path
+
+
 @app.api_route("/video/{file_path:path}", methods=["GET", "HEAD"])
 async def serve_video(
     file_path: str,
@@ -2478,37 +2529,7 @@ async def serve_video(
     """
     verify_auth_token(authorization=authorization, access_token=auth)
 
-    if config is None or not config.video.enabled:
-        raise HTTPException(status_code=404, detail="Video serving is disabled")
-
-    # Convert to absolute path
-    video_root = Path(
-        config.paths.video_root if config.paths.video_root else config.paths.archive_root
-    ).resolve()
-    full_path = (video_root / file_path).resolve()
-
-    # Security check: ensure the path is within video_root
-    try:
-        if not str(full_path).startswith(str(video_root)):
-            raise HTTPException(status_code=403, detail="Access denied")
-    except Exception as e:
-        logger.error(f"Path resolution error: {e}")
-        raise HTTPException(status_code=400, detail="Invalid file path")
-
-    # If a directory is passed, choose best available video file in that directory.
-    if full_path.exists() and full_path.is_dir():
-        selected = _select_media_file_from_directory(full_path, kind="video")
-        if selected is None:
-            raise HTTPException(status_code=404, detail="Video directory is empty")
-        full_path = selected
-
-    # Check if file exists
-    if not full_path.exists():
-        raise HTTPException(status_code=404, detail="Video file not found")
-
-    # Check if file has valid video extension
-    if full_path.suffix.lower() not in config.video.extensions:
-        raise HTTPException(status_code=400, detail="Invalid video file type")
+    full_path = _resolve_archive_video_path(file_path)
 
     logger.info(f"Serving video file: {full_path}")
 
@@ -2525,6 +2546,151 @@ async def serve_video(
     # NOTE: Do not force Content-Disposition: attachment for videos.
     # Some browsers refuse to play media in <video> when it is served as an attachment.
     return FileResponse(path=str(full_path), media_type=media_type)
+
+
+def _clip_cache_key(video_file: Path, start: float, end: float) -> str:
+    """Deterministic cache key for an extracted clip, invalidated on re-transcode."""
+    try:
+        stat = video_file.stat()
+        signature = (
+            f"{video_file.resolve()}|{start:.1f}|{end:.1f}|{int(stat.st_mtime)}|{stat.st_size}"
+        )
+    except OSError:
+        signature = f"{video_file.resolve()}|{start:.1f}|{end:.1f}"
+    return hashlib.sha1(signature.encode("utf-8")).hexdigest()
+
+
+def _cleanup_clip_cache_best_effort() -> None:
+    """Best-effort TTL + count cap on cached clips, mirroring the HLS cache."""
+    try:
+        CLIP_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+        files = [f for f in CLIP_CACHE_ROOT.iterdir() if f.is_file()]
+    except OSError:
+        return
+
+    now = time.time()
+    stale_before = now - max(CLIP_CACHE_TTL_SECONDS, 0)
+    survivors: list[Path] = []
+    for f in files:
+        try:
+            if f.stat().st_mtime < stale_before:
+                f.unlink(missing_ok=True)
+            else:
+                survivors.append(f)
+        except OSError:
+            continue
+
+    overflow = len(survivors) - max(CLIP_CACHE_MAX_FILES, 0)
+    if overflow <= 0:
+        return
+    try:
+        survivors.sort(key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return
+    for f in survivors[:overflow]:
+        # Same best-effort contract as the TTL loop above: cleanup must never
+        # fail the clip request that triggered it.
+        with suppress(OSError):
+            f.unlink(missing_ok=True)
+
+
+def _ensure_clip_cache(video_file: Path, start: float, end: float) -> Path:
+    """Extract [start, end] of a video into a cached standalone mp4.
+
+    ``-ss`` before ``-i`` with ``-c copy`` cuts at the nearest preceding
+    keyframe: fast (a remux, no re-encode) at the cost of the clip starting up
+    to a few seconds early, which for a transcript excerpt is fine -- the
+    chunks already overlap by 30 seconds for the same reason.
+    """
+    cache_key = _clip_cache_key(video_file, start, end)
+    out_path = CLIP_CACHE_ROOT / f"{cache_key}.mp4"
+    if out_path.exists():
+        return out_path
+
+    # Name-keyed locks are generic despite living next to the HLS cache; a
+    # prefix keeps clip keys from ever colliding with HLS keys.
+    lock = _get_hls_generation_lock(f"clip:{cache_key}")
+    with lock:
+        if out_path.exists():
+            return out_path
+        _cleanup_clip_cache_best_effort()
+        CLIP_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=str(CLIP_CACHE_ROOT), suffix=".mp4")
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            f"{start:.3f}",
+            "-i",
+            str(video_file),
+            "-t",
+            f"{end - start:.3f}",
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(tmp_path),
+        ]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=CLIP_FFMPEG_TIMEOUT_SECONDS
+            )
+        except FileNotFoundError as exc:
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail="ffmpeg is not installed") from exc
+        except subprocess.TimeoutExpired as exc:
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=504, detail="Clip extraction timed out") from exc
+
+        if result.returncode != 0 or not tmp_path.exists() or tmp_path.stat().st_size == 0:
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Clip extraction failed: {result.stderr.strip()[:200]}",
+            )
+        tmp_path.replace(out_path)
+    return out_path
+
+
+@app.get("/video-clip/{file_path:path}")
+async def serve_video_clip(
+    file_path: str,
+    start: Annotated[float, Query(ge=0)],
+    end: Annotated[float, Query(gt=0)],
+    authorization: Annotated[str | None, Header()] = None,
+    auth: Annotated[str | None, Query()] = None,
+):
+    """Serve one retrieved chunk's time span as a standalone mp4.
+
+    Built for chat front-ends (the Slack connector) that want to drop the
+    actual footage into a conversation instead of a link to the full
+    broadcast. Same auth and path containment as /video.
+    """
+    verify_auth_token(authorization=authorization, access_token=auth)
+
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end must be greater than start")
+    if end - start > CLIP_MAX_SECONDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Clip length is capped at {CLIP_MAX_SECONDS} seconds",
+        )
+
+    full_path = _resolve_archive_video_path(file_path)
+
+    with usage_span("video_clip", seconds_span=f"{end - start:.0f}"):
+        clip_path = await asyncio.to_thread(_ensure_clip_cache, full_path, start, end)
+
+    return FileResponse(
+        path=str(clip_path),
+        media_type="video/mp4",
+        filename=f"{full_path.stem}_{int(start)}-{int(end)}.mp4",
+    )
 
 
 @app.api_route("/hls/master/{file_path:path}", methods=["GET", "HEAD"])

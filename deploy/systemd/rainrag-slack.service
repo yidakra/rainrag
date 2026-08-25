@@ -1,0 +1,21 @@
+# Assumes the ubuntu user and /home/ubuntu/rainrag, matching the other
+# rainrag-* units. Edit User/Group and the paths below to fit your
+# deployment before enabling.
+[Unit]
+Description=RainRAG Slack Connector
+After=network.target rainrag-api.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/rainrag
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=RAINRAG_API_URL=http://127.0.0.1:8001
+EnvironmentFile=-/home/ubuntu/rainrag/.env
+ExecStart=/usr/bin/env bash -lc 'cd /home/ubuntu/rainrag && uv run python -m uvicorn rainrag.slack_connector:app --host 127.0.0.1 --port 8002'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
