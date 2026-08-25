@@ -56,6 +56,16 @@ concurrency limits, timeouts, and show up in the same usage accounting
 
 ## 1. Create the Slack app
 
+**Fast path:** <https://api.slack.com/apps> → **Create New App** → **From a
+manifest** → pick the workspace → paste `deploy/slack-app-manifest.yaml`.
+That configures the scopes, events, slash command and interactivity URLs in
+one step — then do only steps 4–5 below (install + copy the two credentials)
+and continue with section 2. Section 3 is already covered by the manifest
+except its final verification: the event URL shows as unverified until the
+connector is running, so hit **Retry** under Event Subscriptions at the end.
+
+**Manual path**, doing the same by hand:
+
 1. Go to <https://api.slack.com/apps> → **Create New App** → **From scratch**.
 2. Name it (e.g. `RainRAG`) and pick your workspace.
 3. Under **OAuth & Permissions**, add these **Bot Token Scopes**:
