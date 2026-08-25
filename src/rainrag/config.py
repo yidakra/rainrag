@@ -437,6 +437,19 @@ class RerankerConfig(BaseModel):
     initial_k: int = Field(
         default=20, description="Number of candidates to retrieve before reranking"
     )
+    near_duplicate_threshold: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Word-trigram containment (overlap over the smaller chunk) above which "
+            "two candidate chunks are "
+            "treated as the same text and only the higher-scored one is kept. "
+            "The archive contains the same segment more than once (rebroadcasts, "
+            "re-transcriptions differing only in casing/punctuation), and duplicates "
+            "waste top-k slots that should carry distinct evidence. 0 disables."
+        ),
+    )
     min_retrieval_score: float = Field(
         default=0.0,
         ge=0.0,

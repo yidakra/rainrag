@@ -1515,6 +1515,60 @@ class RAGQueryEngine:
             ordered[i - 1] = doc
         return ordered
 
+    @staticmethod
+    def _text_shingles(text: str, n: int = 3) -> set[tuple[str, ...]]:
+        """Word n-gram shingles over normalized text.
+
+        Normalization strips casing and punctuation because the archive holds
+        the same speech both cased/punctuated and raw -- those must compare
+        as identical, not merely similar.
+        """
+        words = re.findall(r"[\w\-а-яА-ЯёЁ]+", text.lower())
+        if len(words) < n:
+            return {tuple(words)} if words else set()
+        return {tuple(words[i : i + n]) for i in range(len(words) - n + 1)}
+
+    def _suppress_near_duplicates(self, documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Keep only the highest-scored copy of near-identical candidate texts.
+
+        The same broadcast segment enters the index more than once: rebroadcast
+        on a later date, or re-transcribed with different casing/punctuation.
+        Observed live: two of five answer slots carrying the same Putin
+        statement twice. Documents arrive score-ordered, so keeping the first
+        of each near-duplicate group keeps the best-scored one.
+        """
+        threshold = getattr(self.config.reranker, "near_duplicate_threshold", 0.0) or 0.0
+        if threshold <= 0 or len(documents) < 2:
+            return documents
+
+        kept: list[dict[str, Any]] = []
+        kept_shingles: list[set[tuple[str, ...]]] = []
+        dropped = 0
+        for doc in documents:
+            shingles = self._text_shingles(doc.get("text") or "")
+            duplicate = False
+            for seen in kept_shingles:
+                # Containment, not Jaccard: a re-transcription is often one
+                # chunk plus a stray prefix sentence, and Jaccard punishes the
+                # length asymmetry (measured 0.55 on a real duplicate pair
+                # where containment reads 0.82). If the smaller text is mostly
+                # inside the larger, the smaller adds nothing.
+                smaller = min(len(shingles), len(seen))
+                if smaller and len(shingles & seen) / smaller >= threshold:
+                    duplicate = True
+                    break
+            if duplicate:
+                dropped += 1
+                continue
+            kept.append(doc)
+            kept_shingles.append(shingles)
+
+        if dropped:
+            logger.info(
+                "Near-duplicate suppression dropped {}/{} candidates", dropped, len(documents)
+            )
+        return kept
+
     def rerank_documents(
         self, query: str, documents: list[dict[str, Any]], top_n: int
     ) -> list[dict[str, Any]]:
@@ -2060,6 +2114,12 @@ Question: {query}"""
             documents = self._apply_time_decay_boost(
                 documents, time_sensitivity=temporal_context["time_sensitivity"]
             )
+
+        # Step 4b: Collapse near-identical candidates (rebroadcasts and
+        # re-transcriptions) before ranks are spent on them. Runs on the wide
+        # candidate pool so every dropped duplicate frees a slot for distinct
+        # evidence in the final top-k.
+        documents = self._suppress_near_duplicates(documents)
 
         # Step 5: Rerank if enabled
         if self.config.reranker.enabled and documents:
