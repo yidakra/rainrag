@@ -694,6 +694,31 @@ def _escape_mrkdwn(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+_MD_BOLD_RE = re.compile(r"(?<!\*)\*\*(?!\s)(.+?)(?<!\s)\*\*(?!\*)", re.DOTALL)
+_MD_BOLD_UNDERSCORE_RE = re.compile(r"(?<!_)__(?!\s)(.+?)(?<!\s)__(?!_)", re.DOTALL)
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
+_MD_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+
+
+def markdown_to_mrkdwn(text: str) -> str:
+    """Convert the markdown LLMs habitually emit into Slack mrkdwn.
+
+    LLM answers arrive as standard markdown, but Slack renders mrkdwn:
+    ``**bold**`` shows its literal asterisks, headings show their hashes.
+    Escaping runs first, so transcript text quoted in an answer cannot smuggle
+    in a ``<!channel>`` ping or a fake link; the conversions below then insert
+    the only angle brackets in the string. Deliberately minimal -- bold,
+    headings and links cover what the answer prompts actually produce, and a
+    missed construct degrades to visible punctuation, never to broken text.
+    """
+    text = _escape_mrkdwn(text)
+    text = _MD_LINK_RE.sub(r"<\2|\1>", text)
+    text = _MD_HEADING_RE.sub(r"*\1*", text)
+    text = _MD_BOLD_RE.sub(r"*\1*", text)
+    text = _MD_BOLD_UNDERSCORE_RE.sub(r"*\1*", text)
+    return text
+
+
 def _split_for_blocks(text: str, limit: int = SLACK_BLOCK_TEXT_LIMIT) -> list[str]:
     """Split text into block-sized pieces, preferring paragraph then word breaks."""
     pieces: list[str] = []
@@ -757,6 +782,7 @@ def format_answer(result: dict[str, Any], language: str) -> tuple[str, list[dict
     answer = (result.get("answer") or "").strip() or (
         "Не нашёл ответа в архиве." if language == "ru" else "No answer found in the archive."
     )
+    answer = markdown_to_mrkdwn(answer)
     blocks: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": piece}}
         for piece in _split_for_blocks(answer)
