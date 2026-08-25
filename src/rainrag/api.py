@@ -144,6 +144,57 @@ def usage_span(event: str, **fields: Any) -> Any:
         )
 
 
+# --- Pilot answer log ---------------------------------------------------------
+# The usage lines deliberately carry no question or answer text. During the
+# pilot the service needs the opposite: full question/answer/retrieval records
+# to review quality, build eval sets and link journalist feedback to concrete
+# answers. JSONL on disk (gitignored data/), one object per line, append-only.
+# Set RAINRAG_QUERY_LOG_PATH= (empty) to turn it off after the pilot.
+QUERY_LOG_PATH = os.getenv("RAINRAG_QUERY_LOG_PATH", "data/query_log.jsonl")
+_query_log_lock = threading.Lock()
+
+
+def append_query_log(result: dict[str, Any], **fields: Any) -> None:
+    """Append one full query record to the pilot log. Never raises.
+
+    Logging is accounting; a full disk or bad payload must not fail the query
+    that already succeeded.
+    """
+    if not QUERY_LOG_PATH:
+        return
+    try:
+        docs = [
+            {
+                "doc_id": d.get("doc_id"),
+                "path": d.get("path"),
+                "rank": d.get("rank"),
+                "score": d.get("score"),
+                "rerank_score": d.get("rerank_score"),
+                "date": d.get("web_date") or d.get("date"),
+                "web_title": d.get("web_title"),
+                "start_time": d.get("start_time"),
+                "end_time": d.get("end_time"),
+            }
+            for d in (result.get("retrieved_documents") or [])
+        ]
+        record = {
+            "ts": time.time(),
+            "question": result.get("question"),
+            "answer": result.get("answer"),
+            "docs": docs,
+            "tokens_in": result.get("cost.llm_tokens_in"),
+            "tokens_out": result.get("cost.llm_tokens_out"),
+            **fields,
+        }
+        line = json.dumps(record, ensure_ascii=False)
+        path = Path(QUERY_LOG_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _query_log_lock, open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        logger.exception("Pilot query log append failed; the query itself succeeded")
+
+
 def _record_query_usage(usage: dict[str, Any], result: Any, docs: int | None = None) -> None:
     """Copy the measurable facts about a finished query onto its usage span.
 
@@ -1503,6 +1554,15 @@ async def query(
             logger.info(f"Query completed successfully. Retrieved {len(context_chunks)} documents")
 
             _record_query_usage(usage, result, len(context_chunks))
+            append_query_log(
+                result,
+                mode="corpus",
+                transport="blocking",
+                lang=request.language,
+                top_k=request.top_k,
+                date_from=request.date_from,
+                date_to=request.date_to,
+            )
 
             return response
 
@@ -1636,6 +1696,15 @@ async def query_stream(
                     elif kind == "done":
                         response = _build_query_response(payload)
                         _record_query_usage(usage, payload)
+                        append_query_log(
+                            payload,
+                            mode="corpus",
+                            transport="stream",
+                            lang=request.language,
+                            top_k=request.top_k,
+                            date_from=request.date_from,
+                            date_to=request.date_to,
+                        )
                         yield _sse("done", response.model_dump(mode="json"))
                     elif kind == "pipeline_error":
                         logger.error(f"Streaming query failed: {payload}")
@@ -2274,6 +2343,7 @@ async def query_video_session(
             _get_query_semaphore().release()
 
         _record_query_usage(usage, result)
+        append_query_log(result, mode="session", lang=request.language, session_id=session_id)
         return _build_query_response(result, media_urls=False)
 
 

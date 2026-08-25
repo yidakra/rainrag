@@ -1706,12 +1706,18 @@ def record_answer_feedback(event: dict[str, Any], bot_user_id: str | None) -> bo
     if verdict is None:
         return False
     retracted = event.get("type") == "reaction_removed"
+    item = event.get("item") or {}
     _log_usage(
         "slack_feedback",
         "ok",
         time.monotonic(),
         verdict=f"retracted_{verdict}" if retracted else verdict,
         reaction=event.get("reaction"),
+        # Which answer was rated: pilot reviews join this to the message in
+        # Slack (and to the API's query log by time proximity). Identifies the
+        # message, not the person -- the reactor is still never logged.
+        channel=item.get("channel"),
+        message_ts=item.get("ts"),
     )
     return True
 
