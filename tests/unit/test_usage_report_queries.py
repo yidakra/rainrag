@@ -113,3 +113,58 @@ class TestTokens:
 )
 def test_is_number(value, expected):
     assert ur._is_number(value) is expected
+
+
+class TestSlackAttribution:
+    def test_via_slack_line_present_when_counted(self, capsys):
+        ur.report_queries([_query(), _query()], argparse.Namespace(days=7), via_slack=2)
+        out = capsys.readouterr().out
+        assert "via Slack: 2" in out
+
+    def test_no_slack_line_when_zero(self, capsys):
+        ur.report_queries([_query()], argparse.Namespace(days=7), via_slack=0)
+        assert "via Slack" not in capsys.readouterr().out
+
+
+class TestMultiUnitJournal:
+    def test_journal_lines_passes_all_units(self, monkeypatch):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return R()
+
+        monkeypatch.setattr(ur.subprocess, "run", fake_run)
+        ur.journal_lines("7 days ago", ["rainrag-api", "rainrag-slack"])
+        assert captured["cmd"].count("-u") == 2
+        assert "rainrag-slack" in captured["cmd"]
+
+    def test_single_string_unit_still_works(self, monkeypatch):
+        """health_check.py passes a bare string; the signature change must not break it."""
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return R()
+
+        monkeypatch.setattr(ur.subprocess, "run", fake_run)
+        ur.journal_lines("1 hour ago", "rainrag-api")
+        assert captured["cmd"].count("-u") == 1
+
+    def test_slack_only_selection_keeps_attribution(self, capsys):
+        """--unit rainrag-slack yields slack_query events but no query events."""
+        ur.report_queries([], argparse.Namespace(days=7), via_slack=4)
+        out = capsys.readouterr().out
+        assert "via Slack: 4" in out

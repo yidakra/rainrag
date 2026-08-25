@@ -45,18 +45,19 @@ class JournalUnavailableError(JournalError):
     """
 
 
-def journal_lines(since: str, unit: str, timeout: float = 120) -> list[str]:
-    """Return journal lines for the unit since a journalctl time expression.
+def journal_lines(since: str, unit: str | list[str], timeout: float = 120) -> list[str]:
+    """Return journal lines for one or more units since a journalctl time expression.
 
     Raises JournalError instead of exiting, so callers that have other work to do
     -- scripts/health_check.py runs four more checks -- can carry on.
     """
+    units = [unit] if isinstance(unit, str) else list(unit)
+    unit_flags = [flag for u in units for flag in ("-u", u)]
     try:
         proc = subprocess.run(
             [
                 "journalctl",
-                "-u",
-                unit,
+                *unit_flags,
                 "--since",
                 since,
                 "--no-pager",
@@ -77,8 +78,8 @@ def journal_lines(since: str, unit: str, timeout: float = 120) -> list[str]:
     return proc.stdout.splitlines()
 
 
-def read_journal(days: int, unit: str) -> list[str]:
-    """Return journal lines for the unit over the last N days, or exit on failure."""
+def read_journal(days: int, unit: str | list[str]) -> list[str]:
+    """Return journal lines for the unit(s) over the last N days, or exit on failure."""
     try:
         return journal_lines(f"{days} days ago", unit)
     except JournalError as exc:
@@ -113,19 +114,35 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--days", type=int, default=7, help="how far back to look (default 7)")
-    ap.add_argument("--unit", default="rainrag-api", help="systemd unit to read")
+    ap.add_argument(
+        "--unit",
+        action="append",
+        default=None,
+        help="systemd unit(s) to read; repeatable "
+        "(default: rainrag-api and rainrag-slack, so Slack usage is visible)",
+    )
     ap.add_argument("--failures", action="store_true", help="list failed attempts only")
     args = ap.parse_args()
 
-    events = parse(read_journal(args.days, args.unit))
-    report_queries([e for e in events if e.get("event") == "query"], args)
+    units = args.unit or ["rainrag-api", "rainrag-slack"]
+    events = parse(read_journal(args.days, units))
+    # Every Slack question also reaches the API and is counted there as a
+    # regular query event; slack_query is attribution, not additional volume.
+    via_slack = sum(1 for e in events if e.get("event") == "slack_query")
+    report_queries([e for e in events if e.get("event") == "query"], args, via_slack=via_slack)
     return report_imports([e for e in events if e.get("event") == "video_import"], args)
 
 
-def report_queries(queries: list[dict[str, str]], args: argparse.Namespace) -> None:
+def report_queries(
+    queries: list[dict[str, str]], args: argparse.Namespace, via_slack: int = 0
+) -> None:
     """Print the question-answering side: volume, failures, latency, tokens."""
     print(f"Questions asked, last {args.days} day(s): {len(queries)} attempt(s)")
     if not queries:
+        # --unit rainrag-slack alone selects slack_query events but no query
+        # events; the observed Slack usage must not vanish with them.
+        if via_slack:
+            print(f"  via Slack: {via_slack}")
         print("  none recorded (nobody asked, or the API predates query usage logging)\n")
         return
 
@@ -137,6 +154,8 @@ def report_queries(queries: list[dict[str, str]], args: argparse.Namespace) -> N
 
     modes = Counter(e.get("mode", "?") for e in queries)
     print("  " + ", ".join(f"{k}: {v}" for k, v in modes.most_common()))
+    if via_slack:
+        print(f"  via Slack: {via_slack}")
 
     # .get throughout: parse() accepts any key=value sequence, so a truncated or
     # rotated journal line can yield an event with no outcome at all. The report

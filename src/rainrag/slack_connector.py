@@ -742,15 +742,25 @@ def _split_for_blocks(text: str, limit: int = SLACK_BLOCK_TEXT_LIMIT) -> list[st
     return pieces
 
 
-def _chunk_title(doc: dict[str, Any]) -> str:
-    return doc.get("web_title") or doc.get("filename") or "—"
+def _chunk_title(doc: dict[str, Any], language: str = "ru") -> str:
+    """The chunk's broadcast title, or a humane fallback.
+
+    A quarter of the archive has no CMS article, and those chunks used to show
+    their raw /data/archive/<40-hex>/... path as the "title" -- meaningless to
+    a journalist. The date (appended by every caller) and the media links
+    identify the video; the label just has to read like language.
+    """
+    title = doc.get("web_title")
+    if title:
+        return str(title)
+    return "Эфир из архива" if language == "ru" else "Archive broadcast"
 
 
 def _chunk_date(doc: dict[str, Any]) -> str | None:
     return doc.get("web_date") or doc.get("date")
 
 
-def _source_lines(context: list[dict[str, Any]]) -> list[str]:
+def _source_lines(context: list[dict[str, Any]], language: str = "ru") -> list[str]:
     """Render the top retrieved chunks as source attributions.
 
     Chunks are deduplicated by group_id so two hits in the same broadcast show
@@ -765,7 +775,7 @@ def _source_lines(context: list[dict[str, Any]]) -> list[str]:
             continue
         seen_groups.add(group)
 
-        title = _chunk_title(doc)
+        title = _chunk_title(doc, language)
         chunk_date = _chunk_date(doc)
         url = doc.get("web_url")
 
@@ -788,7 +798,7 @@ def format_answer(result: dict[str, Any], language: str) -> tuple[str, list[dict
         for piece in _split_for_blocks(answer)
     ]
 
-    sources = _source_lines(result.get("context") or [])
+    sources = _source_lines(result.get("context") or [], language)
     if sources:
         heading = "Источники" if language == "ru" else "Sources"
         blocks.append(
@@ -828,7 +838,7 @@ def format_context_blocks(
     buttons: list[dict[str, Any]] = []
 
     for i, doc in enumerate(chunks, start=1):
-        title = _escape_mrkdwn(_chunk_title(doc))
+        title = _escape_mrkdwn(_chunk_title(doc, language))
         meta_bits: list[str] = []
         chunk_date = _chunk_date(doc)
         if chunk_date:
@@ -985,16 +995,17 @@ async def post_slack_message(
     text: str,
     blocks: list[dict[str, Any]] | None = None,
     thread_ts: str | None = None,
-) -> bool:
-    """Post a message via chat.postMessage; returns False on any failure.
+) -> str | None:
+    """Post a message via chat.postMessage; returns its ts, or None on failure.
 
-    Slack reports API errors inside a 200 response ({"ok": false, ...}), so
-    the status code alone proves nothing.
+    The ts is what chat.update needs to edit the message later (the busy
+    placeholder becomes the answer). Slack reports API errors inside a 200
+    response ({"ok": false, ...}), so the status code alone proves nothing.
     """
     token = _bot_token()
     if not token:
         logger.error("SLACK_BOT_TOKEN is not configured; dropping reply to {}", channel)
-        return False
+        return None
 
     payload: dict[str, Any] = {"channel": channel, "text": text}
     if blocks:
@@ -1012,10 +1023,49 @@ async def post_slack_message(
         data = response.json()
     except Exception as exc:
         logger.error("chat.postMessage failed for channel {}: {}", channel, exc)
-        return False
+        return None
 
     if not data.get("ok"):
         logger.error("chat.postMessage rejected for channel {}: {}", channel, data.get("error"))
+        return None
+    return data.get("ts") or None
+
+
+async def update_slack_message(
+    channel: str,
+    ts: str,
+    text: str,
+    blocks: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Edit an existing message via chat.update; returns False on any failure.
+
+    Used to turn the "searching..." placeholder into the answer, so a question
+    gets exactly one reply message instead of a placeholder that lingers as
+    clutter above every answer.
+    """
+    token = _bot_token()
+    if not token:
+        return False
+
+    payload: dict[str, Any] = {"channel": channel, "ts": ts, "text": text}
+    # chat.update keeps existing blocks unless they are explicitly replaced,
+    # and the placeholder has none -- always send the field.
+    payload["blocks"] = blocks or []
+
+    try:
+        async with httpx.AsyncClient(timeout=SLACK_POST_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                f"{SLACK_API_BASE}/chat.update",
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        data = response.json()
+    except Exception as exc:
+        logger.error("chat.update failed for channel {}: {}", channel, exc)
+        return False
+
+    if not data.get("ok"):
+        logger.error("chat.update rejected for channel {}: {}", channel, data.get("error"))
         return False
     return True
 
@@ -1446,7 +1496,21 @@ async def process_event_question(event: dict[str, Any]) -> None:
     thread_root = event.get("thread_ts") or event.get("ts") or ""
     reply_thread = event.get("thread_ts") if is_dm else thread_root
 
+    # A silent bot during a 30-60s query reads as a bot that did not hear the
+    # question, so a placeholder goes up immediately and the first real reply
+    # EDITS it (chat.update) rather than posting alongside it -- one question,
+    # one answer message, no lingering "searching..." clutter. Posted lazily:
+    # video uploads announce their own progress and must not leave one behind.
+    placeholder_ts: str | None = None
+
     async def send(text: str, blocks: list[dict[str, Any]] | None) -> None:
+        nonlocal placeholder_ts
+        if placeholder_ts is not None:
+            ts, placeholder_ts = placeholder_ts, None
+            if await update_slack_message(channel, ts, text, blocks):
+                return
+            # The edit failed (deleted placeholder, API hiccup); a fresh post
+            # still beats a swallowed answer.
         await post_slack_message(channel, text, blocks, reply_thread)
 
     parsed = parse_message(event.get("text", ""))
@@ -1458,6 +1522,11 @@ async def process_event_question(event: dict[str, Any]) -> None:
         language = parsed.language or (detect_language(text) if text else "ru")
         await _handle_video_file(video_files[0], channel, thread_root, language)
         return
+
+    # video: imports post their own progress messages and never reply through
+    # send(), so a placeholder would linger as "searching..." forever.
+    if parsed.mode != "video":
+        placeholder_ts = await post_slack_message(channel, _BUSY_TEXT, None, reply_thread)
 
     # A message inside a thread bound to a video session queries that video.
     # `send` already replies into that thread: thread_root is the thread's
@@ -1496,11 +1565,18 @@ app = FastAPI(
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    """Liveness plus configuration sanity, without leaking secret values."""
+    """Liveness plus configuration sanity, without leaking secret values.
+
+    Reports "degraded" when either Slack credential is missing: the process is
+    up but cannot verify webhooks or post replies, and a monitor that calls
+    that "ok" would sleep through a dead bot.
+    """
+    signing = bool(os.getenv("SLACK_SIGNING_SECRET"))
+    token = bool(_bot_token())
     return {
-        "status": "ok",
-        "signing_secret_configured": bool(os.getenv("SLACK_SIGNING_SECRET")),
-        "bot_token_configured": bool(_bot_token()),
+        "status": "ok" if signing and token else "degraded",
+        "signing_secret_configured": signing,
+        "bot_token_configured": token,
         "api_url": _api_base(),
         "asset_url_configured": bool(_asset_base()),
     }
