@@ -99,6 +99,7 @@ reranker:
   top_n: 5  # Number of documents to return after reranking
   initial_k: 20  # Number of candidates to retrieve before reranking
   min_retrieval_score: 0.0  # Minimum document score (0-1) to include in prompt (0 disables)
+  near_duplicate_threshold: 0.7  # Drop near-identical candidate chunks (rebroadcasts/re-transcriptions); 0 disables
 
 # Chunking configuration
 chunking:
