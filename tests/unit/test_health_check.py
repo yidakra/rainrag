@@ -546,3 +546,99 @@ def test_degraded_detail_names_the_false_configured_flags() -> None:
     )
     assert result.status == hc.FAIL
     assert "bot_token_configured" in result.detail
+
+
+# --------------------------------------------------------------------------- #
+# Slack alerting policy
+# --------------------------------------------------------------------------- #
+# The policy exists because on 2026-08-26 the check flagged a filling disk 24
+# times over 11 hours into a journal nobody read. Alert on change, remind
+# rarely: a monitor that repeats every 30 minutes gets muted, and then the run
+# that mattered is muted too.
+
+HOUR = 3600.0
+
+
+def _decide(failing: bool, state: dict, now: float = 1000.0, fp: str = "disk"):
+    return hc.decide_alert(
+        failing=failing,
+        fingerprint=fp if failing else "",
+        state=state,
+        now=now,
+        reminder_seconds=12 * HOUR,
+    )
+
+
+def test_first_failure_alerts() -> None:
+    kind, state = _decide(True, {})
+    assert kind == "problem"
+    assert state["failing"] is True
+
+
+def test_repeat_failure_stays_silent() -> None:
+    _, state = _decide(True, {}, now=1000.0)
+    kind, _ = _decide(True, state, now=1000.0 + 1800)
+    assert kind is None
+
+
+def test_persistent_failure_reminds_after_the_window() -> None:
+    _, state = _decide(True, {}, now=1000.0)
+    kind, _ = _decide(True, state, now=1000.0 + 13 * HOUR)
+    assert kind == "reminder"
+
+
+def test_a_different_failure_alerts_immediately() -> None:
+    """A new check failing is a new incident, not a continuation."""
+    _, state = _decide(True, {}, fp="disk")
+    kind, _ = _decide(True, state, now=1100.0, fp="api,disk")
+    assert kind == "problem"
+
+
+def test_recovery_alerts_once_then_stays_silent() -> None:
+    _, state = _decide(True, {})
+    kind, state = _decide(False, state, now=1100.0)
+    assert kind == "recovery"
+    kind, _ = _decide(False, state, now=1200.0)
+    assert kind is None
+
+
+def test_healthy_from_the_start_never_alerts() -> None:
+    kind, _ = _decide(False, {})
+    assert kind is None
+
+
+def test_alert_text_names_the_failing_checks() -> None:
+    results = [
+        hc.CheckResult("disk", hc.FAIL, "/data 95% used"),
+        hc.CheckResult("api", hc.OK, "fine"),
+    ]
+    text = hc.format_alert("problem", results, "web-1")
+    assert "disk" in text and "95% used" in text and "web-1" in text
+    assert "api" not in text.split("•")[0]
+
+
+def test_recovery_text_is_unambiguous() -> None:
+    text = hc.format_alert("recovery", [hc.CheckResult("disk", hc.OK, "fine")], "web-1")
+    assert "recovered" in text
+
+
+def test_state_file_round_trip(tmp_path: Path) -> None:
+    p = tmp_path / "state" / "alert.json"
+    assert hc.load_alert_state(p) == {}
+    hc.save_alert_state(p, {"failing": True, "fingerprint": "disk", "last_sent": 5.0})
+    assert hc.load_alert_state(p)["fingerprint"] == "disk"
+
+
+def test_corrupt_state_file_is_treated_as_empty(tmp_path: Path) -> None:
+    p = tmp_path / "alert.json"
+    p.write_text("not json")
+    assert hc.load_alert_state(p) == {}
+
+
+def test_alerting_is_skipped_without_channel_or_token(monkeypatch) -> None:
+    """No channel configured must mean no network call, not a crash."""
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    args = argparse.Namespace(
+        slack_alert_channel="", alert_state_file="/nonexistent/x.json", reminder_hours=12
+    )
+    hc.maybe_alert([hc.CheckResult("disk", hc.FAIL, "full")], args)

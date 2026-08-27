@@ -10,9 +10,11 @@ Type=oneshot
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/rainrag
-# The script only reads config.yaml and stats data/telegram.session; it needs no
-# secrets, so no EnvironmentFile here on purpose.
+# Alerting needs SLACK_BOT_TOKEN; everything else the script uses comes from
+# config.yaml and the filesystem. EnvironmentFile is optional (leading -) so a
+# deployment without .env still runs the checks, just without Slack alerts.
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/home/ubuntu/rainrag/.env
 ExecStart=/home/ubuntu/rainrag/.venv/bin/python3 /home/ubuntu/rainrag/scripts/health_check.py --slack-url http://127.0.0.1:8002/health
 
 # A healthy run exits 0 and prints nothing, so this unit leaves no journal entry
