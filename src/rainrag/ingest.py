@@ -1777,6 +1777,13 @@ class Ingester:
             parts.append(web_desc)
 
         text = "\n\n".join(parts).strip()
+        # No transcript exists for these, so the article legitimately is the
+        # document -- but the embedder only reads the first max_chunk_tokens of
+        # it, and storing many multiples of that is bytes for nothing. Bound it
+        # to what actually gets embedded.
+        budget = self._chunk_token_budget()
+        if budget:
+            text = self._truncate_to_tokens(text, budget, language)
         if len(text) < self.config.processing.min_text_length:
             return None
 
@@ -2120,6 +2127,19 @@ class Ingester:
         label = self.config.web_metadata.append_label
         return self._cap_metadata_block("\n".join([label, *lines]))
 
+    @staticmethod
+    def _truncate_to_tokens(text: str, max_tokens: int, language: str = "ru") -> str:
+        """Cut text down to roughly max_tokens, marking the cut with an ellipsis.
+
+        estimate_tokens is proportional to length, so scaling by the ratio lands
+        close enough; being slightly under the cap is fine, over is not.
+        """
+        tokens = VTTParser.estimate_tokens(text, language)
+        if tokens <= max_tokens:
+            return text
+        keep = max(1, int(len(text) * max_tokens / tokens))
+        return text[:keep].rstrip() + "…"
+
     def _cap_metadata_block(self, block: str) -> str:
         """Truncate an oversized metadata block to its share of the chunk budget.
 
@@ -2143,7 +2163,6 @@ class Ingester:
 
         # estimate_tokens is proportional to length, so scale by the ratio and
         # cut on a character boundary; being slightly under the cap is fine.
-        keep = max(1, int(len(block) * allowed_tokens / tokens))
         logger.warning(
             "Web metadata block is {} tokens, over the {} allowed by "
             "max_block_token_share={}; truncating. Consider dropping long fields "
@@ -2152,7 +2171,7 @@ class Ingester:
             allowed_tokens,
             share,
         )
-        return block[:keep].rstrip() + "…"
+        return self._truncate_to_tokens(block, allowed_tokens)
 
     def _chunk_token_budget(self) -> int | None:
         """The effective max tokens per chunk (config value or model auto-detect)."""

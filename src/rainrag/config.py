@@ -643,7 +643,11 @@ class WebMetadataConfig(BaseModel):
         description="If True, append web metadata to each chunk text",
     )
     fields: list[str] = Field(
-        default=["title", "date", "description", "url"],
+        # Short, per-video-distinctive values only. "description" is the full
+        # article body; embedding it in every chunk starves the transcript of
+        # token budget (see max_block_token_share) and makes every chunk of a
+        # video look alike. It stays on the payload and in API responses.
+        default=["title", "date"],
         description=(
             "Web metadata fields to append to document text. Accepted: title, date, "
             "description, url, program, presenters, tags, stories. Changing this list "

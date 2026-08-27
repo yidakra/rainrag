@@ -76,3 +76,34 @@ class TestBlockCap:
         block = ing._build_web_metadata_block(META)
         adjusted = max(1, 462 - VTTParser.estimate_tokens(block, "ru"))
         assert adjusted > 300
+
+
+class TestModelDefault:
+    def test_pydantic_default_excludes_description(self):
+        """A deployment whose config.yaml omits `fields` must still be safe."""
+        from rainrag.config import WebMetadataConfig
+
+        assert WebMetadataConfig().fields == ["title", "date"]
+
+
+class TestSpeechFreeDocuments:
+    """Speech-free videos have no transcript, so the article IS the document —
+    but it must still be bounded by what the embedder actually reads."""
+
+    def _ingester_for_speech_free(self, budget: int | None = 462):
+        ing = _ingester(fields=["title", "date"], budget=budget)
+        ing.config.web_metadata.ingest_speech_free = True
+        ing.config.processing = SimpleNamespace(min_text_length=10)
+        return ing
+
+    def test_long_article_is_truncated_to_the_budget(self):
+        from rainrag.ingest import VTTParser
+
+        ing = self._ingester_for_speech_free()
+        text = ing._truncate_to_tokens(ARTICLE, 462)
+        assert text.endswith("…")
+        assert VTTParser.estimate_tokens(text, "ru") <= 462 + 5
+
+    def test_short_article_untouched(self):
+        ing = self._ingester_for_speech_free()
+        assert ing._truncate_to_tokens("короткий текст", 462) == "короткий текст"
