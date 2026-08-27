@@ -278,5 +278,11 @@ web_metadata:
   # The taxonomy fields (program/presenters/tags/stories) are stored on the Qdrant
   # payload regardless; listing them here also embeds them in the text, which
   # invalidates every content hash and forces a full re-embed.
-  fields: ["title", "date", "description"]
+  # Only short, per-video-distinctive fields belong here: whatever is listed is
+  # appended to EVERY chunk of the video and competes with the transcript for
+  # the chunk's token budget. "description" is the full article body (measured
+  # at 14 kB / ~5900 tokens against a 462-token budget), which collapsed every
+  # chunk to a 1-token sliver on 2026-08-26. It stays on the Qdrant payload and
+  # in API responses either way -- it just is not embedded.
+  fields: ["title", "date"]
   require_web_metadata: false  # Mode 2: Only ingest videos with web metadata; Mode 1 (false): Ingest all videos with null web fields when metadata missing

@@ -617,6 +617,19 @@ class WebMetadataConfig(BaseModel):
     min_content_length: int = Field(
         default=10, ge=1, description="Minimum content length for web description text"
     )
+    max_block_token_share: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Hardest cap on the appended metadata block, as a share of the chunk "
+            "token budget. Long per-field values (a full article body in "
+            "'description') otherwise consume the entire budget and collapse every "
+            "chunk to a 1-token sliver -- observed on 2026-08-26, when a reindex "
+            "wrote 295 GB of near-empty chunks before the disk filled. The block is "
+            "truncated to fit and the shortfall is logged. 0 disables the cap."
+        ),
+    )
     include_in_text: bool = Field(
         default=False,
         description="If True, append web metadata to document text for retrieval",
