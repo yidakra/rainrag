@@ -6,8 +6,9 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -1600,6 +1601,12 @@ class Ingester:
         super().__init__()
         self.config = config
         self.parser = VTTParser()
+        # Diagnostic counters are incremented from the ingest worker threads;
+
+        # += on an int is load-add-store, so it needs the lock to stay exact.
+
+        self._counter_lock = threading.Lock()
+
         self.invalid_vtt_count = 0
         self.speech_free_count = 0  # valid VTT with no cues (silent video)
         self.speech_free_with_metadata_count = 0  # subset that had web metadata → indexed
@@ -1731,15 +1738,53 @@ class Ingester:
 
         logger.info(f"Found {len(vtt_files)} .vtt files")
 
-        for vtt_file in vtt_files:
-            # Check file size limit
-            if vtt_file.stat().st_size > self.config.processing.max_file_size:
-                logger.warning(
-                    f"Skipping {vtt_file} (size {vtt_file.stat().st_size} exceeds limit)"
-                )
-                continue
+        # The size check used to live here, as a stat() per file before any
+        # parsing began: 287k sequential NFS round trips, measured at 18/s, so
+        # 4.4 hours of silence before the first document. It now happens in
+        # process_file, inside the worker threads, where the file is opened
+        # anyway.
+        yield from vtt_files
 
-            yield vtt_file
+    def _parsed_documents(self, vtt_files: list[Path]) -> Iterator[tuple[Path, list["Document"]]]:
+        """Yield (path, documents) for each VTT file, parsing them in parallel.
+
+        Parsing is dominated by NFS round trips -- measured at 2.4 files/s with
+        the CPU ~2% busy -- so the wall-clock cost is waiting, not computing,
+        and threads overlap the waits despite the GIL. Everything that mutates
+        shared state (the output file, the manifest) stays with the caller on
+        the main thread; only process_file runs concurrently.
+
+        Results are yielded in input order and in bounded batches, so memory
+        stays flat over a 287k-file archive instead of holding every parsed
+        document at once.
+        """
+        workers = max(1, int(getattr(self.config.processing, "ingest_workers", 1) or 1))
+        if workers == 1:
+            for path in tqdm(vtt_files, desc="Processing VTT files"):
+                yield path, self.process_file(path)
+            return
+
+        logger.info(f"Parsing VTT files with {workers} threads")
+        batch_size = workers * 32
+        with (
+            ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ingest") as pool,
+            tqdm(total=len(vtt_files), desc="Processing VTT files") as progress,
+        ):
+            for start in range(0, len(vtt_files), batch_size):
+                batch = vtt_files[start : start + batch_size]
+                for path, docs in zip(batch, pool.map(self._parse_one, batch), strict=True):
+                    progress.update(1)
+                    yield path, docs
+
+    def _parse_one(self, file_path: Path) -> list["Document"]:
+        """process_file for a worker thread: a failure is one skipped file."""
+        try:
+            return self.process_file(file_path)
+        except Exception:
+            logger.exception(f"Failed to process {file_path}")
+            with self._counter_lock:
+                self.invalid_vtt_count += 1
+            return []
 
     def _make_speech_free_doc(
         self,
@@ -1819,6 +1864,15 @@ class Ingester:
         Returns:
             List of Document objects (may contain multiple chunks or single full document)
         """
+        # Size guard (moved here from find_vtt_files so it runs in parallel).
+        try:
+            if file_path.stat().st_size > self.config.processing.max_file_size:
+                logger.warning(f"Skipping {file_path} (exceeds max_file_size)")
+                return []
+        except OSError as exc:
+            logger.warning(f"Skipping {file_path} (cannot stat: {exc})")
+            return []
+
         # Detect language
         language = self.parser.detect_language(file_path)
 
@@ -1866,7 +1920,8 @@ class Ingester:
             cues = self.parser.parse_vtt_to_cues(file_path)
 
             if cues is None:
-                self.invalid_vtt_count += 1
+                with self._counter_lock:
+                    self.invalid_vtt_count += 1
                 if self.invalid_vtt_count % 1000 == 0:
                     logger.warning(
                         "Invalid VTT files so far: "
@@ -1878,12 +1933,14 @@ class Ingester:
 
             if not cues:
                 # Valid VTT structure but no subtitle cues — silent/music-only video
-                self.speech_free_count += 1
+                with self._counter_lock:
+                    self.speech_free_count += 1
                 doc = self._make_speech_free_doc(
                     file_path, language, video_id, web_metadata, final_date, final_date_ts, duration
                 )
                 if doc:
-                    self.speech_free_with_metadata_count += 1
+                    with self._counter_lock:
+                        self.speech_free_with_metadata_count += 1
                     logger.debug(
                         f"Created metadata-only document for speech-free video: {file_path}"
                     )
@@ -1997,7 +2054,8 @@ class Ingester:
 
             if result is None:
                 # Truly invalid VTT (missing WEBVTT header or unreadable)
-                self.invalid_vtt_count += 1
+                with self._counter_lock:
+                    self.invalid_vtt_count += 1
                 logger.debug(f"Invalid VTT file: {file_path}")
                 return []
 
@@ -2005,12 +2063,14 @@ class Ingester:
 
             if not text:
                 # Valid VTT structure but no speech cues (silent/music-only video)
-                self.speech_free_count += 1
+                with self._counter_lock:
+                    self.speech_free_count += 1
                 doc = self._make_speech_free_doc(
                     file_path, language, video_id, web_metadata, final_date, final_date_ts, duration
                 )
                 if doc:
-                    self.speech_free_with_metadata_count += 1
+                    with self._counter_lock:
+                        self.speech_free_with_metadata_count += 1
                     logger.debug(
                         f"Created metadata-only document for speech-free video: {file_path}"
                     )
@@ -2220,9 +2280,7 @@ class Ingester:
             # Process all VTT files
             vtt_files = list(self.find_vtt_files(root_path))
 
-            for file_path in tqdm(vtt_files, desc="Processing VTT files"):
-                docs = self.process_file(file_path)
-
+            for file_path, docs in self._parsed_documents(vtt_files):
                 if docs:
                     file_count += 1
                     doc_ids = []
