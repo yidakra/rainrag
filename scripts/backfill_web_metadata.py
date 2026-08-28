@@ -45,6 +45,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 _HASH_RE = re.compile(r"^[a-f0-9]{40}$")
 
+# Mirrors web_metadata.max_description_chars; the loader here is constructed
+# directly rather than from the full config, so the default is repeated.
+DESCRIPTION_CHAR_LIMIT = 600
+
 # The run is hours long and usually redirected to a log file, where stdout is
 # block-buffered -- an operator tailing the log would see nothing until exit.
 print = functools.partial(print, flush=True)
@@ -185,7 +189,13 @@ def backfill_video(
 
     from rainrag.ingest import document_web_fields
 
-    fields = document_web_fields(cleaned)
+    # Same cap as ingest: otherwise a backfill re-run would put the full
+    # article body back onto payloads the reindex had just trimmed.
+    max_chars = (
+        getattr(getattr(loader, "config", None), "max_description_chars", None)
+        or DESCRIPTION_CHAR_LIMIT
+    )
+    fields = document_web_fields(cleaned, max_chars)
     if dry_run:
         return "written", 0
 

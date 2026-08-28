@@ -630,6 +630,19 @@ class WebMetadataConfig(BaseModel):
     min_content_length: int = Field(
         default=10, ge=1, description="Minimum content length for web description text"
     )
+    max_description_chars: int = Field(
+        default=600,
+        ge=0,
+        description=(
+            "Truncate web_description to this many characters on the Document, "
+            "and so in docs.jsonl, the Qdrant payload and API responses. The CMS "
+            "'description' is the full article body -- measured at 14 kB, stored "
+            "on every chunk of the video -- which made the corpus 27 GB and "
+            "OOM-killed the embed stage. It is a display field: the UI renders it "
+            "in a chunk card with a link to the full article directly beneath. "
+            "0 disables truncation."
+        ),
+    )
     max_block_token_share: float = Field(
         default=0.25,
         ge=0.0,
