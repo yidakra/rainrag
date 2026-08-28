@@ -123,3 +123,27 @@ than videos are imported, so mixing them would swamp the import signal.
 which is how the failure-rate path gets tested without waiting for real
 breakage. On a host with no `journalctl` at all (a laptop), the import check is
 skipped rather than failed — there is nothing to read and nothing is wrong.
+
+## Slack alerts
+
+The check reports into `systemctl --failed` and the journal, which only helps
+if somebody looks. On 2026-08-26 it correctly flagged a filling disk 24 times
+over 11 hours while a reindex wrote 295 GB; nobody read the journal and the
+run died. It now also posts to Slack.
+
+Set `RAINRAG_HEALTH_SLACK_CHANNEL` (a channel id, e.g. `C0BSBNC8AN7`) in
+`.env` alongside the `SLACK_BOT_TOKEN` the connector already uses. Empty or
+unset disables alerting; the checks still run.
+
+Alerts fire on a *change* of state, never on every run:
+
+| Event | Alert |
+| --- | --- |
+| First failure, or a different check starts failing | yes |
+| Same failure on the next run | no |
+| Same failure still going after `--reminder-hours` (default 12) | one reminder |
+| Everything passes again | one recovery message |
+
+The last state lives in `data/health_alert_state.json`. Delete it to force the
+next failure to alert again. A monitor that repeats itself every 30 minutes
+gets muted, and then the run that mattered is muted too.

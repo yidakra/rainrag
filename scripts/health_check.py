@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import socket
 import stat
 import sys
 import time
@@ -41,8 +43,9 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import yaml
 
@@ -216,6 +219,104 @@ def evaluate_session_file(path: str, *, mode: int | None, telegram_enabled: bool
 
 def exit_code(results: list[CheckResult]) -> int:
     return 1 if any(r.failed for r in results) else 0
+
+
+# --------------------------------------------------------------------------- #
+# Slack alerting
+# --------------------------------------------------------------------------- #
+# The check has always reported into `systemctl --failed` and the journal.
+# On 2026-08-26 it correctly flagged a filling disk 24 times over 11 hours and
+# nobody looked, because nothing pushed the signal anywhere a human reads. It
+# now also posts to Slack -- with two rules that keep it worth reading:
+#
+#   * only on a CHANGE of state (first failure, and recovery), never every run
+#   * a reminder at most once per REMINDER_HOURS while a problem persists
+#
+# A monitor that repeats itself every 30 minutes gets muted, and then the run
+# that mattered is muted too.
+
+REMINDER_HOURS = 12.0
+
+
+def load_alert_state(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_alert_state(path: Path, state: dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state), encoding="utf-8")
+    except OSError as exc:
+        print(f"warning: could not persist alert state to {path}: {exc}", file=sys.stderr)
+
+
+def decide_alert(
+    *,
+    failing: bool,
+    fingerprint: str,
+    state: dict[str, Any],
+    now: float,
+    reminder_seconds: float,
+) -> tuple[str | None, dict[str, Any]]:
+    """Decide whether to alert, and what the new state is.
+
+    Returns (kind, new_state) where kind is "problem", "reminder", "recovery"
+    or None. Pure so the policy is testable without a clock or a network.
+    """
+    was_failing = bool(state.get("failing"))
+    last_sent = float(state.get("last_sent") or 0)
+
+    if failing:
+        if not was_failing or state.get("fingerprint") != fingerprint:
+            kind = "problem"
+        elif now - last_sent >= reminder_seconds:
+            kind = "reminder"
+        else:
+            return None, state
+        return kind, {"failing": True, "fingerprint": fingerprint, "last_sent": now}
+
+    if was_failing:
+        return "recovery", {"failing": False, "fingerprint": "", "last_sent": now}
+    return None, {"failing": False, "fingerprint": "", "last_sent": last_sent}
+
+
+def post_slack_alert(text: str, *, token: str, channel: str, timeout: float = 20.0) -> bool:
+    """Post one alert. Never raises: alerting must not fail the health check."""
+    payload = json.dumps({"channel": channel, "text": text}).encode("utf-8")
+    request = Request(  # noqa: S310 - fixed https Slack endpoint
+        "https://slack.com/api/chat.postMessage",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310
+            body = json.loads(response.read() or b"{}")
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        print(f"warning: Slack alert failed: {exc}", file=sys.stderr)
+        return False
+    if not body.get("ok"):
+        print(f"warning: Slack rejected the alert: {body.get('error')}", file=sys.stderr)
+        return False
+    return True
+
+
+def format_alert(kind: str, results: list[CheckResult], host: str) -> str:
+    """The message a human reads at 3am: what broke, on which host."""
+    problems = [r for r in results if r.failed]
+    if kind == "recovery":
+        return f":white_check_mark: *RainRAG recovered* on `{host}` — all checks pass again."
+    prefix = (
+        ":rotating_light: *RainRAG health*" if kind == "problem" else ":hourglass: *Still failing*"
+    )
+    lines = [f"{prefix} on `{host}` — {len(problems)} problem(s):"]
+    lines += [f"• *{r.name}*: {r.detail}" for r in problems]
+    return "\n".join(lines)
 
 
 def render(results: list[CheckResult], *, verbose: bool) -> str:
@@ -469,6 +570,24 @@ def build_parser() -> argparse.ArgumentParser:
     targets.add_argument(
         "--api-url", default=DEFAULT_API_URL, help="API URL expected to return 200"
     )
+    alerts = ap.add_argument_group("alerts", "push failures to Slack")
+    alerts.add_argument(
+        "--slack-alert-channel",
+        default=os.getenv("RAINRAG_HEALTH_SLACK_CHANNEL", ""),
+        help="Slack channel id to alert; empty disables alerting entirely",
+    )
+    alerts.add_argument(
+        "--alert-state-file",
+        default=str(REPO_ROOT / "data" / "health_alert_state.json"),
+        help="where the last alert state is remembered, so alerts fire on change",
+    )
+    alerts.add_argument(
+        "--reminder-hours",
+        type=float,
+        default=REMINDER_HOURS,
+        help="how often to re-alert while a problem persists",
+    )
+
     targets.add_argument(
         "--slack-url",
         default="",
@@ -532,7 +651,36 @@ def main(argv: list[str] | None = None) -> int:
     report = render(results, verbose=args.verbose)
     if report:
         print(report)
+
+    maybe_alert(results, args)
+
     return exit_code(results)
+
+
+def maybe_alert(results: list[CheckResult], args: argparse.Namespace) -> None:
+    """Post a Slack alert when the health state changes. Never raises."""
+    channel = (args.slack_alert_channel or "").strip()
+    token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+    if not channel or not token:
+        return
+
+    problems = [r for r in results if r.failed]
+    state_path = Path(args.alert_state_file)
+    kind, new_state = decide_alert(
+        failing=bool(problems),
+        # Fingerprint on which checks fail, not their wording: a disk creeping
+        # 91% -> 93% is the same incident, not a new one.
+        fingerprint=",".join(sorted(r.name for r in problems)),
+        state=load_alert_state(state_path),
+        now=time.time(),
+        reminder_seconds=max(0.0, args.reminder_hours) * 3600,
+    )
+    if kind is None:
+        return
+    if post_slack_alert(
+        format_alert(kind, results, socket.gethostname()), token=token, channel=channel
+    ):
+        save_alert_state(state_path, new_state)
 
 
 if __name__ == "__main__":
