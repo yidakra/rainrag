@@ -1777,6 +1777,13 @@ class Ingester:
             parts.append(web_desc)
 
         text = "\n\n".join(parts).strip()
+        # No transcript exists for these, so the article legitimately is the
+        # document -- but the embedder only reads the first max_chunk_tokens of
+        # it, and storing many multiples of that is bytes for nothing. Bound it
+        # to what actually gets embedded.
+        budget = self._chunk_token_budget()
+        if budget:
+            text = self._truncate_to_tokens(text, budget, language)
         if len(text) < self.config.processing.min_text_length:
             return None
 
@@ -2118,7 +2125,61 @@ class Ingester:
             return None
 
         label = self.config.web_metadata.append_label
-        return "\n".join([label, *lines])
+        return self._cap_metadata_block("\n".join([label, *lines]))
+
+    @staticmethod
+    def _truncate_to_tokens(text: str, max_tokens: int, language: str = "ru") -> str:
+        """Cut text down to roughly max_tokens, marking the cut with an ellipsis.
+
+        estimate_tokens is proportional to length, so scaling by the ratio lands
+        close enough; being slightly under the cap is fine, over is not.
+        """
+        tokens = VTTParser.estimate_tokens(text, language)
+        if tokens <= max_tokens:
+            return text
+        keep = max(1, int(len(text) * max_tokens / tokens))
+        return text[:keep].rstrip() + "…"
+
+    def _cap_metadata_block(self, block: str) -> str:
+        """Truncate an oversized metadata block to its share of the chunk budget.
+
+        A per-chunk metadata block competes with the transcript for the same
+        token budget: the caller subtracts its size from max_tokens. Without a
+        cap, one long field (a full article body in 'description') leaves
+        max(1, negative) == 1 token for the transcript itself, so every chunk
+        becomes a sliver carrying a copy of the article -- useless for
+        retrieval and enormous on disk. Capping keeps the failure mode to
+        "metadata is abbreviated" instead of "the corpus is destroyed".
+        """
+        share = getattr(self.config.web_metadata, "max_block_token_share", 0.0) or 0.0
+        budget = self._chunk_token_budget()
+        if share <= 0 or not budget:
+            return block
+
+        allowed_tokens = max(1, int(budget * share))
+        tokens = VTTParser.estimate_tokens(block, "ru")
+        if tokens <= allowed_tokens:
+            return block
+
+        # estimate_tokens is proportional to length, so scale by the ratio and
+        # cut on a character boundary; being slightly under the cap is fine.
+        logger.warning(
+            "Web metadata block is {} tokens, over the {} allowed by "
+            "max_block_token_share={}; truncating. Consider dropping long fields "
+            "(e.g. 'description') from web_metadata.fields.",
+            tokens,
+            allowed_tokens,
+            share,
+        )
+        return self._truncate_to_tokens(block, allowed_tokens)
+
+    def _chunk_token_budget(self) -> int | None:
+        """The effective max tokens per chunk (config value or model auto-detect)."""
+        try:
+            budget = self.config.get_max_chunk_tokens()
+        except Exception:
+            return None
+        return int(budget) if budget else None
 
     def ingest(self, incremental: bool = False) -> int:
         """
