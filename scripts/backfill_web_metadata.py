@@ -159,6 +159,7 @@ def backfill_video(
     video_hash: str,
     point_ids: list[Any],
     dry_run: bool,
+    max_description_chars: int = DESCRIPTION_CHAR_LIMIT,
     payload_batch: int = 500,
 ) -> tuple[str, int]:
     """Fetch one video's metadata and write it onto its points.
@@ -191,11 +192,7 @@ def backfill_video(
 
     # Same cap as ingest: otherwise a backfill re-run would put the full
     # article body back onto payloads the reindex had just trimmed.
-    max_chars = (
-        getattr(getattr(loader, "config", None), "max_description_chars", None)
-        or DESCRIPTION_CHAR_LIMIT
-    )
-    fields = document_web_fields(cleaned, max_chars)
+    fields = document_web_fields(cleaned, max_description_chars)
     if dry_run:
         return "written", 0
 
@@ -296,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
                 video_hash=video_hash,
                 point_ids=by_video[video_hash],
                 dry_run=args.dry_run,
+                max_description_chars=config.web_metadata.max_description_chars,
             )
         except KeyboardInterrupt:
             print(f"\nInterrupted at {i}/{len(todo)}; state files are current, rerun to resume.")

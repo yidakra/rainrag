@@ -319,3 +319,46 @@ class TestBackfillVideo:
             dry_run=False,
         )
         assert outcome == "written"
+
+
+class TestDescriptionCapIsHonoured:
+    """The cap must come from config, not be hardcoded at the call site.
+
+    A getattr chain onto the loader silently resolved to None and always used
+    the default, so a custom limit was ignored and `0` (disable) could not work.
+    """
+
+    LONG = "Заместитель председателя Совета предпринимателей рассказал о теме. " * 200
+
+    def _article(self):
+        return {**RAW_ARTICLE, "preview_text": self.LONG, "detail_text": ""}
+
+    def test_configured_limit_is_applied(self, tmp_path: Path):
+        loader = _real_loader(tmp_path, self._article())
+        qdrant = MagicMock()
+        bf.backfill_video(
+            qdrant=qdrant,
+            collection="c",
+            loader=loader,
+            video_hash="a" * 40,
+            point_ids=[1],
+            dry_run=False,
+            max_description_chars=120,
+        )
+        desc = qdrant.set_payload.call_args.kwargs["payload"]["web_description"]
+        assert len(desc) <= 121
+
+    def test_zero_disables_truncation(self, tmp_path: Path):
+        loader = _real_loader(tmp_path, self._article())
+        qdrant = MagicMock()
+        bf.backfill_video(
+            qdrant=qdrant,
+            collection="c",
+            loader=loader,
+            video_hash="a" * 40,
+            point_ids=[1],
+            dry_run=False,
+            max_description_chars=0,
+        )
+        desc = qdrant.set_payload.call_args.kwargs["payload"]["web_description"]
+        assert len(desc) > 1000

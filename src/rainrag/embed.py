@@ -806,8 +806,14 @@ class Embedder:
         # written rather than a 10 GB in-memory copy of it.
         final_embeddings.flush()
         self.cache.save(final_embeddings, documents)
-        # Not deleted explicitly: unlinking an open file is fine on Linux, and
-        # a `del` here would make the name statically unbound in flush_pending.
+        # Release the mapping before unlinking. Linux would unlink an open file
+        # happily, but a 10 GB mapping should not outlive its use, and on
+        # Windows an open mapping makes the unlink fail outright. Closing the
+        # handle rather than `del`-ing the name also keeps the name bound, which
+        # flush_pending closes over.
+        mmap_handle = getattr(final_embeddings, "_mmap", None)
+        if mmap_handle is not None:
+            mmap_handle.close()
         if tmp_embeddings_path.exists():
             tmp_embeddings_path.unlink()
 
