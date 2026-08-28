@@ -1701,8 +1701,11 @@ class RAGQueryEngine:
    «Что говорил» — суть сказанного. Не начинайте с «В архиве найдены
    видеозаписи»: журналист задал вопрос, а не запросил каталог.
 2. При необходимости добавьте краткий контекст из записей.
-3. ЗАТЕМ перечислите материалы, на которых основан ответ: дата записи (поле
-   "Date"), длительность (поле "Duration") и чем именно полезен фрагмент.
+3. ЗАТЕМ добавьте раздел «Материалы». Для КАЖДОГО материала укажите: дату
+   записи (поле "Date"), длительность (поле "Duration"), тайм-коды фрагмента
+   (поле "Timecodes") и чем именно он полезен. Тайм-коды обязательны —
+   по ним редактор находит нужное место в записи; исключение только для
+   видео, помеченных "[No transcript — description only]".
 
 Остальные правила:
 - Используйте прошедшее время: "В архивном видео от 2021-05-11 показано..."
@@ -1726,8 +1729,11 @@ ANSWER STRUCTURE — the answer first, the footage second:
    "The archive contains relevant recordings": a journalist asked a question,
    not for a catalogue.
 2. Add brief context from the recordings if it helps.
-3. THEN list the material the answer rests on: recording date (the "Date"
-   field), duration (the "Duration" field), and what each clip contributes.
+3. THEN add a "Materials" section. For EVERY clip give: the recording date
+   (the "Date" field), duration (the "Duration" field), the clip's timecodes
+   (the "Timecodes" field) and what it contributes. Timecodes are required —
+   they are how an editor finds the moment in the recording; the only
+   exception is video marked "[No transcript — description only]".
 
 Other rules:
 - Use past tense: "Archive footage from 2021-05-11 shows..."
