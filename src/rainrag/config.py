@@ -227,6 +227,19 @@ class ProcessingConfig(BaseModel):
     """Configuration for data processing."""
 
     num_workers: int = Field(default=4)
+    ingest_workers: int = Field(
+        default=16,
+        ge=1,
+        le=64,
+        description=(
+            "Threads used to parse VTT files during ingestion. The archive is on "
+            "NFS and parsing is dominated by network round trips -- measured at "
+            "3.6 files/s single-threaded with the CPU ~2% busy, 35 files/s at 16 "
+            "threads on disjoint cold file sets -- so threads "
+            "overlap the waiting rather than fighting the GIL. 1 restores the "
+            "old sequential behaviour."
+        ),
+    )
     max_file_size: int = Field(default=10485760)  # 10 MB
     min_text_length: int = Field(default=50)
 
