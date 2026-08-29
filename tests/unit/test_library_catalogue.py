@@ -134,7 +134,8 @@ class TestGenreTable:
             ],
             reviewed={},
         )
-        rows = {r["program"]: r for r in csv.DictReader(open(path, encoding="utf-8"))}
+        with open(path, encoding="utf-8") as f:
+            rows = {r["program"]: r for r in csv.DictReader(f)}
         assert rows["Лекции на Дожде"]["source"] == "confirmed"
         assert rows["Здесь и сейчас"]["source"] == "unknown"
 
