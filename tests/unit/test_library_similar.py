@@ -149,3 +149,38 @@ class TestFromRecord:
     def test_missing_fields_default_empty(self):
         e = Episode.from_record({"video_hash": "h"})
         assert (e.subject, e.speakers, e.genre) == ([], [], [])
+
+
+class TestSurnameMatchingRegression:
+    """Review caught that this used the longest token, not the surname.
+
+    Anyone whose given name is longer than their surname silently failed to
+    match — including Шульман, one of the six episodes the ranking is scored
+    against.
+    """
+
+    @pytest.mark.parametrize(
+        "full,bare",
+        [
+            ("Екатерина Шульман", "Шульман"),
+            ("Дмитрий Быков", "Быков"),
+            ("Наталья Синдеева", "Синдеева"),
+            ("Ирина Хакамада", "Хакамада"),
+            ("Вера Полозкова", "Полозкова"),
+        ],
+    )
+    def test_full_name_matches_bare_surname(self, full: str, bare: str) -> None:
+        assert normalise_person(full) == normalise_person(bare)
+
+    def test_different_people_do_not_collide(self) -> None:
+        assert normalise_person("Екатерина Шульман") != normalise_person("Екатерина Шаврина")
+
+    def test_single_token_name_survives(self) -> None:
+        assert normalise_person("Хакамада") == "хакамада"
+
+    def test_speaker_bonus_now_applies_to_shulman(self) -> None:
+        """The end-to-end effect: the bonus was silently never awarded."""
+        seed = ep("seed", subject=["политика"], speakers=["Екатерина Шульман"])
+        cand = ep("a", subject=["политика"], speakers=["Шульман"])
+        _score, speakers, _subjects = score_pair(seed, cand, subject_idf([seed, cand]))
+        assert speakers == ["Шульман"]

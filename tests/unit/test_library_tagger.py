@@ -181,3 +181,19 @@ class TestFewshot:
             {"title": "T", "parent_program": "P", "subject": ["политика"], "genre": ["интервью"]}
         )
         assert "политика" in block and "интервью" in block and "T" in block
+
+
+class TestGreedyJsonRegression:
+    """A greedy `{.*}` spanned to the last brace, losing good responses."""
+
+    def test_trailing_object_does_not_break_parsing(self) -> None:
+        raw = '{"subject": ["политика"]}\n\nКомментарий: {"note": "лишнее"}'
+        assert parse_tagging_response(raw)["subject"] == ["политика"]
+
+    def test_leading_prose_with_braces_is_skipped(self) -> None:
+        raw = 'Ответ ниже.\n{"subject": ["психология"], "genre": ["лекция"]}'
+        assert parse_tagging_response(raw)["genre"] == ["лекция"]
+
+    def test_nested_objects_survive(self) -> None:
+        raw = '{"subject": ["x"], "meta": {"nested": true}}'
+        assert parse_tagging_response(raw)["subject"] == ["x"]

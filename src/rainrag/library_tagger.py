@@ -204,7 +204,25 @@ def _is_retryable(exc: Exception) -> bool:
     return any(marker in str(exc).lower() for marker in _RETRYABLE)
 
 
-_JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
+def _first_json_object(raw: str) -> Any:
+    """Decode the first complete JSON object in a string.
+
+    A greedy `{.*}` spans from the first brace to the *last* one, so a reply
+    with any trailing object -- "{...}\n\nКомментарий: {...}" -- produced
+    invalid JSON and lost an otherwise good response. raw_decode stops at the
+    end of the first complete value instead.
+    """
+    decoder = json.JSONDecoder()
+    for start in range(len(raw)):
+        if raw[start] != "{":
+            continue
+        try:
+            value, _end = decoder.raw_decode(raw[start:])
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ValueError("no JSON object in response")
 
 
 def parse_tagging_response(raw: str) -> dict[str, list[str]]:
@@ -215,10 +233,7 @@ def parse_tagging_response(raw: str) -> dict[str, list[str]]:
     Unknown keys are dropped and every value is coerced to a list of clean
     strings, because one malformed field must not lose the other five.
     """
-    match = _JSON_BLOCK.search(raw or "")
-    if not match:
-        raise ValueError("no JSON object in response")
-    data = json.loads(match.group(0))
+    data = _first_json_object(raw or "")
     if not isinstance(data, dict):
         raise ValueError("response JSON is not an object")
 

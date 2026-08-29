@@ -92,7 +92,9 @@ def main(argv: list[str] | None = None) -> int:
         episodes,
         min_duration_minutes=filters.get("min_duration_minutes"),
         genres=filters.get("genre"),
-        limit=max(args.k, args.show),
+        # The full filtered pool: truncating here would report MRR 0 whenever
+        # the first correct answer falls below the display cut-off.
+        limit=len(episodes),
     )
     ranked = [r.episode.content_id for r in results]
 
