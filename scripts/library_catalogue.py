@@ -28,6 +28,7 @@ import argparse
 import json
 import sys
 from collections import Counter, defaultdict
+from statistics import median
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -143,7 +144,7 @@ def summarise_programs(videos: dict[str, Video], top_tags: int = 12) -> list[dic
                 "last_date": dates[-1] if dates else None,
                 "dated_episodes": len(dates),
                 "median_duration_minutes": (
-                    round(sorted(durations)[len(durations) // 2] / 60, 1) if durations else None
+                    round(median(durations) / 60, 1) if durations else None
                 ),
                 "presenters": [n for n, _ in presenters.most_common(top_tags)],
                 "top_themes": [{"tag": t, "episodes": c} for t, c in themes.most_common(top_tags)],
@@ -290,7 +291,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n  full list ({len(episodes)}): {out}")
         return 0
 
-    programs = [p for p in summarise_programs(videos) if p["episodes"] >= args.min_episodes]
+    all_programs = summarise_programs(videos)
+    programs = [p for p in all_programs if p["episodes"] >= args.min_episodes]
     n = len(videos)
     totals = {
         "videos": n,
@@ -304,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
     }
 
+    for out in (args.json_out, args.markdown_out):
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.json_out).write_text(
         json.dumps({"totals": totals, "programs": programs}, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -316,7 +320,10 @@ def main(argv: list[str] | None = None) -> int:
 
     genre_path = Path(args.json_out).with_name("program_genres.csv")
     reviewed = load_program_genres(genre_path)
-    write_program_genre_draft(genre_path, programs, reviewed)
+    # Deliberately the unfiltered list: --min-episodes narrows the catalogue an
+    # editor reads, but rewriting the genre table from a filtered list would
+    # drop every smaller programme's row -- including reviewed ones.
+    write_program_genre_draft(genre_path, all_programs, reviewed)
     print(f"  Genres:   {genre_path} ({len(reviewed)} already reviewed)")
 
     print(f"\n{totals['videos']:,} videos · {totals['programs']:,} programmes".replace(",", " "))

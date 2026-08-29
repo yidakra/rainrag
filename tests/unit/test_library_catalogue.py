@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from library_catalogue import (  # noqa: E402
@@ -133,7 +134,8 @@ class TestGenreTable:
             ],
             reviewed={},
         )
-        rows = {r["program"]: r for r in csv.DictReader(open(path, encoding="utf-8"))}
+        with open(path, encoding="utf-8") as f:
+            rows = {r["program"]: r for r in csv.DictReader(f)}
         assert rows["Лекции на Дожде"]["source"] == "confirmed"
         assert rows["Здесь и сейчас"]["source"] == "unknown"
 
@@ -156,3 +158,39 @@ class TestGenreTable:
         for genres in CONFIRMED_PROGRAM_GENRES.values():
             for g in genres:
                 assert g in GENRES
+
+
+class TestReviewFindings:
+    """Regressions for what review caught on the first version."""
+
+    def test_median_is_the_true_median_for_even_counts(self) -> None:
+        """sorted()[n//2] is the upper middle: [60s, 600s] reported 10.0 min."""
+        videos = fold_chunks_to_videos(
+            [_chunk("aaa", duration_seconds=60.0), _chunk("bbb", duration_seconds=600.0)]
+        )
+        assert summarise_programs(videos)[0]["median_duration_minutes"] == pytest.approx(5.5)
+
+    def test_odd_counts_still_take_the_middle(self) -> None:
+        videos = fold_chunks_to_videos(
+            [
+                _chunk("a", duration_seconds=60.0),
+                _chunk("b", duration_seconds=120.0),
+                _chunk("c", duration_seconds=600.0),
+            ]
+        )
+        assert summarise_programs(videos)[0]["median_duration_minutes"] == pytest.approx(2.0)
+
+    def test_genre_table_keeps_programmes_below_the_episode_filter(self, tmp_path: Path) -> None:
+        """--min-episodes narrows the catalogue, never the genre table.
+
+        Rewriting the table from a filtered list would delete the reviewed rows
+        of every smaller programme -- the exact loss the function exists to
+        prevent.
+        """
+        path = tmp_path / "program_genres.csv"
+        write_program_genre_draft(
+            path,
+            [{"program": "Маленькая линейка", "episodes": 3, "median_duration_minutes": 40}],
+            reviewed={"Маленькая линейка": ("интервью",)},
+        )
+        assert load_program_genres(path)["Маленькая линейка"] == ("интервью",)
