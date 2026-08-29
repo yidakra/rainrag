@@ -42,15 +42,21 @@ def normalise_tag(tag: str) -> str:
 
 
 def normalise_person(name: str) -> str:
-    """Fold a person's name for comparison.
+    """Fold a person's name to its surname for comparison.
 
     Surname-last is the convention in both the CMS and the titles, and the
     surname is the part that stays constant across «Ирина Хакамада» and
-    «Хакамада» -- so names compare on their longest token.
+    «Хакамада».
+
+    This took the *longest* token until review caught it, which silently broke
+    matching for anyone whose given name is longer than their surname:
+    «Екатерина Шульман» folded to «екатерина» and «Дмитрий Быков» to «дмитрий»,
+    so neither matched the bare surname the model returns. Шульман is one of
+    the six results the ranking is measured against.
     """
     cleaned = re.sub(r"[^\w\s-]", " ", str(name).lower().replace("ё", "е"))
     tokens = [t for t in cleaned.split() if len(t) > 2]
-    return max(tokens, key=len) if tokens else ""
+    return tokens[-1] if tokens else ""
 
 
 @dataclass

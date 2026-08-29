@@ -28,9 +28,9 @@ import argparse
 import json
 import sys
 from collections import Counter, defaultdict
-from statistics import median
 from dataclasses import dataclass, field
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 
