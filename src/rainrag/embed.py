@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import time
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -25,6 +26,62 @@ except ImportError:
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer as SentenceTransformerType
+
+
+class DocumentFile(Sequence):
+    """A JSONL document file that behaves like a list without being one.
+
+    The pipeline was written around ``list[Document]``: it takes ``len()`` for
+    array shapes, iterates to embed, and indexes to look documents up. That is
+    a fine contract; holding all of them at once is not. A 27 GB corpus of
+    2.64M documents needed 11.9 GB of RSS and was OOM-killed on a 15 GB host,
+    and the corpus only grows.
+
+    So this keeps the contract and drops the memory: length comes from a line
+    count, iteration parses one line at a time, and indexing uses a line-offset
+    table (8 bytes per document -- 21 MB for this corpus, against gigabytes for
+    the objects themselves). Random access is rare; iteration is the hot path
+    and stays sequential.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self._offsets: list[int] | None = None
+
+    def _build_offsets(self) -> list[int]:
+        if self._offsets is None:
+            offsets = []
+            with open(self.path, "rb") as f:
+                position = f.tell()
+                for line in f:
+                    if line.strip():
+                        offsets.append(position)
+                    position += len(line)
+            self._offsets = offsets
+        return self._offsets
+
+    def __len__(self) -> int:
+        return len(self._build_offsets())
+
+    def __iter__(self) -> Iterator[Document]:
+        # Sequential read, independent of the offset table: this is the path
+        # that runs over every document, so it must not fault anything in.
+        with open(self.path, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    yield Document(**json.loads(line))
+
+    def __getitem__(self, index: int) -> Document:  # type: ignore[override]
+        offsets = self._build_offsets()
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(offsets)))]  # type: ignore[return-value]
+        if index < 0:
+            index += len(offsets)
+        if not 0 <= index < len(offsets):
+            raise IndexError(index)
+        with open(self.path, encoding="utf-8") as f:
+            f.seek(offsets[index])
+            return Document(**json.loads(f.readline()))
 
 
 class EmbeddingCache:
@@ -58,13 +115,17 @@ class EmbeddingCache:
         self.embeddings_file = self.cache_dir / "embeddings.npy"
         self.metadata_file = self.cache_dir / "metadata.jsonl"
 
-    def save(self, embeddings: np.ndarray, documents: list[Document]) -> None:
+    def save(self, embeddings: np.ndarray, documents: Iterable[Document]) -> None:
         """
         Save embeddings and metadata to cache.
 
+        ``documents`` is only iterated, never indexed or measured, so a lazily
+        read DocumentFile works here exactly like a list -- and does not put
+        the whole corpus in memory to write it back out.
+
         Args:
             embeddings: NumPy array of embeddings (shape: [N, D])
-            documents: List of documents corresponding to embeddings
+            documents: Documents corresponding to embeddings, in the same order
         """
         logger.info(f"Saving {len(embeddings)} embeddings to cache")
 
@@ -321,15 +382,21 @@ class Embedder:
 
         return any(indicator in error_str for indicator in transient_indicators)
 
-    def load_documents(self, docs_path: str) -> list[Document]:
+    def load_documents(self, docs_path: str) -> DocumentFile:
         """
-        Load documents from JSONL file.
+        Open a JSONL document file as a lazily-read sequence.
+
+        Returns a DocumentFile, which behaves like the list this used to
+        return -- len(), iteration, indexing -- without holding every document
+        in memory. Materialising them killed the pipeline: 2.64M documents from
+        a 27 GB file needed 11.9 GB of RSS and the kernel OOM-killed the embed
+        stage on a 15 GB host.
 
         Args:
             docs_path: Path to documents JSONL file
 
         Returns:
-            List of Document objects
+            A DocumentFile over the JSONL
         """
         docs_file = Path(docs_path)
 
@@ -337,13 +404,7 @@ class Embedder:
             raise FileNotFoundError(f"Documents file not found: {docs_path}")
 
         logger.info(f"Loading documents from {docs_path}")
-
-        documents = []
-        with open(docs_file, encoding="utf-8") as f:
-            for line in f:
-                doc_dict = json.loads(line)
-                documents.append(Document(**doc_dict))
-
+        documents = DocumentFile(docs_file)
         logger.info(f"Loaded {len(documents)} documents")
         return documents
 
@@ -685,54 +746,79 @@ class Embedder:
         )
 
         # Classify documents into cached vs. needs-embedding
-        to_embed: list[Document] = []
-        to_embed_indices: list[int] = []
         cached_count = 0
 
         tmp_embeddings_path = self.cache.cache_dir / "embeddings.incremental.tmp.npy"
+        total_documents = len(documents)
         final_embeddings = np.lib.format.open_memmap(
             tmp_embeddings_path,
             mode="w+",
             dtype=np.float32,
-            shape=(len(documents), embedding_dim),
+            shape=(total_documents, embedding_dim),
         )
+
+        # Cache misses are embedded in bounded batches as they are found, not
+        # collected first: on a corpus where most content changed, the "collect
+        # everything then embed" shape held all 2.6M documents in memory and
+        # was OOM-killed. Memory now scales with the batch, not the corpus.
+        embed_batch = max(1, int(getattr(self.config.embedding, "batch_size", 128)) * 8)
+        pending_docs: list[Document] = []
+        pending_indices: list[int] = []
+        embedded_count = 0
+        model_loaded = False
+
+        def flush_pending() -> int:
+            nonlocal model_loaded
+            if not pending_docs:
+                return 0
+            if not model_loaded:
+                self.load_model()
+                model_loaded = True
+            new_embeddings = self.generate_embeddings(pending_docs, show_progress=False)
+            for j, idx in enumerate(pending_indices):
+                final_embeddings[idx] = new_embeddings[j]
+            done = len(pending_docs)
+            pending_docs.clear()
+            pending_indices.clear()
+            return done
 
         for i, doc in enumerate(documents):
             doc_hash = _content_hash(doc)
-            if doc_hash in hash_to_embedding_index:
-                cached_idx = hash_to_embedding_index[doc_hash]
-                if cached_idx >= cached_embeddings.shape[0]:
-                    # Stale index, treat as cache miss
-                    to_embed.append(doc)
-                    to_embed_indices.append(i)
-                    continue
+            cached_idx = hash_to_embedding_index.get(doc_hash)
+            if cached_idx is not None and cached_idx < cached_embeddings.shape[0]:
                 final_embeddings[i] = cached_embeddings[cached_idx]
                 cached_count += 1
             else:
-                to_embed.append(doc)
-                to_embed_indices.append(i)
+                # Also covers a stale index pointing past the cached array.
+                pending_docs.append(doc)
+                pending_indices.append(i)
+                if len(pending_docs) >= embed_batch:
+                    embedded_count += flush_pending()
+                    logger.info(
+                        f"Incremental embedding: {cached_count} cached, "
+                        f"{embedded_count} embedded, {i + 1}/{total_documents} seen"
+                    )
 
-        logger.info(f"Incremental embedding: {cached_count} cached, " + f"{len(to_embed)} to embed")
+        embedded_count += flush_pending()
+        logger.info(f"Incremental embedding: {cached_count} cached, {embedded_count} embedded")
 
-        if to_embed:
-            # Load model and embed only the new/changed documents
-            self.load_model()
-            new_embeddings = self.generate_embeddings(to_embed)
-            for j, idx in enumerate(to_embed_indices):
-                final_embeddings[idx] = new_embeddings[j]
-        else:
-            logger.info("All documents have cached embeddings — nothing to embed!")
-
-        # Save updated cache and clean up the temporary memmap file.
+        # Save updated cache, then hand back a read-only view of what was
+        # written rather than a 10 GB in-memory copy of it.
         final_embeddings.flush()
         self.cache.save(final_embeddings, documents)
-        # Convert to regular ndarray before deleting backing file
-        final_embeddings = np.array(final_embeddings)
+        # Release the mapping before unlinking. Linux would unlink an open file
+        # happily, but a 10 GB mapping should not outlive its use, and on
+        # Windows an open mapping makes the unlink fail outright. Closing the
+        # handle rather than `del`-ing the name also keeps the name bound, which
+        # flush_pending closes over.
+        mmap_handle = getattr(final_embeddings, "_mmap", None)
+        if mmap_handle is not None:
+            mmap_handle.close()
         if tmp_embeddings_path.exists():
             tmp_embeddings_path.unlink()
 
         logger.info("Incremental embedding pipeline complete!")
-        return final_embeddings, documents
+        return np.load(self.cache.embeddings_file, mmap_mode="r"), documents
 
 
 def run_embedding(

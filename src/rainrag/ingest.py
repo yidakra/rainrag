@@ -46,16 +46,39 @@ WEB_METADATA_PAYLOAD_FIELDS = (
 )
 
 
-def document_web_fields(web_metadata: dict[str, Any]) -> dict[str, Any]:
+def truncate_description(text: Any, max_chars: int) -> Any:
+    """Trim a description to max_chars on a word boundary. 0 means no limit.
+
+    Non-strings and short strings pass through untouched, so this is safe to
+    apply unconditionally.
+    """
+    if max_chars <= 0 or not isinstance(text, str) or len(text) <= max_chars:
+        return text
+    cut = text[:max_chars]
+    # Prefer the last word break in the final quarter, so the tail is not a
+    # severed word; fall back to a hard cut when there is no space there.
+    space = cut.rfind(" ", int(max_chars * 0.75))
+    if space > 0:
+        cut = cut[:space]
+    return cut.rstrip(" ,.;:—-") + "…"
+
+
+def document_web_fields(
+    web_metadata: dict[str, Any], max_description_chars: int = 0
+) -> dict[str, Any]:
     """Map cleaned web metadata onto ``Document`` keyword arguments.
 
     Kept in one place because three call sites build Documents (chunked,
-    unchunked and speech-free) and they must stay in step.
+    unchunked and speech-free) and they must stay in step -- and because the
+    description cap has to apply to every one of them.
     """
     fields: dict[str, Any] = {
         key: web_metadata.get(key)
         for key in ("web_title", "web_date", "web_date_ts", "web_description", "web_url")
     }
+    fields["web_description"] = truncate_description(
+        fields.get("web_description"), max_description_chars
+    )
     fields["web_program"] = web_metadata.get("web_program")
     for key in (
         "web_presenters",
@@ -1850,7 +1873,7 @@ class Ingester:
             total_chunks=None,
             start_time_seconds=None,
             end_time_seconds=None,
-            **document_web_fields(web_metadata),
+            **document_web_fields(web_metadata, self.config.web_metadata.max_description_chars),
             is_speech_free=True,
         )
 
@@ -2040,7 +2063,9 @@ class Ingester:
                     total_chunks=total_chunks,
                     start_time_seconds=chunk.start_seconds,
                     end_time_seconds=chunk.end_seconds,
-                    **document_web_fields(web_metadata),
+                    **document_web_fields(
+                        web_metadata, self.config.web_metadata.max_description_chars
+                    ),
                     content_hash=compute_content_hash(text),
                 )
                 documents.append(doc)
@@ -2108,7 +2133,7 @@ class Ingester:
                 is_chunk=False,
                 start_time_seconds=start_seconds,
                 end_time_seconds=end_seconds,
-                **document_web_fields(web_metadata),
+                **document_web_fields(web_metadata, self.config.web_metadata.max_description_chars),
                 content_hash=compute_content_hash(text),
             )
 

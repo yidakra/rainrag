@@ -45,6 +45,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 _HASH_RE = re.compile(r"^[a-f0-9]{40}$")
 
+# Mirrors web_metadata.max_description_chars; the loader here is constructed
+# directly rather than from the full config, so the default is repeated.
+DESCRIPTION_CHAR_LIMIT = 600
+
 # The run is hours long and usually redirected to a log file, where stdout is
 # block-buffered -- an operator tailing the log would see nothing until exit.
 print = functools.partial(print, flush=True)
@@ -155,6 +159,7 @@ def backfill_video(
     video_hash: str,
     point_ids: list[Any],
     dry_run: bool,
+    max_description_chars: int = DESCRIPTION_CHAR_LIMIT,
     payload_batch: int = 500,
 ) -> tuple[str, int]:
     """Fetch one video's metadata and write it onto its points.
@@ -185,7 +190,9 @@ def backfill_video(
 
     from rainrag.ingest import document_web_fields
 
-    fields = document_web_fields(cleaned)
+    # Same cap as ingest: otherwise a backfill re-run would put the full
+    # article body back onto payloads the reindex had just trimmed.
+    fields = document_web_fields(cleaned, max_description_chars)
     if dry_run:
         return "written", 0
 
@@ -286,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
                 video_hash=video_hash,
                 point_ids=by_video[video_hash],
                 dry_run=args.dry_run,
+                max_description_chars=config.web_metadata.max_description_chars,
             )
         except KeyboardInterrupt:
             print(f"\nInterrupted at {i}/{len(todo)}; state files are current, rerun to resume.")
