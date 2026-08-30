@@ -39,7 +39,7 @@ DEFAULT_GOLD = REPO_ROOT / "data" / "library_gold.json"
 
 
 def load_episodes(path: Path) -> list:
-    from rainrag.library_similar import Episode
+    from rainrag.library_similar import Episode, dedupe_latest
 
     episodes = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -54,7 +54,10 @@ def load_episodes(path: Path) -> list:
         if record.get("error"):
             continue
         episodes.append(Episode.from_record(record))
-    return episodes
+    # The tag file is appended to, so a re-tagged episode has more than one
+    # row. Counting those separately would overstate the pool and rank the
+    # same episode twice.
+    return dedupe_latest(episodes)
 
 
 def main(argv: list[str] | None = None) -> int:
