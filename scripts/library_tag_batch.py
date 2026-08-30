@@ -40,8 +40,29 @@ DEFAULT_RAW = REPO_ROOT / "data" / "library_catalogue.raw.json"
 DEFAULT_GOLD = REPO_ROOT / "data" / "library_gold.json"
 
 
+def load_cms_article(metadata_dir: Path, video_hash: str) -> dict[str, Any]:
+    """Read one cached CMS article, for presenters and mentions.
+
+    The cache is named by video_hash (``<hash>.json``), so a tagging run needs
+    no index at all: it reads the few thousand articles it will actually tag
+    instead of holding all 139k in memory. Loading them eagerly cost 954 MB on
+    disk and several GB resident -- the difference between a run that fits
+    alongside a reindex and one that OOMs it.
+    """
+    path = metadata_dir / f"{video_hash}.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def load_cms_index(metadata_dir: Path) -> dict[str, dict[str, Any]]:
-    """Map video_hash -> cached CMS article, for presenters and mentions."""
+    """Map video_hash -> cached CMS article.
+
+    Only ``--content-ids`` needs this: selecting by CMS id is a reverse lookup
+    that cannot be answered without scanning. The ordinary batch path uses
+    ``load_cms_article`` and never pays for it.
+    """
     index: dict[str, dict[str, Any]] = {}
     for path in metadata_dir.glob("*.json"):
         try:
@@ -52,6 +73,43 @@ def load_cms_index(metadata_dir: Path) -> dict[str, dict[str, Any]]:
         if video_hash:
             index[str(video_hash)] = data
     return index
+
+
+# Only these fields are read per episode; the rest of a folded Video (themes,
+# persons, chunk counts) is catalogue material the tagger never touches.
+_VIDEO_CACHE_FIELDS = ("video_key", "title", "program", "date", "duration_seconds", "url")
+
+
+def write_videos_cache(path: Path, videos: dict[str, Any]) -> int:
+    """Persist the folded videos the tagger needs, one JSON object per line."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for video in videos.values():
+            row = {k: getattr(video, k, None) for k in _VIDEO_CACHE_FIELDS}
+            row["presenters"] = list(getattr(video, "presenters", []) or [])
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return len(videos)
+
+
+def load_videos_cache(path: Path) -> dict[str, Any]:
+    """Read the folded-video cache, streaming.
+
+    Folding from the raw Qdrant scroll means parsing a 1.1 GB JSON array into
+    1.7M payload dicts, which peaks at 8.8 GB resident -- enough to OOM a
+    concurrent reindex on this box. The tagger needs six fields per video, so
+    it reads them from a ~20 MB line-delimited cache instead and never
+    materialises the scroll at all.
+    """
+    from library_catalogue import Video
+
+    videos: dict[str, Any] = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            videos[row["video_key"]] = Video(**row)
+    return videos
 
 
 def transcript_path(archive_root: Path, video_hash: str) -> Path | None:
@@ -94,6 +152,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--config", default=str(REPO_ROOT / "config.yaml"))
     parser.add_argument("--raw-cache", default=str(DEFAULT_RAW))
+    parser.add_argument(
+        "--videos-cache",
+        default=str(REPO_ROOT / "data" / "library_videos.jsonl"),
+        help="folded-video cache; built from --raw-cache when absent",
+    )
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--gold", default=str(DEFAULT_GOLD))
     parser.add_argument("--metadata-dir", default="/home/ubuntu/rainrag/web_metadata")
@@ -117,8 +180,16 @@ def main(argv: list[str] | None = None) -> int:
 
     from rainrag.library_tagger import read_vtt_text, tag_episode
 
-    payloads = json.loads(Path(args.raw_cache).read_text(encoding="utf-8"))
-    videos = fold_chunks_to_videos(payloads)
+    videos_cache = Path(args.videos_cache)
+    if videos_cache.exists():
+        videos = load_videos_cache(videos_cache)
+        print(f"  videos from cache: {len(videos)}", flush=True)
+    else:
+        payloads = json.loads(Path(args.raw_cache).read_text(encoding="utf-8"))
+        videos = fold_chunks_to_videos(payloads)
+        del payloads
+        print(f"  folded {len(videos)} videos -> {videos_cache}", flush=True)
+        write_videos_cache(videos_cache, videos)
 
     # Reading the CMS cache means opening ~139k small JSON files, so it is
     # deferred until something actually needs it -- a --dry-run should not pay
@@ -179,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_config(args.config)
     engine = RAGQueryEngine(config)
-    cms = cms_all or load_cms_index(Path(args.metadata_dir))
+    metadata_dir = Path(args.metadata_dir)
     archive_root = Path(args.archive_root)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
                 counters["no_transcript"] += 1
             return
 
-        article = cms.get(video.video_key, {})
+        article = cms_all.get(video.video_key) or load_cms_article(metadata_dir, video.video_key)
         presenters, mentioned = cms_people(article)
         result = tag_episode(
             engine,
