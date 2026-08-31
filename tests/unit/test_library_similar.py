@@ -184,3 +184,72 @@ class TestSurnameMatchingRegression:
         cand = ep("a", subject=["политика"], speakers=["Шульман"])
         _score, speakers, _subjects = score_pair(seed, cand, subject_idf([seed, cand]))
         assert speakers == ["Шульман"]
+
+
+def _ep(
+    video_hash, *, content_id=None, subject=(), speakers=(), genre=("лекция",), duration=3600.0
+):
+    from rainrag.library_similar import Episode
+
+    return Episode(
+        video_hash=video_hash,
+        content_id=content_id,
+        duration_seconds=duration,
+        genre=list(genre),
+        subject=list(subject),
+        speakers=list(speakers),
+    )
+
+
+def test_dedupe_latest_keeps_the_last_row_for_a_repeated_hash():
+    """The tag file is appended to, so the newer run must win."""
+    from rainrag.library_similar import dedupe_latest
+
+    older = _ep("aaa", content_id="1", subject=["старое"], duration=195180.0)
+    newer = _ep("aaa", content_id="1", subject=["новое"], duration=3253.0)
+    result = dedupe_latest([older, newer])
+
+    assert len(result) == 1
+    assert result[0].subject == ["новое"]
+    # The superseded row for 484740 claimed 54 hours; keeping it would let a
+    # bad runtime through the duration filter.
+    assert result[0].duration_seconds == 3253.0
+
+
+def test_dedupe_latest_keeps_distinct_hashes_sharing_a_content_id():
+    """Two cuts of one CMS article are an editorial question, not a duplicate.
+
+    Eight content_ids in the pool have two hashes with identical titles and
+    runtimes up to 33% apart. Collapsing them would hide archive content.
+    """
+    from rainrag.library_similar import dedupe_latest
+
+    result = dedupe_latest([_ep("aaa", content_id="7"), _ep("bbb", content_id="7")])
+    assert {e.video_hash for e in result} == {"aaa", "bbb"}
+
+
+def test_find_similar_returns_a_repeated_episode_only_once():
+    from rainrag.library_similar import find_similar
+
+    seed = _ep("seed", content_id="0", subject=["интуиция"], speakers=["Ирина Хакамада"])
+    dup_a = _ep("dup", content_id="9", subject=["интуиция"], speakers=["Ирина Хакамада"])
+    dup_b = _ep(
+        "dup", content_id="9", subject=["интуиция", "лидерство"], speakers=["Ирина Хакамада"]
+    )
+
+    results = find_similar(seed, [dup_a, dup_b], limit=10)
+    assert [r.episode.video_hash for r in results] == ["dup"]
+    # Last row wins, so the shortlist shows the newer tagging.
+    assert "лидерство" in results[0].episode.subject
+
+
+def test_find_similar_excludes_a_re_tagged_seed_from_its_own_results():
+    """A duplicate row of the seed would otherwise rank first against itself."""
+    from rainrag.library_similar import find_similar
+
+    seed = _ep("seed", content_id="0", subject=["интуиция"], speakers=["Ирина Хакамада"])
+    seed_again = _ep("seed", content_id="0", subject=["интуиция"], speakers=["Ирина Хакамада"])
+    other = _ep("other", content_id="1", subject=["интуиция"])
+
+    results = find_similar(seed, [seed_again, other], limit=10)
+    assert [r.episode.video_hash for r in results] == ["other"]

@@ -97,6 +97,40 @@ class Episode:
         )
 
 
+def episode_identity(episode: Episode) -> str:
+    """The key under which two records are the same episode.
+
+    ``video_hash``, not ``content_id``: eight content_ids in the tagged pool
+    have two *different* hashes with identical titles but runtimes differing by
+    up to 33%, and whether those are duplicate ingests or genuinely different
+    cuts is an editorial question. Collapsing them here would hide archive
+    content from a shortlist, which is the opposite of what the Library needs.
+    """
+    return episode.video_hash
+
+
+def dedupe_latest(episodes: Iterable[Episode]) -> list[Episode]:
+    """Collapse repeated records of one episode, keeping the last.
+
+    ``library_tags.jsonl`` is opened in append mode, so tagging an episode
+    again adds a row rather than replacing one -- three episodes in the current
+    pool carry two successful rows each. Ranking over the raw file returns the
+    same episode twice: it burns a slot on a shortlist an editor reads by eye,
+    and the two rows disagree on exactly the fields used as hard filters
+    (``genre`` and ``duration_seconds``), so which one wins must not be left to
+    scoring order.
+
+    Last wins, because rows are appended in the order they were produced and
+    the later one reflects the newer run. That also repairs bad metadata: the
+    superseded record for 484740 claims a duration of 195180 seconds -- 54
+    hours -- against the 3253 seconds actually computed from its transcript.
+    """
+    latest: dict[str, Episode] = {}
+    for episode in episodes:
+        latest[episode_identity(episode)] = episode
+    return list(latest.values())
+
+
 @dataclass
 class Scored:
     """An episode with its score and the reason for it, for display."""
@@ -181,7 +215,10 @@ def find_similar(
     they are asked for: "видео длиной от 30 минут в жанре лекции или интервью"
     excludes, it does not merely prefer. The seed itself is never returned.
     """
-    pool = [c for c in candidates if c.video_hash != seed.video_hash]
+    # Identity, not object equality: a re-tagged seed would otherwise rank
+    # first against itself as a perfect match.
+    seed_id = episode_identity(seed)
+    pool = [c for c in dedupe_latest(candidates) if episode_identity(c) != seed_id]
     if idf is None:
         idf = subject_idf([seed, *pool])
 
