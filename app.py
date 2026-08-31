@@ -243,9 +243,11 @@ TRANSLATIONS = {
         "mode_content": "По содержанию",
         "mode_name": "По названию",
         "mode_video": "Своё видео",
+        "mode_library": "Библиотека",
         "mode_content_caption": "Поиск по расшифровкам архива Дождя",
         "mode_name_caption": "Поиск видео в архиве по названию",
         "mode_video_caption": "Загрузите своё видео — мы его расшифруем и ответим на вопросы по нему",
+        "mode_library_caption": "Похожие выпуски по темам и спикерам, сопоставление с YouTube",
         # Single-video upload mode
         "video_upload_prompt": "Перетащите видео сюда, чтобы расшифровать его и задавать вопросы по нему",
         "video_uploading": "Загрузка видео…",
@@ -380,9 +382,11 @@ TRANSLATIONS = {
         "mode_content": "By content",
         "mode_name": "By title",
         "mode_video": "Your video",
+        "mode_library": "Library",
         "mode_content_caption": "Search across the TV Rain archive transcripts",
         "mode_name_caption": "Find archive videos by title",
         "mode_video_caption": "Upload your own video — we'll transcribe it and answer questions about it",
+        "mode_library_caption": "Similar episodes by subject and speaker, YouTube matching",
         # Single-video upload mode
         "video_upload_prompt": "Drop a video here to transcribe it and ask questions about it",
         "video_uploading": "Uploading video…",
@@ -2786,7 +2790,7 @@ def main():
     st.caption(get_text("subtitle", lang))
 
     # Search-mode selector: content RAG / name search / single-video upload
-    modes = ["content", "name", "video"]
+    modes = ["content", "name", "video", "library"]
     current_mode = (
         st.session_state.search_mode if st.session_state.search_mode in modes else "content"
     )
@@ -2812,6 +2816,15 @@ def main():
     # ---- SINGLE-VIDEO UPLOAD MODE ----
     if st.session_state.search_mode == "video":
         render_video_mode(lang)
+        return
+
+    # ---- БИБЛИОТЕКА ДОЖДЯ MODE ----
+    if st.session_state.search_mode == "library":
+        # Imported lazily: the mode is file-backed and self-contained, and the
+        # other three modes should not pay its import.
+        from ui_library import render_library_mode
+
+        render_library_mode(lang)
         return
 
     # ---- NAME SEARCH MODE ----
