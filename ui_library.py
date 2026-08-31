@@ -309,16 +309,21 @@ def render_youtube_tab(episodes: list[Episode], lang: str) -> None:
         episode = by_content.get(str(cid)) if cid else None
         if cid:
             title = item.get("archive_title") or cid
-            if episode and episode.url:
-                st.markdown(f"[{title}]({episode.url})")
-            else:
-                st.markdown(title)
+            # Most candidates are outside the tagged pool, so the map's own
+            # archive fields are the usual source; the tagged episode wins
+            # when present because its metadata is fresher.
+            url = (episode.url if episode else None) or item.get("archive_url")
+            date = (episode.date if episode else None) or item.get("archive_date")
+            duration = (episode.duration_seconds if episode else None) or item.get(
+                "archive_duration_seconds"
+            )
+            st.markdown(f"[{title}]({url})" if url else title)
             st.caption(
                 " · ".join(
                     x
                     for x in [
-                        episode.date if episode else None,
-                        _fmt_minutes(episode.duration_seconds if episode else None, lang),
+                        date,
+                        _fmt_minutes(duration, lang),
                         f"score {item.get('score', 0):.2f} ({item.get('confidence')})",
                     ]
                     if x

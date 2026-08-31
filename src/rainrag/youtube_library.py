@@ -238,14 +238,19 @@ def candidate_positions(
     Ranked by how many words they share, so the cap keeps the most promising
     candidates rather than an arbitrary slice.
     """
-    words = [w for w in set(normalise_title(title).split()) if len(w) > 3]
+    words = sorted(w for w in set(normalise_title(title).split()) if len(w) > 3)
     if not words:
         return []
     counts: dict[int, int] = {}
     for word in words:
         for position in index.get(word, ()):  # noqa: SIM118 - set membership iteration
             counts[position] = counts.get(position, 0) + 1
-    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    # Ties broken by position, not by dict order. Hundreds of positions tie at
+    # one shared word, and the cap slices that group -- left to insertion
+    # order, which follows string-set iteration and therefore the process's
+    # hash seed, the same run gave different answers on 39 of 236 uploads.
+    # A matcher an editor reviews must at minimum agree with itself.
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     return [position for position, _shared in ranked[:max_candidates]]
 
 
