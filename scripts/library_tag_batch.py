@@ -181,11 +181,21 @@ def main(argv: list[str] | None = None) -> int:
     from rainrag.library_tagger import read_vtt_text, tag_episode
 
     videos_cache = Path(args.videos_cache)
-    if videos_cache.exists():
+    raw_cache = Path(args.raw_cache)
+    # A reindex regenerates the raw scroll; a folded cache from before that
+    # would silently serve the old archive forever. Newer raw wins.
+    stale = (
+        videos_cache.exists()
+        and raw_cache.exists()
+        and raw_cache.stat().st_mtime > videos_cache.stat().st_mtime
+    )
+    if videos_cache.exists() and not stale:
         videos = load_videos_cache(videos_cache)
         print(f"  videos from cache: {len(videos)}", flush=True)
     else:
-        payloads = json.loads(Path(args.raw_cache).read_text(encoding="utf-8"))
+        if stale:
+            print(f"  {videos_cache.name} predates {raw_cache.name}; refolding", flush=True)
+        payloads = json.loads(raw_cache.read_text(encoding="utf-8"))
         videos = fold_chunks_to_videos(payloads)
         del payloads
         print(f"  folded {len(videos)} videos -> {videos_cache}", flush=True)
