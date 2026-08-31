@@ -6,27 +6,21 @@ import json
 import sys
 from pathlib import Path
 
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from rainrag.library_similar import Episode, Scored  # noqa: E402
-
-from ui_library import (  # noqa: E402
-    append_decision,
-    load_decisions,
-    load_tagged_episodes,
-    review_queue,
-    search_episodes,
-    split_by_speaker,
-)
-
 
 def _ep(video_hash, **kw):
+    from rainrag.library_similar import Episode
+
     return Episode(video_hash=video_hash, **kw)
 
 
 def test_load_tagged_episodes_drops_errors_and_dedupes(tmp_path: Path):
+    from ui_library import load_tagged_episodes
+
     p = tmp_path / "tags.jsonl"
     rows = [
         {"video_hash": "a", "content_id": "1", "subject": ["x"]},
@@ -43,6 +37,8 @@ def test_load_tagged_episodes_drops_errors_and_dedupes(tmp_path: Path):
 
 
 def test_search_matches_title_and_program_case_and_yo_insensitively():
+    from ui_library import search_episodes
+
     eps = [
         _ep("1", title="Лекция Ирины Хакамады", date="2020-01-01"),
         _ep("2", program="Сто лекций с Дмитрием Быковым", date="2021-01-01"),
@@ -55,10 +51,15 @@ def test_search_matches_title_and_program_case_and_yo_insensitively():
 
 
 def test_search_with_empty_needle_returns_nothing():
+    from ui_library import search_episodes
+
     assert search_episodes([_ep("1", title="x")], "   ") == []
 
 
 def test_split_by_speaker_partitions_and_preserves_order():
+    from rainrag.library_similar import Scored
+    from ui_library import split_by_speaker
+
     a = Scored(_ep("a"), 3.1, ["Ирина Хакамада"], [])
     b = Scored(_ep("b"), 0.2, [], ["политика"])
     c = Scored(_ep("c"), 3.0, ["Ирина Хакамада"], ["интуиция"])
@@ -68,6 +69,8 @@ def test_split_by_speaker_partitions_and_preserves_order():
 
 
 def test_decisions_round_trip_and_last_verdict_wins(tmp_path: Path):
+    from ui_library import append_decision, load_decisions
+
     p = tmp_path / "decisions.csv"
     append_decision("yt1", "100", "match", path=p)
     append_decision("yt2", None, "skip", path=p)
@@ -76,6 +79,8 @@ def test_decisions_round_trip_and_last_verdict_wins(tmp_path: Path):
 
 
 def test_review_queue_hides_decided_and_editor_rows_and_orders_by_confidence():
+    from ui_library import review_queue
+
     matches = [
         {"youtube_id": "r1", "confidence": "review", "score": 0.7},
         {"youtube_id": "e1", "confidence": "editor", "score": 1.0},
