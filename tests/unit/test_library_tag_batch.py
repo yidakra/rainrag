@@ -83,3 +83,38 @@ def test_videos_cache_skips_blank_lines(tmp_path: Path):
     path = tmp_path / "videos.jsonl"
     path.write_text(json.dumps({"video_key": "h1", "title": "A"}) + "\n\n", encoding="utf-8")
     assert set(load_videos_cache(path)) == {"h1"}
+
+
+def test_stale_videos_cache_is_refolded_when_raw_cache_is_newer(tmp_path, capsys):
+    """After a reindex regenerates the scroll, the folded cache must not win."""
+    import os
+
+    import library_tag_batch as batch
+
+    raw = tmp_path / "raw.json"
+    cache = tmp_path / "videos.jsonl"
+    cache.write_text(
+        json.dumps({"video_key": "old", "title": "устаревшее"}) + "\n", encoding="utf-8"
+    )
+    raw.write_text(json.dumps([{"path": "new.ru.vtt", "web_title": "свежее"}]), encoding="utf-8")
+    os.utime(cache, (1_000_000, 1_000_000))
+    os.utime(raw, (2_000_000, 2_000_000))
+
+    # Exercise main's loading branch via a dry run against the tmp files.
+    rc = batch.main(
+        [
+            "--raw-cache",
+            str(raw),
+            "--videos-cache",
+            str(cache),
+            "--gold",
+            str(tmp_path / "missing_gold.json"),
+            "--dry-run",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "refolding" in out
+    # And the cache now holds the refolded archive, not the stale row.
+    reloaded = batch.load_videos_cache(cache)
+    assert set(reloaded) == {"new"}
