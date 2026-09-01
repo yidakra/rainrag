@@ -197,7 +197,14 @@ FEEDBACK_PATH = REPO_ROOT / "data" / "library_feedback.csv"
 
 
 def load_feedback(path: Path = FEEDBACK_PATH) -> dict[tuple[str, str], str]:
-    """(seed, candidate) -> verdict, last one wins."""
+    """(seed, candidate) -> verdict, last one wins.
+
+    Deliberately keyed by the pair, not by (pair, column): the two columns
+    partition one result list, so a candidate appears in exactly one of them
+    per render, and when re-tagging later moves a pair across columns the
+    editor's judgment should follow it -- they rated the suggestion, not the
+    column it was displayed in. The CSV keeps ``column`` for analysis.
+    """
     marks: dict[tuple[str, str], str] = {}
     if not path.exists():
         return marks

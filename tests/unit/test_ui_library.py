@@ -113,3 +113,35 @@ def test_feedback_file_gets_a_header_exactly_once(tmp_path: Path):
     lines = p.read_text(encoding="utf-8").strip().splitlines()
     assert lines[0].startswith("seed_content_id,")
     assert len(lines) == 3
+
+
+def test_feedback_marks_are_per_pair_not_per_column(tmp_path: Path):
+    """A verdict follows the (seed, candidate) pair across columns.
+
+    The columns partition one result list, so a pair is shown in exactly one
+    of them per render; if re-tagging later moves it, the editor's judgment
+    moves with it rather than presenting the pair as unjudged. The CSV still
+    records the column each verdict was given in.
+    """
+    from ui_library import append_feedback, load_feedback
+
+    p = tmp_path / "feedback.csv"
+    append_feedback("454595", "484740", "theme", 7, "good", path=p)
+    append_feedback("454595", "484740", "speaker", 2, "bad", path=p)
+    assert load_feedback(p) == {("454595", "484740"): "bad"}
+    rows = p.read_text(encoding="utf-8").strip().splitlines()
+    assert rows[1].split(",")[2] == "theme" and rows[2].split(",")[2] == "speaker"
+
+
+def test_split_by_speaker_never_puts_one_episode_in_both_columns():
+    """The invariant the per-pair feedback key rests on."""
+    from rainrag.library_similar import Scored
+    from ui_library import split_by_speaker
+
+    results = [
+        Scored(_ep("a"), 3.1, ["Ирина Хакамада"], ["интуиция"]),
+        Scored(_ep("b"), 0.2, [], ["политика"]),
+    ]
+    same, themed = split_by_speaker(results)
+    assert {r.episode.video_hash for r in same} & {r.episode.video_hash for r in themed} == set()
+    assert len(same) + len(themed) == len(results)
