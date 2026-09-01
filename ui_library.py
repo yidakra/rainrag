@@ -146,6 +146,25 @@ def split_by_speaker(results: list[Scored]) -> tuple[list[Scored], list[Scored]]
     return same, themed
 
 
+def _append_csv_row(path: Path, header: list[str], row: list[object]) -> None:
+    """Append one row, creating the file with its header atomically.
+
+    An exists-check followed by an append races: two first submissions from
+    different sessions can both see no file and both write a header, and the
+    loser's header is then read back as a data row. Exclusive creation makes
+    exactly one writer own the header.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(path, "x", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            writer.writerow(row)
+    except FileExistsError:
+        with open(path, "a", encoding="utf-8", newline="") as f:
+            csv.writer(f).writerow(row)
+
+
 def load_decisions(path: Path = DECISIONS_PATH) -> dict[str, str]:
     """youtube_id -> verdict, last decision wins (the file is append-only)."""
     decisions: dict[str, str] = {}
@@ -163,15 +182,11 @@ def append_decision(
 ) -> None:
     """Append one editor verdict. Append-only for the same reason the tag file
     is: regenerating machine output must never be able to destroy these."""
-    exists = path.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        if not exists:
-            writer.writerow(["youtube_id", "content_id", "verdict", "decided_at"])
-        writer.writerow(
-            [youtube_id, content_id or "", verdict, datetime.now(timezone.utc).isoformat()]
-        )
+    _append_csv_row(
+        path,
+        ["youtube_id", "content_id", "verdict", "decided_at"],
+        [youtube_id, content_id or "", verdict, datetime.now(timezone.utc).isoformat()],
+    )
 
 
 FEEDBACK_PATH = REPO_ROOT / "data" / "library_feedback.csv"
@@ -207,24 +222,18 @@ def append_feedback(
     data/exp/THEME_RANKING.md). Judgments recorded here grow that set as a
     side effect of editors doing their normal work.
     """
-    exists = path.exists()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        if not exists:
-            writer.writerow(
-                ["seed_content_id", "candidate_content_id", "column", "rank", "verdict", "at"]
-            )
-        writer.writerow(
-            [
-                seed_content_id,
-                candidate_content_id,
-                column,
-                rank,
-                verdict,
-                datetime.now(timezone.utc).isoformat(),
-            ]
-        )
+    _append_csv_row(
+        path,
+        ["seed_content_id", "candidate_content_id", "column", "rank", "verdict", "at"],
+        [
+            seed_content_id,
+            candidate_content_id,
+            column,
+            rank,
+            verdict,
+            datetime.now(timezone.utc).isoformat(),
+        ],
+    )
 
 
 # ------------------------------------------------------------------ rendering
@@ -306,7 +315,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     )
     same, themed = split_by_speaker(results)
 
-    marks = load_feedback()
+    marks = _cached_feedback(FEEDBACK_PATH.stat().st_mtime if FEEDBACK_PATH.exists() else 0.0)
     speaker_col, theme_col = st.columns(2)
     with speaker_col:
         st.subheader(_t("same_speaker", lang))
@@ -415,6 +424,16 @@ def render_youtube_tab(episodes: list[Episode], lang: str) -> None:
     if b_skip.button(_t("btn_skip", lang), key=f"s_{yt_id}"):
         append_decision(yt_id, str(cid) if cid else None, "skip")
         st.rerun()
+
+
+@st.cache_data(show_spinner=False)
+def _cached_feedback(mtime: float) -> dict[tuple[str, str], str]:
+    """Feedback marks, re-parsed only when the file changes.
+
+    The page reruns on every widget interaction and this file grows without
+    bound, so an uncached read is a per-click cost that only ever rises."""
+    del mtime
+    return load_feedback()
 
 
 @st.cache_data(show_spinner=False)
