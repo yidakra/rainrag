@@ -23,9 +23,15 @@ compete with a reindex for memory.
 from __future__ import annotations
 
 import csv
-import fcntl
 import json
 import os
+import threading
+
+
+try:
+    import fcntl
+except ImportError:  # Windows dev box: no flock.
+    fcntl = None
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -157,16 +163,38 @@ def _append_csv_row(path: Path, header: list[str], row: list[object]) -> None:
     write does: the size check decides the header and no two rows interleave.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8", newline="") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        try:
-            writer = csv.writer(f)
-            if os.fstat(f.fileno()).st_size == 0:
-                writer.writerow(header)
-            writer.writerow(row)
-            f.flush()
-        finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    with open(path, "a", encoding="utf-8", newline="") as f, _FileLock(f, exclusive=True):
+        writer = csv.writer(f)
+        if os.fstat(f.fileno()).st_size == 0:
+            writer.writerow(header)
+        writer.writerow(row)
+        f.flush()
+
+
+# Production runs two Streamlit processes on Linux, where flock serializes
+# them. On a platform without fcntl (a Windows dev box running one process),
+# a process-wide lock is the honest equivalent of the same guarantee.
+_FALLBACK_LOCK = threading.Lock()
+
+
+class _FileLock:
+    """Exclusive or shared flock when available, process-wide lock otherwise."""
+
+    def __init__(self, f: object, exclusive: bool) -> None:
+        self._f = f
+        self._exclusive = exclusive
+
+    def __enter__(self) -> None:
+        if fcntl is not None:
+            fcntl.flock(self._f.fileno(), fcntl.LOCK_EX if self._exclusive else fcntl.LOCK_SH)  # type: ignore[attr-defined]
+        else:
+            _FALLBACK_LOCK.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        if fcntl is not None:
+            fcntl.flock(self._f.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+        else:
+            _FALLBACK_LOCK.release()
 
 
 def _locked_read_rows(path: Path) -> list[dict[str, str]]:
@@ -178,12 +206,8 @@ def _locked_read_rows(path: Path) -> list[dict[str, str]]:
     """
     if not path.exists():
         return []
-    with open(path, encoding="utf-8", newline="") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
-        try:
-            return list(csv.DictReader(f))
-        finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    with open(path, encoding="utf-8", newline="") as f, _FileLock(f, exclusive=False):
+        return list(csv.DictReader(f))
 
 
 def load_decisions(path: Path = DECISIONS_PATH) -> dict[str, str]:
