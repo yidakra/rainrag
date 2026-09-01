@@ -169,15 +169,29 @@ def _append_csv_row(path: Path, header: list[str], row: list[object]) -> None:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+def _locked_read_rows(path: Path) -> list[dict[str, str]]:
+    """All rows of a verdict CSV, read under a shared lock.
+
+    Writers hold an exclusive flock for the whole append; taking the shared
+    counterpart here means a read never parses a torn final line from a write
+    in flight in the other Streamlit process.
+    """
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8", newline="") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        try:
+            return list(csv.DictReader(f))
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
 def load_decisions(path: Path = DECISIONS_PATH) -> dict[str, str]:
     """youtube_id -> verdict, last decision wins (the file is append-only)."""
     decisions: dict[str, str] = {}
-    if not path.exists():
-        return decisions
-    with open(path, encoding="utf-8", newline="") as f:
-        for row in csv.DictReader(f):
-            if row.get("youtube_id"):
-                decisions[row["youtube_id"]] = row.get("verdict", "")
+    for row in _locked_read_rows(path):
+        if row.get("youtube_id"):
+            decisions[row["youtube_id"]] = row.get("verdict", "")
     return decisions
 
 
@@ -206,14 +220,9 @@ def load_feedback(path: Path = FEEDBACK_PATH) -> dict[tuple[str, str], str]:
     column it was displayed in. The CSV keeps ``column`` for analysis.
     """
     marks: dict[tuple[str, str], str] = {}
-    if not path.exists():
-        return marks
-    with open(path, encoding="utf-8", newline="") as f:
-        for row in csv.DictReader(f):
-            if row.get("seed_content_id") and row.get("candidate_content_id"):
-                marks[(row["seed_content_id"], row["candidate_content_id"])] = row.get(
-                    "verdict", ""
-                )
+    for row in _locked_read_rows(path):
+        if row.get("seed_content_id") and row.get("candidate_content_id"):
+            marks[(row["seed_content_id"], row["candidate_content_id"])] = row.get("verdict", "")
     return marks
 
 
