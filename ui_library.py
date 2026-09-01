@@ -23,7 +23,9 @@ compete with a reindex for memory.
 from __future__ import annotations
 
 import csv
+import fcntl
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -147,22 +149,24 @@ def split_by_speaker(results: list[Scored]) -> tuple[list[Scored], list[Scored]]
 
 
 def _append_csv_row(path: Path, header: list[str], row: list[object]) -> None:
-    """Append one row, creating the file with its header atomically.
+    """Append one row, writing the header exactly once, under a file lock.
 
-    An exists-check followed by an append races: two first submissions from
-    different sessions can both see no file and both write a header, and the
-    loser's header is then read back as a data row. Exclusive creation makes
-    exactly one writer own the header.
+    Verdicts arrive from concurrent editor sessions -- and from two separate
+    Streamlit *processes* (the public and the IP-restricted service), so an
+    in-process lock cannot serialize them. An exclusive flock over the whole
+    write does: the size check decides the header and no two rows interleave.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with open(path, "x", encoding="utf-8", newline="") as f:
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
             writer = csv.writer(f)
-            writer.writerow(header)
+            if os.fstat(f.fileno()).st_size == 0:
+                writer.writerow(header)
             writer.writerow(row)
-    except FileExistsError:
-        with open(path, "a", encoding="utf-8", newline="") as f:
-            csv.writer(f).writerow(row)
+            f.flush()
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def load_decisions(path: Path = DECISIONS_PATH) -> dict[str, str]:
@@ -315,7 +319,15 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     )
     same, themed = split_by_speaker(results)
 
-    marks = _cached_feedback(FEEDBACK_PATH.stat().st_mtime if FEEDBACK_PATH.exists() else 0.0)
+    try:
+        stat = FEEDBACK_PATH.stat()
+        # mtime alone has coarse resolution on some filesystems; two rapid
+        # verdicts could share it and pin a stale cache. Size breaks the tie
+        # (the file is append-only, so it grows on every write).
+        cache_key = (stat.st_mtime_ns, stat.st_size)
+    except FileNotFoundError:
+        cache_key = (0, 0)
+    marks = _cached_feedback(cache_key)
     speaker_col, theme_col = st.columns(2)
     with speaker_col:
         st.subheader(_t("same_speaker", lang))
@@ -427,12 +439,12 @@ def render_youtube_tab(episodes: list[Episode], lang: str) -> None:
 
 
 @st.cache_data(show_spinner=False)
-def _cached_feedback(mtime: float) -> dict[tuple[str, str], str]:
+def _cached_feedback(cache_key: tuple[int, int]) -> dict[tuple[str, str], str]:
     """Feedback marks, re-parsed only when the file changes.
 
     The page reruns on every widget interaction and this file grows without
     bound, so an uncached read is a per-click cost that only ever rises."""
-    del mtime
+    del cache_key
     return load_feedback()
 
 
