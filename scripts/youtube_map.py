@@ -22,6 +22,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +32,11 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--videos-cache",
+        default=str(REPO_ROOT / "data" / "library_videos.jsonl"),
+        help="folded-video cache from library_tag_batch; falls back to --raw-cache",
+    )
     parser.add_argument(
         "--raw-cache", default=str(REPO_ROOT / "data" / "library_catalogue.raw.json")
     )
@@ -71,23 +77,42 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Channel uploads: {len(videos)}")
 
     # Archive runtimes, keyed by content id: the strongest matching signal.
-    durations: dict[str, float] = {}
-    payloads = json.loads(Path(args.raw_cache).read_text(encoding="utf-8"))
-    from library_catalogue import fold_chunks_to_videos
+    # The folded cache keeps this at ~0.3 GB; folding the raw scroll costs
+    # 8.8 GB, which is why the tagger stopped doing it (#65). Fall back to the
+    # scroll only when nothing has built the cache yet.
+    from library_tag_batch import load_videos_cache
 
+    videos_cache = Path(args.videos_cache)
+    if videos_cache.exists():
+        folded = load_videos_cache(videos_cache)
+    else:
+        from library_catalogue import fold_chunks_to_videos
+
+        folded = fold_chunks_to_videos(json.loads(Path(args.raw_cache).read_text(encoding="utf-8")))
     hash_to_duration = {
-        v.video_key: v.duration_seconds
-        for v in fold_chunks_to_videos(payloads).values()
-        if v.duration_seconds
+        v.video_key: v.duration_seconds for v in folded.values() if v.duration_seconds
     }
+    durations: dict[str, float] = {}
+    # Date and URL ride along for free: the reviewer deciding whether a
+    # YouTube upload is this archive episode compares dates and runtimes and
+    # wants to click through -- without these, every card outside the tagged
+    # pool showed a bare title and nothing to check it against.
+    archive_info: dict[str, dict[str, Any]] = {}
     for path in Path(args.metadata_dir).glob("*.json"):
         try:
             d = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        cid = str(d.get("id") or "")
+        if not cid:
+            continue
         seconds = hash_to_duration.get(str(d.get("video_hash")))
-        if d.get("id") and seconds:
-            durations[str(d["id"])] = seconds
+        if seconds:
+            durations[cid] = seconds
+        archive_info[cid] = {
+            "archive_date": (d.get("date_active_start") or "")[:10] or None,
+            "archive_url": d.get("url"),
+        }
     print(f"Archive runtimes known for {len(durations):,} episodes".replace(",", " "))
 
     index = build_title_index(archive)
@@ -119,6 +144,8 @@ def main(argv: list[str] | None = None) -> int:
             "published_at": views[m.video_id].published_at,
             "view_count": views[m.video_id].view_count,
             "duration_seconds": views[m.video_id].duration_seconds,
+            "archive_duration_seconds": durations.get(m.content_id or ""),
+            **archive_info.get(m.content_id or "", {"archive_date": None, "archive_url": None}),
         }
         for m in matches
     ]

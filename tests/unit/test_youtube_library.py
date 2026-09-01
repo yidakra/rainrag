@@ -106,3 +106,18 @@ class TestMatching:
 
     def test_empty_archive_does_not_crash(self) -> None:
         assert match_video(video("что угодно"), []).content_id is None
+
+
+def test_candidate_positions_is_deterministic_at_the_cap_boundary():
+    """Ties at the candidate cap must not depend on hash-seed iteration order.
+
+    Two runs of the real matcher disagreed on 39 of 236 uploads because the
+    cap sliced a tie group in set-iteration order. Lowest positions win now.
+    """
+    from rainrag.youtube_library import build_title_index, candidate_positions
+
+    # 30 archive titles sharing exactly one word with the query -> all tie.
+    archive = [(str(i), f"передача выпуск{i} новости") for i in range(30)]
+    index = build_title_index(archive)
+    picked = candidate_positions("новости недели", index, max_candidates=10)
+    assert picked == sorted(picked) == list(range(10))
