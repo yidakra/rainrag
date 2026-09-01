@@ -174,6 +174,59 @@ def append_decision(
         )
 
 
+FEEDBACK_PATH = REPO_ROOT / "data" / "library_feedback.csv"
+
+
+def load_feedback(path: Path = FEEDBACK_PATH) -> dict[tuple[str, str], str]:
+    """(seed, candidate) -> verdict, last one wins."""
+    marks: dict[tuple[str, str], str] = {}
+    if not path.exists():
+        return marks
+    with open(path, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("seed_content_id") and row.get("candidate_content_id"):
+                marks[(row["seed_content_id"], row["candidate_content_id"])] = row.get(
+                    "verdict", ""
+                )
+    return marks
+
+
+def append_feedback(
+    seed_content_id: str,
+    candidate_content_id: str,
+    column: str,
+    rank: int,
+    verdict: str,
+    path: Path = FEEDBACK_PATH,
+) -> None:
+    """One editor judgment on one suggestion.
+
+    This file is the ground truth the ranking work is starved of: every
+    scorer variant tested against Varya's first query hit the same wall --
+    two labelled examples cannot distinguish tuning from overfitting (see
+    data/exp/THEME_RANKING.md). Judgments recorded here grow that set as a
+    side effect of editors doing their normal work.
+    """
+    exists = path.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        if not exists:
+            writer.writerow(
+                ["seed_content_id", "candidate_content_id", "column", "rank", "verdict", "at"]
+            )
+        writer.writerow(
+            [
+                seed_content_id,
+                candidate_content_id,
+                column,
+                rank,
+                verdict,
+                datetime.now(timezone.utc).isoformat(),
+            ]
+        )
+
+
 # ------------------------------------------------------------------ rendering
 
 
@@ -193,13 +246,32 @@ def _episode_label(e: Episode) -> str:
     return " — ".join(bits)
 
 
-def _render_scored(rank: int, r: Scored, lang: str) -> None:
+def _render_scored(
+    rank: int,
+    r: Scored,
+    lang: str,
+    *,
+    seed_id: str | None = None,
+    column: str = "",
+    marks: dict[tuple[str, str], str] | None = None,
+) -> None:
     e = r.episode
     title = e.title or _untitled(lang)
     line = f"**{rank}.** [{title}]({e.url})" if e.url else f"**{rank}.** {title}"
     meta = " · ".join(x for x in [e.program, e.date, _fmt_minutes(e.duration_seconds, lang)] if x)
-    st.markdown(f"{line}  \n{meta}")
-    st.caption(r.explain())
+    body, up, down = st.columns([12, 1, 1])
+    with body:
+        st.markdown(f"{line}  \n{meta}")
+        st.caption(r.explain())
+    if seed_id and e.content_id:
+        mark = (marks or {}).get((seed_id, e.content_id))
+        key = f"fb_{column}_{seed_id}_{e.content_id}"
+        if up.button("✓" if mark == "good" else "👍", key=f"{key}_g", disabled=mark == "good"):
+            append_feedback(seed_id, e.content_id, column, rank, "good")
+            st.rerun()
+        if down.button("✗" if mark == "bad" else "👎", key=f"{key}_b", disabled=mark == "bad"):
+            append_feedback(seed_id, e.content_id, column, rank, "bad")
+            st.rerun()
 
 
 def render_similar_tab(episodes: list[Episode], lang: str) -> None:
@@ -234,19 +306,20 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     )
     same, themed = split_by_speaker(results)
 
+    marks = load_feedback()
     speaker_col, theme_col = st.columns(2)
     with speaker_col:
         st.subheader(_t("same_speaker", lang))
         if not same:
             st.caption(_t("nothing_similar", lang))
         for i, r in enumerate(same[:10], 1):
-            _render_scored(i, r, lang)
+            _render_scored(i, r, lang, seed_id=seed.content_id, column="speaker", marks=marks)
     with theme_col:
         st.subheader(_t("same_theme", lang))
         if not themed:
             st.caption(_t("nothing_similar", lang))
         for i, r in enumerate(themed[:10], 1):
-            _render_scored(i, r, lang)
+            _render_scored(i, r, lang, seed_id=seed.content_id, column="theme", marks=marks)
 
 
 _CONFIDENCE_ORDER = {"exact": 0, "strong": 1, "review": 2, "none": 3, "editor": 4}

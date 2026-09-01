@@ -91,3 +91,25 @@ def test_review_queue_hides_decided_and_editor_rows_and_orders_by_confidence():
     queue = review_queue(matches, decisions={"d1": "match"})
     # editor rows are already ground truth; decided rows are done
     assert [m["youtube_id"] for m in queue] == ["s1", "r1", "n1"]
+
+
+def test_feedback_round_trip_and_last_verdict_wins(tmp_path: Path):
+    from ui_library import append_feedback, load_feedback
+
+    p = tmp_path / "feedback.csv"
+    append_feedback("454595", "484740", "theme", 7, "good", path=p)
+    append_feedback("454595", "431298", "theme", 9, "bad", path=p)
+    append_feedback("454595", "484740", "theme", 7, "bad", path=p)  # changed their mind
+    marks = load_feedback(p)
+    assert marks == {("454595", "484740"): "bad", ("454595", "431298"): "bad"}
+
+
+def test_feedback_file_gets_a_header_exactly_once(tmp_path: Path):
+    from ui_library import append_feedback
+
+    p = tmp_path / "feedback.csv"
+    append_feedback("1", "2", "speaker", 1, "good", path=p)
+    append_feedback("1", "3", "speaker", 2, "good", path=p)
+    lines = p.read_text(encoding="utf-8").strip().splitlines()
+    assert lines[0].startswith("seed_content_id,")
+    assert len(lines) == 3
