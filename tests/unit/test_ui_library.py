@@ -158,3 +158,40 @@ def test_youtube_id_extraction_from_urls_and_bare_ids():
     assert youtube_id_from_query("интуиция") is None
     assert youtube_id_from_query("Хакамада мастер-класс") is None
     assert youtube_id_from_query("management!") is None
+    # an 11-char lowercase English word is a search, not an id
+    assert youtube_id_from_query("managements") is None
+    assert youtube_id_from_query("MANAGEMENTS") is None
+
+
+def test_resolve_prefers_the_decision_files_own_content_id(tmp_path, monkeypatch):
+    """A review-tab confirmation pins its content_id: a later map regeneration
+    must not be able to silently repoint the link."""
+    import ui_library
+
+    dec = tmp_path / "decisions.csv"
+    dec.write_text(
+        "youtube_id,content_id,verdict,decided_at\nabcDEF123-_,111,match,2026\n",
+        encoding="utf-8",
+    )
+    mp = tmp_path / "map.json"
+    mp.write_text(
+        json.dumps([{"youtube_id": "abcDEF123-_", "content_id": "999", "confidence": "editor"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ui_library, "DECISIONS_PATH", dec)
+    monkeypatch.setattr(ui_library, "MAP_PATH", mp)
+    from ui_library import resolve_youtube_id
+
+    assert resolve_youtube_id("abcDEF123-_") == "111"
+
+
+def test_load_map_rows_survives_a_torn_or_missing_file(tmp_path, monkeypatch):
+    import ui_library
+
+    mp = tmp_path / "map.json"
+    monkeypatch.setattr(ui_library, "MAP_PATH", mp)
+    from ui_library import load_map_rows
+
+    assert load_map_rows(mp) == []
+    mp.write_text('[{"youtube_id": "x"', encoding="utf-8")  # mid-regeneration
+    assert load_map_rows(mp) == []

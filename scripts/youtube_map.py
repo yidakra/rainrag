@@ -83,8 +83,10 @@ def main(argv: list[str] | None = None) -> int:
     if known_csv.exists():
         with open(known_csv, encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
-                if row.get("youtube_id") and row.get("content_id"):
-                    known[row["youtube_id"].strip()] = row["content_id"].strip()
+                yt = (row.get("youtube_id") or "").strip()
+                cid = (row.get("content_id") or "").strip()
+                if yt and cid:
+                    known[yt] = cid
     print(f"Hand-written links (gold + editor sheet): {len(known)}")
 
     videos = fetch_channel_videos(api_key)

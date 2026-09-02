@@ -87,7 +87,8 @@ _T = {
         "tab_similar": "Similar episodes",
         "tab_youtube": "YouTube matching",
         "seed_search": "Find a seed episode",
-        "seed_search_help": "Searches titles and programmes of tagged episodes",
+        "seed_search_help": "An episode or programme title, or a YouTube link. "
+        "Searches tagged episodes over 30 minutes.",
         "seed_pick": "Seed episode",
         "no_seed_matches": "No matches among {n} tagged episodes. Only episodes over 30 minutes "
         "are searchable; ~3,200 more await tagging. Try another word or paste a YouTube link.",
@@ -147,38 +148,54 @@ _YT_BARE_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 def youtube_id_from_query(text: str) -> str | None:
     """Pull a YouTube video id out of a search query, if there is one.
 
-    A URL is unambiguous. A bare 11-character id is only treated as one when
-    the whole query is exactly that token: an editor pasting an id pastes
-    nothing else, while a title word never matches the charset check anyway
-    (titles here are Russian).
+    A URL is unambiguous. A bare 11-character token is only treated as an id
+    when it also carries a digit, "-", "_" or mixed case: a lowercase English
+    word like "managements" is a plausible title search, while real ids are
+    base64-flavoured and all-lowercase-letters ones are vanishingly rare.
     """
     text = text.strip()
     m = _YT_URL_ID.search(text)
     if m:
         return m.group(1)
-    if _YT_BARE_ID.fullmatch(text):
+    if _YT_BARE_ID.fullmatch(text) and (
+        any(c.isdigit() or c in "-_" for c in text)
+        or (text != text.lower() and text != text.upper())
+    ):
         return text
     return None
 
 
-def resolve_youtube_id(yt_id: str, decisions: dict[str, str] | None = None) -> str | None:
+def load_map_rows(path: Path = MAP_PATH) -> list[dict]:
+    """The upload->archive map, or empty while absent, mid-regeneration or torn."""
+    if not path.exists():
+        return []
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return rows if isinstance(rows, list) else []
+
+
+def resolve_youtube_id(yt_id: str) -> str | None:
     """Archive content_id for an upload, from editor truth only.
 
-    The mapping file's editor/exact/strong rows were audited against 211
-    hand-made pairs (23/23 confident links correct); the review band was
-    right ~40% of the time and is deliberately not used here.
+    Review-tab confirmations win, read from the decisions file, which stores
+    the confirmed content_id precisely so that a later map regeneration
+    cannot silently repoint the link. After that the map's editor/exact/
+    strong rows: audited against 211 hand-made pairs, the confident tier was
+    23/23 correct while the review band was right ~40% of the time, so the
+    review band is deliberately not used here.
     """
-    if MAP_PATH.exists():
-        for m in json.loads(MAP_PATH.read_text(encoding="utf-8")):
-            if m.get("youtube_id") == yt_id:
-                if m.get("confidence") in ("editor", "exact", "strong") and m.get("content_id"):
-                    return str(m["content_id"])
-                break
-    # a match the editor confirmed in the review tab
-    if (decisions or load_decisions()).get(yt_id) == "match" and MAP_PATH.exists():
-        for m in json.loads(MAP_PATH.read_text(encoding="utf-8")):
-            if m.get("youtube_id") == yt_id and m.get("content_id"):
+    for row in _locked_read_rows(DECISIONS_PATH):
+        if row.get("youtube_id") == yt_id and row.get("verdict") == "match":
+            cid = (row.get("content_id") or "").strip()
+            if cid:
+                return cid
+    for m in load_map_rows():
+        if m.get("youtube_id") == yt_id:
+            if m.get("confidence") in ("editor", "exact", "strong") and m.get("content_id"):
                 return str(m["content_id"])
+            break
     return None
 
 
@@ -477,7 +494,10 @@ def render_youtube_tab(episodes: list[Episode], lang: str) -> None:
         st.warning(_t("map_missing", lang, path=MAP_PATH.name))
         return
     st.caption(_t("queue_note", lang))
-    matches = json.loads(MAP_PATH.read_text(encoding="utf-8"))
+    matches = load_map_rows()
+    if not matches:
+        st.warning(_t("map_missing", lang, path=MAP_PATH.name))
+        return
     decisions = load_decisions()
     queue = review_queue(matches, decisions)
 
