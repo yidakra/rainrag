@@ -141,22 +141,32 @@ def load_tagged_episodes(path: Path = TAGS_PATH) -> list[Episode]:
     return dedupe_latest(episodes)
 
 
-_YT_URL_ID = re.compile(r"(?:youtu\.be/|[?&]v=|/shorts/|/live/|/embed/)([A-Za-z0-9_-]{11})")
+_YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "youtube-nocookie.com"}
+_YT_PATH_ID = re.compile(r"(?:^|[?&]v=|/shorts/|/live/|/embed/|^/)([A-Za-z0-9_-]{11})(?:[?&#]|$)")
 _YT_BARE_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
 def youtube_id_from_query(text: str) -> str | None:
     """Pull a YouTube video id out of a search query, if there is one.
 
-    A URL is unambiguous. A bare 11-character token is only treated as an id
-    when it also carries a digit, "-", "_" or mixed case: a lowercase English
-    word like "managements" is a plausible title search, while real ids are
+    Only YouTube hosts count: a pasted link to some other site with a v=
+    parameter is not a YouTube id and must fall through to title search. A
+    bare 11-character token is treated as an id only when it also carries a
+    digit, "-", "_" or mixed case: a lowercase English word like
+    "managements" is a plausible title search, while real ids are
     base64-flavoured and all-lowercase-letters ones are vanishingly rare.
     """
     text = text.strip()
-    m = _YT_URL_ID.search(text)
-    if m:
-        return m.group(1)
+    if "//" in text or text.startswith(
+        ("youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com")
+    ):
+        from urllib.parse import urlparse
+
+        parsed = urlparse(text if "//" in text else f"https://{text}")
+        if (parsed.hostname or "").lower() not in _YT_HOSTS:
+            return None
+        m = _YT_PATH_ID.search(f"{parsed.path}?{parsed.query}")
+        return m.group(1) if m else None
     if _YT_BARE_ID.fullmatch(text) and (
         any(c.isdigit() or c in "-_" for c in text)
         or (text != text.lower() and text != text.upper())
@@ -186,11 +196,18 @@ def resolve_youtube_id(yt_id: str) -> str | None:
     23/23 correct while the review band was right ~40% of the time, so the
     review band is deliberately not used here.
     """
+    verdict = None
+    verdict_cid = ""
     for row in _locked_read_rows(DECISIONS_PATH):
-        if row.get("youtube_id") == yt_id and row.get("verdict") == "match":
-            cid = (row.get("content_id") or "").strip()
-            if cid:
-                return cid
+        if row.get("youtube_id") == yt_id:
+            verdict = row.get("verdict")
+            verdict_cid = (row.get("content_id") or "").strip()
+    if verdict == "match" and verdict_cid:
+        return verdict_cid
+    if verdict == "no_match":
+        # The editor explicitly rejected the map's candidate; resolving it
+        # anyway would override a human with string similarity.
+        return None
     for m in load_map_rows():
         if m.get("youtube_id") == yt_id:
             if m.get("confidence") in ("editor", "exact", "strong") and m.get("content_id"):

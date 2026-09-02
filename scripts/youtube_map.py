@@ -42,6 +42,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--gold", default=str(REPO_ROOT / "data" / "library_gold.json"))
     parser.add_argument(
+        "--gold-only",
+        action="store_true",
+        help="allow regenerating without the editor mapping CSV",
+    )
+    parser.add_argument(
         "--known-csv",
         default=str(REPO_ROOT / "data" / "varya_published.csv"),
         help="editor-confirmed youtube_id,content_id pairs; these always win",
@@ -80,7 +85,18 @@ def main(argv: list[str] | None = None) -> int:
     # audited against it, the matcher's confident tier was 23/23 correct but
     # its review tier was right ~40% of the time. Facts beat similarity.
     known_csv = Path(args.known_csv)
-    if known_csv.exists():
+    if not known_csv.exists():
+        if not args.gold_only:
+            # A silent fallback here would regenerate the map without the
+            # editor's 211 overrides while still reporting success -- the
+            # worst kind of wrong. Absence must be an explicit choice.
+            print(
+                f"editor mapping not found: {known_csv}\n"
+                "pass --gold-only to regenerate without editor overrides",
+                file=sys.stderr,
+            )
+            return 1
+    else:
         with open(known_csv, encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
                 yt = (row.get("youtube_id") or "").strip()
