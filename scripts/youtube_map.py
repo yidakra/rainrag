@@ -41,6 +41,11 @@ def main(argv: list[str] | None = None) -> int:
         "--raw-cache", default=str(REPO_ROOT / "data" / "library_catalogue.raw.json")
     )
     parser.add_argument("--gold", default=str(REPO_ROOT / "data" / "library_gold.json"))
+    parser.add_argument(
+        "--known-csv",
+        default=str(REPO_ROOT / "data" / "varya_published.csv"),
+        help="editor-confirmed youtube_id,content_id pairs; these always win",
+    )
     parser.add_argument("--metadata-dir", default="/home/ubuntu/rainrag/web_metadata")
     parser.add_argument("--out", default=str(REPO_ROOT / "data" / "youtube_map.json"))
     parser.add_argument("--csv-out", default=str(REPO_ROOT / "data" / "youtube_map.csv"))
@@ -71,7 +76,16 @@ def main(argv: list[str] | None = None) -> int:
         for e in gold.get("episodes", [])
         if e.get("youtube_id") and e.get("content_id")
     }
-    print(f"Hand-written links from the sheet: {len(known)}")
+    # The editor's own mapping sheet (Варя's Content tab) outranks everything:
+    # audited against it, the matcher's confident tier was 23/23 correct but
+    # its review tier was right ~40% of the time. Facts beat similarity.
+    known_csv = Path(args.known_csv)
+    if known_csv.exists():
+        with open(known_csv, encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                if row.get("youtube_id") and row.get("content_id"):
+                    known[row["youtube_id"].strip()] = row["content_id"].strip()
+    print(f"Hand-written links (gold + editor sheet): {len(known)}")
 
     videos = fetch_channel_videos(api_key)
     print(f"Channel uploads: {len(videos)}")

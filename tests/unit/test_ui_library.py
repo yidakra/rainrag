@@ -145,3 +145,16 @@ def test_split_by_speaker_never_puts_one_episode_in_both_columns():
     same, themed = split_by_speaker(results)
     assert {r.episode.video_hash for r in same} & {r.episode.video_hash for r in themed} == set()
     assert len(same) + len(themed) == len(results)
+
+
+def test_youtube_id_extraction_from_urls_and_bare_ids():
+    from ui_library import youtube_id_from_query
+
+    assert youtube_id_from_query("https://youtu.be/RohuZGgpC_k") == "RohuZGgpC_k"
+    assert youtube_id_from_query("https://www.youtube.com/watch?v=RohuZGgpC_k&t=5") == "RohuZGgpC_k"
+    assert youtube_id_from_query("https://youtube.com/shorts/N8XZOHbIiA8") == "N8XZOHbIiA8"
+    assert youtube_id_from_query("RohuZGgpC_k") == "RohuZGgpC_k"
+    # a title fragment must never be mistaken for an id
+    assert youtube_id_from_query("интуиция") is None
+    assert youtube_id_from_query("Хакамада мастер-класс") is None
+    assert youtube_id_from_query("management!") is None
