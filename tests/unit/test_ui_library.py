@@ -145,3 +145,100 @@ def test_split_by_speaker_never_puts_one_episode_in_both_columns():
     same, themed = split_by_speaker(results)
     assert {r.episode.video_hash for r in same} & {r.episode.video_hash for r in themed} == set()
     assert len(same) + len(themed) == len(results)
+
+
+def test_youtube_id_extraction_from_urls_and_bare_ids():
+    from ui_library import youtube_id_from_query
+
+    assert youtube_id_from_query("https://youtu.be/RohuZGgpC_k") == "RohuZGgpC_k"
+    assert youtube_id_from_query("https://www.youtube.com/watch?v=RohuZGgpC_k&t=5") == "RohuZGgpC_k"
+    assert youtube_id_from_query("https://youtube.com/shorts/N8XZOHbIiA8") == "N8XZOHbIiA8"
+    assert youtube_id_from_query("RohuZGgpC_k") == "RohuZGgpC_k"
+    # a title fragment must never be mistaken for an id
+    assert youtube_id_from_query("интуиция") is None
+    assert youtube_id_from_query("Хакамада мастер-класс") is None
+    assert youtube_id_from_query("management!") is None
+    # an 11-char lowercase English word is a search, not an id
+    assert youtube_id_from_query("managements") is None
+    assert youtube_id_from_query("MANAGEMENTS") is None
+
+
+def test_resolve_prefers_the_decision_files_own_content_id(tmp_path, monkeypatch):
+    """A review-tab confirmation pins its content_id: a later map regeneration
+    must not be able to silently repoint the link."""
+    import ui_library
+
+    dec = tmp_path / "decisions.csv"
+    dec.write_text(
+        "youtube_id,content_id,verdict,decided_at\nabcDEF123-_,111,match,2026\n",
+        encoding="utf-8",
+    )
+    mp = tmp_path / "map.json"
+    mp.write_text(
+        json.dumps([{"youtube_id": "abcDEF123-_", "content_id": "999", "confidence": "editor"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ui_library, "DECISIONS_PATH", dec)
+    monkeypatch.setattr(ui_library, "MAP_PATH", mp)
+    from ui_library import resolve_youtube_id
+
+    assert resolve_youtube_id("abcDEF123-_") == "111"
+
+
+def test_load_map_rows_survives_a_torn_or_missing_file(tmp_path, monkeypatch):
+    import ui_library
+
+    mp = tmp_path / "map.json"
+    monkeypatch.setattr(ui_library, "MAP_PATH", mp)
+    from ui_library import load_map_rows
+
+    assert load_map_rows(mp) == []
+    mp.write_text('[{"youtube_id": "x"', encoding="utf-8")  # mid-regeneration
+    assert load_map_rows(mp) == []
+    mp.write_text('["bad row", {"youtube_id": "x"}]', encoding="utf-8")  # garbage rows
+    assert load_map_rows(mp) == [{"youtube_id": "x"}]
+
+
+def test_youtube_id_requires_a_youtube_host():
+    from ui_library import youtube_id_from_query
+
+    assert youtube_id_from_query("https://example.com/watch?v=abcDEF123-_") is None
+    assert youtube_id_from_query("https://evil.com/shorts/abcDEF123-_") is None
+    assert youtube_id_from_query("https://m.youtube.com/watch?v=abcDEF123-_") == "abcDEF123-_"
+    assert youtube_id_from_query("youtube.com/watch?v=abcDEF123-_") == "abcDEF123-_"
+    # share links often carry a trailing slash
+    assert youtube_id_from_query("https://youtu.be/RohuZGgpC_k/") == "RohuZGgpC_k"
+
+
+def test_resolve_honors_an_explicit_rejection(tmp_path, monkeypatch):
+    """A review-tab «не то» must not be overridden by the map's candidate."""
+    import ui_library
+
+    dec = tmp_path / "decisions.csv"
+    dec.write_text(
+        "youtube_id,content_id,verdict,decided_at\nabcDEF123-_,999,no_match,2026\n",
+        encoding="utf-8",
+    )
+    mp = tmp_path / "map.json"
+    mp.write_text(
+        json.dumps([{"youtube_id": "abcDEF123-_", "content_id": "999", "confidence": "exact"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ui_library, "DECISIONS_PATH", dec)
+    monkeypatch.setattr(ui_library, "MAP_PATH", mp)
+    assert ui_library.resolve_youtube_id("abcDEF123-_") is None
+
+
+def test_map_generator_fails_without_the_editor_csv(tmp_path):
+    import subprocess
+    import sys as _sys
+
+    script = Path(__file__).resolve().parent.parent.parent / "scripts" / "youtube_map.py"
+    r = subprocess.run(
+        [_sys.executable, str(script), "--known-csv", str(tmp_path / "absent.csv")],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "YOUTUBE_API_KEY": "x"},
+    )
+    assert r.returncode == 1
+    assert "editor mapping not found" in r.stderr
