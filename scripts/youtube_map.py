@@ -57,6 +57,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--review", action="store_true", help="print the uncertain matches")
     args = parser.parse_args(argv)
 
+    # Validated before anything else is read: a silent fallback here would
+    # regenerate the map without the editor's 211 overrides while still
+    # reporting success -- the worst kind of wrong. Absence must be an
+    # explicit choice, and the error must not hide behind whichever other
+    # file happens to be missing too.
+    known_csv = Path(args.known_csv)
+    if not known_csv.exists() and not args.gold_only:
+        print(
+            f"editor mapping not found: {known_csv}\n"
+            "pass --gold-only to regenerate without editor overrides",
+            file=sys.stderr,
+        )
+        return 1
+
     from rainrag.youtube_library import build_title_index, fetch_channel_videos, match_video
 
     api_key = os.getenv("YOUTUBE_API_KEY", "").strip()
@@ -84,19 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     # The editor's own mapping sheet (Варя's Content tab) outranks everything:
     # audited against it, the matcher's confident tier was 23/23 correct but
     # its review tier was right ~40% of the time. Facts beat similarity.
-    known_csv = Path(args.known_csv)
-    if not known_csv.exists():
-        if not args.gold_only:
-            # A silent fallback here would regenerate the map without the
-            # editor's 211 overrides while still reporting success -- the
-            # worst kind of wrong. Absence must be an explicit choice.
-            print(
-                f"editor mapping not found: {known_csv}\n"
-                "pass --gold-only to regenerate without editor overrides",
-                file=sys.stderr,
-            )
-            return 1
-    else:
+    if known_csv.exists():
         with open(known_csv, encoding="utf-8", newline="") as f:
             for row in csv.DictReader(f):
                 yt = (row.get("youtube_id") or "").strip()
