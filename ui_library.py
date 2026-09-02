@@ -54,11 +54,11 @@ _T = {
         "tab_youtube": "YouTube-сопоставление",
         "seed_search": "Найти выпуск-образец",
         "seed_search_help": "Название выпуска или программы, либо ссылка на ролик YouTube. "
-        "Ищем среди размеченных выпусков длиннее 30 минут.",
+        "Ищем среди размеченных выпусков (в разметку попадает всё длиннее 30 минут).",
         "seed_pick": "Выпуск-образец",
-        "no_seed_matches": "Ничего не нашлось среди {n} размеченных выпусков. Ищутся только "
-        "выпуски длиннее 30 минут; ещё ~3 200 ждут разметки. Попробуйте другое слово "
-        "или вставьте ссылку на ролик YouTube.",
+        "no_seed_matches": "Ничего не нашлось среди {n} размеченных выпусков (ещё ~3 200 "
+        "длинных ждут разметки, короткие в разметку не попадают). Попробуйте другое "
+        "слово или вставьте ссылку на ролик YouTube.",
         "yt_resolved_untagged": "Ролик сопоставлен с архивным выпуском {cid}, но тот ещё не "
         "размечен, поэтому подобрать похожие пока нельзя.",
         "yt_unknown": "Этот ролик ещё не сопоставлен с архивом — его можно подтвердить во "
@@ -88,10 +88,10 @@ _T = {
         "tab_youtube": "YouTube matching",
         "seed_search": "Find a seed episode",
         "seed_search_help": "An episode or programme title, or a YouTube link. "
-        "Searches tagged episodes over 30 minutes.",
+        "Searches tagged episodes (tagging covers everything over 30 minutes).",
         "seed_pick": "Seed episode",
-        "no_seed_matches": "No matches among {n} tagged episodes. Only episodes over 30 minutes "
-        "are searchable; ~3,200 more await tagging. Try another word or paste a YouTube link.",
+        "no_seed_matches": "No matches among {n} tagged episodes (~3,200 long ones await "
+        "tagging; short episodes are not tagged). Try another word or paste a YouTube link.",
         "yt_resolved_untagged": "This upload maps to archive episode {cid}, which is not tagged "
         "yet, so similar episodes cannot be suggested.",
         "yt_unknown": "This upload is not matched to the archive yet — you can confirm it in "
