@@ -195,6 +195,8 @@ def test_load_map_rows_survives_a_torn_or_missing_file(tmp_path, monkeypatch):
     assert load_map_rows(mp) == []
     mp.write_text('[{"youtube_id": "x"', encoding="utf-8")  # mid-regeneration
     assert load_map_rows(mp) == []
+    mp.write_text('["bad row", {"youtube_id": "x"}]', encoding="utf-8")  # garbage rows
+    assert load_map_rows(mp) == [{"youtube_id": "x"}]
 
 
 def test_youtube_id_requires_a_youtube_host():
@@ -204,6 +206,8 @@ def test_youtube_id_requires_a_youtube_host():
     assert youtube_id_from_query("https://evil.com/shorts/abcDEF123-_") is None
     assert youtube_id_from_query("https://m.youtube.com/watch?v=abcDEF123-_") == "abcDEF123-_"
     assert youtube_id_from_query("youtube.com/watch?v=abcDEF123-_") == "abcDEF123-_"
+    # share links often carry a trailing slash
+    assert youtube_id_from_query("https://youtu.be/RohuZGgpC_k/") == "RohuZGgpC_k"
 
 
 def test_resolve_honors_an_explicit_rejection(tmp_path, monkeypatch):

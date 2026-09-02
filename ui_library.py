@@ -142,7 +142,7 @@ def load_tagged_episodes(path: Path = TAGS_PATH) -> list[Episode]:
 
 
 _YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "youtube-nocookie.com"}
-_YT_PATH_ID = re.compile(r"(?:^|[?&]v=|/shorts/|/live/|/embed/|^/)([A-Za-z0-9_-]{11})(?:[?&#]|$)")
+_YT_PATH_ID = re.compile(r"(?:^|[?&]v=|/shorts/|/live/|/embed/|^/)([A-Za-z0-9_-]{11})(?:[/?&#]|$)")
 _YT_BARE_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
@@ -183,7 +183,10 @@ def load_map_rows(path: Path = MAP_PATH) -> list[dict]:
         rows = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    return rows if isinstance(rows, list) else []
+    if not isinstance(rows, list):
+        return []
+    # a syntactically valid file can still hold garbage rows
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def resolve_youtube_id(yt_id: str) -> str | None:
