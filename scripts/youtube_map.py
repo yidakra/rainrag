@@ -41,11 +41,35 @@ def main(argv: list[str] | None = None) -> int:
         "--raw-cache", default=str(REPO_ROOT / "data" / "library_catalogue.raw.json")
     )
     parser.add_argument("--gold", default=str(REPO_ROOT / "data" / "library_gold.json"))
+    parser.add_argument(
+        "--gold-only",
+        action="store_true",
+        help="allow regenerating without the editor mapping CSV",
+    )
+    parser.add_argument(
+        "--known-csv",
+        default=str(REPO_ROOT / "data" / "varya_published.csv"),
+        help="editor-confirmed youtube_id,content_id pairs; these always win",
+    )
     parser.add_argument("--metadata-dir", default="/home/ubuntu/rainrag/web_metadata")
     parser.add_argument("--out", default=str(REPO_ROOT / "data" / "youtube_map.json"))
     parser.add_argument("--csv-out", default=str(REPO_ROOT / "data" / "youtube_map.csv"))
     parser.add_argument("--review", action="store_true", help="print the uncertain matches")
     args = parser.parse_args(argv)
+
+    # Validated before anything else is read: a silent fallback here would
+    # regenerate the map without the editor's 211 overrides while still
+    # reporting success -- the worst kind of wrong. Absence must be an
+    # explicit choice, and the error must not hide behind whichever other
+    # file happens to be missing too.
+    known_csv = Path(args.known_csv)
+    if not known_csv.exists() and not args.gold_only:
+        print(
+            f"editor mapping not found: {known_csv}\n"
+            "pass --gold-only to regenerate without editor overrides",
+            file=sys.stderr,
+        )
+        return 1
 
     from rainrag.youtube_library import build_title_index, fetch_channel_videos, match_video
 
@@ -71,7 +95,17 @@ def main(argv: list[str] | None = None) -> int:
         for e in gold.get("episodes", [])
         if e.get("youtube_id") and e.get("content_id")
     }
-    print(f"Hand-written links from the sheet: {len(known)}")
+    # The editor's own mapping sheet (Варя's Content tab) outranks everything:
+    # audited against it, the matcher's confident tier was 23/23 correct but
+    # its review tier was right ~40% of the time. Facts beat similarity.
+    if known_csv.exists():
+        with open(known_csv, encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                yt = (row.get("youtube_id") or "").strip()
+                cid = (row.get("content_id") or "").strip()
+                if yt and cid:
+                    known[yt] = cid
+    print(f"Hand-written links (gold + editor sheet): {len(known)}")
 
     videos = fetch_channel_videos(api_key)
     print(f"Channel uploads: {len(videos)}")

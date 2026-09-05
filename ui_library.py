@@ -25,6 +25,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import threading
 
 
@@ -52,9 +53,18 @@ _T = {
         "tab_similar": "Похожие выпуски",
         "tab_youtube": "YouTube-сопоставление",
         "seed_search": "Найти выпуск-образец",
-        "seed_search_help": "Поиск по названию и программе среди размеченных выпусков",
+        "seed_search_help": "Название выпуска или программы, либо ссылка на ролик YouTube. "
+        "Ищем среди размеченных выпусков (в разметку попадает всё длиннее 30 минут).",
         "seed_pick": "Выпуск-образец",
-        "no_seed_matches": "Ничего не нашлось — попробуйте другое слово.",
+        "no_seed_matches": "Ничего не нашлось среди {n} размеченных выпусков (ещё ~3 200 "
+        "длинных ждут разметки, короткие в разметку не попадают). Попробуйте другое "
+        "слово или вставьте ссылку на ролик YouTube.",
+        "yt_resolved_untagged": "Ролик сопоставлен с архивным выпуском {cid}, но тот ещё не "
+        "размечен, поэтому подобрать похожие пока нельзя.",
+        "yt_unknown": "Этот ролик ещё не сопоставлен с архивом — его можно подтвердить во "
+        "вкладке «YouTube-сопоставление».",
+        "queue_note": "Сверка всех роликов канала с архивом. Очередь общая и не зависит от "
+        "поиска во вкладке «Похожие выпуски».",
         "min_minutes": "Длительность от, мин",
         "genres": "Жанры",
         "same_speaker": "Тот же спикер",
@@ -77,9 +87,17 @@ _T = {
         "tab_similar": "Similar episodes",
         "tab_youtube": "YouTube matching",
         "seed_search": "Find a seed episode",
-        "seed_search_help": "Searches titles and programmes of tagged episodes",
+        "seed_search_help": "An episode or programme title, or a YouTube link. "
+        "Searches tagged episodes (tagging covers everything over 30 minutes).",
         "seed_pick": "Seed episode",
-        "no_seed_matches": "No matches — try another word.",
+        "no_seed_matches": "No matches among {n} tagged episodes (~3,200 long ones await "
+        "tagging; short episodes are not tagged). Try another word or paste a YouTube link.",
+        "yt_resolved_untagged": "This upload maps to archive episode {cid}, which is not tagged "
+        "yet, so similar episodes cannot be suggested.",
+        "yt_unknown": "This upload is not matched to the archive yet — you can confirm it in "
+        "the YouTube matching tab.",
+        "queue_note": "Reviews every channel upload against the archive. The queue is global "
+        "and independent of the search on the other tab.",
         "min_minutes": "Min duration, min",
         "genres": "Genres",
         "same_speaker": "Same speaker",
@@ -121,6 +139,84 @@ def load_tagged_episodes(path: Path = TAGS_PATH) -> list[Episode]:
             continue
         episodes.append(Episode.from_record(record))
     return dedupe_latest(episodes)
+
+
+_YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "youtube-nocookie.com"}
+_YT_PATH_ID = re.compile(r"(?:^|[?&]v=|/shorts/|/live/|/embed/|^/)([A-Za-z0-9_-]{11})(?:[/?&#]|$)")
+_YT_BARE_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def youtube_id_from_query(text: str) -> str | None:
+    """Pull a YouTube video id out of a search query, if there is one.
+
+    Only YouTube hosts count: a pasted link to some other site with a v=
+    parameter is not a YouTube id and must fall through to title search. A
+    bare 11-character token is treated as an id only when it also carries a
+    digit, "-", "_" or mixed case: a lowercase English word like
+    "managements" is a plausible title search, while real ids are
+    base64-flavoured and all-lowercase-letters ones are vanishingly rare.
+    """
+    text = text.strip()
+    if "//" in text or text.startswith(
+        ("youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com")
+    ):
+        from urllib.parse import urlparse
+
+        parsed = urlparse(text if "//" in text else f"https://{text}")
+        if (parsed.hostname or "").lower() not in _YT_HOSTS:
+            return None
+        m = _YT_PATH_ID.search(f"{parsed.path}?{parsed.query}")
+        return m.group(1) if m else None
+    if _YT_BARE_ID.fullmatch(text) and (
+        any(c.isdigit() or c in "-_" for c in text)
+        or (text != text.lower() and text != text.upper())
+    ):
+        return text
+    return None
+
+
+def load_map_rows(path: Path = MAP_PATH) -> list[dict]:
+    """The upload->archive map, or empty while absent, mid-regeneration or torn."""
+    if not path.exists():
+        return []
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(rows, list):
+        return []
+    # a syntactically valid file can still hold garbage rows
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def resolve_youtube_id(yt_id: str) -> str | None:
+    """Archive content_id for an upload, from editor truth only.
+
+    Review-tab confirmations win, read from the decisions file, which stores
+    the confirmed content_id precisely so that a later map regeneration
+    cannot silently repoint the link. After that the map's editor/exact/
+    strong rows: audited against 211 hand-made pairs, the confident tier was
+    23/23 correct while the review band was right ~40% of the time, so the
+    review band is deliberately not used here.
+    """
+    verdict = None
+    verdict_cid = ""
+    for row in _locked_read_rows(DECISIONS_PATH):
+        if row.get("youtube_id") == yt_id:
+            verdict = row.get("verdict")
+            verdict_cid = (row.get("content_id") or "").strip()
+    if verdict == "match" and verdict_cid:
+        return verdict_cid
+    if verdict == "no_match":
+        # The editor explicitly rejected the map's candidate; resolving it
+        # anyway would override a human with string similarity.
+        return None
+    for m in load_map_rows():
+        if m.get("youtube_id") == yt_id:
+            if m.get("confidence") in ("editor", "exact", "strong") and m.get("content_id"):
+                return str(m["content_id"])
+            break
+    return None
 
 
 def search_episodes(episodes: list[Episode], needle: str, limit: int = 50) -> list[Episode]:
@@ -332,8 +428,19 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         _t("seed_search", lang), help=_t("seed_search_help", lang), key="library_seed_search"
     )
     matches = search_episodes(episodes, needle)
+    yt_id = youtube_id_from_query(needle) if needle else None
+    if not matches and yt_id:
+        cid = resolve_youtube_id(yt_id)
+        if cid:
+            matches = [e for e in episodes if e.content_id == cid]
+            if not matches:
+                st.info(_t("yt_resolved_untagged", lang, cid=cid))
+                return
+        else:
+            st.info(_t("yt_unknown", lang))
+            return
     if needle and not matches:
-        st.info(_t("no_seed_matches", lang))
+        st.info(_t("no_seed_matches", lang, n=len(episodes)))
     if not matches:
         return
     seed = st.selectbox(
@@ -406,7 +513,11 @@ def render_youtube_tab(episodes: list[Episode], lang: str) -> None:
     if not MAP_PATH.exists():
         st.warning(_t("map_missing", lang, path=MAP_PATH.name))
         return
-    matches = json.loads(MAP_PATH.read_text(encoding="utf-8"))
+    st.caption(_t("queue_note", lang))
+    matches = load_map_rows()
+    if not matches:
+        st.warning(_t("map_missing", lang, path=MAP_PATH.name))
+        return
     decisions = load_decisions()
     queue = review_queue(matches, decisions)
 
