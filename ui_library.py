@@ -35,10 +35,13 @@ except ImportError:  # Windows dev box: no flock.
     fcntl = None
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import streamlit as st
 
 from rainrag.library import GENRES
+from rainrag.library_performance import METRIC_COLUMNS, aggregate, build_uploads, load_metrics
 from rainrag.library_similar import Episode, Scored, dedupe_latest, find_similar
 
 
@@ -46,12 +49,36 @@ REPO_ROOT = Path(__file__).resolve().parent
 TAGS_PATH = REPO_ROOT / "data" / "library_tags.jsonl"
 MAP_PATH = REPO_ROOT / "data" / "youtube_map.json"
 DECISIONS_PATH = REPO_ROOT / "data" / "youtube_map_decisions.csv"
+VIDEOS_CACHE_PATH = REPO_ROOT / "data" / "library_videos.jsonl"
+# A YouTube Studio export (Analytics -> Advanced mode -> Export), columns renamed
+# to the «YT metrics» sheet's schema. Absent until the channel owner drops one in.
+METRICS_PATH = REPO_ROOT / "data" / "youtube_metrics.csv"
 
 _T = {
     "ru": {
         "no_tags": "Файл разметки не найден: {path}. Запустите library_tag_batch.py.",
         "tab_similar": "Похожие выпуски",
         "tab_youtube": "YouTube-сопоставление",
+        "tab_perf": "Что смотрят",
+        "perf_intro": "{n} роликов Библиотеки сопоставлены с архивом. Метрика: {metric}. "
+        "Только просмотры пока публичные; CPM и удержание появятся, когда в data/ ляжет "
+        "выгрузка из YouTube Studio.",
+        "perf_metric": "Метрика",
+        "perf_by_speaker": "По спикерам",
+        "perf_by_program": "По программам",
+        "perf_uploads": "Все ролики",
+        "col_speaker": "спикер",
+        "col_program": "программа",
+        "col_uploads": "роликов",
+        "col_total": "всего",
+        "col_median": "медиана",
+        "col_best": "лучший",
+        "col_title": "ролик",
+        "col_archive": "архивный выпуск",
+        "col_speakers": "спикеры",
+        "col_views": "просмотры",
+        "col_published": "опубликован",
+        "metric_views": "просмотры",
         "seed_search": "Найти выпуск-образец",
         "seed_search_help": "Название выпуска или программы, либо ссылка на ролик YouTube. "
         "Ищем среди размеченных выпусков (в разметку попадает всё длиннее 30 минут).",
@@ -86,6 +113,26 @@ _T = {
         "no_tags": "Tag file not found: {path}. Run library_tag_batch.py.",
         "tab_similar": "Similar episodes",
         "tab_youtube": "YouTube matching",
+        "tab_perf": "What performs",
+        "perf_intro": "{n} Library uploads are linked to archive episodes. Metric: {metric}. "
+        "Only view counts are public so far; CPM and retention appear once a YouTube Studio "
+        "export is placed in data/.",
+        "perf_metric": "Metric",
+        "perf_by_speaker": "By speaker",
+        "perf_by_program": "By programme",
+        "perf_uploads": "All uploads",
+        "col_speaker": "speaker",
+        "col_program": "programme",
+        "col_uploads": "uploads",
+        "col_total": "total",
+        "col_median": "median",
+        "col_best": "best",
+        "col_title": "upload",
+        "col_archive": "archive episode",
+        "col_speakers": "speakers",
+        "col_views": "views",
+        "col_published": "published",
+        "metric_views": "views",
         "seed_search": "Find a seed episode",
         "seed_search_help": "An episode or programme title, or a YouTube link. "
         "Searches tagged episodes (tagging covers everything over 30 minutes).",
@@ -589,6 +636,113 @@ def render_youtube_tab(episodes: list[Episode], lang: str) -> None:
         st.rerun()
 
 
+def _videos_by_hash() -> dict[str, Any]:
+    """Programme and presenters for every archive video, keyed by hash.
+
+    Most Library uploads are under 30 minutes and therefore outside the
+    tagged pool; the videos cache covers all 139k videos, so the performance
+    table does not depend on tagging.
+    """
+    if not VIDEOS_CACHE_PATH.exists():
+        return {}
+    out: dict[str, Any] = {}
+    with open(VIDEOS_CACHE_PATH, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                out[row.get("video_key", "")] = SimpleNamespace(**row)
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def _cached_videos_by_hash(mtime: float) -> dict[str, Any]:
+    del mtime
+    return _videos_by_hash()
+
+
+def render_performance_tab(episodes: list[Episode], lang: str) -> None:
+    map_rows = load_map_rows()
+    if not map_rows:
+        st.warning(_t("map_missing", lang, path=MAP_PATH.name))
+        return
+    videos = _cached_videos_by_hash(
+        VIDEOS_CACHE_PATH.stat().st_mtime if VIDEOS_CACHE_PATH.exists() else 0.0
+    )
+    tags_by_content = {
+        e.content_id: {"presenter_cms": e.speakers, "guest": [], "program": e.program}
+        for e in episodes
+        if e.content_id
+    }
+    metrics = load_metrics(METRICS_PATH)
+    uploads = build_uploads(map_rows, videos, tags_by_content, metrics)
+
+    available = ["views"] + [
+        c for c in METRIC_COLUMNS if c != "views" and any(c in u.metrics for u in uploads)
+    ]
+    metric = st.selectbox(
+        _t("perf_metric", lang),
+        available,
+        format_func=lambda m: _t("metric_views", lang) if m == "views" else m,
+        key="perf_metric",
+    )
+    st.caption(_t("perf_intro", lang, n=len(uploads), metric=metric))
+
+    def _fmt(v: float) -> str:
+        return f"{v:,.0f}".replace(",", " ") if metric == "views" else f"{v:,.2f}".replace(",", " ")
+
+    def _table(rows: list[dict[str, Any]], key: str) -> None:
+        st.dataframe(
+            [
+                {
+                    _t(f"col_{key}", lang): r[key],
+                    _t("col_uploads", lang): r["uploads"],
+                    _t("col_total", lang): _fmt(r["total"]),
+                    _t("col_median", lang): _fmt(r["median"]),
+                    _t("col_best", lang): _fmt(r["best"]),
+                }
+                for r in rows[:30]
+            ],
+            hide_index=True,
+            width="stretch",
+        )
+
+    sp_col, pr_col = st.columns(2)
+    with sp_col:
+        st.subheader(_t("perf_by_speaker", lang))
+        _table(aggregate(uploads, "speaker", metric), "speaker")
+    with pr_col:
+        st.subheader(_t("perf_by_program", lang))
+        _table(aggregate(uploads, "program", metric), "program")
+
+    st.subheader(_t("perf_uploads", lang))
+    ordered = sorted(
+        uploads,
+        key=lambda u: -((u.view_count or 0) if metric == "views" else u.metrics.get(metric, 0.0)),
+    )
+    st.dataframe(
+        [
+            {
+                _t("col_title", lang): u.youtube_title,
+                _t("col_archive", lang): u.archive_title or u.content_id,
+                _t("col_program", lang): u.program or "",
+                _t("col_speakers", lang): ", ".join(u.speakers),
+                _t("col_views", lang) if metric == "views" else metric: _fmt(
+                    float(u.view_count or 0) if metric == "views" else u.metrics.get(metric, 0.0)
+                ),
+                _t("col_published", lang): u.published_at or "",
+                "youtube": f"https://youtu.be/{u.youtube_id}",
+            }
+            for u in ordered
+        ],
+        hide_index=True,
+        width="stretch",
+        column_config={"youtube": st.column_config.LinkColumn()},
+    )
+
+
 @st.cache_data(show_spinner=False)
 def _cached_feedback(cache_key: tuple[int, int]) -> dict[tuple[str, str], str]:
     """Feedback marks, re-parsed only when the file changes.
@@ -612,8 +766,12 @@ def render_library_mode(lang: str) -> None:
         st.warning(_t("no_tags", lang, path=TAGS_PATH.name))
         return
     episodes = _cached_episodes(TAGS_PATH.stat().st_mtime)
-    similar_tab, youtube_tab = st.tabs([_t("tab_similar", lang), _t("tab_youtube", lang)])
+    similar_tab, perf_tab, youtube_tab = st.tabs(
+        [_t("tab_similar", lang), _t("tab_perf", lang), _t("tab_youtube", lang)]
+    )
     with similar_tab:
         render_similar_tab(episodes, lang)
+    with perf_tab:
+        render_performance_tab(episodes, lang)
     with youtube_tab:
         render_youtube_tab(episodes, lang)

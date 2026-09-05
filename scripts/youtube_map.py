@@ -146,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
         archive_info[cid] = {
             "archive_date": (d.get("date_active_start") or "")[:10] or None,
             "archive_url": d.get("url"),
+            # lets the UI join programme/presenters from the videos cache for
+            # episodes outside the tagged pool (most Library uploads are <30 min)
+            "archive_video_hash": str(d.get("video_hash") or "") or None,
         }
     print(f"Archive runtimes known for {len(durations):,} episodes".replace(",", " "))
 
@@ -179,7 +182,10 @@ def main(argv: list[str] | None = None) -> int:
             "view_count": views[m.video_id].view_count,
             "duration_seconds": views[m.video_id].duration_seconds,
             "archive_duration_seconds": durations.get(m.content_id or ""),
-            **archive_info.get(m.content_id or "", {"archive_date": None, "archive_url": None}),
+            **archive_info.get(
+                m.content_id or "",
+                {"archive_date": None, "archive_url": None, "archive_video_hash": None},
+            ),
         }
         for m in matches
     ]
