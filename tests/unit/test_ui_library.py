@@ -242,3 +242,49 @@ def test_map_generator_fails_without_the_editor_csv(tmp_path):
     )
     assert r.returncode == 1
     assert "editor mapping not found" in r.stderr
+
+
+def test_search_untagged_finds_indexed_videos_the_tagger_skipped():
+    from types import SimpleNamespace
+
+    from ui_library import search_untagged
+
+    videos = {
+        "h1": SimpleNamespace(
+            title="Михаил Кузмин «Александрийские песни», 1908",
+            program="Сто лекций",
+            date="2019-01-01",
+            duration_seconds=1620.0,
+            url="u1",
+        ),
+        "h2": SimpleNamespace(
+            title="Про всё остальное",
+            program=None,
+            date="2020-01-01",
+            duration_seconds=600.0,
+            url="u2",
+        ),
+    }
+    hits = search_untagged(videos, "кузмин")
+    assert [e.video_hash for e in hits] == ["h1"]
+    assert hits[0].subject == [] and hits[0].content_id is None
+    assert search_untagged(videos, "   ") == []
+
+
+def test_search_untagged_excludes_tagged_hashes_before_the_cut():
+    """Tagged matches must not crowd untagged ones out of the limit."""
+    from types import SimpleNamespace
+
+    from ui_library import search_untagged
+
+    videos = {
+        f"t{i}": SimpleNamespace(
+            title="Лекция", program=None, date=f"2020-01-{i:02d}", duration_seconds=1.0, url=None
+        )
+        for i in range(1, 6)
+    }
+    videos["u1"] = SimpleNamespace(
+        title="Лекция", program=None, date="2019-01-01", duration_seconds=1.0, url=None
+    )
+    hits = search_untagged(videos, "лекция", limit=3, exclude={f"t{i}" for i in range(1, 6)})
+    assert [e.video_hash for e in hits] == ["u1"]

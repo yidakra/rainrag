@@ -90,6 +90,10 @@ _T = {
         "размечен, поэтому подобрать похожие пока нельзя.",
         "yt_unknown": "Этот ролик ещё не сопоставлен с архивом — его можно подтвердить во "
         "вкладке «YouTube-сопоставление».",
+        "seed_untagged": "Выпуск найден в архиве, но ещё не размечен, поэтому подобрать похожие "
+        "пока нельзя. Короткие выпуски (до 30 минут) в первую разметку не попадали; "
+        "доразметка запланирована.",
+        "untagged_mark": "(не размечен)",
         "queue_note": "Сверка всех роликов канала с архивом. Очередь общая и не зависит от "
         "поиска во вкладке «Похожие выпуски».",
         "min_minutes": "Длительность от, мин",
@@ -143,6 +147,10 @@ _T = {
         "yet, so similar episodes cannot be suggested.",
         "yt_unknown": "This upload is not matched to the archive yet — you can confirm it in "
         "the YouTube matching tab.",
+        "seed_untagged": "This episode is in the archive but not tagged yet, so similar episodes "
+        "cannot be suggested. Episodes under 30 minutes were outside the first tagging pass; "
+        "a follow-up is planned.",
+        "untagged_mark": "(untagged)",
         "queue_note": "Reviews every channel upload against the archive. The queue is global "
         "and independent of the search on the other tab.",
         "min_minutes": "Min duration, min",
@@ -264,6 +272,48 @@ def resolve_youtube_id(yt_id: str) -> str | None:
                 return str(m["content_id"])
             break
     return None
+
+
+def search_untagged(
+    videos_by_hash: dict[str, Any],
+    needle: str,
+    limit: int = 50,
+    exclude: set[str] | None = None,
+) -> list[Episode]:
+    """Title search over every indexed video, for seeds the tagger has not reached.
+
+    150 of the 211 episodes the Library has actually published are under 30
+    minutes and therefore untagged; a search that only knew the tagged pool
+    reported them as nonexistent. They exist. Returned as Episodes with no
+    subjects so the caller can show them and explain, not rank them.
+    """
+    needle = needle.strip().lower().replace("ё", "е")
+    if not needle:
+        return []
+    # Excluded (already tagged) hashes are dropped before the cut, otherwise a
+    # title shared by many tagged episodes would crowd the untagged ones out
+    # of the top 50 and the feature would report none.
+    exclude = exclude or set()
+    hits: list[Episode] = []
+    for h, v in videos_by_hash.items():
+        if h in exclude:
+            continue
+        title = getattr(v, "title", None) or ""
+        program = getattr(v, "program", None) or ""
+        if needle in f"{title} {program}".lower().replace("ё", "е"):
+            hits.append(
+                Episode(
+                    video_hash=h,
+                    content_id=None,
+                    title=title or None,
+                    program=program or None,
+                    date=getattr(v, "date", None),
+                    duration_seconds=getattr(v, "duration_seconds", None),
+                    url=getattr(v, "url", None),
+                )
+            )
+    hits.sort(key=lambda e: e.date or "", reverse=True)
+    return hits[:limit]
 
 
 def search_episodes(episodes: list[Episode], needle: str, limit: int = 50) -> list[Episode]:
@@ -475,6 +525,13 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         _t("seed_search", lang), help=_t("seed_search_help", lang), key="library_seed_search"
     )
     matches = search_episodes(episodes, needle)
+    tagged_hashes = {e.video_hash for e in episodes}
+    if needle and not youtube_id_from_query(needle):
+        videos = _cached_videos_by_hash(
+            VIDEOS_CACHE_PATH.stat().st_mtime if VIDEOS_CACHE_PATH.exists() else 0.0
+        )
+        extra = search_untagged(videos, needle, exclude=tagged_hashes)
+        matches = matches + extra[: max(0, 50 - len(matches))]
     yt_id = youtube_id_from_query(needle) if needle else None
     if not matches and yt_id:
         cid = resolve_youtube_id(yt_id)
@@ -493,9 +550,15 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     seed = st.selectbox(
         _t("seed_pick", lang),
         matches,
-        format_func=_episode_label,
+        format_func=lambda e: (
+            _episode_label(e)
+            + ("" if e.video_hash in tagged_hashes else f" {_t('untagged_mark', lang)}")
+        ),
         key="library_seed_pick",
     )
+    if seed.video_hash not in tagged_hashes:
+        st.info(_t("seed_untagged", lang))
+        return
     filter_col, genre_col = st.columns([1, 2])
     with filter_col:
         min_minutes = st.number_input(
