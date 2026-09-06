@@ -274,7 +274,12 @@ def resolve_youtube_id(yt_id: str) -> str | None:
     return None
 
 
-def search_untagged(videos_by_hash: dict[str, Any], needle: str, limit: int = 50) -> list[Episode]:
+def search_untagged(
+    videos_by_hash: dict[str, Any],
+    needle: str,
+    limit: int = 50,
+    exclude: set[str] | None = None,
+) -> list[Episode]:
     """Title search over every indexed video, for seeds the tagger has not reached.
 
     150 of the 211 episodes the Library has actually published are under 30
@@ -285,8 +290,14 @@ def search_untagged(videos_by_hash: dict[str, Any], needle: str, limit: int = 50
     needle = needle.strip().lower().replace("ё", "е")
     if not needle:
         return []
+    # Excluded (already tagged) hashes are dropped before the cut, otherwise a
+    # title shared by many tagged episodes would crowd the untagged ones out
+    # of the top 50 and the feature would report none.
+    exclude = exclude or set()
     hits: list[Episode] = []
     for h, v in videos_by_hash.items():
+        if h in exclude:
+            continue
         title = getattr(v, "title", None) or ""
         program = getattr(v, "program", None) or ""
         if needle in f"{title} {program}".lower().replace("ё", "е"):
@@ -519,7 +530,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         videos = _cached_videos_by_hash(
             VIDEOS_CACHE_PATH.stat().st_mtime if VIDEOS_CACHE_PATH.exists() else 0.0
         )
-        extra = [e for e in search_untagged(videos, needle) if e.video_hash not in tagged_hashes]
+        extra = search_untagged(videos, needle, exclude=tagged_hashes)
         matches = matches + extra[: max(0, 50 - len(matches))]
     yt_id = youtube_id_from_query(needle) if needle else None
     if not matches and yt_id:
