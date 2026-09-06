@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             f.write("\n".join(rows) + "\n")
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_name, path)
+        Path(tmp_name).replace(path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
