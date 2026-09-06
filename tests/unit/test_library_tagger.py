@@ -297,25 +297,34 @@ def test_clean_script_preserves_non_dict_rows_and_never_overwrites_backup(tmp_pa
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_strip_entities_keeps_lowercase_homographs_but_drops_acronyms_and_names():
-    """«свобода» the topic survives org «Свобода»; «вгик» and «slow food» do not."""
+def test_strip_entities_model_fields_are_authoritative_regardless_of_case():
+    """A lowercase single word matching a model-produced entity is a leak:
+    on production tags that bucket was 13,016 places and 4,675 organisations."""
     from rainrag.library_tagger import strip_entities_from_subjects
 
     parsed = {
-        "subject": [
-            "свобода",
-            "оппозиция",
-            "вгик",
-            "slow food",
-            "арабские эмираты",
-            "Свобода",
-            "цензура",
-        ],
-        "organization": ["Свобода", "Оппозиция", "ВГИК", "Slow Food"],
-        "place": ["Арабские Эмираты"],
+        "subject": ["россия", "роскомнадзор", "земфира", "цензура", "конфликт в Сирии"],
+        "place": ["Россия", "Сирия"],
+        "organization": ["Роскомнадзор"],
+        "guest": [],
+        "mentioned_extra": ["Земфира"],
+        "genre": [],
+    }
+    assert strip_entities_from_subjects(parsed)["subject"] == ["цензура", "конфликт в Сирии"]
+
+
+def test_strip_entities_cms_people_lists_only_remove_exact_or_multiword_matches():
+    """CMS mention tags carry topic-like noise (кино, оппозиция); a lowercase
+    single word matching one of those is kept as a topic."""
+    from rainrag.library_tagger import strip_entities_from_subjects
+
+    parsed = {
+        "subject": ["оппозиция", "кино", "Оппозиция", "наталья синдеева", "театр"],
+        "place": [],
+        "organization": [],
         "guest": [],
         "mentioned_extra": [],
         "genre": [],
     }
-    out = strip_entities_from_subjects(parsed)
-    assert out["subject"] == ["свобода", "оппозиция", "цензура"]
+    out = strip_entities_from_subjects(parsed, ["Наталья Синдеева"], ["Оппозиция", "Кино"])
+    assert out["subject"] == ["оппозиция", "кино", "театр"]

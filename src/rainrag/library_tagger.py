@@ -233,42 +233,48 @@ def _fold(tag: str) -> str:
 
 
 def strip_entities_from_subjects(
-    parsed: dict[str, list[str]], *extra_entities: list[str]
+    parsed: dict[str, list[str]], *cms_people: list[str]
 ) -> dict[str, list[str]]:
     """Enforce the editor's scope rule: subject holds abstract topics only.
 
     Her Categories scope says it plainly («Сирия — это place. Конфликт в
     Сирии — subject»), and the model ignores it often: on the first 10,178
-    tagged episodes 16% of all subject tags duplicated a place, organisation
-    or person already on the same card. Asking harder in the prompt helps;
-    removing the duplicates deterministically guarantees it. Anything in
-    place/organization/guest/mentioned_extra, or in the CMS-known people
-    passed as ``extra_entities``, is dropped from subject.
+    tagged episodes 16% of all subject tags duplicated an entity already on
+    the same card. Asking harder in the prompt helps; removing duplicates
+    deterministically guarantees it.
+
+    Two sources, two rules, chosen from the data rather than from case:
+
+    * The model's own place/organization/guest/mentioned_extra are
+      authoritative. Any subject folding to one of them is removed, whatever
+      its case: the single-lowercase-word matches on production tags were
+      13,016 places (россия, украина) and 4,675 organisations (роскомнадзор,
+      газпром), leaks to the last one. A rare homograph (свобода vs the radio
+      station) is lost with them; that is the price of a rule that holds.
+    * CMS-derived people lists (``cms_people``: presenters, mentions) are
+      noisy -- they carry topic-like tags such as «кино» or «оппозиция» -- so
+      they remove a subject only on an exact match or a multi-word match,
+      never a lowercase single word.
     """
-    entities: dict[str, str] = {}
+    model_entities: set[str] = set()
     for key in ("place", "organization", "guest", "mentioned_extra"):
-        for t in parsed.get(key, []):
-            if _fold(t):
-                entities.setdefault(_fold(t), str(t).strip())
-    for group in extra_entities:
+        model_entities.update(_fold(t) for t in parsed.get(key, []) if _fold(t))
+    cms_entities: dict[str, str] = {}
+    for group in cms_people:
         for t in group:
             if _fold(t):
-                entities.setdefault(_fold(t), str(t).strip())
+                cms_entities.setdefault(_fold(t), str(t).strip())
 
     def is_entity(subject: str) -> bool:
-        entity = entities.get(_fold(subject))
-        if entity is None:
+        folded = _fold(subject)
+        if folded in model_entities:
+            return True
+        cms = cms_entities.get(folded)
+        if cms is None:
             return False
-        # Homographs: the prompt lowercases abstract topics and capitalises
-        # proper nouns, so a single lowercase word that only matches a
-        # Title-case entity is the model saying "topic" (свобода vs the radio
-        # station Свобода, оппозиция vs a party). Keep it. Multi-word matches
-        # (арабские эмираты, slow food) and lowercased acronyms (вгик ~ ВГИК)
-        # are leaked names regardless of case, and go.
         subject = subject.strip()
         single_lower = " " not in subject and subject == subject.lower()
-        entity_acronym = entity.isupper() and len(entity) > 1
-        return not (single_lower and entity != entity.lower() and not entity_acronym)
+        return subject == cms or not single_lower
 
     cleaned = dict(parsed)
     cleaned["subject"] = [t for t in parsed.get("subject", []) if not is_entity(t)]
