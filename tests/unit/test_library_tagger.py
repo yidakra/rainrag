@@ -328,3 +328,7 @@ def test_strip_entities_cms_people_lists_only_remove_exact_or_multiword_matches(
     }
     out = strip_entities_from_subjects(parsed, ["Наталья Синдеева"], ["Оппозиция", "Кино"])
     assert out["subject"] == ["оппозиция", "кино", "театр"]
+    # identical lowercase spelling in the CMS list still does not remove a
+    # lowercase single-word topic, and mixed spellings change nothing
+    out = strip_entities_from_subjects(parsed, ["наталья синдеева"], ["кино", "Кино", "оппозиция"])
+    assert out["subject"] == ["оппозиция", "кино", "театр"]

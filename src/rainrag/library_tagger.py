@@ -253,28 +253,26 @@ def strip_entities_from_subjects(
       station) is lost with them; that is the price of a rule that holds.
     * CMS-derived people lists (``cms_people``: presenters, mentions) are
       noisy -- they carry topic-like tags such as «кино» or «оппозиция» -- so
-      they remove a subject only on an exact match or a multi-word match,
-      never a lowercase single word.
+      a match there removes a subject only when the subject is capitalised or
+      multi-word (a name); a lowercase single word is kept as a topic, even
+      when the CMS entry is spelled identically.
     """
     model_entities: set[str] = set()
     for key in ("place", "organization", "guest", "mentioned_extra"):
         model_entities.update(_fold(t) for t in parsed.get(key, []) if _fold(t))
-    cms_entities: dict[str, str] = {}
+    cms_entities: set[str] = set()
     for group in cms_people:
-        for t in group:
-            if _fold(t):
-                cms_entities.setdefault(_fold(t), str(t).strip())
+        cms_entities.update(_fold(t) for t in group if _fold(t))
 
     def is_entity(subject: str) -> bool:
         folded = _fold(subject)
         if folded in model_entities:
             return True
-        cms = cms_entities.get(folded)
-        if cms is None:
+        if folded not in cms_entities:
             return False
         subject = subject.strip()
         single_lower = " " not in subject and subject == subject.lower()
-        return subject == cms or not single_lower
+        return not single_lower
 
     cleaned = dict(parsed)
     cleaned["subject"] = [t for t in parsed.get("subject", []) if not is_entity(t)]
