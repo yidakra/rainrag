@@ -268,9 +268,7 @@ def strip_entities_from_subjects(
         subject = subject.strip()
         single_lower = " " not in subject and subject == subject.lower()
         entity_acronym = entity.isupper() and len(entity) > 1
-        if single_lower and entity != entity.lower() and not entity_acronym:
-            return False
-        return True
+        return not (single_lower and entity != entity.lower() and not entity_acronym)
 
     cleaned = dict(parsed)
     cleaned["subject"] = [t for t in parsed.get("subject", []) if not is_entity(t)]
