@@ -242,3 +242,30 @@ def test_map_generator_fails_without_the_editor_csv(tmp_path):
     )
     assert r.returncode == 1
     assert "editor mapping not found" in r.stderr
+
+
+def test_search_untagged_finds_indexed_videos_the_tagger_skipped():
+    from types import SimpleNamespace
+
+    from ui_library import search_untagged
+
+    videos = {
+        "h1": SimpleNamespace(
+            title="Михаил Кузмин «Александрийские песни», 1908",
+            program="Сто лекций",
+            date="2019-01-01",
+            duration_seconds=1620.0,
+            url="u1",
+        ),
+        "h2": SimpleNamespace(
+            title="Про всё остальное",
+            program=None,
+            date="2020-01-01",
+            duration_seconds=600.0,
+            url="u2",
+        ),
+    }
+    hits = search_untagged(videos, "кузмин")
+    assert [e.video_hash for e in hits] == ["h1"]
+    assert hits[0].subject == [] and hits[0].content_id is None
+    assert search_untagged(videos, "   ") == []
