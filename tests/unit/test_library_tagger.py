@@ -197,3 +197,66 @@ class TestGreedyJsonRegression:
     def test_nested_objects_survive(self) -> None:
         raw = '{"subject": ["x"], "meta": {"nested": true}}'
         assert parse_tagging_response(raw)["subject"] == ["x"]
+
+
+def test_strip_entities_removes_places_orgs_and_people_from_subject():
+    """Varya's scope: «Сирия — это place. Конфликт в Сирии — subject»."""
+    from rainrag.library_tagger import strip_entities_from_subjects
+
+    parsed = {
+        "guest": ["Екатерина Шульман"],
+        "subject": [
+            "политика",
+            "Сирия",
+            "конфликт в Сирии",
+            "Роскомнадзор",
+            "цензура",
+            "екатерина шульман",
+            "Владимир Путин",
+        ],
+        "place": ["Сирия"],
+        "organization": ["Роскомнадзор"],
+        "genre": ["интервью"],
+        "mentioned_extra": [],
+    }
+    out = strip_entities_from_subjects(parsed, ["Наталья Синдеева"], ["Владимир Путин"])
+    assert out["subject"] == ["политика", "конфликт в Сирии", "цензура"]
+    # other fields untouched
+    assert out["place"] == ["Сирия"] and out["guest"] == ["Екатерина Шульман"]
+
+
+def test_strip_entities_is_case_and_yo_insensitive():
+    from rainrag.library_tagger import strip_entities_from_subjects
+
+    parsed = {
+        "subject": ["Ёлка", "елка", "театр"],
+        "place": [],
+        "organization": ["ЕЛКА"],
+        "guest": [],
+        "mentioned_extra": [],
+        "genre": [],
+    }
+    assert strip_entities_from_subjects(parsed)["subject"] == ["театр"]
+
+
+def test_clean_record_applies_scope_and_reports_removed_count():
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "scripts"))
+    from library_tags_clean import clean_record
+
+    rec = {
+        "video_hash": "h",
+        "subject": ["цензура", "Роскомнадзор", "Сирия", "Наталья Синдеева"],
+        "organization": ["Роскомнадзор"],
+        "place": ["Сирия"],
+        "presenter_cms": ["Наталья Синдеева"],
+    }
+    out, removed = clean_record(rec)
+    assert out["subject"] == ["цензура"] and removed == 3
+    # errored rows and rows without subjects pass through untouched
+    assert clean_record({"video_hash": "x", "error": "boom"}) == (
+        {"video_hash": "x", "error": "boom"},
+        0,
+    )

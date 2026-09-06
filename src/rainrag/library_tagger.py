@@ -55,10 +55,13 @@ SYSTEM_PROMPT = """Ты помогаешь редакции телеканала
 Правила:
 - guest — те, кого пригласили говорить: гость интервью, лектор. НЕ ведущий. \
 Если это лекция и лектор уже указан как ведущий в метаданных — оставь guest пустым.
-- subject — 20-35 тегов. Смешивай широкие темы («политика», «психология») и \
-конкретные («теория пустоты», «муниципальные выборы»). Включай: предметную область, \
-ключевые понятия, профессию говорящего, если она по теме. Это теги для поиска \
-похожего контента, поэтому лучше добавить лишний тег, чем упустить нужный.
+- subject — 20-35 тегов, ТОЛЬКО абстрактные темы: о чём выпуск, а не что в нём \
+мелькнуло. Смешивай широкие («политика», «психология») и конкретные («теория пустоты», \
+«муниципальные выборы»). Включай предметную область, ключевые понятия, профессию \
+говорящего, если она по теме. Люди, места и организации в subject НЕ идут: «Сирия» — \
+это place, «конфликт в Сирии» — subject; «Роскомнадзор» — organization, «цензура» — \
+subject. Это теги для поиска похожего контента, поэтому лучше добавить лишний тег, \
+чем упустить нужный.
 - place — где происходит действие или о чём речь: город и страна.
 - organization — упомянутые организации, компании, институции.
 - genre — один или два из перечисленных вариантов, ничего другого.
@@ -225,6 +228,33 @@ def _first_json_object(raw: str) -> Any:
     raise ValueError("no JSON object in response")
 
 
+def _fold(tag: str) -> str:
+    return re.sub(r"[^\w\s-]", "", str(tag).lower().replace("ё", "е")).strip()
+
+
+def strip_entities_from_subjects(
+    parsed: dict[str, list[str]], *extra_entities: list[str]
+) -> dict[str, list[str]]:
+    """Enforce the editor's scope rule: subject holds abstract topics only.
+
+    Her Categories scope says it plainly («Сирия — это place. Конфликт в
+    Сирии — subject»), and the model ignores it often: on the first 10,178
+    tagged episodes 16% of all subject tags duplicated a place, organisation
+    or person already on the same card. Asking harder in the prompt helps;
+    removing the duplicates deterministically guarantees it. Anything in
+    place/organization/guest/mentioned_extra, or in the CMS-known people
+    passed as ``extra_entities``, is dropped from subject.
+    """
+    entities: set[str] = set()
+    for key in ("place", "organization", "guest", "mentioned_extra"):
+        entities.update(_fold(t) for t in parsed.get(key, []) if _fold(t))
+    for group in extra_entities:
+        entities.update(_fold(t) for t in group if _fold(t))
+    cleaned = dict(parsed)
+    cleaned["subject"] = [t for t in parsed.get("subject", []) if _fold(t) not in entities]
+    return cleaned
+
+
 def parse_tagging_response(raw: str) -> dict[str, list[str]]:
     """Pull the tag lists out of a model response.
 
@@ -325,6 +355,7 @@ def tag_episode(
         result.error = f"{type(last_error).__name__}: {last_error}"
         return result
 
+    parsed = strip_entities_from_subjects(parsed, presenters, mentioned)
     result.guest = parsed["guest"]
     result.subject = parsed["subject"]
     result.place = parsed["place"]
