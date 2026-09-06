@@ -88,6 +88,12 @@ def test_load_metrics_keeps_latest_snapshot_and_parses_decimal_commas(tmp_path: 
     )
     m = load_metrics(p)
     assert m["a"] == {"views": 250.0, "playbackBasedCpm": 2.25}
+    # a newer snapshot with blank cells must not erase older good values
+    p.write_text(
+        "youtube_id,snapshot_date,views,playbackBasedCpm\nc,2026-08-01,100,1.5\nc,2026-09-01,,\n",
+        encoding="utf-8",
+    )
+    assert load_metrics(p)["c"] == {"views": 100.0, "playbackBasedCpm": 1.5}
     assert m["b"] == {"playbackBasedCpm": 3.0}
     assert load_metrics(tmp_path / "absent.csv") == {}
 
@@ -100,7 +106,8 @@ def test_aggregate_by_cpm_skips_uploads_without_that_metric():
         [_map("x", "1"), _map("y", "2")], videos, {}, metrics={"x": {"playbackBasedCpm": 4.0}}
     )
     rows = aggregate(ups, "program", metric="playbackBasedCpm")
-    assert rows == [{"program": "P", "uploads": 2, "total": 4.0, "median": 4.0, "best": 4.0}]
+    # "uploads" is the sample size behind the stats: one of the two has CPM
+    assert rows == [{"program": "P", "uploads": 1, "total": 4.0, "median": 4.0, "best": 4.0}]
 
 
 def test_aggregate_merges_speaker_spellings_across_uploads():

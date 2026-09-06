@@ -690,8 +690,15 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
     )
     st.caption(_t("perf_intro", lang, n=len(uploads), metric=metric))
 
-    def _fmt(v: float) -> str:
+    def _fmt(v: float | None) -> str:
+        if v is None:
+            return ""
         return f"{v:,.0f}".replace(",", " ") if metric == "views" else f"{v:,.2f}".replace(",", " ")
+
+    def _val(u: Any) -> float | None:
+        if metric == "views":
+            return float(u.view_count) if u.view_count is not None else None
+        return u.metrics.get(metric)
 
     def _table(rows: list[dict[str, Any]], key: str) -> None:
         st.dataframe(
@@ -718,10 +725,8 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
         _table(aggregate(uploads, "program", metric), "program")
 
     st.subheader(_t("perf_uploads", lang))
-    ordered = sorted(
-        uploads,
-        key=lambda u: -((u.view_count or 0) if metric == "views" else u.metrics.get(metric, 0.0)),
-    )
+    # Uploads without the metric sort last and render blank, not as zero.
+    ordered = sorted(uploads, key=lambda u: (_val(u) is None, -(_val(u) or 0.0)))
     st.dataframe(
         [
             {
@@ -729,9 +734,7 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
                 _t("col_archive", lang): u.archive_title or u.content_id,
                 _t("col_program", lang): u.program or "",
                 _t("col_speakers", lang): ", ".join(u.speakers),
-                _t("col_views", lang) if metric == "views" else metric: _fmt(
-                    float(u.view_count or 0) if metric == "views" else u.metrics.get(metric, 0.0)
-                ),
+                _t("col_views", lang) if metric == "views" else metric: _fmt(_val(u)),
                 _t("col_published", lang): u.published_at or "",
                 "youtube": f"https://youtu.be/{u.youtube_id}",
             }

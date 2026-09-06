@@ -76,23 +76,25 @@ def load_metrics(path: Path) -> dict[str, dict[str, float]]:
     """
     if not path.exists():
         return {}
-    latest: dict[str, tuple[str, dict[str, float]]] = {}
+    # Per metric, not per row: a newer snapshot with a blank cell must not
+    # erase a value an older snapshot did have.
+    latest: dict[str, dict[str, tuple[str, float]]] = defaultdict(dict)
     with open(path, encoding="utf-8", newline="") as f:
         for row in csv.DictReader(f):
             yt = (row.get("youtube_id") or "").strip()
             if not yt:
                 continue
             snap = (row.get("snapshot_date") or "").strip()
-            vals: dict[str, float] = {}
             for col in METRIC_COLUMNS:
                 raw = (row.get(col) or "").replace(",", ".").strip()
                 try:
-                    vals[col] = float(raw)
+                    val = float(raw)
                 except ValueError:
                     continue
-            if yt not in latest or snap >= latest[yt][0]:
-                latest[yt] = (snap, vals)
-    return {yt: vals for yt, (_, vals) in latest.items()}
+                prev = latest[yt].get(col)
+                if prev is None or snap >= prev[0]:
+                    latest[yt][col] = (snap, val)
+    return {yt: {col: v for col, (_, v) in cols.items()} for yt, cols in latest.items()}
 
 
 def build_uploads(
@@ -173,9 +175,12 @@ def aggregate(uploads: list[Upload], key: str, metric: str = "views") -> list[di
         vals = [v for v in vals if v is not None]
         if not vals:
             continue
+        # "uploads" is the sample the stats describe, not the whole group:
+        # CPM may exist for 3 of a speaker's 10 uploads, and a median over 3
+        # labelled as 10 would misrepresent the evidence.
         row: dict[str, Any] = {
             key: name,
-            "uploads": len(ups),
+            "uploads": len(vals),
             "total": sum(vals),
             "median": median(vals),
             "best": max(vals),
