@@ -260,3 +260,38 @@ def test_clean_record_applies_scope_and_reports_removed_count():
         {"video_hash": "x", "error": "boom"},
         0,
     )
+
+
+def test_clean_script_preserves_non_dict_rows_and_never_overwrites_backup(tmp_path):
+    import json as _json
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "scripts"))
+    from library_tags_clean import main
+
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(
+        "\n".join(
+            [
+                _json.dumps(
+                    {"video_hash": "a", "subject": ["цензура", "Сирия"], "place": ["Сирия"]}
+                ),
+                "null",
+                '["not", "a", "card"]',
+                '{"torn": ',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert main(["--tags", str(tags)]) == 0
+    lines = tags.read_text(encoding="utf-8").splitlines()
+    assert _json.loads(lines[0])["subject"] == ["цензура"]
+    assert lines[1:] == ["null", '["not", "a", "card"]', '{"torn": ']
+    backup = tags.with_suffix(".jsonl.pre-scope.bak")
+    original = backup.read_text(encoding="utf-8")
+    # second run: backup keeps the pre-scope content, not the cleaned file
+    assert main(["--tags", str(tags)]) == 0
+    assert backup.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob("*.tmp"))

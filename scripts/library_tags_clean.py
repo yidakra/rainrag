@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -64,6 +66,9 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             rows.append(line)  # a torn line from a live run: keep as is
             continue
+        if not isinstance(record, dict):
+            rows.append(line)  # valid JSON but not a card: keep, do not touch
+            continue
         cleaned, n = clean_record(record)
         total += len(record.get("subject") or [])
         if n:
@@ -75,9 +80,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         return 0
     backup = path.with_suffix(".jsonl.pre-scope.bak")
-    shutil.copy2(path, backup)
-    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    print(f"rewritten; original kept at {backup.name}")
+    if backup.exists():
+        # A second run must not copy already-cleaned data over the only
+        # record of the pre-scope tags.
+        print(f"backup already exists, keeping it: {backup.name}")
+    else:
+        shutil.copy2(path, backup)
+    # Write beside the target and replace atomically: a crash mid-write must
+    # leave the live file intact, not truncated, because the UI reads it.
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(rows) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+    print(f"rewritten atomically; original kept at {backup.name}")
     return 0
 
 
