@@ -245,13 +245,35 @@ def strip_entities_from_subjects(
     place/organization/guest/mentioned_extra, or in the CMS-known people
     passed as ``extra_entities``, is dropped from subject.
     """
-    entities: set[str] = set()
+    entities: dict[str, str] = {}
     for key in ("place", "organization", "guest", "mentioned_extra"):
-        entities.update(_fold(t) for t in parsed.get(key, []) if _fold(t))
+        for t in parsed.get(key, []):
+            if _fold(t):
+                entities.setdefault(_fold(t), str(t).strip())
     for group in extra_entities:
-        entities.update(_fold(t) for t in group if _fold(t))
+        for t in group:
+            if _fold(t):
+                entities.setdefault(_fold(t), str(t).strip())
+
+    def is_entity(subject: str) -> bool:
+        entity = entities.get(_fold(subject))
+        if entity is None:
+            return False
+        # Homographs: the prompt lowercases abstract topics and capitalises
+        # proper nouns, so a single lowercase word that only matches a
+        # Title-case entity is the model saying "topic" (свобода vs the radio
+        # station Свобода, оппозиция vs a party). Keep it. Multi-word matches
+        # (арабские эмираты, slow food) and lowercased acronyms (вгик ~ ВГИК)
+        # are leaked names regardless of case, and go.
+        subject = subject.strip()
+        single_lower = " " not in subject and subject == subject.lower()
+        entity_acronym = entity.isupper() and len(entity) > 1
+        if single_lower and entity != entity.lower() and not entity_acronym:
+            return False
+        return True
+
     cleaned = dict(parsed)
-    cleaned["subject"] = [t for t in parsed.get("subject", []) if _fold(t) not in entities]
+    cleaned["subject"] = [t for t in parsed.get("subject", []) if not is_entity(t)]
     return cleaned
 
 

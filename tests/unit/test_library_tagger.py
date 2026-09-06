@@ -295,3 +295,27 @@ def test_clean_script_preserves_non_dict_rows_and_never_overwrites_backup(tmp_pa
     assert main(["--tags", str(tags)]) == 0
     assert backup.read_text(encoding="utf-8") == original
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_strip_entities_keeps_lowercase_homographs_but_drops_acronyms_and_names():
+    """«свобода» the topic survives org «Свобода»; «вгик» and «slow food» do not."""
+    from rainrag.library_tagger import strip_entities_from_subjects
+
+    parsed = {
+        "subject": [
+            "свобода",
+            "оппозиция",
+            "вгик",
+            "slow food",
+            "арабские эмираты",
+            "Свобода",
+            "цензура",
+        ],
+        "organization": ["Свобода", "Оппозиция", "ВГИК", "Slow Food"],
+        "place": ["Арабские Эмираты"],
+        "guest": [],
+        "mentioned_extra": [],
+        "genre": [],
+    }
+    out = strip_entities_from_subjects(parsed)
+    assert out["subject"] == ["свобода", "оппозиция", "цензура"]
