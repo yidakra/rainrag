@@ -332,3 +332,33 @@ def test_strip_entities_cms_people_lists_only_remove_exact_or_multiword_matches(
     # lowercase single-word topic, and mixed spellings change nothing
     out = strip_entities_from_subjects(parsed, ["наталья синдеева"], ["кино", "Кино", "оппозиция"])
     assert out["subject"] == ["оппозиция", "кино", "театр"]
+
+
+def test_tag_episode_emits_filtered_subjects():
+    """Integration: what tag_episode stores is the filtered result, not the raw parse."""
+    from rainrag.library_tagger import tag_episode
+
+    class FakeEngine:
+        def generate_answer(self, messages, temperature=0.2, usage_sink=None):
+            if usage_sink is not None:
+                usage_sink.update({"tokens_in": 1, "tokens_out": 1})
+            return (
+                '{"guest": ["Екатерина Шульман"], "subject": ["политика", "Сирия", "Роскомнадзор", "цензура"],'
+                ' "place": ["Сирия"], "organization": ["Роскомнадзор"], "genre": ["интервью"], "mentioned_extra": []}'
+            )
+
+    res = tag_episode(
+        FakeEngine(),
+        video_hash="h",
+        content_id="1",
+        title="t",
+        program="p",
+        date="2020-01-01",
+        duration_minutes=40,
+        presenters=["Наталья Синдеева"],
+        mentioned=[],
+        transcript="текст",
+    )
+    assert res.error is None, res.error
+    assert res.subject == ["политика", "цензура"]
+    assert res.place == ["Сирия"] and res.organization == ["Роскомнадзор"]
