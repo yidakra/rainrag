@@ -197,3 +197,168 @@ class TestGreedyJsonRegression:
     def test_nested_objects_survive(self) -> None:
         raw = '{"subject": ["x"], "meta": {"nested": true}}'
         assert parse_tagging_response(raw)["subject"] == ["x"]
+
+
+def test_strip_entities_removes_places_orgs_and_people_from_subject():
+    """Varya's scope: «Сирия — это place. Конфликт в Сирии — subject»."""
+    from rainrag.library_tagger import strip_entities_from_subjects
+
+    parsed = {
+        "guest": ["Екатерина Шульман"],
+        "subject": [
+            "политика",
+            "Сирия",
+            "конфликт в Сирии",
+            "Роскомнадзор",
+            "цензура",
+            "екатерина шульман",
+            "Владимир Путин",
+        ],
+        "place": ["Сирия"],
+        "organization": ["Роскомнадзор"],
+        "genre": ["интервью"],
+        "mentioned_extra": [],
+    }
+    out = strip_entities_from_subjects(parsed, ["Наталья Синдеева"], ["Владимир Путин"])
+    assert out["subject"] == ["политика", "конфликт в Сирии", "цензура"]
+    # other fields untouched
+    assert out["place"] == ["Сирия"] and out["guest"] == ["Екатерина Шульман"]
+
+
+def test_strip_entities_is_case_and_yo_insensitive():
+    from rainrag.library_tagger import strip_entities_from_subjects
+
+    parsed = {
+        "subject": ["Ёлка", "елка", "театр"],
+        "place": [],
+        "organization": ["ЕЛКА"],
+        "guest": [],
+        "mentioned_extra": [],
+        "genre": [],
+    }
+    assert strip_entities_from_subjects(parsed)["subject"] == ["театр"]
+
+
+def test_clean_record_applies_scope_and_reports_removed_count():
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "scripts"))
+    from library_tags_clean import clean_record
+
+    rec = {
+        "video_hash": "h",
+        "subject": ["цензура", "Роскомнадзор", "Сирия", "Наталья Синдеева"],
+        "organization": ["Роскомнадзор"],
+        "place": ["Сирия"],
+        "presenter_cms": ["Наталья Синдеева"],
+    }
+    out, removed = clean_record(rec)
+    assert out["subject"] == ["цензура"] and removed == 3
+    # errored rows and rows without subjects pass through untouched
+    assert clean_record({"video_hash": "x", "error": "boom"}) == (
+        {"video_hash": "x", "error": "boom"},
+        0,
+    )
+
+
+def test_clean_script_preserves_non_dict_rows_and_never_overwrites_backup(tmp_path):
+    import json as _json
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "scripts"))
+    from library_tags_clean import main
+
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(
+        "\n".join(
+            [
+                _json.dumps(
+                    {"video_hash": "a", "subject": ["цензура", "Сирия"], "place": ["Сирия"]}
+                ),
+                "null",
+                '["not", "a", "card"]',
+                '{"torn": ',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert main(["--tags", str(tags)]) == 0
+    lines = tags.read_text(encoding="utf-8").splitlines()
+    assert _json.loads(lines[0])["subject"] == ["цензура"]
+    assert lines[1:] == ["null", '["not", "a", "card"]', '{"torn": ']
+    backup = tags.with_suffix(".jsonl.pre-scope.bak")
+    original = backup.read_text(encoding="utf-8")
+    # second run: backup keeps the pre-scope content, not the cleaned file
+    assert main(["--tags", str(tags)]) == 0
+    assert backup.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_strip_entities_model_fields_are_authoritative_regardless_of_case():
+    """A lowercase single word matching a model-produced entity is a leak:
+    on production tags that bucket was 13,016 places and 4,675 organisations."""
+    from rainrag.library_tagger import strip_entities_from_subjects
+
+    parsed = {
+        "subject": ["россия", "роскомнадзор", "земфира", "цензура", "конфликт в Сирии"],
+        "place": ["Россия", "Сирия"],
+        "organization": ["Роскомнадзор"],
+        "guest": [],
+        "mentioned_extra": ["Земфира"],
+        "genre": [],
+    }
+    assert strip_entities_from_subjects(parsed)["subject"] == ["цензура", "конфликт в Сирии"]
+
+
+def test_strip_entities_cms_people_lists_only_remove_exact_or_multiword_matches():
+    """CMS mention tags carry topic-like noise (кино, оппозиция); a lowercase
+    single word matching one of those is kept as a topic."""
+    from rainrag.library_tagger import strip_entities_from_subjects
+
+    parsed = {
+        "subject": ["оппозиция", "кино", "Оппозиция", "наталья синдеева", "театр"],
+        "place": [],
+        "organization": [],
+        "guest": [],
+        "mentioned_extra": [],
+        "genre": [],
+    }
+    out = strip_entities_from_subjects(parsed, ["Наталья Синдеева"], ["Оппозиция", "Кино"])
+    assert out["subject"] == ["оппозиция", "кино", "театр"]
+    # identical lowercase spelling in the CMS list still does not remove a
+    # lowercase single-word topic, and mixed spellings change nothing
+    out = strip_entities_from_subjects(parsed, ["наталья синдеева"], ["кино", "Кино", "оппозиция"])
+    assert out["subject"] == ["оппозиция", "кино", "театр"]
+
+
+def test_tag_episode_emits_filtered_subjects():
+    """Integration: what tag_episode stores is the filtered result, not the raw parse."""
+    from rainrag.library_tagger import tag_episode
+
+    class FakeEngine:
+        def generate_answer(self, messages, temperature=0.2, usage_sink=None):
+            if usage_sink is not None:
+                usage_sink.update({"tokens_in": 1, "tokens_out": 1})
+            return (
+                '{"guest": ["Екатерина Шульман"], "subject": ["политика", "Сирия", "Роскомнадзор", "цензура"],'
+                ' "place": ["Сирия"], "organization": ["Роскомнадзор"], "genre": ["интервью"], "mentioned_extra": []}'
+            )
+
+    res = tag_episode(
+        FakeEngine(),
+        video_hash="h",
+        content_id="1",
+        title="t",
+        program="p",
+        date="2020-01-01",
+        duration_minutes=40,
+        presenters=["Наталья Синдеева"],
+        mentioned=[],
+        transcript="текст",
+    )
+    assert res.error is None, res.error
+    assert res.subject == ["политика", "цензура"]
+    assert res.place == ["Сирия"] and res.organization == ["Роскомнадзор"]

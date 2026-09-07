@@ -55,10 +55,13 @@ SYSTEM_PROMPT = """Ты помогаешь редакции телеканала
 Правила:
 - guest — те, кого пригласили говорить: гость интервью, лектор. НЕ ведущий. \
 Если это лекция и лектор уже указан как ведущий в метаданных — оставь guest пустым.
-- subject — 20-35 тегов. Смешивай широкие темы («политика», «психология») и \
-конкретные («теория пустоты», «муниципальные выборы»). Включай: предметную область, \
-ключевые понятия, профессию говорящего, если она по теме. Это теги для поиска \
-похожего контента, поэтому лучше добавить лишний тег, чем упустить нужный.
+- subject — 20-35 тегов, ТОЛЬКО абстрактные темы: о чём выпуск, а не что в нём \
+мелькнуло. Смешивай широкие («политика», «психология») и конкретные («теория пустоты», \
+«муниципальные выборы»). Включай предметную область, ключевые понятия, профессию \
+говорящего, если она по теме. Люди, места и организации в subject НЕ идут: «Сирия» — \
+это place, «конфликт в Сирии» — subject; «Роскомнадзор» — organization, «цензура» — \
+subject. Это теги для поиска похожего контента, поэтому лучше добавить лишний тег, \
+чем упустить нужный.
 - place — где происходит действие или о чём речь: город и страна.
 - organization — упомянутые организации, компании, институции.
 - genre — один или два из перечисленных вариантов, ничего другого.
@@ -225,6 +228,57 @@ def _first_json_object(raw: str) -> Any:
     raise ValueError("no JSON object in response")
 
 
+def _fold(tag: str) -> str:
+    return re.sub(r"[^\w\s-]", "", str(tag).lower().replace("ё", "е")).strip()
+
+
+def strip_entities_from_subjects(
+    parsed: dict[str, list[str]], *cms_people: list[str]
+) -> dict[str, list[str]]:
+    """Enforce the editor's scope rule: subject holds abstract topics only.
+
+    Her Categories scope says it plainly («Сирия — это place. Конфликт в
+    Сирии — subject»), and the model ignores it often: on the first 10,178
+    tagged episodes 16% of all subject tags duplicated an entity already on
+    the same card. Asking harder in the prompt helps; removing duplicates
+    deterministically guarantees it.
+
+    Two sources, two rules, chosen from the data rather than from case:
+
+    * The model's own place/organization/guest/mentioned_extra are
+      authoritative. Any subject folding to one of them is removed, whatever
+      its case: the single-lowercase-word matches on production tags were
+      13,016 places (россия, украина) and 4,675 organisations (роскомнадзор,
+      газпром), leaks to the last one. A rare homograph (свобода vs the radio
+      station) is lost with them; that is the price of a rule that holds.
+    * CMS-derived people lists (``cms_people``: presenters, mentions) are
+      noisy -- they carry topic-like tags such as «кино» or «оппозиция» -- so
+      a match there removes a subject only when the subject is capitalised or
+      multi-word (a name); a lowercase single word is kept as a topic, even
+      when the CMS entry is spelled identically.
+    """
+    model_entities: set[str] = set()
+    for key in ("place", "organization", "guest", "mentioned_extra"):
+        model_entities.update(_fold(t) for t in parsed.get(key, []) if _fold(t))
+    cms_entities: set[str] = set()
+    for group in cms_people:
+        cms_entities.update(_fold(t) for t in group if _fold(t))
+
+    def is_entity(subject: str) -> bool:
+        folded = _fold(subject)
+        if folded in model_entities:
+            return True
+        if folded not in cms_entities:
+            return False
+        subject = subject.strip()
+        single_lower = " " not in subject and subject == subject.lower()
+        return not single_lower
+
+    cleaned = dict(parsed)
+    cleaned["subject"] = [t for t in parsed.get("subject", []) if not is_entity(t)]
+    return cleaned
+
+
 def parse_tagging_response(raw: str) -> dict[str, list[str]]:
     """Pull the tag lists out of a model response.
 
@@ -325,6 +379,7 @@ def tag_episode(
         result.error = f"{type(last_error).__name__}: {last_error}"
         return result
 
+    parsed = strip_entities_from_subjects(parsed, presenters, mentioned)
     result.guest = parsed["guest"]
     result.subject = parsed["subject"]
     result.place = parsed["place"]
