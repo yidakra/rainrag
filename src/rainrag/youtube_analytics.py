@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import csv
 import fcntl
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -75,28 +77,35 @@ API_METRICS = [
 FILTER_BATCH = 500  # the API caps a video== filter at 500 ids
 
 
-def rows_to_snapshot(
-    column_headers: list[dict[str, Any]],
-    rows: list[list[Any]],
-    snapshot_date: str,
+def rows_to_dicts(
+    column_headers: list[dict[str, Any]], rows: list[list[Any]]
 ) -> list[dict[str, Any]]:
-    """Reshape one Analytics response into CSV rows in the sheet's schema.
+    """Zip one response's positional rows with *its own* column headers.
 
-    The API returns positional rows described by ``columnHeaders``; the
-    ``video`` dimension is the id. Metrics the API did not return stay blank
-    so the reader (``load_metrics``) simply sees them as absent.
+    Done per batch, never after merging: the requested metric set can shrink
+    mid-pull when the API rejects a metric, and rows from an earlier batch
+    zipped against a later, narrower header list would land every value after
+    the dropped column under the wrong name.
     """
     names = [h["name"] for h in column_headers]
-    if "video" not in names:
+    if rows and "video" not in names:
         raise ValueError("response has no video dimension")
+    return [dict(zip(names, row, strict=True)) for row in rows]
+
+
+def rows_to_snapshot(records: list[dict[str, Any]], snapshot_date: str) -> list[dict[str, Any]]:
+    """Reshape merged per-video records into CSV rows in the sheet's schema.
+
+    Metrics absent from a record stay blank so the reader (``load_metrics``)
+    simply sees them as missing.
+    """
     out: list[dict[str, Any]] = []
-    for row in rows:
-        rec = dict(zip(names, row, strict=False))
+    for rec in records:
         csv_row: dict[str, Any] = dict.fromkeys(CSV_COLUMNS, "")
         csv_row["youtube_id"] = rec["video"]
         csv_row["snapshot_date"] = snapshot_date
         for m in API_METRICS:
-            if m in rec and rec[m] is not None:
+            if rec.get(m) is not None:
                 csv_row[m] = rec[m]
         out.append(csv_row)
     return out
@@ -108,6 +117,9 @@ def append_snapshot(path: Path, csv_rows: list[dict[str, Any]]) -> int:
     with open(path, "a", encoding="utf-8", newline="") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         try:
+            # Position is fixed at open(), before the lock; a concurrent first
+            # run could have written the header in between. Re-check under it.
+            f.seek(0, os.SEEK_END)
             writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
             if f.tell() == 0:
                 writer.writeheader()
@@ -124,6 +136,14 @@ def chunked(items: list[str], size: int = FILTER_BATCH) -> list[list[str]]:
 
 
 # ------------------------------------------------------------------ Google side
+
+
+def _write_token(token_json: Path, data: str) -> None:
+    """Owner-only file: the refresh token grants read access to channel revenue."""
+    fd = os.open(token_json, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(data)
 
 
 def load_credentials(client_json: Path, token_json: Path, auth_code: str | None = None) -> Any:
@@ -144,7 +164,7 @@ def load_credentials(client_json: Path, token_json: Path, auth_code: str | None 
         return creds
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        token_json.write_text(creds.to_json(), encoding="utf-8")
+        _write_token(token_json, creds.to_json())
         return creds
     if not client_json.exists():
         raise SystemExit(
@@ -164,26 +184,27 @@ def load_credentials(client_json: Path, token_json: Path, auth_code: str | None 
         )
     flow.fetch_token(code=auth_code)
     creds = flow.credentials
-    token_json.write_text(creds.to_json(), encoding="utf-8")
+    _write_token(token_json, creds.to_json())
     return creds
 
 
 def fetch_video_metrics(
     creds: Any, video_ids: list[str], start_date: str, end_date: str
-) -> tuple[list[dict[str, Any]], list[list[Any]]]:
-    """Lifetime-to-date metrics per video, in batches of 500 ids.
+) -> list[dict[str, Any]]:
+    """Lifetime-to-date metrics per video, as one dict per video.
 
-    Returns (columnHeaders, rows) merged across batches. Metrics the API
-    rejects for this channel are dropped and the batch retried, so a channel
-    without monetisation still gets views and retention.
+    Batches of 500 ids (the API's filter cap). Each batch's rows are zipped
+    with that batch's own headers before merging, so a metric the API rejects
+    on a later batch cannot shift earlier rows. Rejected metrics are dropped
+    for the rest of the pull and the batch retried, so a channel without
+    monetisation still yields views and retention.
     """
     from googleapiclient.discovery import build
     from googleapiclient.errors import HttpError
 
     service = build("youtubeAnalytics", "v2", credentials=creds, cache_discovery=False)
     metrics = list(API_METRICS)
-    headers: list[dict[str, Any]] = []
-    rows: list[list[Any]] = []
+    records: list[dict[str, Any]] = []
     for batch in chunked(video_ids):
         while True:
             try:
@@ -206,14 +227,18 @@ def fetch_video_metrics(
                 if bad is None:
                     raise
                 metrics.remove(bad)
-        headers = resp.get("columnHeaders", headers)
-        rows.extend(resp.get("rows", []))
-    return headers, rows
+        records.extend(rows_to_dicts(resp.get("columnHeaders", []), resp.get("rows", [])))
+    return records
 
 
 def _rejected_metric(message: str, metrics: list[str]) -> str | None:
-    """Which requested metric an API error complains about, if any."""
+    """The exact requested metric an API error names, if any.
+
+    Matched as a whole identifier, not a substring: the API quotes the bad
+    name in parentheses or quotes, and a substring test would let a shorter
+    metric name hide inside a longer one.
+    """
     for m in metrics:
-        if m in message:
+        if re.search(rf"(?<![A-Za-z]){re.escape(m)}(?![A-Za-z])", message):
             return m
     return None

@@ -47,11 +47,16 @@ def main(argv: list[str] | None = None) -> int:
     video_ids = sorted(
         {m["youtube_id"] for m in json.loads(Path(args.map).read_text(encoding="utf-8"))}
     )
+    if not video_ids:
+        print(f"no youtube ids in {args.map}; nothing to pull")
+        return 0
     today = dt.date.today().isoformat()
-    headers, rows = fetch_video_metrics(creds, video_ids, args.start, today)
-    csv_rows = rows_to_snapshot(headers, rows, today)
-    n = append_snapshot(Path(args.out), csv_rows)
-    metrics_seen = [h["name"] for h in headers if h["name"] != "video"]
+    records = fetch_video_metrics(creds, video_ids, args.start, today)
+    if not records:
+        print(f"the API returned no rows for {len(video_ids)} videos; nothing written")
+        return 0
+    n = append_snapshot(Path(args.out), rows_to_snapshot(records, today))
+    metrics_seen = sorted({k for r in records for k in r if k != "video"})
     print(f"snapshot {today}: {n} videos, metrics {metrics_seen} -> {args.out}")
     return 0
 
