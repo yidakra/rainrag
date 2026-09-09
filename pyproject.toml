@@ -48,6 +48,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+analytics = [
+    "google-api-python-client>=2.100,<3.0.0",
+    "google-auth-oauthlib>=1.2,<2.0.0",
+]
 eval = [
     "mlflow>=2.14,<3.0.0",
     "ragas>=0.1.0,<0.2.0",
@@ -208,6 +212,10 @@ module = [
     "streamlit.*",
     "uvicorn.*",
     "mcp.*",
+    "googleapiclient.*",
+    "google_auth_oauthlib.*",
+    "google.auth.*",
+    "google.oauth2.*",
 ]
 ignore_missing_imports = true
 
