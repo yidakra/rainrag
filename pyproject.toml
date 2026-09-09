@@ -207,15 +207,13 @@ module = [
     "qdrant_client.*",
     "mistralai.*",
     "google.*",
+    "googleapiclient.*",
+    "google_auth_oauthlib.*",
     "anthropic.*",
     "cohere.*",
     "streamlit.*",
     "uvicorn.*",
     "mcp.*",
-    "googleapiclient.*",
-    "google_auth_oauthlib.*",
-    "google.auth.*",
-    "google.oauth2.*",
 ]
 ignore_missing_imports = true
 
