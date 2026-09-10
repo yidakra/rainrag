@@ -288,3 +288,49 @@ def test_search_untagged_excludes_tagged_hashes_before_the_cut():
     )
     hits = search_untagged(videos, "лекция", limit=3, exclude={f"t{i}" for i in range(1, 6)})
     assert [e.video_hash for e in hits] == ["u1"]
+
+
+def test_display_title_prefers_cms_then_transcript_then_placeholder():
+    from ui_library import display_title
+
+    cms = _ep("a", title="Лекция")
+    no_cms = _ep("b")
+    synthetic = {"b": "Глава СБУ Малюк уходит в отставку."}
+    assert display_title(cms, "ru", synthetic) == ("Лекция", False)
+    assert display_title(no_cms, "ru", synthetic) == ("Глава СБУ Малюк уходит в отставку.", True)
+    assert display_title(no_cms, "ru", {}) == ("(без названия)", True)
+
+
+def test_search_matches_synthetic_titles_for_cms_less_episodes():
+    from ui_library import search_episodes
+
+    eps = [_ep("b", date="2026-01-05"), _ep("c", title="Другое", date="2025-01-01")]
+    hits = search_episodes(eps, "малюк", synthetic={"b": "Глава СБУ Малюк уходит в отставку."})
+    assert [e.video_hash for e in hits] == ["b"]
+
+
+def test_load_untitled_titles_tolerates_missing_and_bad_files(tmp_path):
+    from ui_library import load_untitled_titles
+
+    assert load_untitled_titles(tmp_path / "absent.json") == {}
+    bad = tmp_path / "bad.json"
+    bad.write_text("[1,2", encoding="utf-8")
+    assert load_untitled_titles(bad) == {}
+    ok = tmp_path / "ok.json"
+    ok.write_text('{"h1": "Заголовок", "h2": ""}', encoding="utf-8")
+    assert load_untitled_titles(ok) == {"h1": "Заголовок"}
+
+
+def test_snippet_takes_first_sentence_and_caps():
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "scripts"))
+    from library_untitled_titles import snippet
+
+    assert (
+        snippet("Добрый вечер, знатоки, гости клуба. Это четвёртая игра.")
+        == "Добрый вечер, знатоки, гости клуба."
+    )
+    long = "слово " * 40
+    assert len(snippet(long)) <= 90 and snippet(long).endswith("…")
