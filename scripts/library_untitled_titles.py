@@ -35,13 +35,35 @@ def snippet(text: str, max_chars: int = MAX_CHARS) -> str:
     в отставку.»), which is exactly what an editor scanning a list needs.
     """
     text = re.sub(r"\s+", " ", text).strip()
-    m = re.match(rf"(.{{20,{max_chars}}}?[.!?])\s", text)
+    m = re.match(rf"(.{{1,{max_chars}}}?[.!?])(?:\s|$)", text)
     if m:
         return m.group(1).strip()
     if len(text) <= max_chars:
         return text
     # no sentence boundary within reach: cut and say so
     return text[: max_chars - 1].rstrip() + "…"
+
+
+def untitled_hashes(lines: list[str]) -> list[str]:
+    """Hashes whose *latest* successful row has no title.
+
+    The tag file is append-only and the UI reads it last-row-wins
+    (``dedupe_latest``); this must agree, or a re-tagged episode whose newer
+    row gained a title would still get a stand-in, and one whose newer row
+    lost it would get none.
+    """
+    latest: dict[str, dict] = {}
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("error") or not r.get("video_hash"):
+            continue
+        latest[r["video_hash"]] = r
+    return [h for h, r in latest.items() if not r.get("title")]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,20 +78,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from rainrag.library_tagger import read_vtt_text
 
-    seen: set[str] = set()
-    untitled: list[str] = []
-    for line in Path(args.tags).read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            r = json.loads(line)
-        except ValueError:
-            continue
-        if r.get("error") or r.get("video_hash") in seen:
-            continue
-        seen.add(r["video_hash"])
-        if not r.get("title"):
-            untitled.append(r["video_hash"])
+    untitled = untitled_hashes(Path(args.tags).read_text(encoding="utf-8").splitlines())
 
     out: dict[str, str] = {}
     root = Path(args.archive_root)

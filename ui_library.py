@@ -513,7 +513,11 @@ def load_untitled_titles(path: Path = UNTITLED_TITLES_PATH) -> dict[str, str]:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {k: str(v) for k, v in data.items() if v}
+    return {
+        h: t.strip()
+        for h, t in data.items()
+        if isinstance(h, str) and isinstance(t, str) and t.strip()
+    }
 
 
 @st.cache_data(show_spinner=False)
@@ -522,15 +526,32 @@ def _cached_untitled_titles(mtime: float) -> dict[str, str]:
     return load_untitled_titles()
 
 
+_MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+!|<>~])")
+
+
+def escape_markdown(text: str) -> str:
+    """Neutralise markdown syntax in text that will be rendered by st.markdown.
+
+    Stand-in titles come from transcripts, which are untrusted text: a
+    sentence containing ``](`` or a backtick would otherwise break out of the
+    link and inject markup into the editor's view. CMS titles never went
+    through this path before, so it applies to stand-ins only.
+    """
+    return _MD_SPECIAL.sub(r"\\\1", text)
+
+
 def display_title(
     e: Episode, lang: str, synthetic: dict[str, str] | None = None
 ) -> tuple[str, bool]:
-    """(title to show, whether it is a stand-in rather than a CMS title)."""
+    """(title to show, whether it is a stand-in rather than a CMS title).
+
+    Stand-ins are returned markdown-escaped; callers render them as-is.
+    """
     if e.title:
         return e.title, False
     stand_in = (synthetic or {}).get(e.video_hash)
     if stand_in:
-        return stand_in, True
+        return escape_markdown(stand_in), True
     return _untitled(lang), True
 
 

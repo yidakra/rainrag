@@ -334,3 +334,54 @@ def test_snippet_takes_first_sentence_and_caps():
     )
     long = "слово " * 40
     assert len(snippet(long)) <= 90 and snippet(long).endswith("…")
+
+
+def test_stand_in_titles_are_markdown_escaped_but_cms_titles_are_not():
+    from ui_library import display_title
+
+    hostile = {"b": "Смотри](https://evil) `x` *y*"}
+    title, stand_in = display_title(_ep("b"), "ru", hostile)
+    assert stand_in and "](" not in title and "`x`" not in title
+    assert title == "Смотри\\]\\(https://evil\\) \\`x\\` \\*y\\*"
+    # CMS titles are trusted and pass through untouched
+    assert display_title(_ep("a", title="A [b] *c*"), "ru", hostile) == ("A [b] *c*", False)
+
+
+def test_load_untitled_titles_keeps_only_nonblank_strings(tmp_path):
+    from ui_library import load_untitled_titles
+
+    p = tmp_path / "t.json"
+    p.write_text(
+        '{"h1": "  ok  ", "h2": ["bad"], "h3": 5, "h4": "   ", "h5": ""}', encoding="utf-8"
+    )
+    assert load_untitled_titles(p) == {"h1": "ok"}
+
+
+def test_snippet_returns_a_short_first_sentence():
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "scripts"))
+    from library_untitled_titles import snippet
+
+    assert snippet("Привет. Сегодня обсуждаем важное.") == "Привет."
+    assert snippet("Конец без пробела после точки.") == "Конец без пробела после точки."
+
+
+def test_untitled_hashes_use_last_row_wins_like_the_ui():
+    import json as _json
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "scripts"))
+    from library_untitled_titles import untitled_hashes
+
+    lines = [
+        _json.dumps({"video_hash": "a", "title": None}),
+        _json.dumps({"video_hash": "a", "title": "Появилось название"}),  # re-tag gained a title
+        _json.dumps({"video_hash": "b", "title": "Было"}),
+        _json.dumps({"video_hash": "b", "title": None}),  # re-tag lost it
+        _json.dumps({"video_hash": "c", "error": "boom"}),
+        "{torn",
+    ]
+    assert untitled_hashes(lines) == ["b"]
