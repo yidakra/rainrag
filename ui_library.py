@@ -53,6 +53,8 @@ VIDEOS_CACHE_PATH = REPO_ROOT / "data" / "library_videos.jsonl"
 # A YouTube Studio export (Analytics -> Advanced mode -> Export), columns renamed
 # to the «YT metrics» sheet's schema. Absent until the channel owner drops one in.
 METRICS_PATH = REPO_ROOT / "data" / "youtube_metrics.csv"
+# Stand-in titles for tagged episodes with no CMS card (scripts/library_untitled_titles.py)
+UNTITLED_TITLES_PATH = REPO_ROOT / "data" / "untitled_titles.json"
 
 _T = {
     "ru": {
@@ -94,6 +96,7 @@ _T = {
         "пока нельзя. Короткие выпуски (до 30 минут) в первую разметку не попадали; "
         "доразметка запланирована.",
         "untagged_mark": "(не размечен)",
+        "no_cms_mark": "без карточки в CMS",
         "queue_note": "Сверка всех роликов канала с архивом. Очередь общая и не зависит от "
         "поиска во вкладке «Похожие выпуски».",
         "min_minutes": "Длительность от, мин",
@@ -151,6 +154,7 @@ _T = {
         "cannot be suggested. Episodes under 30 minutes were outside the first tagging pass; "
         "a follow-up is planned.",
         "untagged_mark": "(untagged)",
+        "no_cms_mark": "no CMS record",
         "queue_note": "Reviews every channel upload against the archive. The queue is global "
         "and independent of the search on the other tab.",
         "min_minutes": "Min duration, min",
@@ -316,7 +320,12 @@ def search_untagged(
     return hits[:limit]
 
 
-def search_episodes(episodes: list[Episode], needle: str, limit: int = 50) -> list[Episode]:
+def search_episodes(
+    episodes: list[Episode],
+    needle: str,
+    limit: int = 50,
+    synthetic: dict[str, str] | None = None,
+) -> list[Episode]:
     """Substring search over title and programme, newest first.
 
     A selectbox over 10k episodes is unusable; a search box narrowing to 50 is
@@ -325,10 +334,14 @@ def search_episodes(episodes: list[Episode], needle: str, limit: int = 50) -> li
     needle = needle.strip().lower().replace("ё", "е")
     if not needle:
         return []
+    synthetic = synthetic or {}
     hits = [
         e
         for e in episodes
-        if needle in f"{e.title or ''} {e.program or ''}".lower().replace("ё", "е")
+        if needle
+        in f"{e.title or synthetic.get(e.video_hash, '')} {e.program or ''}".lower().replace(
+            "ё", "е"
+        )
     ]
     hits.sort(key=lambda e: e.date or "", reverse=True)
     return hits[:limit]
@@ -484,9 +497,68 @@ def _untitled(lang: str) -> str:
     return "(без названия)" if lang == "ru" else "(untitled)"
 
 
-def _episode_label(e: Episode) -> str:
+def load_untitled_titles(path: Path = UNTITLED_TITLES_PATH) -> dict[str, str]:
+    """video_hash -> first transcript sentence, for episodes with no CMS card.
+
+    27% of indexed videos have no CMS article and therefore no title; they
+    are mostly the freshest content. Their transcript opening stands in so an
+    editor can judge them, and the card says explicitly that the CMS has no
+    record, so nobody goes looking for a page that does not exist.
+    """
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        h: t.strip()
+        for h, t in data.items()
+        if isinstance(h, str) and isinstance(t, str) and t.strip()
+    }
+
+
+@st.cache_data(show_spinner=False)
+def _cached_untitled_titles(mtime: float) -> dict[str, str]:
+    del mtime
+    return load_untitled_titles()
+
+
+_MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+!|<>~])")
+
+
+def escape_markdown(text: str) -> str:
+    """Neutralise markdown syntax in text that will be rendered by st.markdown.
+
+    Stand-in titles come from transcripts, which are untrusted text: a
+    sentence containing ``](`` or a backtick would otherwise break out of the
+    link and inject markup into the editor's view. CMS titles never went
+    through this path before, so it applies to stand-ins only.
+    """
+    return _MD_SPECIAL.sub(r"\\\1", text)
+
+
+def display_title(
+    e: Episode, lang: str, synthetic: dict[str, str] | None = None
+) -> tuple[str, bool]:
+    """(title to show, whether it is a stand-in rather than a CMS title).
+
+    Stand-ins are returned markdown-escaped; callers render them as-is.
+    """
+    if e.title:
+        return e.title, False
+    stand_in = (synthetic or {}).get(e.video_hash)
+    if stand_in:
+        return escape_markdown(stand_in), True
+    return _untitled(lang), True
+
+
+def _episode_label(e: Episode, synthetic: dict[str, str] | None = None) -> str:
     # A raw video hash means nothing to an editor; the date still narrows it.
-    bits = [e.date or "????-??-??", (e.title or _untitled("ru"))[:80]]
+    title, _ = display_title(e, "ru", synthetic)
+    bits = [e.date or "????-??-??", title[:80]]
     if e.program:
         bits.append(f"({e.program})")
     return " — ".join(bits)
@@ -500,11 +572,15 @@ def _render_scored(
     seed_id: str | None = None,
     column: str = "",
     marks: dict[tuple[str, str], str] | None = None,
+    synthetic: dict[str, str] | None = None,
 ) -> None:
     e = r.episode
-    title = e.title or _untitled(lang)
+    title, stand_in = display_title(e, lang, synthetic)
     line = f"**{rank}.** [{title}]({e.url})" if e.url else f"**{rank}.** {title}"
-    meta = " · ".join(x for x in [e.program, e.date, _fmt_minutes(e.duration_seconds, lang)] if x)
+    meta_bits = [e.program, e.date, _fmt_minutes(e.duration_seconds, lang)]
+    if stand_in:
+        meta_bits.append(_t("no_cms_mark", lang))
+    meta = " · ".join(x for x in meta_bits if x)
     body, up, down = st.columns([12, 1, 1])
     with body:
         st.markdown(f"{line}  \n{meta}")
@@ -524,7 +600,10 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     needle = st.text_input(
         _t("seed_search", lang), help=_t("seed_search_help", lang), key="library_seed_search"
     )
-    matches = search_episodes(episodes, needle)
+    synthetic = _cached_untitled_titles(
+        UNTITLED_TITLES_PATH.stat().st_mtime if UNTITLED_TITLES_PATH.exists() else 0.0
+    )
+    matches = search_episodes(episodes, needle, synthetic=synthetic)
     tagged_hashes = {e.video_hash for e in episodes}
     if needle and not youtube_id_from_query(needle):
         videos = _cached_videos_by_hash(
@@ -551,7 +630,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         _t("seed_pick", lang),
         matches,
         format_func=lambda e: (
-            _episode_label(e)
+            _episode_label(e, synthetic)
             + ("" if e.video_hash in tagged_hashes else f" {_t('untagged_mark', lang)}")
         ),
         key="library_seed_pick",
@@ -591,13 +670,29 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         if not same:
             st.caption(_t("nothing_similar", lang))
         for i, r in enumerate(same[:10], 1):
-            _render_scored(i, r, lang, seed_id=seed.content_id, column="speaker", marks=marks)
+            _render_scored(
+                i,
+                r,
+                lang,
+                seed_id=seed.content_id,
+                column="speaker",
+                marks=marks,
+                synthetic=synthetic,
+            )
     with theme_col:
         st.subheader(_t("same_theme", lang))
         if not themed:
             st.caption(_t("nothing_similar", lang))
         for i, r in enumerate(themed[:10], 1):
-            _render_scored(i, r, lang, seed_id=seed.content_id, column="theme", marks=marks)
+            _render_scored(
+                i,
+                r,
+                lang,
+                seed_id=seed.content_id,
+                column="theme",
+                marks=marks,
+                synthetic=synthetic,
+            )
 
 
 _CONFIDENCE_ORDER = {"exact": 0, "strong": 1, "review": 2, "none": 3, "editor": 4}

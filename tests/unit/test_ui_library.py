@@ -288,3 +288,100 @@ def test_search_untagged_excludes_tagged_hashes_before_the_cut():
     )
     hits = search_untagged(videos, "лекция", limit=3, exclude={f"t{i}" for i in range(1, 6)})
     assert [e.video_hash for e in hits] == ["u1"]
+
+
+def test_display_title_prefers_cms_then_transcript_then_placeholder():
+    from ui_library import display_title
+
+    cms = _ep("a", title="Лекция")
+    no_cms = _ep("b")
+    synthetic = {"b": "Глава СБУ Малюк уходит в отставку."}
+    assert display_title(cms, "ru", synthetic) == ("Лекция", False)
+    assert display_title(no_cms, "ru", synthetic) == ("Глава СБУ Малюк уходит в отставку.", True)
+    assert display_title(no_cms, "ru", {}) == ("(без названия)", True)
+
+
+def test_search_matches_synthetic_titles_for_cms_less_episodes():
+    from ui_library import search_episodes
+
+    eps = [_ep("b", date="2026-01-05"), _ep("c", title="Другое", date="2025-01-01")]
+    hits = search_episodes(eps, "малюк", synthetic={"b": "Глава СБУ Малюк уходит в отставку."})
+    assert [e.video_hash for e in hits] == ["b"]
+
+
+def test_load_untitled_titles_tolerates_missing_and_bad_files(tmp_path):
+    from ui_library import load_untitled_titles
+
+    assert load_untitled_titles(tmp_path / "absent.json") == {}
+    bad = tmp_path / "bad.json"
+    bad.write_text("[1,2", encoding="utf-8")
+    assert load_untitled_titles(bad) == {}
+    ok = tmp_path / "ok.json"
+    ok.write_text('{"h1": "Заголовок", "h2": ""}', encoding="utf-8")
+    assert load_untitled_titles(ok) == {"h1": "Заголовок"}
+
+
+def test_snippet_takes_first_sentence_and_caps():
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "scripts"))
+    from library_untitled_titles import snippet
+
+    assert (
+        snippet("Добрый вечер, знатоки, гости клуба. Это четвёртая игра.")
+        == "Добрый вечер, знатоки, гости клуба."
+    )
+    long = "слово " * 40
+    assert len(snippet(long)) <= 90 and snippet(long).endswith("…")
+
+
+def test_stand_in_titles_are_markdown_escaped_but_cms_titles_are_not():
+    from ui_library import display_title
+
+    hostile = {"b": "Смотри](https://evil) `x` *y*"}
+    title, stand_in = display_title(_ep("b"), "ru", hostile)
+    assert stand_in and "](" not in title and "`x`" not in title
+    assert title == "Смотри\\]\\(https://evil\\) \\`x\\` \\*y\\*"
+    # CMS titles are trusted and pass through untouched
+    assert display_title(_ep("a", title="A [b] *c*"), "ru", hostile) == ("A [b] *c*", False)
+
+
+def test_load_untitled_titles_keeps_only_nonblank_strings(tmp_path):
+    from ui_library import load_untitled_titles
+
+    p = tmp_path / "t.json"
+    p.write_text(
+        '{"h1": "  ok  ", "h2": ["bad"], "h3": 5, "h4": "   ", "h5": ""}', encoding="utf-8"
+    )
+    assert load_untitled_titles(p) == {"h1": "ok"}
+
+
+def test_snippet_returns_a_short_first_sentence():
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "scripts"))
+    from library_untitled_titles import snippet
+
+    assert snippet("Привет. Сегодня обсуждаем важное.") == "Привет."
+    assert snippet("Конец без пробела после точки.") == "Конец без пробела после точки."
+
+
+def test_untitled_hashes_use_last_row_wins_like_the_ui():
+    import json as _json
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent / "scripts"))
+    from library_untitled_titles import untitled_hashes
+
+    lines = [
+        _json.dumps({"video_hash": "a", "title": None}),
+        _json.dumps({"video_hash": "a", "title": "Появилось название"}),  # re-tag gained a title
+        _json.dumps({"video_hash": "b", "title": "Было"}),
+        _json.dumps({"video_hash": "b", "title": None}),  # re-tag lost it
+        _json.dumps({"video_hash": "c", "error": "boom"}),
+        "{torn",
+    ]
+    assert untitled_hashes(lines) == ["b"]
