@@ -12,8 +12,11 @@ one-time setup:
    its JSON as ``data/google_oauth_client.json``.
 2. Run ``scripts/youtube_analytics_pull.py --auth``: it prints a consent URL.
    Whoever owns (or manages, with revenue access) the Library channel opens
-   it, grants access, and pastes back the code. The refresh token is stored
-   in ``data/google_oauth_token.json`` and never needs repeating.
+   it, grants access, and pastes back the code. Each URL is single-use: it
+   carries a PKCE challenge whose verifier is written next to the token file
+   and consumed by the matching ``--auth-code`` run, so a code obtained from
+   an older URL cannot be exchanged. The refresh token is stored in
+   ``data/google_oauth_token.json`` and never needs repeating.
 3. Every later run appends one snapshot per video to
    ``data/youtube_metrics.csv`` in the «YT metrics» sheet's column schema,
    which the Library UI already reads.
@@ -138,12 +141,22 @@ def chunked(items: list[str], size: int = FILTER_BATCH) -> list[list[str]]:
 # ------------------------------------------------------------------ Google side
 
 
-def _write_token(token_json: Path, data: str) -> None:
-    """Owner-only file: the refresh token grants read access to channel revenue."""
-    fd = os.open(token_json, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def _write_private(path: Path, data: str) -> None:
+    """Write owner-only: these files grant read access to channel revenue."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(data)
+
+
+def _write_token(token_json: Path, data: str) -> None:
+    """Owner-only file: the refresh token grants read access to channel revenue."""
+    _write_private(token_json, data)
+
+
+def _verifier_path(token_json: Path) -> Path:
+    """Where the PKCE verifier waits between the --auth and --auth-code runs."""
+    return token_json.with_name(token_json.name + ".verifier")
 
 
 def load_credentials(client_json: Path, token_json: Path, auth_code: str | None = None) -> Any:
@@ -175,16 +188,33 @@ def load_credentials(client_json: Path, token_json: Path, auth_code: str | None 
     flow.redirect_uri = (
         "http://localhost:1/"  # never reached; the user copies the code from the URL
     )
+    verifier_path = _verifier_path(token_json)
     if auth_code is None:
         url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+        # authorization_url() mints a PKCE verifier that fetch_token() has to
+        # send back. --auth and --auth-code are separate processes, so an
+        # in-memory verifier is gone by the time the code arrives and Google
+        # rejects the exchange. Keep it on disk, owner-only, until it is used.
+        if flow.code_verifier:
+            _write_private(verifier_path, flow.code_verifier)
         raise SystemExit(
             "Open this URL as the channel owner, grant access, then re-run with\n"
             "  --auth-code <the 'code=' value from the address bar after the redirect>\n\n"
             f"{url}"
         )
+    saved = verifier_path.read_text(encoding="utf-8").strip() if verifier_path.exists() else ""
+    if saved:
+        flow.code_verifier = saved
+    elif flow.autogenerate_code_verifier:
+        raise SystemExit(
+            f"No PKCE verifier at {verifier_path}, so this code cannot be exchanged.\n"
+            "Re-run with --auth and use the URL it prints: a code obtained from an "
+            "earlier URL is tied to a verifier that no longer exists."
+        )
     flow.fetch_token(code=auth_code)
     creds = flow.credentials
     _write_token(token_json, creds.to_json())
+    verifier_path.unlink(missing_ok=True)
     return creds
 
 
