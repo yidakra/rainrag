@@ -428,6 +428,24 @@ def speaker_options(results: Iterable[Scored]) -> list[str]:
     return sorted(labels, key=lambda name: (name.lower(), name))
 
 
+def carried_selection(
+    options: list[str], previous_options: list[str] | None, previous_selection: Iterable[str]
+) -> list[str]:
+    """Which speakers stay ticked when the offered ones change.
+
+    Narrowing «Длительность от, мин» or «Жанры» can take a speaker out of the
+    results, and widening it again puts her back. She has to come back ticked:
+    nothing may be hidden by a speaker the editor never unticked. A name the
+    editor did untick stays unticked for as long as it keeps being offered,
+    and a first render, with nothing offered before, ticks everything.
+    """
+    if previous_options is None:
+        return list(options)
+    chosen = set(previous_selection)
+    known = set(previous_options)
+    return [s for s in options if s in chosen or s not in known]
+
+
 def _passes_speaker_filter(result: Scored, keys: set[str]) -> bool:
     speakers = {normalise_person(s) for s in result.episode.speakers}
     speakers.discard("")
@@ -780,14 +798,19 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     options = speaker_options(same + themed)
     selected: list[str] | None = None
     if options:
-        # Keyed on the seed, so a new seed starts with everything ticked.
-        # Changing duration or genre keeps the editor's choice, minus any name
-        # the narrowed pool no longer offers.
+        # Keyed on the seed, so picking another episode starts over with
+        # everything ticked. Within one seed the ticks are carried across a
+        # change of duration or genre, which changes what is on offer.
         state_key = f"library_speakers_{seed.video_hash}"
-        if state_key in st.session_state:
-            st.session_state[state_key] = [s for s in st.session_state[state_key] if s in options]
+        offered_key = f"{state_key}_offered"
+        st.session_state[state_key] = carried_selection(
+            options,
+            st.session_state.get(offered_key),
+            st.session_state.get(state_key, options),
+        )
+        st.session_state[offered_key] = options
         with speaker_filter_col:
-            selected = st.multiselect(_t("speakers", lang), options, default=options, key=state_key)
+            selected = st.multiselect(_t("speakers", lang), options, key=state_key)
     same_rows = visible_results(same, selected, limit=SIMILAR_DISPLAY_LIMIT)
     theme_rows = visible_results(themed, selected, limit=SIMILAR_DISPLAY_LIMIT)
 

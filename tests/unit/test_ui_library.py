@@ -434,10 +434,10 @@ def test_stat_key_of_a_missing_file_is_stable_and_not_an_error(tmp_path):
     assert _stat_key(tmp_path / "absent.csv") == (0, 0)
 
 
-def _scored(video_hash, speakers, *, shared=None, score=0.1):
+def _scored(video_hash, speakers):
     from rainrag.library_similar import Scored
 
-    return Scored(_ep(video_hash, speakers=list(speakers)), score, list(shared or []), ["тема"])
+    return Scored(_ep(video_hash, speakers=list(speakers)), 0.1, [], ["тема"])
 
 
 def test_speaker_options_come_from_the_results_and_merge_name_variants():
@@ -545,3 +545,34 @@ def test_a_column_emptied_by_the_filter_is_not_called_an_empty_card():
     assert visible_results(rows, [], limit=10) == []
     assert _T["ru"]["speakers_hidden"].strip()
     assert _T["en"]["speakers_hidden"].strip()
+
+
+def test_first_render_offers_every_speaker_ticked():
+    from ui_library import carried_selection
+
+    options = ["Дмитрий Быков", "Ирина Хакамада"]
+    assert carried_selection(options, None, []) == options
+
+
+def test_an_unticked_speaker_stays_unticked_while_she_is_still_offered():
+    from ui_library import carried_selection
+
+    options = ["Дмитрий Быков", "Ирина Хакамада"]
+    assert carried_selection(options, options, ["Дмитрий Быков"]) == ["Дмитрий Быков"]
+
+
+def test_a_speaker_the_filters_dropped_and_brought_back_returns_ticked():
+    from ui_library import carried_selection
+
+    # The editor raises «Длительность от, мин», Шульман's episodes fall out of
+    # the results, then she lowers it again and they come back. Nothing may be
+    # hidden by a speaker she never unticked, so Шульман returns ticked, while
+    # Быков, whom she did untick, stays off.
+    everyone = ["Дмитрий Быков", "Екатерина Шульман", "Ирина Хакамада"]
+    narrowed = ["Дмитрий Быков", "Ирина Хакамада"]
+    after_narrowing = carried_selection(narrowed, everyone, ["Екатерина Шульман", "Ирина Хакамада"])
+    assert after_narrowing == ["Ирина Хакамада"]
+    assert carried_selection(everyone, narrowed, after_narrowing) == [
+        "Екатерина Шульман",
+        "Ирина Хакамада",
+    ]
