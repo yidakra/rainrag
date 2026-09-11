@@ -442,8 +442,8 @@ def stale_speaker_keys(keys: Iterable[str], keep: Iterable[str]) -> list[str]:
 
     Session state outlives the seed that filled it, so without this an editor
     who unticks a speaker, moves to another episode and comes back finds the
-    old unticks silently hiding results, and every seed she tries leaves a
-    pair of keys behind for the rest of the session.
+    old unticks silently hiding results, and every seed she tries leaves its
+    keys behind for the rest of the session.
     """
     kept = set(keep)
     return [k for k in keys if k.startswith(SPEAKER_STATE_PREFIX) and k not in kept]
