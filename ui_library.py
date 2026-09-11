@@ -812,14 +812,16 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     # sits next to «Жанры» even though its options need the results.
     options = speaker_options(same + themed)
     selected: list[str] | None = None
+    # Keyed on the seed, so picking another episode starts over with everything
+    # ticked. Within one seed the ticks are carried across a change of duration
+    # or genre, which changes what is on offer. The old seed's keys go whether
+    # or not this one has any speakers to offer: a detour through an episode
+    # nobody is credited on must not preserve them either.
+    state_key = f"{SPEAKER_STATE_PREFIX}{seed.video_hash}"
+    offered_key = f"{state_key}_offered"
+    for stale in stale_speaker_keys(st.session_state, [state_key, offered_key]):
+        del st.session_state[stale]
     if options:
-        # Keyed on the seed, so picking another episode starts over with
-        # everything ticked. Within one seed the ticks are carried across a
-        # change of duration or genre, which changes what is on offer.
-        state_key = f"{SPEAKER_STATE_PREFIX}{seed.video_hash}"
-        offered_key = f"{state_key}_offered"
-        for stale in stale_speaker_keys(st.session_state, [state_key, offered_key]):
-            del st.session_state[stale]
         st.session_state[state_key] = carried_selection(
             options,
             st.session_state.get(offered_key),
