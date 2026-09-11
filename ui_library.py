@@ -43,6 +43,7 @@ from typing import Any
 import streamlit as st
 
 from rainrag.library import GENRES
+from rainrag.library_blend import Audience, blended_top
 from rainrag.library_performance import METRIC_COLUMNS, aggregate, build_uploads, load_metrics
 from rainrag.library_programs import load_programmes
 from rainrag.library_similar import (
@@ -51,6 +52,7 @@ from rainrag.library_similar import (
     dedupe_latest,
     find_similar,
     normalise_person,
+    subject_idf,
 )
 
 
@@ -115,6 +117,8 @@ _T = {
         "speakers_hidden": "Все результаты скрыты фильтром по спикерам.",
         "same_speaker": "Тот же спикер",
         "same_theme": "Похожие темы",
+        "top5": "Топ-5",
+        "top5_note": "Смешанный топ по спикеру, темам и данным ютуба. Оси, по которым данных нет, в расчёт не идут.",
         "nothing_similar": "Пересечений не нашлось.",
         "no_speaker": "У этого выпуска не указан спикер, поэтому подобрать «того же спикера» "
         "не получится. В карточке нет ни ведущего из CMS, ни гостя из расшифровки.",
@@ -180,6 +184,8 @@ _T = {
         "speakers_hidden": "Every result is hidden by the speaker filter.",
         "same_speaker": "Same speaker",
         "same_theme": "Similar subjects",
+        "top5": "Top 5",
+        "top5_note": "A blended ranking over speaker, subjects and YouTube data. Axes with no data are left out of the calculation.",
         "nothing_similar": "No overlap found.",
         "no_speaker": "This episode has no speaker recorded, so there is nothing to match on. "
         "Neither a CMS presenter nor a guest from the transcript is set.",
@@ -264,6 +270,35 @@ def youtube_id_from_query(text: str) -> str | None:
     ):
         return text
     return None
+
+
+def audience_by_hash(
+    map_path: Path = MAP_PATH, metrics_path: Path = METRICS_PATH
+) -> dict[str, Audience]:
+    """Analytics per archive episode, via the upload map.
+
+    Only uploads confirmed against the archive carry a hash, so this covers
+    the couple of hundred published episodes and nothing else. That is the
+    normal state and the blend is built for it: an episode with no entry here
+    simply does not compete on the analytics axes.
+
+    Age and gender are absent for now. The demographics report can only be
+    filtered to one video per request, so it needs its own pull rather than
+    riding along with the batched metrics, and until then the audience axis
+    never fires.
+    """
+    metrics = load_metrics(metrics_path)
+    profiles: dict[str, Audience] = {}
+    for row in load_map_rows(map_path):
+        video_hash = row.get("archive_video_hash")
+        measured = metrics.get(row.get("youtube_id") or "")
+        if not video_hash or not measured:
+            continue
+        profiles[str(video_hash)] = Audience(
+            average_view_duration=measured.get("averageViewDuration"),
+            playback_based_cpm=measured.get("playbackBasedCpm"),
+        )
+    return profiles
 
 
 def load_map_rows(path: Path = MAP_PATH) -> list[dict]:
@@ -870,6 +905,22 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     except FileNotFoundError:
         cache_key = (0, 0)
     marks = _cached_feedback(cache_key)
+    shortlist = blended_top(
+        seed,
+        [r.episode for r in visible_results(same + themed, selected, limit=SIMILAR_POOL_LIMIT)],
+        _cached_idf(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH)),
+        _cached_audiences(_stat_key(MAP_PATH), _stat_key(METRICS_PATH)),
+    )
+    if shortlist:
+        st.subheader(_t("top5", lang))
+        st.caption(_t("top5_note", lang))
+        for i, b in enumerate(shortlist, 1):
+            title, synthetic_title = display_title(b.episode, lang, synthetic)
+            link = f"[{escape_markdown(title)}]({b.episode.url})" if b.episode.url else title
+            st.markdown(f"{i}. {link}")
+            st.caption(b.explain(lang))
+        st.divider()
+
     speaker_col, theme_col = st.columns(2)
     with speaker_col:
         st.subheader(_t("same_speaker", lang))
@@ -1139,6 +1190,25 @@ def _stat_key(path: Path) -> tuple[int, int]:
     except OSError:
         return (0, 0)
     return (stat.st_mtime_ns, stat.st_size)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_audiences(map_key: tuple[int, int], metrics_key: tuple[int, int]) -> dict:
+    """Analytics per episode; re-read when either source file changes."""
+    del map_key, metrics_key
+    return audience_by_hash()
+
+
+@st.cache_data(show_spinner=False)
+def _cached_idf(tags_key: tuple[int, int], programs_key: tuple[int, int]) -> dict:
+    """IDF over the whole tagged pool.
+
+    Computed once per data change rather than per interaction: it walks every
+    subject on all 13,808 episodes, and the shortlist needs the same weighting
+    the two columns use or the three lists would disagree about what a theme
+    match is worth.
+    """
+    return subject_idf(_cached_episodes(tags_key, programs_key))
 
 
 @st.cache_data(show_spinner=False)
