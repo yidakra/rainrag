@@ -42,6 +42,7 @@ import streamlit as st
 
 from rainrag.library import GENRES
 from rainrag.library_performance import METRIC_COLUMNS, aggregate, build_uploads, load_metrics
+from rainrag.library_programs import load_programmes
 from rainrag.library_similar import Episode, Scored, dedupe_latest, find_similar
 
 
@@ -55,6 +56,7 @@ VIDEOS_CACHE_PATH = REPO_ROOT / "data" / "library_videos.jsonl"
 METRICS_PATH = REPO_ROOT / "data" / "youtube_metrics.csv"
 # Stand-in titles for tagged episodes with no CMS card (scripts/library_untitled_titles.py)
 UNTITLED_TITLES_PATH = REPO_ROOT / "data" / "untitled_titles.json"
+PROGRAMS_PATH = REPO_ROOT / "data" / "library_programs.csv"
 
 _T = {
     "ru": {
@@ -104,6 +106,9 @@ _T = {
         "same_speaker": "Тот же спикер",
         "same_theme": "Похожие темы",
         "nothing_similar": "Пересечений не нашлось.",
+        "no_speaker": "У этого выпуска не указан спикер, поэтому подобрать «того же спикера» "
+        "не получится. В карточке нет ни ведущего из CMS, ни гостя из расшифровки.",
+        "presenter_demoted": "Ведущий не считается спикером в этом жанре: ищем по гостю.",
         "map_missing": "Файл сопоставления не найден: {path}. Запустите youtube_map.py.",
         "review_done": "Всё проверено: {n} решений.",
         "review_stats": "Подтверждено: {ok} · Отклонено: {no} · Осталось: {left}",
@@ -162,6 +167,10 @@ _T = {
         "same_speaker": "Same speaker",
         "same_theme": "Similar subjects",
         "nothing_similar": "No overlap found.",
+        "no_speaker": "This episode has no speaker recorded, so there is nothing to match on. "
+        "Neither a CMS presenter nor a guest from the transcript is set.",
+        "presenter_demoted": "The presenter does not count as a speaker in this genre; "
+        "matching on the guest instead.",
         "map_missing": "Map file not found: {path}. Run youtube_map.py.",
         "review_done": "All reviewed: {n} decisions.",
         "review_stats": "Confirmed: {ok} · Rejected: {no} · Remaining: {left}",
@@ -184,8 +193,15 @@ def _t(key: str, lang: str, **kw: object) -> str:
 # ---------------------------------------------------------------- data access
 
 
-def load_tagged_episodes(path: Path = TAGS_PATH) -> list[Episode]:
-    """The tagged pool, deduped, failures dropped — same rules as the eval."""
+def load_tagged_episodes(
+    path: Path = TAGS_PATH, programs_path: Path = PROGRAMS_PATH
+) -> list[Episode]:
+    """The tagged pool, deduped, failures dropped — same rules as the eval.
+
+    The programme table decides whether a presenter counts as a speaker. When
+    it is absent the ranking falls back to presenter plus guest, as before.
+    """
+    programmes = load_programmes(programs_path)
     episodes: list[Episode] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -196,7 +212,7 @@ def load_tagged_episodes(path: Path = TAGS_PATH) -> list[Episode]:
             continue  # a row mid-write during a tagging run
         if record.get("error"):
             continue
-        episodes.append(Episode.from_record(record))
+        episodes.append(Episode.from_record(record, programmes))
     return dedupe_latest(episodes)
 
 
@@ -668,7 +684,12 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     with speaker_col:
         st.subheader(_t("same_speaker", lang))
         if not same:
-            st.caption(_t("nothing_similar", lang))
+            # Varya reopened 86cbdbuv9 on exactly this: "Пересечений не нашлось"
+            # reads as a ranking miss when the real cause is that the episode
+            # has nobody recorded to match against.
+            st.caption(_t("no_speaker" if not seed.speakers else "nothing_similar", lang))
+        elif seed.presenter_demoted:
+            st.caption(_t("presenter_demoted", lang))
         for i, r in enumerate(same[:10], 1):
             _render_scored(
                 i,
@@ -915,10 +936,12 @@ def _cached_feedback(cache_key: tuple[int, int]) -> dict[tuple[str, str], str]:
 
 
 @st.cache_data(show_spinner=False)
-def _cached_episodes(mtime: float) -> list[Episode]:
+def _cached_episodes(mtime: float, programs_mtime: float) -> list[Episode]:
     """Cache keyed on the tag file's mtime, so a finished tagging run shows up
-    on the next interaction without a service restart."""
-    del mtime
+    on the next interaction without a service restart. The programme table is
+    in the key too: editing a genre in the sheet changes who counts as a
+    speaker, and that must not need a restart either."""
+    del mtime, programs_mtime
     return load_tagged_episodes()
 
 
@@ -926,7 +949,8 @@ def render_library_mode(lang: str) -> None:
     if not TAGS_PATH.exists():
         st.warning(_t("no_tags", lang, path=TAGS_PATH.name))
         return
-    episodes = _cached_episodes(TAGS_PATH.stat().st_mtime)
+    programs_mtime = PROGRAMS_PATH.stat().st_mtime if PROGRAMS_PATH.exists() else 0.0
+    episodes = _cached_episodes(TAGS_PATH.stat().st_mtime, programs_mtime)
     similar_tab, perf_tab, youtube_tab = st.tabs(
         [_t("tab_similar", lang), _t("tab_perf", lang), _t("tab_youtube", lang)]
     )

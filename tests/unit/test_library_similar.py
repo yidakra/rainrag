@@ -253,3 +253,60 @@ def test_find_similar_excludes_a_re_tagged_seed_from_its_own_results():
 
     results = find_similar(seed, [seed_again, other], limit=10)
     assert [r.episode.video_hash for r in results] == ["other"]
+
+
+def test_from_record_applies_the_programme_speaker_rule():
+    """An interview's presenter must not become the thing the ranking matches on."""
+    from rainrag.library_programs import Programme
+    from rainrag.library_similar import Episode
+
+    programmes = {"синдеева": Programme("Синдеева", ("интервью",), "Наталья Синдеева")}
+    record = {
+        "video_hash": "h1",
+        "program": "Синдеева",
+        "presenter_cms": ["Наталья Синдеева"],
+        "guest": ["Михаил Ходорковский"],
+    }
+    episode = Episode.from_record(record, programmes)
+    assert episode.speakers == ["Михаил Ходорковский"]
+    assert episode.presenter_demoted
+
+
+def test_from_record_without_a_programme_table_is_unchanged():
+    from rainrag.library_similar import Episode
+
+    record = {
+        "video_hash": "h1",
+        "program": "Синдеева",
+        "presenter_cms": ["Наталья Синдеева"],
+        "guest": ["Михаил Ходорковский"],
+    }
+    episode = Episode.from_record(record)
+    assert episode.speakers == ["Наталья Синдеева", "Михаил Ходорковский"]
+    assert not episode.presenter_demoted
+
+
+def test_the_guest_not_the_interviewer_drives_the_ranking():
+    """End to end: two interviews by the same host must not match each other."""
+    from rainrag.library_programs import Programme
+    from rainrag.library_similar import Episode, find_similar
+
+    programmes = {"синдеева": Programme("Синдеева", ("интервью",), "Наталья Синдеева")}
+    make = lambda h, guest: Episode.from_record(  # noqa: E731
+        {
+            "video_hash": h,
+            "program": "Синдеева",
+            "presenter_cms": ["Наталья Синдеева"],
+            "guest": [guest],
+            "subject": [],
+            "duration_seconds": 3600,
+        },
+        programmes,
+    )
+    seed = make("seed", "Михаил Ходорковский")
+    same_guest = make("same", "Михаил Ходорковский")
+    other_guest = make("other", "Юлия Навальная")
+    ranked = find_similar(seed, [same_guest, other_guest], limit=5)
+    assert ranked[0].episode.video_hash == "same"
+    assert ranked[0].shared_speakers == ["Михаил Ходорковский"]
+    assert not [r for r in ranked if r.episode.video_hash == "other" and r.shared_speakers]
