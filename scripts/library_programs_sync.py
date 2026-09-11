@@ -55,7 +55,14 @@ def validate_export(path: Path) -> list[dict[str, str]]:
 
 
 def latest_tag_rows(path: Path) -> list[dict[str, object]]:
-    """Last row wins, matching how the ranker reads the tagging output."""
+    """Last good row wins, matching how the ranker reads the tagging output.
+
+    Errors are dropped *before* the dedup, not after. The ranker does the same,
+    and the difference is not cosmetic: an episode that was tagged, then
+    re-tagged into a failure, still has a usable earlier row. Filtering last
+    would discard it here while the interface keeps serving it, so the coverage
+    report would blame the programme table for a gap that does not exist.
+    """
     if not path.exists():
         return []
     latest: dict[str, dict[str, object]] = {}
@@ -68,9 +75,11 @@ def latest_tag_rows(path: Path) -> list[dict[str, object]]:
                 record = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(record, dict) and record.get("video_hash"):
+            if not isinstance(record, dict) or record.get("error"):
+                continue
+            if record.get("video_hash"):
                 latest[str(record["video_hash"])] = record
-    return [r for r in latest.values() if not r.get("error")]
+    return list(latest.values())
 
 
 def report_coverage(table: Path, tags: Path) -> int:
