@@ -552,7 +552,6 @@ def test_first_render_offers_every_speaker_ticked():
 
     options = ["Дмитрий Быков", "Ирина Хакамада"]
     unticked = unticked_speakers(None, [], [])
-    assert unticked == []
     assert carried_selection(options, unticked) == options
 
 
@@ -561,7 +560,6 @@ def test_an_unticked_speaker_stays_unticked_on_the_next_run():
 
     options = ["Дмитрий Быков", "Ирина Хакамада"]
     unticked = unticked_speakers(options, ["Дмитрий Быков"], [])
-    assert unticked == ["Ирина Хакамада"]
     assert carried_selection(options, unticked) == ["Дмитрий Быков"]
 
 
@@ -570,7 +568,6 @@ def test_ticking_a_speaker_back_on_forgets_that_she_was_unticked():
 
     options = ["Дмитрий Быков", "Ирина Хакамада"]
     unticked = unticked_speakers(options, options, ["Ирина Хакамада"])
-    assert unticked == []
     assert carried_selection(options, unticked) == options
 
 
@@ -597,9 +594,17 @@ def test_an_untick_survives_the_speaker_leaving_the_pool_and_coming_back():
     everyone = ["Дмитрий Быков", "Екатерина Шульман", "Ирина Хакамада"]
     narrowed = ["Дмитрий Быков", "Ирина Хакамада"]
     unticked = unticked_speakers(everyone, ["Дмитрий Быков", "Ирина Хакамада"], [])
-    assert unticked == ["Екатерина Шульман"]
     unticked = unticked_speakers(narrowed, narrowed, unticked)
     assert carried_selection(everyone, unticked) == narrowed
+
+
+def test_an_untick_survives_the_name_being_spelled_differently():
+    from ui_library import carried_selection, unticked_speakers
+
+    # The label on a checkbox is whichever spelling the current pool uses
+    # most, and a pool change can flip it. The person stays unticked.
+    unticked = unticked_speakers(["Дмитрий Быков", "Ирина Хакамада"], ["Дмитрий Быков"], [])
+    assert carried_selection(["Дмитрий Быков", "Хакамада"], unticked) == ["Дмитрий Быков"]
 
 
 def test_another_seeds_speaker_ticks_are_dropped_from_session_state():

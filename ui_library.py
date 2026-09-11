@@ -460,19 +460,25 @@ def unticked_speakers(
     A name that was on offer and is not in the selection has just been taken
     off; a name in the selection has been put back and stops counting as
     unticked. Names not on offer last time are left as they were.
+
+    People are held by their ``normalise_person`` key rather than by the label
+    on the checkbox, because the label is whichever spelling the current pool
+    uses most and a pool change can flip it from «Ирина Хакамада» to
+    «Хакамада». The untick has to outlive that.
     """
-    unticked = set(previously_unticked)
+    unticked = {normalise_person(s) for s in previously_unticked}
     if previous_options is not None:
-        chosen = set(previous_selection)
-        unticked |= {s for s in previous_options if s not in chosen}
+        chosen = {normalise_person(s) for s in previous_selection}
+        unticked |= {normalise_person(s) for s in previous_options} - chosen
         unticked -= chosen
+    unticked.discard("")
     return sorted(unticked)
 
 
 def carried_selection(options: Iterable[str], unticked: Iterable[str]) -> list[str]:
-    """Everything currently on offer except what the editor took off."""
-    hidden = set(unticked)
-    return [s for s in options if s not in hidden]
+    """Everything currently on offer except the people the editor took off."""
+    hidden = {normalise_person(s) for s in unticked}
+    return [s for s in options if normalise_person(s) not in hidden]
 
 
 def _passes_speaker_filter(result: Scored, keys: set[str]) -> bool:
