@@ -576,3 +576,19 @@ def test_a_speaker_the_filters_dropped_and_brought_back_returns_ticked():
         "Екатерина Шульман",
         "Ирина Хакамада",
     ]
+
+
+def test_another_seeds_speaker_ticks_are_dropped_from_session_state():
+    from ui_library import stale_speaker_keys
+
+    state = {
+        "library_seed_pick": "irrelevant",
+        "library_genres": ["лекция"],
+        "library_speakers_old": ["Ирина Хакамада"],
+        "library_speakers_old_offered": ["Ирина Хакамада", "Дмитрий Быков"],
+        "library_speakers_new": ["Дмитрий Быков"],
+        "library_speakers_new_offered": ["Дмитрий Быков"],
+    }
+    stale = stale_speaker_keys(state, ["library_speakers_new", "library_speakers_new_offered"])
+    # Only the previous seed's pair goes, and no unrelated widget is touched.
+    assert sorted(stale) == ["library_speakers_old", "library_speakers_old_offered"]

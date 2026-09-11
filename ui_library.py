@@ -428,6 +428,21 @@ def speaker_options(results: Iterable[Scored]) -> list[str]:
     return sorted(labels, key=lambda name: (name.lower(), name))
 
 
+SPEAKER_STATE_PREFIX = "library_speakers_"
+
+
+def stale_speaker_keys(keys: Iterable[str], keep: Iterable[str]) -> list[str]:
+    """Speaker-filter session keys left behind by some other seed.
+
+    Session state outlives the seed that filled it, so without this an editor
+    who unticks a speaker, moves to another episode and comes back finds the
+    old unticks silently hiding results, and every seed she tries leaves a
+    pair of keys behind for the rest of the session.
+    """
+    kept = set(keep)
+    return [k for k in keys if k.startswith(SPEAKER_STATE_PREFIX) and k not in kept]
+
+
 def carried_selection(
     options: list[str], previous_options: list[str] | None, previous_selection: Iterable[str]
 ) -> list[str]:
@@ -801,8 +816,10 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         # Keyed on the seed, so picking another episode starts over with
         # everything ticked. Within one seed the ticks are carried across a
         # change of duration or genre, which changes what is on offer.
-        state_key = f"library_speakers_{seed.video_hash}"
+        state_key = f"{SPEAKER_STATE_PREFIX}{seed.video_hash}"
         offered_key = f"{state_key}_offered"
+        for stale in stale_speaker_keys(st.session_state, [state_key, offered_key]):
+            del st.session_state[stale]
         st.session_state[state_key] = carried_selection(
             options,
             st.session_state.get(offered_key),
