@@ -27,6 +27,8 @@ import json
 import os
 import re
 import threading
+from collections import Counter, defaultdict
+from collections.abc import Iterable
 
 
 try:
@@ -43,7 +45,13 @@ import streamlit as st
 from rainrag.library import GENRES
 from rainrag.library_performance import METRIC_COLUMNS, aggregate, build_uploads, load_metrics
 from rainrag.library_programs import load_programmes
-from rainrag.library_similar import Episode, Scored, dedupe_latest, find_similar
+from rainrag.library_similar import (
+    Episode,
+    Scored,
+    dedupe_latest,
+    find_similar,
+    normalise_person,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -103,6 +111,8 @@ _T = {
         "поиска во вкладке «Похожие выпуски».",
         "min_minutes": "Длительность от, мин",
         "genres": "Жанры",
+        "speakers": "Спикеры",
+        "speakers_none": "Ни один спикер не выбран, показывать нечего.",
         "same_speaker": "Тот же спикер",
         "same_theme": "Похожие темы",
         "nothing_similar": "Пересечений не нашлось.",
@@ -111,6 +121,7 @@ _T = {
         "presenter_demoted": "Ведущий не считается спикером в этом жанре: ищем по гостю.",
         "demoted_no_guest": "Ведущий не считается спикером в этом жанре, а гость в расшифровке "
         "не определился, поэтому подбирать не по кому.",
+        "speakers_filtered": "Все совпадения скрыты фильтром по спикерам.",
         "map_missing": "Файл сопоставления не найден: {path}. Запустите youtube_map.py.",
         "review_done": "Всё проверено: {n} решений.",
         "review_stats": "Подтверждено: {ok} · Отклонено: {no} · Осталось: {left}",
@@ -166,6 +177,8 @@ _T = {
         "and independent of the search on the other tab.",
         "min_minutes": "Min duration, min",
         "genres": "Genres",
+        "speakers": "Speakers",
+        "speakers_none": "No speaker is selected, nothing to show.",
         "same_speaker": "Same speaker",
         "same_theme": "Similar subjects",
         "nothing_similar": "No overlap found.",
@@ -175,6 +188,7 @@ _T = {
         "matching on the guest instead.",
         "demoted_no_guest": "The presenter does not count as a speaker in this genre and no "
         "guest was extracted from the transcript, so there is nobody to match on.",
+        "speakers_filtered": "Every match is hidden by the speaker filter.",
         "map_missing": "Map file not found: {path}. Run youtube_map.py.",
         "review_done": "All reviewed: {n} decisions.",
         "review_stats": "Confirmed: {ok} · Rejected: {no} · Remaining: {left}",
@@ -378,6 +392,73 @@ def split_by_speaker(results: list[Scored]) -> tuple[list[Scored], list[Scored]]
     same = [r for r in results if r.shared_speakers]
     themed = [r for r in results if not r.shared_speakers]
     return same, themed
+
+
+# Each column shows ten rows, but the ranker is asked for the whole pool, so
+# the speaker filter can be applied to a deeper slice and the columns refill
+# instead of thinning out when a speaker is unticked. Fifty per column is deep
+# enough to refill ten several times over, and shallow enough that the list of
+# checkboxes stays a list an editor can read.
+SIMILAR_DISPLAY_LIMIT = 10
+SIMILAR_POOL_LIMIT = 50
+
+
+def speaker_options(results: Iterable[Scored]) -> list[str]:
+    """The speakers present in these results, one entry per person.
+
+    Names are grouped by ``normalise_person``, the same surname key the ranker
+    itself matches on, so «Хакамада» and «Ирина Хакамада» become one checkbox
+    rather than two half-working ones; the displayed variant is the one that
+    occurs most often. The price is that two people who share a surname share
+    a checkbox, which is worth paying: a second notion of speaker identity,
+    disagreeing with the ranking's own, would be worse than a rare collision.
+
+    ``Scored.shared_speakers`` is deliberately not the source. It is empty for
+    every row of «Похожие темы», so a filter built on it could not touch that
+    column at all.
+    """
+    variants: dict[str, Counter[str]] = defaultdict(Counter)
+    for result in results:
+        for name in result.episode.speakers:
+            key = normalise_person(name)
+            if key:
+                variants[key][str(name).strip()] += 1
+    labels = [
+        max(counter.items(), key=lambda pair: (pair[1], len(pair[0]), pair[0]))[0]
+        for counter in variants.values()
+    ]
+    return sorted(labels, key=lambda name: (name.lower(), name))
+
+
+def _passes_speaker_filter(result: Scored, keys: set[str]) -> bool:
+    speakers = {normalise_person(s) for s in result.episode.speakers}
+    speakers.discard("")
+    # An episode nobody is credited on is never hidden: the filter can only
+    # exclude what it can attribute to somebody.
+    return not speakers or bool(speakers & keys)
+
+
+def visible_results(
+    results: Iterable[Scored], selected: Iterable[str] | None, *, limit: int
+) -> list[Scored]:
+    """The rows to render: filtered by speaker first, cut to ``limit`` after.
+
+    That order is the feature. Unticking a speaker has to pull deeper
+    candidates up into the visible ten rather than leave holes in it, so
+    ``results`` is expected to be a pool larger than ``limit``. Backfill
+    therefore reaches as deep as the pool and no deeper: unticking almost
+    everybody can still leave a column shorter than ``limit``.
+
+    ``selected`` of ``None`` means no filter at all; an empty ``selected``
+    means every attributable result is hidden, which is what unticking the
+    last box literally asks for.
+    """
+    rows = list(results)
+    if selected is not None:
+        keys = {normalise_person(s) for s in selected}
+        keys.discard("")
+        rows = [r for r in rows if _passes_speaker_filter(r, keys)]
+    return rows[:limit]
 
 
 def _append_csv_row(path: Path, header: list[str], row: list[object]) -> None:
@@ -674,7 +755,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     if seed.video_hash not in tagged_hashes:
         st.info(_t("seed_untagged", lang))
         return
-    filter_col, genre_col = st.columns([1, 2])
+    filter_col, genre_col, speaker_filter_col = st.columns([1, 2, 2])
     with filter_col:
         min_minutes = st.number_input(
             _t("min_minutes", lang), min_value=0, value=30, step=5, key="library_min_minutes"
@@ -690,6 +771,29 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         limit=len(episodes),
     )
     same, themed = split_by_speaker(results)
+    same = same[:SIMILAR_POOL_LIMIT]
+    themed = themed[:SIMILAR_POOL_LIMIT]
+
+    # The offered speakers are the ones this seed's own results have, not the
+    # archive's; they come from the whole pool rather than the visible ten, so
+    # unticking a name cannot make it vanish from the list that would let the
+    # editor tick it back on. The column was reserved above so the control
+    # sits next to «Жанры» even though its options need the results.
+    options = speaker_options(same + themed)
+    selected: list[str] | None = None
+    if options:
+        # Keyed on the seed, so a new seed starts with everything ticked.
+        # Changing duration or genre keeps the editor's choice, minus any name
+        # the narrowed pool no longer offers.
+        state_key = f"library_speakers_{seed.video_hash}"
+        if state_key in st.session_state:
+            st.session_state[state_key] = [s for s in st.session_state[state_key] if s in options]
+        with speaker_filter_col:
+            selected = st.multiselect(_t("speakers", lang), options, default=options, key=state_key)
+        if not selected:
+            st.caption(_t("speakers_none", lang))
+    same_rows = visible_results(same, selected, limit=SIMILAR_DISPLAY_LIMIT)
+    theme_rows = visible_results(themed, selected, limit=SIMILAR_DISPLAY_LIMIT)
 
     try:
         stat = FEEDBACK_PATH.stat()
@@ -703,11 +807,14 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     speaker_col, theme_col = st.columns(2)
     with speaker_col:
         st.subheader(_t("same_speaker", lang))
-        if not same:
-            st.caption(_t(empty_speaker_reason(seed), lang))
+        if not same_rows:
+            # Four causes now, not three: the speaker filter can empty a column
+            # that the ranker did fill. Saying "no speaker recorded" then would
+            # be the same lie this branch already fixed twice.
+            st.caption(_t("speakers_filtered" if same else empty_speaker_reason(seed), lang))
         elif seed.presenter_demoted:
             st.caption(_t("presenter_demoted", lang))
-        for i, r in enumerate(same[:10], 1):
+        for i, r in enumerate(same_rows, 1):
             _render_scored(
                 i,
                 r,
@@ -719,9 +826,9 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
             )
     with theme_col:
         st.subheader(_t("same_theme", lang))
-        if not themed:
+        if not theme_rows:
             st.caption(_t("nothing_similar", lang))
-        for i, r in enumerate(themed[:10], 1):
+        for i, r in enumerate(theme_rows, 1):
             _render_scored(
                 i,
                 r,
