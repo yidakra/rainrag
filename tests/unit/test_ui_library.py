@@ -607,17 +607,31 @@ def test_an_untick_survives_the_name_being_spelled_differently():
     assert carried_selection(["Дмитрий Быков", "Хакамада"], unticked) == ["Дмитрий Быков"]
 
 
-def test_another_seeds_speaker_ticks_are_dropped_from_session_state():
-    from ui_library import stale_speaker_keys
+def _speaker_state(*seeds):
+    from ui_library import speaker_state_keys
 
-    state = {
-        "library_seed_pick": "irrelevant",
-        "library_genres": ["лекция"],
-        "library_speakers_old": ["Ирина Хакамада"],
-        "library_speakers_old_offered": ["Ирина Хакамада", "Дмитрий Быков"],
-        "library_speakers_new": ["Дмитрий Быков"],
-        "library_speakers_new_offered": ["Дмитрий Быков"],
-    }
-    stale = stale_speaker_keys(state, ["library_speakers_new", "library_speakers_new_offered"])
-    # Only the previous seed's pair goes, and no unrelated widget is touched.
-    assert sorted(stale) == ["library_speakers_old", "library_speakers_old_offered"]
+    state = {"library_seed_pick": "irrelevant", "library_genres": ["лекция"]}
+    for seed in seeds:
+        for key in speaker_state_keys(seed):
+            state[key] = ["Ирина Хакамада"]
+    return state
+
+
+def test_another_seeds_speaker_ticks_are_dropped_from_session_state():
+    from ui_library import speaker_state_keys, stale_speaker_keys
+
+    state = _speaker_state("old", "new")
+    stale = stale_speaker_keys(state, speaker_state_keys("new"))
+    # Only the previous seed's keys go, and no unrelated widget is touched.
+    assert sorted(stale) == sorted(speaker_state_keys("old"))
+
+
+def test_a_detour_through_a_seed_with_no_filter_drops_the_old_ticks():
+    from ui_library import speaker_state_keys, stale_speaker_keys
+
+    # An untagged seed shows no filter and so has no keys of its own. The
+    # previous seed's must still go, or coming back to it would restore ticks
+    # the editor set two seeds ago.
+    state = _speaker_state("old")
+    stale = stale_speaker_keys(state, speaker_state_keys("untagged"))
+    assert sorted(stale) == sorted(speaker_state_keys("old"))

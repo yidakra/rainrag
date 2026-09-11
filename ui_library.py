@@ -431,6 +431,12 @@ def speaker_options(results: Iterable[Scored]) -> list[str]:
 SPEAKER_STATE_PREFIX = "library_speakers_"
 
 
+def speaker_state_keys(video_hash: str) -> list[str]:
+    """The session keys that hold the speaker filter for one seed."""
+    base = f"{SPEAKER_STATE_PREFIX}{video_hash}"
+    return [base, f"{base}_offered", f"{base}_unticked"]
+
+
 def stale_speaker_keys(keys: Iterable[str], keep: Iterable[str]) -> list[str]:
     """Speaker-filter session keys left behind by some other seed.
 
@@ -803,6 +809,15 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         ),
         key="library_seed_pick",
     )
+    # Before the untagged branch returns, not after: an editor who unticks a
+    # speaker here, looks at an episode with no tags and comes back must find
+    # the filter as it starts, not as she left it two seeds ago. Keyed on the
+    # seed, so only the one on screen keeps its ticks, and they survive a
+    # change of duration or genre, which changes who is on offer. An untagged
+    # seed has no keys of its own, so this clears the lot.
+    state_key, offered_key, unticked_key = speaker_state_keys(seed.video_hash)
+    for stale in stale_speaker_keys(st.session_state, [state_key, offered_key, unticked_key]):
+        del st.session_state[stale]
     if seed.video_hash not in tagged_hashes:
         st.info(_t("seed_untagged", lang))
         return
@@ -832,16 +847,6 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     # sits next to «Жанры» even though its options need the results.
     options = speaker_options(same + themed)
     selected: list[str] | None = None
-    # Keyed on the seed, so picking another episode starts over with everything
-    # ticked. Within one seed the ticks are carried across a change of duration
-    # or genre, which changes what is on offer. The old seed's keys go whether
-    # or not this one has any speakers to offer: a detour through an episode
-    # nobody is credited on must not preserve them either.
-    state_key = f"{SPEAKER_STATE_PREFIX}{seed.video_hash}"
-    offered_key = f"{state_key}_offered"
-    unticked_key = f"{state_key}_unticked"
-    for stale in stale_speaker_keys(st.session_state, [state_key, offered_key, unticked_key]):
-        del st.session_state[stale]
     if options:
         unticked = unticked_speakers(
             st.session_state.get(offered_key),
