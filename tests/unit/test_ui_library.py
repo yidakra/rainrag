@@ -385,3 +385,27 @@ def test_untitled_hashes_use_last_row_wins_like_the_ui():
         "{torn",
     ]
     assert untitled_hashes(lines) == ["b"]
+
+
+def test_empty_speaker_column_names_the_actual_cause():
+    """Three causes look identical to the editor unless the message differs."""
+    from rainrag.library_similar import Episode
+    from ui_library import empty_speaker_reason
+
+    has_speaker = Episode(video_hash="h", speakers=["Ирина Хакамада"])
+    assert empty_speaker_reason(has_speaker) == "nothing_similar"
+
+    demoted = Episode(video_hash="h", speakers=[], presenter_demoted=True)
+    assert empty_speaker_reason(demoted) == "demoted_no_guest"
+
+    empty_card = Episode(video_hash="h", speakers=[], presenter_demoted=False)
+    assert empty_speaker_reason(empty_card) == "no_speaker"
+
+
+def test_every_empty_speaker_message_exists_in_both_languages():
+    """A missing key would render the key itself into the editor's view."""
+    from ui_library import _T
+
+    for key in ("nothing_similar", "demoted_no_guest", "no_speaker", "presenter_demoted"):
+        for lang in ("ru", "en"):
+            assert _T[lang][key].strip()

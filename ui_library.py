@@ -109,6 +109,8 @@ _T = {
         "no_speaker": "У этого выпуска не указан спикер, поэтому подобрать «того же спикера» "
         "не получится. В карточке нет ни ведущего из CMS, ни гостя из расшифровки.",
         "presenter_demoted": "Ведущий не считается спикером в этом жанре: ищем по гостю.",
+        "demoted_no_guest": "Ведущий не считается спикером в этом жанре, а гость в расшифровке "
+        "не определился, поэтому подбирать не по кому.",
         "map_missing": "Файл сопоставления не найден: {path}. Запустите youtube_map.py.",
         "review_done": "Всё проверено: {n} решений.",
         "review_stats": "Подтверждено: {ok} · Отклонено: {no} · Осталось: {left}",
@@ -171,6 +173,8 @@ _T = {
         "Neither a CMS presenter nor a guest from the transcript is set.",
         "presenter_demoted": "The presenter does not count as a speaker in this genre; "
         "matching on the guest instead.",
+        "demoted_no_guest": "The presenter does not count as a speaker in this genre and no "
+        "guest was extracted from the transcript, so there is nobody to match on.",
         "map_missing": "Map file not found: {path}. Run youtube_map.py.",
         "review_done": "All reviewed: {n} decisions.",
         "review_stats": "Confirmed: {ok} · Rejected: {no} · Remaining: {left}",
@@ -556,6 +560,22 @@ def escape_markdown(text: str) -> str:
     return _MD_SPECIAL.sub(r"\\\1", text)
 
 
+def empty_speaker_reason(seed: Episode) -> str:
+    """Which message explains an empty «Тот же спикер» column.
+
+    Varya reopened 86cbdbuv9 because "Пересечений не нашлось" reads as a
+    ranking miss when the real cause is that there is nobody to match against.
+    Three causes, and naming the wrong one is its own bug: telling an editor
+    the card has no presenter is false when a presenter was set aside by the
+    genre rule, which is the case for 270 episodes.
+    """
+    if seed.speakers:
+        return "nothing_similar"
+    if seed.presenter_demoted:
+        return "demoted_no_guest"
+    return "no_speaker"
+
+
 def display_title(
     e: Episode, lang: str, synthetic: dict[str, str] | None = None
 ) -> tuple[str, bool]:
@@ -684,10 +704,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     with speaker_col:
         st.subheader(_t("same_speaker", lang))
         if not same:
-            # Varya reopened 86cbdbuv9 on exactly this: "Пересечений не нашлось"
-            # reads as a ranking miss when the real cause is that the episode
-            # has nobody recorded to match against.
-            st.caption(_t("no_speaker" if not seed.speakers else "nothing_similar", lang))
+            st.caption(_t(empty_speaker_reason(seed), lang))
         elif seed.presenter_demoted:
             st.caption(_t("presenter_demoted", lang))
         for i, r in enumerate(same[:10], 1):
