@@ -411,7 +411,7 @@ def test_every_empty_speaker_message_exists_in_both_languages():
         "demoted_no_guest",
         "no_speaker",
         "presenter_demoted",
-        "speakers_filtered",
+        "speakers_hidden",
     ):
         for lang in ("ru", "en"):
             assert _T[lang][key].strip()
@@ -543,5 +543,5 @@ def test_a_column_emptied_by_the_filter_is_not_called_an_empty_card():
     # The ranker did find matches; the editor hid them. Different message.
     rows = [_scored("a", ["Ирина Хакамада"])]
     assert visible_results(rows, [], limit=10) == []
-    assert _T["ru"]["speakers_filtered"].strip()
-    assert _T["en"]["speakers_filtered"].strip()
+    assert _T["ru"]["speakers_hidden"].strip()
+    assert _T["en"]["speakers_hidden"].strip()

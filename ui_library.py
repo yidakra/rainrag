@@ -112,7 +112,7 @@ _T = {
         "min_minutes": "Длительность от, мин",
         "genres": "Жанры",
         "speakers": "Спикеры",
-        "speakers_none": "Ни один спикер не выбран, показывать нечего.",
+        "speakers_hidden": "Все результаты скрыты фильтром по спикерам.",
         "same_speaker": "Тот же спикер",
         "same_theme": "Похожие темы",
         "nothing_similar": "Пересечений не нашлось.",
@@ -121,7 +121,6 @@ _T = {
         "presenter_demoted": "Ведущий не считается спикером в этом жанре: ищем по гостю.",
         "demoted_no_guest": "Ведущий не считается спикером в этом жанре, а гость в расшифровке "
         "не определился, поэтому подбирать не по кому.",
-        "speakers_filtered": "Все совпадения скрыты фильтром по спикерам.",
         "map_missing": "Файл сопоставления не найден: {path}. Запустите youtube_map.py.",
         "review_done": "Всё проверено: {n} решений.",
         "review_stats": "Подтверждено: {ok} · Отклонено: {no} · Осталось: {left}",
@@ -178,7 +177,7 @@ _T = {
         "min_minutes": "Min duration, min",
         "genres": "Genres",
         "speakers": "Speakers",
-        "speakers_none": "No speaker is selected, nothing to show.",
+        "speakers_hidden": "Every result is hidden by the speaker filter.",
         "same_speaker": "Same speaker",
         "same_theme": "Similar subjects",
         "nothing_similar": "No overlap found.",
@@ -188,7 +187,6 @@ _T = {
         "matching on the guest instead.",
         "demoted_no_guest": "The presenter does not count as a speaker in this genre and no "
         "guest was extracted from the transcript, so there is nobody to match on.",
-        "speakers_filtered": "Every match is hidden by the speaker filter.",
         "map_missing": "Map file not found: {path}. Run youtube_map.py.",
         "review_done": "All reviewed: {n} decisions.",
         "review_stats": "Confirmed: {ok} · Rejected: {no} · Remaining: {left}",
@@ -790,8 +788,6 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
             st.session_state[state_key] = [s for s in st.session_state[state_key] if s in options]
         with speaker_filter_col:
             selected = st.multiselect(_t("speakers", lang), options, default=options, key=state_key)
-        if not selected:
-            st.caption(_t("speakers_none", lang))
     same_rows = visible_results(same, selected, limit=SIMILAR_DISPLAY_LIMIT)
     theme_rows = visible_results(themed, selected, limit=SIMILAR_DISPLAY_LIMIT)
 
@@ -808,10 +804,11 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     with speaker_col:
         st.subheader(_t("same_speaker", lang))
         if not same_rows:
-            # Four causes now, not three: the speaker filter can empty a column
-            # that the ranker did fill. Saying "no speaker recorded" then would
-            # be the same lie this branch already fixed twice.
-            st.caption(_t("speakers_filtered" if same else empty_speaker_reason(seed), lang))
+            # Four causes, not two. The filter can empty a column the ranker
+            # filled, and an empty ranker result has three distinct reasons of
+            # its own. Naming the wrong one is the bug both halves of this
+            # branch already fixed separately.
+            st.caption(_t("speakers_hidden" if same else empty_speaker_reason(seed), lang))
         elif seed.presenter_demoted:
             st.caption(_t("presenter_demoted", lang))
         for i, r in enumerate(same_rows, 1):
@@ -827,7 +824,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     with theme_col:
         st.subheader(_t("same_theme", lang))
         if not theme_rows:
-            st.caption(_t("nothing_similar", lang))
+            st.caption(_t("speakers_hidden" if themed else "nothing_similar", lang))
         for i, r in enumerate(theme_rows, 1):
             _render_scored(
                 i,
