@@ -548,34 +548,58 @@ def test_a_column_emptied_by_the_filter_is_not_called_an_empty_card():
 
 
 def test_first_render_offers_every_speaker_ticked():
-    from ui_library import carried_selection
+    from ui_library import carried_selection, unticked_speakers
 
     options = ["Дмитрий Быков", "Ирина Хакамада"]
-    assert carried_selection(options, None, []) == options
+    unticked = unticked_speakers(None, [], [])
+    assert unticked == []
+    assert carried_selection(options, unticked) == options
 
 
-def test_an_unticked_speaker_stays_unticked_while_she_is_still_offered():
-    from ui_library import carried_selection
+def test_an_unticked_speaker_stays_unticked_on_the_next_run():
+    from ui_library import carried_selection, unticked_speakers
 
     options = ["Дмитрий Быков", "Ирина Хакамада"]
-    assert carried_selection(options, options, ["Дмитрий Быков"]) == ["Дмитрий Быков"]
+    unticked = unticked_speakers(options, ["Дмитрий Быков"], [])
+    assert unticked == ["Ирина Хакамада"]
+    assert carried_selection(options, unticked) == ["Дмитрий Быков"]
+
+
+def test_ticking_a_speaker_back_on_forgets_that_she_was_unticked():
+    from ui_library import carried_selection, unticked_speakers
+
+    options = ["Дмитрий Быков", "Ирина Хакамада"]
+    unticked = unticked_speakers(options, options, ["Ирина Хакамада"])
+    assert unticked == []
+    assert carried_selection(options, unticked) == options
 
 
 def test_a_speaker_the_filters_dropped_and_brought_back_returns_ticked():
-    from ui_library import carried_selection
+    from ui_library import carried_selection, unticked_speakers
 
     # The editor raises «Длительность от, мин», Шульман's episodes fall out of
     # the results, then she lowers it again and they come back. Nothing may be
-    # hidden by a speaker she never unticked, so Шульман returns ticked, while
-    # Быков, whom she did untick, stays off.
+    # hidden by a speaker she never unticked, so Шульман returns ticked.
     everyone = ["Дмитрий Быков", "Екатерина Шульман", "Ирина Хакамада"]
     narrowed = ["Дмитрий Быков", "Ирина Хакамада"]
-    after_narrowing = carried_selection(narrowed, everyone, ["Екатерина Шульман", "Ирина Хакамада"])
-    assert after_narrowing == ["Ирина Хакамада"]
-    assert carried_selection(everyone, narrowed, after_narrowing) == [
-        "Екатерина Шульман",
-        "Ирина Хакамада",
-    ]
+    unticked = unticked_speakers(everyone, everyone, [])
+    assert carried_selection(narrowed, unticked) == narrowed
+    unticked = unticked_speakers(narrowed, narrowed, unticked)
+    assert carried_selection(everyone, unticked) == everyone
+
+
+def test_an_untick_survives_the_speaker_leaving_the_pool_and_coming_back():
+    from ui_library import carried_selection, unticked_speakers
+
+    # The mirror case: Шульман is unticked on purpose, then a narrowing takes
+    # her off the list entirely and a widening puts her back. She must come
+    # back unticked, or the editor's decision is quietly undone.
+    everyone = ["Дмитрий Быков", "Екатерина Шульман", "Ирина Хакамада"]
+    narrowed = ["Дмитрий Быков", "Ирина Хакамада"]
+    unticked = unticked_speakers(everyone, ["Дмитрий Быков", "Ирина Хакамада"], [])
+    assert unticked == ["Екатерина Шульман"]
+    unticked = unticked_speakers(narrowed, narrowed, unticked)
+    assert carried_selection(everyone, unticked) == narrowed
 
 
 def test_another_seeds_speaker_ticks_are_dropped_from_session_state():

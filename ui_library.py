@@ -443,22 +443,36 @@ def stale_speaker_keys(keys: Iterable[str], keep: Iterable[str]) -> list[str]:
     return [k for k in keys if k.startswith(SPEAKER_STATE_PREFIX) and k not in kept]
 
 
-def carried_selection(
-    options: list[str], previous_options: list[str] | None, previous_selection: Iterable[str]
+def unticked_speakers(
+    previous_options: Iterable[str] | None,
+    previous_selection: Iterable[str],
+    previously_unticked: Iterable[str],
 ) -> list[str]:
-    """Which speakers stay ticked when the offered ones change.
+    """The speakers the editor has taken off, remembered across a pool change.
 
     Narrowing «Длительность от, мин» or «Жанры» can take a speaker out of the
-    results, and widening it again puts her back. She has to come back ticked:
-    nothing may be hidden by a speaker the editor never unticked. A name the
-    editor did untick stays unticked for as long as it keeps being offered,
-    and a first render, with nothing offered before, ticks everything.
+    results, and widening it again puts her back, so the ticks cannot simply
+    be read off the last selection. Two rules have to hold at once: a name the
+    editor unticked stays unticked even while it is away, and a name she never
+    touched comes back ticked rather than silently hiding results. Recording
+    what she took off, instead of what was left on, is what keeps both.
+
+    A name that was on offer and is not in the selection has just been taken
+    off; a name in the selection has been put back and stops counting as
+    unticked. Names not on offer last time are left as they were.
     """
-    if previous_options is None:
-        return list(options)
-    chosen = set(previous_selection)
-    known = set(previous_options)
-    return [s for s in options if s in chosen or s not in known]
+    unticked = set(previously_unticked)
+    if previous_options is not None:
+        chosen = set(previous_selection)
+        unticked |= {s for s in previous_options if s not in chosen}
+        unticked -= chosen
+    return sorted(unticked)
+
+
+def carried_selection(options: Iterable[str], unticked: Iterable[str]) -> list[str]:
+    """Everything currently on offer except what the editor took off."""
+    hidden = set(unticked)
+    return [s for s in options if s not in hidden]
 
 
 def _passes_speaker_filter(result: Scored, keys: set[str]) -> bool:
@@ -819,14 +833,17 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     # nobody is credited on must not preserve them either.
     state_key = f"{SPEAKER_STATE_PREFIX}{seed.video_hash}"
     offered_key = f"{state_key}_offered"
-    for stale in stale_speaker_keys(st.session_state, [state_key, offered_key]):
+    unticked_key = f"{state_key}_unticked"
+    for stale in stale_speaker_keys(st.session_state, [state_key, offered_key, unticked_key]):
         del st.session_state[stale]
     if options:
-        st.session_state[state_key] = carried_selection(
-            options,
+        unticked = unticked_speakers(
             st.session_state.get(offered_key),
             st.session_state.get(state_key, options),
+            st.session_state.get(unticked_key, []),
         )
+        st.session_state[unticked_key] = unticked
+        st.session_state[state_key] = carried_selection(options, unticked)
         st.session_state[offered_key] = options
         with speaker_filter_col:
             selected = st.multiselect(_t("speakers", lang), options, key=state_key)
