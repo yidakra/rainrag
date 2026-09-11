@@ -126,3 +126,21 @@ def test_a_programme_absent_from_the_table_keeps_the_presenter(tmp_path: Path):
 def test_blank_names_are_dropped_rather_than_ranked_as_a_speaker():
     record = {"program": None, "presenter_cms": ["", None], "guest": ["Гость"]}
     assert resolve_speakers(record, None).speakers == ["Гость"]
+
+
+def test_a_byte_order_mark_from_the_sheet_export_does_not_empty_the_table(tmp_path: Path):
+    """Sheets writes a BOM and the sync script copies it through untouched."""
+    path = tmp_path / "library_programs.csv"
+    path.write_text(
+        "\ufefftitle,genre,presenter\nСиндеева,интервью,Наталья Синдеева\n", encoding="utf-8"
+    )
+    programmes = load_programmes(path)
+    assert programme_for("Синдеева", programmes) is not None
+
+
+def test_a_bom_export_still_demotes_the_presenter(tmp_path: Path):
+    """The BOM failed open: the table looked empty and the old ranking came back."""
+    path = tmp_path / "library_programs.csv"
+    path.write_text("\ufefftitle,genre\nСиндеева,интервью\n", encoding="utf-8")
+    record = {"program": "Синдеева", "presenter_cms": ["Ведущая"], "guest": ["Гость"]}
+    assert resolve_speakers(record, load_programmes(path)).speakers == ["Гость"]

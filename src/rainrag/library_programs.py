@@ -89,7 +89,12 @@ def load_programmes(path: Path) -> dict[str, Programme]:
     if not path.exists():
         return {}
     programmes: dict[str, Programme] = {}
-    with open(path, encoding="utf-8", newline="") as handle:
+    # utf-8-sig, not utf-8: a Sheets CSV export starts with a byte-order mark
+    # and the sync script copies the file through byte for byte. Read as plain
+    # utf-8 the mark stays glued to the first header name, so that column is
+    # unreachable by name. With "title" first that empties the whole table and
+    # the speaker rule silently reverts to presenter-plus-guest.
+    with open(path, encoding="utf-8-sig", newline="") as handle:
         for row in csv.DictReader(handle):
             title = (row.get("title") or "").strip()
             if not title:
