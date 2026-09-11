@@ -144,3 +144,17 @@ def test_a_bom_export_still_demotes_the_presenter(tmp_path: Path):
     path.write_text("\ufefftitle,genre\nСиндеева,интервью\n", encoding="utf-8")
     record = {"program": "Синдеева", "presenter_cms": ["Ведущая"], "guest": ["Гость"]}
     assert resolve_speakers(record, load_programmes(path)).speakers == ["Гость"]
+
+
+def test_yo_and_ye_spellings_of_a_title_join(tmp_path: Path):
+    """The sheet is typed by hand and «Как всё начиналось» loses its ё easily."""
+    programmes = load_programmes(
+        _table(tmp_path, ",program,Как всё начиналось,,,Ведущий,интервью,\n")
+    )
+    assert programme_for("Как все начиналось", programmes) is not None
+
+
+def test_the_yo_fold_runs_after_casefold_not_before():
+    """Replacing ё first misses Ё, which casefold then produces anyway."""
+    assert normalise_title("ЁЖИК") == normalise_title("ежик")
+    assert normalise_title("Ёжик") == normalise_title("ёжик") == normalise_title("ежик")

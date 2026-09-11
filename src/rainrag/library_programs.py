@@ -51,9 +51,19 @@ _WHITESPACE = re.compile(r"\s+")
 
 
 def normalise_title(title: str) -> str:
-    """Key for joining programme names across the sheet and the catalogue."""
+    """Key for joining programme names across the sheet and the catalogue.
+
+    Folds ё to е like `normalise_tag` and `normalise_person` do, because the
+    sheet is typed by hand and «Как всё начиналось» is one keystroke from
+    «Как все начиналось». A miss here is silent: the programme reads as absent
+    and its episodes quietly keep the presenter the rule meant to demote.
+
+    The fold runs *after* casefold, not before. Replacing ё first leaves an
+    uppercase Ё untouched, which casefold then turns into ё, and the key still
+    fails to match.
+    """
     folded = unicodedata.normalize("NFKC", title).translate(_APOSTROPHES)
-    return _WHITESPACE.sub(" ", folded).strip().casefold()
+    return _WHITESPACE.sub(" ", folded).strip().casefold().replace("ё", "е")
 
 
 @dataclass(frozen=True)
