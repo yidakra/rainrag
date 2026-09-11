@@ -77,3 +77,106 @@ def test_chunked_and_rejected_metric_exact():
         "playbackBasedCpm"
     )
     assert _rejected_metric("quota exceeded", ["views"]) is None
+
+
+class _FakeCreds:
+    def to_json(self) -> str:
+        return '{"refresh_token": "r"}'
+
+
+class _FakeFlow:
+    """Stands in for InstalledAppFlow: CI installs no Google packages."""
+
+    made: list[_FakeFlow] = []
+
+    def __init__(self) -> None:
+        self.code_verifier: str | None = None
+        self.autogenerate_code_verifier = True
+        self.redirect_uri: str | None = None
+        self.fetched: tuple[str | None, str | None] | None = None
+        self.credentials = _FakeCreds()
+
+    @classmethod
+    def from_client_secrets_file(cls, path: str, scopes: list[str]) -> _FakeFlow:
+        flow = cls()
+        cls.made.append(flow)
+        return flow
+
+    def authorization_url(self, **kwargs: object) -> tuple[str, str]:
+        self.code_verifier = "verifier-minted-by-authorization-url"
+        return ("https://accounts.google.com/o/oauth2/auth?code_challenge=abc", "state")
+
+    def fetch_token(self, code: str | None = None) -> None:
+        self.fetched = (code, self.code_verifier)
+
+
+def _stub_google(monkeypatch) -> None:
+    import sys
+    import types
+
+    _FakeFlow.made = []
+    flow_mod = types.ModuleType("google_auth_oauthlib.flow")
+    flow_mod.InstalledAppFlow = _FakeFlow  # type: ignore[attr-defined]
+    req_mod = types.ModuleType("google.auth.transport.requests")
+    req_mod.Request = object  # type: ignore[attr-defined]
+    cred_mod = types.ModuleType("google.oauth2.credentials")
+    cred_mod.Credentials = object  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google_auth_oauthlib.flow", flow_mod)
+    monkeypatch.setitem(sys.modules, "google.auth.transport.requests", req_mod)
+    monkeypatch.setitem(sys.modules, "google.oauth2.credentials", cred_mod)
+
+
+def test_consent_url_saves_the_pkce_verifier_owner_only(tmp_path: Path, monkeypatch):
+    """--auth and --auth-code are separate processes; the verifier must outlive the first."""
+    import pytest
+
+    from rainrag.youtube_analytics import _verifier_path, load_credentials
+
+    _stub_google(monkeypatch)
+    client = tmp_path / "client.json"
+    client.write_text("{}", encoding="utf-8")
+    token = tmp_path / "token.json"
+
+    with pytest.raises(SystemExit):
+        load_credentials(client, token, auth_code=None)
+
+    saved = _verifier_path(token)
+    assert saved.read_text(encoding="utf-8") == "verifier-minted-by-authorization-url"
+    assert stat.S_IMODE(saved.stat().st_mode) == 0o600
+    assert not token.exists()
+
+
+def test_auth_code_exchange_reuses_the_saved_verifier_then_clears_it(tmp_path: Path, monkeypatch):
+    from rainrag.youtube_analytics import _verifier_path, load_credentials
+
+    _stub_google(monkeypatch)
+    client = tmp_path / "client.json"
+    client.write_text("{}", encoding="utf-8")
+    token = tmp_path / "token.json"
+    _verifier_path(token).write_text("verifier-from-the-earlier-run\n", encoding="utf-8")
+
+    load_credentials(client, token, auth_code="4/code")
+
+    assert _FakeFlow.made[-1].fetched == ("4/code", "verifier-from-the-earlier-run")
+    assert token.read_text(encoding="utf-8") == '{"refresh_token": "r"}'
+    assert not _verifier_path(token).exists()
+
+
+def test_auth_code_without_a_saved_verifier_refuses_before_calling_google(
+    tmp_path: Path, monkeypatch
+):
+    """Better a clear message than an invalid_grant from Google the user cannot read."""
+    import pytest
+
+    from rainrag.youtube_analytics import load_credentials
+
+    _stub_google(monkeypatch)
+    client = tmp_path / "client.json"
+    client.write_text("{}", encoding="utf-8")
+    token = tmp_path / "token.json"
+
+    with pytest.raises(SystemExit, match="--auth"):
+        load_credentials(client, token, auth_code="4/code")
+
+    assert _FakeFlow.made[-1].fetched is None
+    assert not token.exists()
