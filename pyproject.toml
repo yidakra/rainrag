@@ -52,6 +52,10 @@ analytics = [
     "google-api-python-client>=2.100,<3.0.0",
     "google-auth-oauthlib>=1.2,<2.0.0",
 ]
+sheets = [
+    # Reading the programme table's cell fills, which a CSV export throws away.
+    "openpyxl>=3.1,<4.0.0",
+]
 eval = [
     "mlflow>=2.14,<3.0.0",
     "ragas>=0.1.0,<0.2.0",
