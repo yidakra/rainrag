@@ -547,64 +547,58 @@ def test_a_column_emptied_by_the_filter_is_not_called_an_empty_card():
     assert _T["en"]["speakers_hidden"].strip()
 
 
-def test_first_render_offers_every_speaker_ticked():
-    from ui_library import carried_selection, unticked_speakers
+def test_the_filter_starts_empty_so_nothing_is_pre_selected():
+    """185 pre-ticked chips on a real seed pushed the results off the screen."""
+    from ui_library import carried_selection, picked_speakers
 
     options = ["Дмитрий Быков", "Ирина Хакамада"]
-    unticked = unticked_speakers(None, [], [])
-    assert carried_selection(options, unticked) == options
+    picked = picked_speakers(None, [], [])
+    assert picked == []
+    assert carried_selection(options, picked) == []
 
 
-def test_an_unticked_speaker_stays_unticked_on_the_next_run():
-    from ui_library import carried_selection, unticked_speakers
-
-    options = ["Дмитрий Быков", "Ирина Хакамада"]
-    unticked = unticked_speakers(options, ["Дмитрий Быков"], [])
-    assert carried_selection(options, unticked) == ["Дмитрий Быков"]
-
-
-def test_ticking_a_speaker_back_on_forgets_that_she_was_unticked():
-    from ui_library import carried_selection, unticked_speakers
+def test_choosing_a_speaker_narrows_to_her_and_is_remembered():
+    from ui_library import carried_selection, picked_speakers
 
     options = ["Дмитрий Быков", "Ирина Хакамада"]
-    unticked = unticked_speakers(options, options, ["Ирина Хакамада"])
-    assert carried_selection(options, unticked) == options
+    picked = picked_speakers(options, ["Ирина Хакамада"], [])
+    assert carried_selection(options, picked) == ["Ирина Хакамада"]
 
 
-def test_a_speaker_the_filters_dropped_and_brought_back_returns_ticked():
-    from ui_library import carried_selection, unticked_speakers
+def test_removing_a_chosen_speaker_forgets_her():
+    from ui_library import carried_selection, picked_speakers
 
-    # The editor raises «Длительность от, мин», Шульман's episodes fall out of
-    # the results, then she lowers it again and they come back. Nothing may be
-    # hidden by a speaker she never unticked, so Шульман returns ticked.
-    everyone = ["Дмитрий Быков", "Екатерина Шульман", "Ирина Хакамада"]
-    narrowed = ["Дмитрий Быков", "Ирина Хакамада"]
-    unticked = unticked_speakers(everyone, everyone, [])
-    assert carried_selection(narrowed, unticked) == narrowed
-    unticked = unticked_speakers(narrowed, narrowed, unticked)
-    assert carried_selection(everyone, unticked) == everyone
+    options = ["Дмитрий Быков", "Ирина Хакамада"]
+    picked = picked_speakers(options, [], ["Ирина Хакамада"])
+    assert carried_selection(options, picked) == []
 
 
-def test_an_untick_survives_the_speaker_leaving_the_pool_and_coming_back():
-    from ui_library import carried_selection, unticked_speakers
+def test_a_choice_survives_the_speaker_leaving_the_pool_and_coming_back():
+    """Narrowing the duration must not silently drop what the editor picked."""
+    from ui_library import carried_selection, picked_speakers
 
-    # The mirror case: Шульман is unticked on purpose, then a narrowing takes
-    # her off the list entirely and a widening puts her back. She must come
-    # back unticked, or the editor's decision is quietly undone.
-    everyone = ["Дмитрий Быков", "Екатерина Шульман", "Ирина Хакамада"]
-    narrowed = ["Дмитрий Быков", "Ирина Хакамада"]
-    unticked = unticked_speakers(everyone, ["Дмитрий Быков", "Ирина Хакамада"], [])
-    unticked = unticked_speakers(narrowed, narrowed, unticked)
-    assert carried_selection(everyone, unticked) == narrowed
+    everyone = ["Дмитрий Быков", "Ирина Хакамада"]
+    narrowed = ["Дмитрий Быков"]
+    picked = picked_speakers(everyone, ["Ирина Хакамада"], [])
+    assert carried_selection(narrowed, picked) == []
+    picked = picked_speakers(narrowed, [], picked)
+    assert carried_selection(everyone, picked) == ["Ирина Хакамада"]
 
 
-def test_an_untick_survives_the_name_being_spelled_differently():
-    from ui_library import carried_selection, unticked_speakers
+def test_a_choice_survives_the_name_being_spelled_differently():
+    """The chip's label is whichever spelling the current pool uses most."""
+    from ui_library import carried_selection, picked_speakers
 
-    # The label on a checkbox is whichever spelling the current pool uses
-    # most, and a pool change can flip it. The person stays unticked.
-    unticked = unticked_speakers(["Дмитрий Быков", "Ирина Хакамада"], ["Дмитрий Быков"], [])
-    assert carried_selection(["Дмитрий Быков", "Хакамада"], unticked) == ["Дмитрий Быков"]
+    picked = picked_speakers(["Дмитрий Быков", "Ирина Хакамада"], ["Ирина Хакамада"], [])
+    assert carried_selection(["Дмитрий Быков", "Хакамада"], picked) == ["Хакамада"]
+
+
+def test_an_empty_choice_leaves_every_result_visible():
+    """Empty means no filter, not "hide everything"."""
+    from ui_library import visible_results
+
+    rows = [_scored("a", ["Ирина Хакамада"]), _scored("b", ["Дмитрий Быков"])]
+    assert visible_results(rows, None, limit=10) == rows
 
 
 def _speaker_state(*seeds):
