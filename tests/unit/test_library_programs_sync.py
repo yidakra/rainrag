@@ -90,3 +90,88 @@ def test_a_padded_header_is_still_counted_as_a_genre(tmp_path: Path):
     rows = validate_export(export)
     assert rows[0]["genre"] == "интервью"
     assert rows[0]["title"] == "Синдеева"
+
+
+def test_load_excluded_normalises_and_survives_a_missing_or_broken_file(tmp_path: Path):
+    from library_programs_sync import load_excluded
+
+    assert load_excluded(tmp_path / "absent.json") == set()
+    broken = tmp_path / "broken.json"
+    broken.write_text("not json", encoding="utf-8")
+    assert load_excluded(broken) == set()
+    good = tmp_path / "excluded.json"
+    good.write_text('["Hard Day\\u2019s Night", "  ", "Архив"]', encoding="utf-8")
+    loaded = load_excluded(good)
+    assert len(loaded) == 2
+    from rainrag.library_programs import normalise_title
+
+    assert normalise_title("Hard Day's Night") in loaded
+
+
+def test_coverage_leaves_non_programmes_out_of_the_denominator(tmp_path: Path, capsys):
+    """Counting them as gaps reported 83% for a table that reaches 98%."""
+    from library_programs_sync import report_coverage
+
+    table = tmp_path / "programs.csv"
+    table.write_text("title,genre\nСиндеева,интервью\nАрхив,\n", encoding="utf-8")
+    tags = _tags(
+        tmp_path,
+        {"video_hash": "a", "program": "Синдеева"},
+        {"video_hash": "b", "program": "Архив"},
+        {"video_hash": "c", "program": "Архив"},
+    )
+    excluded = tmp_path / "excluded.json"
+    excluded.write_text('["Архив"]', encoding="utf-8")
+    report_coverage(table, tags, excluded)
+    out = capsys.readouterr().out
+    assert "out of scope (not a programme): 2" in out
+    assert "in scope: 1" in out
+    assert "has a genre: 1 (100%)" in out
+
+
+def test_episodes_with_no_programme_can_be_excluded_by_their_bucket_name(tmp_path: Path, capsys):
+    """The catalogue leaves `program` empty; the sheet calls it «(без программы)»."""
+    from library_programs_sync import report_coverage
+
+    table = tmp_path / "programs.csv"
+    table.write_text("title,genre\nСиндеева,интервью\n", encoding="utf-8")
+    tags = _tags(tmp_path, {"video_hash": "a", "program": None}, {"video_hash": "b", "program": ""})
+    excluded = tmp_path / "excluded.json"
+    excluded.write_text('["(без программы)"]', encoding="utf-8")
+    report_coverage(table, tags, excluded)
+    assert "out of scope (not a programme): 2" in capsys.readouterr().out
+
+
+def test_a_coloured_row_with_a_genre_stays_in_scope(tmp_path: Path):
+    """«ONLINE» is highlighted and has a genre; only unusable rows drop out."""
+    openpyxl = pytest.importorskip("openpyxl")
+    from library_programs_sync import excluded_from_workbook
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Programs"
+    ws.append(["content_id", "title", "genre"])
+    ws.append(["1", "Синдеева", "интервью"])
+    ws.append(["2", "Архив", None])
+    ws.append(["3", "ONLINE", "разговор со зрителями"])
+    red = openpyxl.styles.PatternFill(start_color="FFF4CCCC", fill_type="solid")
+    yellow = openpyxl.styles.PatternFill(start_color="FFFFF2CC", fill_type="solid")
+    for cell in ws[3]:
+        cell.fill = red
+    for cell in ws[4]:
+        cell.fill = yellow
+    path = tmp_path / "book.xlsx"
+    wb.save(path)
+    assert excluded_from_workbook(path) == ["Архив"]
+
+
+def test_a_workbook_without_the_programs_sheet_is_rejected(tmp_path: Path):
+    openpyxl = pytest.importorskip("openpyxl")
+    from library_programs_sync import excluded_from_workbook
+
+    wb = openpyxl.Workbook()
+    wb.active.title = "Tags"
+    path = tmp_path / "wrong.xlsx"
+    wb.save(path)
+    with pytest.raises(SystemExit, match="Programs"):
+        excluded_from_workbook(path)
