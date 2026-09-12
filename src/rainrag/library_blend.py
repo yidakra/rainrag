@@ -217,7 +217,14 @@ def blend_pair(
             candidate_audience.playback_based_cpm if candidate_audience else None,
         ),
     }
-    present = {axis: value for axis, value in scores.items() if value is not None}
+    # A weight of zero contributes nothing to the score, so an axis carrying it
+    # must not appear in the reason line either: retuning "theme" to 0 would
+    # otherwise still print «общие темы» for a match those subjects did not make.
+    present = {
+        axis: value
+        for axis, value in scores.items()
+        if value is not None and weights.get(axis, 0.0) != 0.0
+    }
     available = sum(weights.get(axis, 0.0) for axis in present)
     total = (
         sum(weights.get(axis, 0.0) * value for axis, value in present.items()) / available

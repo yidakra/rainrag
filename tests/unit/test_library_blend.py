@@ -243,3 +243,14 @@ def test_an_uncredited_candidate_outranks_one_credited_to_someone_else():
     idf = _idf(seed, uncredited, other_person)
     ranked = blended_top(seed, [other_person, uncredited], idf)
     assert [b.episode.video_hash for b in ranked] == ["u", "o"]
+
+
+def test_a_zero_weight_axis_is_not_offered_as_a_reason():
+    """Retuning theme to 0 must not still print «общие темы» as the explanation."""
+    seed = _ep("s", speakers=["Ирина Хакамада"], subject=["интуиция"])
+    candidate = _ep("c", speakers=["Ирина Хакамада"], subject=["интуиция"])
+    speaker_only = {"speaker": 100.0, "theme": 0.0, "audience": 0.0, "depth": 0.0, "cpm": 0.0}
+    blended = blend_pair(seed, candidate, _idf(seed, candidate), weights=speaker_only)
+    assert "theme" not in blended.axes
+    assert "общие темы" not in blended.explain()
+    assert "тот же спикер" in blended.explain()

@@ -864,12 +864,17 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     with genre_col:
         genres = st.multiselect(_t("genres", lang), list(GENRES), default=[], key="library_genres")
 
+    # One IDF map for all three lists. find_similar would otherwise build its
+    # own over the same pool on every interaction, which costs 1.3s and lets
+    # the columns and the shortlist disagree about what a theme is worth.
+    idf = _cached_idf(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH))
     results = find_similar(
         seed,
         episodes,
         min_duration_minutes=min_minutes or None,
         genres=genres or None,
         limit=len(episodes),
+        idf=idf,
     )
     same, themed = split_by_speaker(results)
     same = same[:SIMILAR_POOL_LIMIT]
@@ -905,18 +910,29 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     except FileNotFoundError:
         cache_key = (0, 0)
     marks = _cached_feedback(cache_key)
+    # Each column's pool separately, not the concatenation cut to one limit:
+    # with 50 same-speaker rows the theme pool would never reach the shortlist
+    # at all, and the whole point is that it draws on both.
+    shortlist_pool = [
+        r.episode
+        for rows in (same, themed)
+        for r in visible_results(rows, selected, limit=SIMILAR_POOL_LIMIT)
+    ]
     shortlist = blended_top(
         seed,
-        [r.episode for r in visible_results(same + themed, selected, limit=SIMILAR_POOL_LIMIT)],
-        _cached_idf(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH)),
+        shortlist_pool,
+        idf,
         _cached_audiences(_stat_key(MAP_PATH), _stat_key(METRICS_PATH)),
     )
     if shortlist:
         st.subheader(_t("top5", lang))
         st.caption(_t("top5_note", lang))
         for i, b in enumerate(shortlist, 1):
-            title, synthetic_title = display_title(b.episode, lang, synthetic)
-            link = f"[{escape_markdown(title)}]({b.episode.url})" if b.episode.url else title
+            # display_title already escapes a stand-in and leaves a CMS title
+            # alone; escaping again here doubled the backslashes. Same shape as
+            # the columns in _render_scored.
+            title, _stand_in = display_title(b.episode, lang, synthetic)
+            link = f"[{title}]({b.episode.url})" if b.episode.url else title
             st.markdown(f"{i}. {link}")
             st.caption(b.explain(lang))
         st.divider()
