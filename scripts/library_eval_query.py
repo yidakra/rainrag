@@ -38,9 +38,13 @@ DEFAULT_TAGS = REPO_ROOT / "data" / "library_tags.jsonl"
 DEFAULT_GOLD = REPO_ROOT / "data" / "library_gold.json"
 
 
-def load_episodes(path: Path) -> list:
+def load_episodes(path: Path, programs_path: Path | None = None) -> list:
+    from rainrag.library_programs import load_programmes
     from rainrag.library_similar import Episode, dedupe_latest
 
+    # Same speaker rule as the interface, or the eval measures a ranking
+    # nobody sees.
+    programmes = load_programmes(programs_path) if programs_path else {}
     episodes = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -53,7 +57,7 @@ def load_episodes(path: Path) -> list:
         # candidate pool with episodes that can never match.
         if record.get("error"):
             continue
-        episodes.append(Episode.from_record(record))
+        episodes.append(Episode.from_record(record, programmes))
     # The tag file is appended to, so a re-tagged episode has more than one
     # row. Counting those separately would overstate the pool and rank the
     # same episode twice.
@@ -65,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--tags", default=str(DEFAULT_TAGS))
+    parser.add_argument("--programs", default=str(REPO_ROOT / "data" / "library_programs.csv"))
     parser.add_argument("--gold", default=str(DEFAULT_GOLD))
     parser.add_argument("--k", type=int, default=10, help="cut-off for recall@k")
     parser.add_argument("--show", type=int, default=10, help="how many results to print")
@@ -74,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
 
     gold = json.loads(Path(args.gold).read_text(encoding="utf-8"))
     query = gold["queries"][0]
-    episodes = load_episodes(Path(args.tags))
+    episodes = load_episodes(Path(args.tags), Path(args.programs))
     by_content = {e.content_id: e for e in episodes if e.content_id}
 
     seed = by_content.get(query["seed_content_id"])

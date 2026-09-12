@@ -29,6 +29,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from rainrag.library_programs import Programme, resolve_speakers
+
 
 # A speaker in common is the strongest signal an editor uses -- four of the six
 # expected results are simply "the same person again" -- but it must not become
@@ -73,16 +75,25 @@ class Episode:
     subject: list[str] = field(default_factory=list)
     speakers: list[str] = field(default_factory=list)
     url: str | None = None
+    presenter_demoted: bool = False
 
     @classmethod
-    def from_record(cls, record: dict[str, Any]) -> Episode:
+    def from_record(
+        cls, record: dict[str, Any], programmes: dict[str, Programme] | None = None
+    ) -> Episode:
         """Build from a tagging-run JSONL row.
 
         Speakers merge the CMS presenter with the model's `guest`: for a
         lecture the CMS field is the lecturer, for an interview the guest is
         the one the search is actually about, and neither alone is enough.
+
+        With a programme table the editorial rule applies on top and drops the
+        presenter for the genres where they interview rather than speak. See
+        `library_programs.resolve_speakers`. Passing nothing keeps the old
+        behaviour, so existing callers rank exactly as before.
         """
-        speakers = list(record.get("presenter_cms") or []) + list(record.get("guest") or [])
+        resolution = resolve_speakers(record, programmes)
+        speakers = resolution.speakers
         return cls(
             video_hash=record["video_hash"],
             content_id=record.get("content_id"),
@@ -94,6 +105,7 @@ class Episode:
             subject=list(record.get("subject") or []),
             speakers=speakers,
             url=record.get("url"),
+            presenter_demoted=resolution.presenter_demoted,
         )
 
 
