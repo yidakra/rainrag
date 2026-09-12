@@ -116,7 +116,7 @@ def test_speaker_axis_is_the_share_of_the_seeds_speakers_not_a_raw_count():
     seed = _ep("s", speakers=["Один Первый", "Два Второй"])
     half = _ep("c", speakers=["Один Первый"])
     assert speaker_axis(seed, half)[0] == 0.5
-    assert speaker_axis(seed, _ep("d", speakers=[]))[0] == 0.0
+    assert speaker_axis(seed, _ep("d", speakers=["Кто-то Третий"]))[0] == 0.0
     assert speaker_axis(_ep("e"), half)[0] is None
 
 
@@ -221,3 +221,25 @@ def test_explain_is_available_in_english_too():
     text = blend_pair(seed, candidate, _idf(seed, candidate)).explain("en")
     assert text.startswith("same speaker: Ирина Хакамада")
     assert "shared subjects: интуиция" in text
+
+
+def test_an_uncredited_candidate_is_unknown_on_the_speaker_axis_not_a_mismatch():
+    """1,102 episodes have nobody credited; a 40-weight zero buried them."""
+    seed = _ep("s", speakers=["Ирина Хакамада"], subject=["интуиция"])
+    uncredited = _ep("u", speakers=[], subject=["интуиция"])
+    other_person = _ep("o", speakers=["Кто-то Другой"], subject=["интуиция"])
+    assert speaker_axis(seed, uncredited)[0] is None
+    assert speaker_axis(seed, other_person)[0] == 0.0
+    idf = _idf(seed, uncredited, other_person)
+    assert "speaker" not in blend_pair(seed, uncredited, idf).axes
+    assert blend_pair(seed, other_person, idf).axes["speaker"] == 0.0
+
+
+def test_an_uncredited_candidate_outranks_one_credited_to_someone_else():
+    """Not knowing must beat knowing it is wrong, on equal themes."""
+    seed = _ep("s", speakers=["Ирина Хакамада"], subject=["интуиция"])
+    uncredited = _ep("u", speakers=[], subject=["интуиция"])
+    other_person = _ep("o", speakers=["Кто-то Другой"], subject=["интуиция"])
+    idf = _idf(seed, uncredited, other_person)
+    ranked = blended_top(seed, [other_person, uncredited], idf)
+    assert [b.episode.video_hash for b in ranked] == ["u", "o"]

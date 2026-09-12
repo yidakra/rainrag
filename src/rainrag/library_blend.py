@@ -99,14 +99,29 @@ class Blended:
 def speaker_axis(seed: Episode, candidate: Episode) -> tuple[float | None, list[str]]:
     """Share of the seed's speakers who also speak in the candidate.
 
-    None when the seed has nobody credited: there is no question to answer,
-    which is not the same as answering it with a zero. 832 episodes are in
-    that state and they must not be pushed down the list for it.
+    None when *either* side has nobody credited. Credited to someone else is a
+    mismatch and scores zero; credited to nobody is missing data, and the whole
+    basis of the renormalisation is that the two are not the same. 1,102
+    episodes carry no speaker after the genre rule demotes presenters, and
+    scoring them zero on a 40-weight axis buried them for a fact we do not have.
+
+    This is not a free correction, and the direction is worth knowing. Over 40
+    sampled seeds, uncredited episodes went from 3 of 200 shortlist rows to 29
+    of 200, against an 8% share of the pool. Dropping the heaviest axis leaves
+    the theme score alone to carry the result, and a strong theme match then
+    reaches the top easily. Under-representation became over-representation.
+
+    Kept anyway, because these are disproportionately the 2021-2026 episodes
+    with no CMS card, which is the freshest material in the archive and the
+    thing an editor most wants surfaced, and because the reason line says
+    «общие темы» only, so nothing claims a speaker match that was never checked.
     """
     seed_keys = {normalise_person(s) for s in seed.speakers if normalise_person(s)}
     if not seed_keys:
         return None, []
     cand_keys = {normalise_person(s) for s in candidate.speakers if normalise_person(s)}
+    if not cand_keys:
+        return None, []
     shared = seed_keys & cand_keys
     names = [s for s in candidate.speakers if normalise_person(s) in shared]
     return len(shared) / len(seed_keys), names
