@@ -254,3 +254,24 @@ def test_a_zero_weight_axis_is_not_offered_as_a_reason():
     assert "theme" not in blended.axes
     assert "общие темы" not in blended.explain()
     assert "тот же спикер" in blended.explain()
+
+
+def test_an_untagged_candidate_is_unknown_on_the_theme_axis_not_a_mismatch():
+    """Mirror of the speaker rule, so the two axes cannot drift apart."""
+    seed = _ep("s", speakers=["Ирина Хакамада"], subject=["интуиция"])
+    untagged = _ep("u", speakers=["Ирина Хакамада"], subject=[])
+    other_theme = _ep("o", speakers=["Ирина Хакамада"], subject=["футбол"])
+    idf = _idf(seed, untagged, other_theme)
+    assert theme_axis(seed, untagged, idf)[0] is None
+    assert theme_axis(seed, other_theme, idf)[0] == 0.0
+    assert "theme" not in blend_pair(seed, untagged, idf).axes
+    assert blend_pair(seed, other_theme, idf).axes["theme"] == 0.0
+
+
+def test_an_untagged_candidate_outranks_one_tagged_with_other_subjects():
+    seed = _ep("s", speakers=["Ирина Хакамада"], subject=["интуиция"])
+    untagged = _ep("u", speakers=["Ирина Хакамада"], subject=[])
+    other_theme = _ep("o", speakers=["Ирина Хакамада"], subject=["футбол"])
+    idf = _idf(seed, untagged, other_theme)
+    ranked = blended_top(seed, [other_theme, untagged], idf)
+    assert [b.episode.video_hash for b in ranked] == ["u", "o"]

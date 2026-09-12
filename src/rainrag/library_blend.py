@@ -134,11 +134,21 @@ def theme_axis(
 
     Same normalisation the two columns already use, so the shortlist and the
     «Похожие темы» column cannot disagree about what counts as a theme match.
+
+    None when either side carries no subjects at all, mirroring the speaker
+    axis: an untagged candidate is unmeasured, not a mismatch.
     """
     seed_keys = {normalise_tag(t) for t in seed.subject if normalise_tag(t)}
     if not seed_keys:
         return None, []
     cand_keys = {normalise_tag(t) for t in candidate.subject if normalise_tag(t)}
+    if not cand_keys:
+        # Same rule as the speaker axis: tagged with other subjects is a
+        # mismatch and scores zero, tagged with nothing is missing data. Only
+        # 10 of 13,808 episodes are untagged, so this changes almost nothing
+        # today; it is here so the two axes cannot drift apart, which is how
+        # the speaker side came to contradict this module's own docstring.
+        return None, []
     shared = seed_keys & cand_keys
     total = sum(idf.get(t, 0.0) for t in seed_keys)
     if total <= 0:
