@@ -406,7 +406,13 @@ def test_every_empty_speaker_message_exists_in_both_languages():
     """A missing key would render the key itself into the editor's view."""
     from ui_library import _T
 
-    for key in ("nothing_similar", "demoted_no_guest", "no_speaker", "presenter_demoted"):
+    for key in (
+        "nothing_similar",
+        "demoted_no_guest",
+        "no_speaker",
+        "presenter_demoted",
+        "speakers_hidden",
+    ):
         for lang in ("ru", "en"):
             assert _T[lang][key].strip()
 
@@ -426,3 +432,206 @@ def test_stat_key_of_a_missing_file_is_stable_and_not_an_error(tmp_path):
     from ui_library import _stat_key
 
     assert _stat_key(tmp_path / "absent.csv") == (0, 0)
+
+
+def _scored(video_hash, speakers):
+    from rainrag.library_similar import Scored
+
+    return Scored(_ep(video_hash, speakers=list(speakers)), 0.1, [], ["тема"])
+
+
+def test_speaker_options_come_from_the_results_and_merge_name_variants():
+    from ui_library import speaker_options
+
+    rows = [
+        _scored("a", ["Ирина Хакамада"]),
+        _scored("b", ["Хакамада", "Екатерина Шульман"]),
+        _scored("c", ["Ирина Хакамада"]),
+        _scored("d", []),
+    ]
+    # One entry per person, the commonest spelling of the name, sorted.
+    assert speaker_options(rows) == ["Екатерина Шульман", "Ирина Хакамада"]
+
+
+def test_visible_results_without_a_filter_is_the_plain_cut():
+    from ui_library import visible_results
+
+    rows = [_scored(str(i), ["Ирина Хакамада"]) for i in range(5)]
+    assert visible_results(rows, None, limit=3) == rows[:3]
+
+
+def test_visible_results_with_every_speaker_selected_changes_nothing():
+    from ui_library import speaker_options, visible_results
+
+    rows = [
+        _scored("a", ["Ирина Хакамада"]),
+        _scored("b", ["Екатерина Шульман"]),
+        _scored("c", []),
+    ]
+    assert visible_results(rows, speaker_options(rows), limit=10) == rows
+
+
+def test_visible_results_keeps_an_episode_if_any_of_its_speakers_stays_selected():
+    from ui_library import visible_results
+
+    rows = [
+        _scored("solo", ["Дмитрий Быков"]),
+        _scored("duo", ["Дмитрий Быков", "Екатерина Шульман"]),
+    ]
+    kept = visible_results(rows, ["Екатерина Шульман"], limit=10)
+    assert [r.episode.video_hash for r in kept] == ["duo"]
+
+
+def test_visible_results_never_hides_an_episode_with_no_speakers():
+    from ui_library import visible_results
+
+    rows = [_scored("nameless", []), _scored("named", ["Дмитрий Быков"])]
+    kept = visible_results(rows, ["Екатерина Шульман"], limit=10)
+    assert [r.episode.video_hash for r in kept] == ["nameless"]
+
+
+def test_visible_results_with_nothing_selected_hides_every_attributable_row():
+    from ui_library import visible_results
+
+    rows = [_scored("a", ["Ирина Хакамада"]), _scored("b", ["Екатерина Шульман"])]
+    assert visible_results(rows, [], limit=10) == []
+
+
+def test_hiding_a_speaker_backfills_the_visible_list_to_its_full_length():
+    from ui_library import SIMILAR_DISPLAY_LIMIT, visible_results
+
+    # A theme column deep enough to refill: the first four rows are Хакамада,
+    # the rest Шульман, and only ten rows are ever shown.
+    rows = [_scored(f"t{i}", ["Ирина Хакамада"]) for i in range(4)]
+    rows += [_scored(f"t{i}", ["Екатерина Шульман"]) for i in range(4, 16)]
+
+    shown = visible_results(
+        rows, ["Ирина Хакамада", "Екатерина Шульман"], limit=SIMILAR_DISPLAY_LIMIT
+    )
+    assert [r.episode.video_hash for r in shown] == [f"t{i}" for i in range(10)]
+
+    backfilled = visible_results(rows, ["Екатерина Шульман"], limit=SIMILAR_DISPLAY_LIMIT)
+    # Still ten rows, not six: candidates t10 to t13 moved up into the gap.
+    assert len(backfilled) == SIMILAR_DISPLAY_LIMIT
+    assert [r.episode.video_hash for r in backfilled] == [f"t{i}" for i in range(4, 14)]
+
+
+def test_speaker_options_are_empty_when_no_result_credits_anyone():
+    from ui_library import speaker_options, visible_results
+
+    rows = [_scored("a", []), _scored("b", [])]
+    # No options means no widget and no filter, so nothing is hidden.
+    assert speaker_options(rows) == []
+    assert visible_results(rows, None, limit=10) == rows
+
+
+def test_speaker_filter_matches_a_surname_typed_without_the_given_name():
+    from ui_library import visible_results
+
+    rows = [_scored("a", ["Ирина Хакамада"]), _scored("b", ["Екатерина Шульман"])]
+    kept = visible_results(rows, ["Хакамада"], limit=10)
+    assert [r.episode.video_hash for r in kept] == ["a"]
+
+
+def test_a_column_emptied_by_the_filter_is_not_called_an_empty_card():
+    """Four causes once the filter exists; three of them are not "no speaker"."""
+    from ui_library import _T, empty_speaker_reason, visible_results
+
+    seedless = _ep("seed", speakers=[])
+    assert empty_speaker_reason(seedless) == "no_speaker"
+
+    # The ranker did find matches; the editor hid them. Different message.
+    rows = [_scored("a", ["Ирина Хакамада"])]
+    assert visible_results(rows, [], limit=10) == []
+    assert _T["ru"]["speakers_hidden"].strip()
+    assert _T["en"]["speakers_hidden"].strip()
+
+
+def test_first_render_offers_every_speaker_ticked():
+    from ui_library import carried_selection, unticked_speakers
+
+    options = ["Дмитрий Быков", "Ирина Хакамада"]
+    unticked = unticked_speakers(None, [], [])
+    assert carried_selection(options, unticked) == options
+
+
+def test_an_unticked_speaker_stays_unticked_on_the_next_run():
+    from ui_library import carried_selection, unticked_speakers
+
+    options = ["Дмитрий Быков", "Ирина Хакамада"]
+    unticked = unticked_speakers(options, ["Дмитрий Быков"], [])
+    assert carried_selection(options, unticked) == ["Дмитрий Быков"]
+
+
+def test_ticking_a_speaker_back_on_forgets_that_she_was_unticked():
+    from ui_library import carried_selection, unticked_speakers
+
+    options = ["Дмитрий Быков", "Ирина Хакамада"]
+    unticked = unticked_speakers(options, options, ["Ирина Хакамада"])
+    assert carried_selection(options, unticked) == options
+
+
+def test_a_speaker_the_filters_dropped_and_brought_back_returns_ticked():
+    from ui_library import carried_selection, unticked_speakers
+
+    # The editor raises «Длительность от, мин», Шульман's episodes fall out of
+    # the results, then she lowers it again and they come back. Nothing may be
+    # hidden by a speaker she never unticked, so Шульман returns ticked.
+    everyone = ["Дмитрий Быков", "Екатерина Шульман", "Ирина Хакамада"]
+    narrowed = ["Дмитрий Быков", "Ирина Хакамада"]
+    unticked = unticked_speakers(everyone, everyone, [])
+    assert carried_selection(narrowed, unticked) == narrowed
+    unticked = unticked_speakers(narrowed, narrowed, unticked)
+    assert carried_selection(everyone, unticked) == everyone
+
+
+def test_an_untick_survives_the_speaker_leaving_the_pool_and_coming_back():
+    from ui_library import carried_selection, unticked_speakers
+
+    # The mirror case: Шульман is unticked on purpose, then a narrowing takes
+    # her off the list entirely and a widening puts her back. She must come
+    # back unticked, or the editor's decision is quietly undone.
+    everyone = ["Дмитрий Быков", "Екатерина Шульман", "Ирина Хакамада"]
+    narrowed = ["Дмитрий Быков", "Ирина Хакамада"]
+    unticked = unticked_speakers(everyone, ["Дмитрий Быков", "Ирина Хакамада"], [])
+    unticked = unticked_speakers(narrowed, narrowed, unticked)
+    assert carried_selection(everyone, unticked) == narrowed
+
+
+def test_an_untick_survives_the_name_being_spelled_differently():
+    from ui_library import carried_selection, unticked_speakers
+
+    # The label on a checkbox is whichever spelling the current pool uses
+    # most, and a pool change can flip it. The person stays unticked.
+    unticked = unticked_speakers(["Дмитрий Быков", "Ирина Хакамада"], ["Дмитрий Быков"], [])
+    assert carried_selection(["Дмитрий Быков", "Хакамада"], unticked) == ["Дмитрий Быков"]
+
+
+def _speaker_state(*seeds):
+    from ui_library import speaker_state_keys
+
+    state = {"library_seed_pick": "irrelevant", "library_genres": ["лекция"]}
+    for seed in seeds:
+        for key in speaker_state_keys(seed):
+            state[key] = ["Ирина Хакамада"]
+    return state
+
+
+def test_another_seeds_speaker_ticks_are_dropped_from_session_state():
+    from ui_library import speaker_state_keys, stale_speaker_keys
+
+    state = _speaker_state("old", "new")
+    stale = stale_speaker_keys(state, speaker_state_keys("new"))
+    # Only the previous seed's keys go, and no unrelated widget is touched.
+    assert sorted(stale) == sorted(speaker_state_keys("old"))
+
+
+def test_a_detour_through_a_seed_with_no_filter_drops_the_old_ticks():
+    from ui_library import speaker_state_keys, stale_speaker_keys
+
+    # An untagged seed shows no filter and so has no keys of its own. The
+    # previous seed's must still go, or coming back to it would restore ticks
+    # the editor set two seeds ago.
+    state = _speaker_state("old")
+    stale = stale_speaker_keys(state, speaker_state_keys("untagged"))
+    assert sorted(stale) == sorted(speaker_state_keys("old"))
