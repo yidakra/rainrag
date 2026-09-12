@@ -105,7 +105,16 @@ def load_programmes(path: Path) -> dict[str, Programme]:
     # unreachable by name. With "title" first that empties the whole table and
     # the speaker rule silently reverts to presenter-plus-guest.
     with open(path, encoding="utf-8-sig", newline="") as handle:
-        for row in csv.DictReader(handle):
+        reader = csv.DictReader(handle)
+        # Strip the header names, not just the values. A stray space in the
+        # sheet makes the column unreachable by name, every title reads as
+        # missing, and the table loads empty: the same silent revert to
+        # presenter-plus-guest that the byte-order mark caused. Fixing it at
+        # the consumer covers a CSV dropped in by hand as well as one the
+        # sync script wrote.
+        if reader.fieldnames:
+            reader.fieldnames = [(name or "").strip() for name in reader.fieldnames]
+        for row in reader:
             title = (row.get("title") or "").strip()
             if not title:
                 continue

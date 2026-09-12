@@ -952,13 +952,28 @@ def _cached_feedback(cache_key: tuple[int, int]) -> dict[tuple[str, str], str]:
     return load_feedback()
 
 
+def _stat_key(path: Path) -> tuple[int, int]:
+    """Cache key that changes whenever a file does.
+
+    Nanoseconds and size, not seconds: two writes inside one filesystem tick
+    share an mtime, and the loser would keep serving episodes resolved
+    against the old programme genres. The feedback cache already keys this
+    way for the same reason.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return (0, 0)
+    return (stat.st_mtime_ns, stat.st_size)
+
+
 @st.cache_data(show_spinner=False)
-def _cached_episodes(mtime: float, programs_mtime: float) -> list[Episode]:
+def _cached_episodes(tags_key: tuple[int, int], programs_key: tuple[int, int]) -> list[Episode]:
     """Cache keyed on the tag file's mtime, so a finished tagging run shows up
     on the next interaction without a service restart. The programme table is
     in the key too: editing a genre in the sheet changes who counts as a
     speaker, and that must not need a restart either."""
-    del mtime, programs_mtime
+    del tags_key, programs_key
     return load_tagged_episodes()
 
 
@@ -966,8 +981,7 @@ def render_library_mode(lang: str) -> None:
     if not TAGS_PATH.exists():
         st.warning(_t("no_tags", lang, path=TAGS_PATH.name))
         return
-    programs_mtime = PROGRAMS_PATH.stat().st_mtime if PROGRAMS_PATH.exists() else 0.0
-    episodes = _cached_episodes(TAGS_PATH.stat().st_mtime, programs_mtime)
+    episodes = _cached_episodes(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH))
     similar_tab, perf_tab, youtube_tab = st.tabs(
         [_t("tab_similar", lang), _t("tab_perf", lang), _t("tab_youtube", lang)]
     )

@@ -158,3 +158,21 @@ def test_the_yo_fold_runs_after_casefold_not_before():
     """Replacing ё first misses Ё, which casefold then produces anyway."""
     assert normalise_title("ЁЖИК") == normalise_title("ежик")
     assert normalise_title("Ёжик") == normalise_title("ёжик") == normalise_title("ежик")
+
+
+def test_padded_header_names_do_not_empty_the_table(tmp_path: Path):
+    """A stray space in the sheet header made every title unreachable by name."""
+    path = tmp_path / "library_programs.csv"
+    path.write_text(" title , genre ,presenter\nСиндеева,интервью,Наталья\n", encoding="utf-8")
+    programmes = load_programmes(path)
+    sindeeva = programme_for("Синдеева", programmes)
+    assert sindeeva is not None
+    assert sindeeva.genres == ("интервью",)
+
+
+def test_a_padded_header_still_demotes_the_presenter(tmp_path: Path):
+    """The failure mode was silent: table empty, old ranking quietly restored."""
+    path = tmp_path / "library_programs.csv"
+    path.write_text("title , genre\nСиндеева,интервью\n", encoding="utf-8")
+    record = {"program": "Синдеева", "presenter_cms": ["Ведущая"], "guest": ["Гость"]}
+    assert resolve_speakers(record, load_programmes(path)).speakers == ["Гость"]
