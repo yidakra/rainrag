@@ -652,3 +652,32 @@ def test_the_shortlist_pool_draws_on_both_columns_not_just_the_first():
     assert any(h.startswith("s") for h in hashes)
     assert any(h.startswith("t") for h in hashes)
     assert len(pool) == SIMILAR_POOL_LIMIT * 2
+
+
+def test_the_shortlist_and_the_columns_share_one_renderer():
+    """Two copies of this display logic have drifted every time they existed."""
+    import inspect
+
+    import ui_library
+
+    for wrapper in (ui_library._render_scored, ui_library._render_blended):
+        body = inspect.getsource(wrapper)
+        assert "_render_suggestion(" in body
+        # The wrapper does nothing but choose the explanation.
+        assert "st.markdown" not in body
+        assert "append_feedback" not in body
+
+
+def test_shortlist_feedback_is_recorded_under_its_own_column(tmp_path):
+    """Judgments from the top 5 must be distinguishable from the columns'."""
+    from ui_library import append_feedback, load_feedback
+
+    path = tmp_path / "library_feedback.csv"
+    append_feedback("seed1", "cand1", "top5", 1, "good", path=path)
+    append_feedback("seed1", "cand2", "speaker", 3, "bad", path=path)
+    rows = path.read_text(encoding="utf-8").splitlines()
+    assert any(",top5," in r for r in rows)
+    assert any(",speaker," in r for r in rows)
+    marks = load_feedback(path)
+    assert marks[("seed1", "cand1")] == "good"
+    assert marks[("seed1", "cand2")] == "bad"
