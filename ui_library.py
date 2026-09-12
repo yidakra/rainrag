@@ -43,7 +43,7 @@ from typing import Any
 import streamlit as st
 
 from rainrag.library import GENRES
-from rainrag.library_blend import Audience, blended_top
+from rainrag.library_blend import Audience, Blended, blended_top
 from rainrag.library_performance import METRIC_COLUMNS, aggregate, build_uploads, load_metrics
 from rainrag.library_programs import load_programmes
 from rainrag.library_similar import (
@@ -774,9 +774,10 @@ def _episode_label(e: Episode, synthetic: dict[str, str] | None = None) -> str:
     return " — ".join(bits)
 
 
-def _render_scored(
+def _render_suggestion(
     rank: int,
-    r: Scored,
+    e: Episode,
+    explanation: str,
     lang: str,
     *,
     seed_id: str | None = None,
@@ -784,7 +785,13 @@ def _render_scored(
     marks: dict[tuple[str, str], str] | None = None,
     synthetic: dict[str, str] | None = None,
 ) -> None:
-    e = r.episode
+    """One suggested episode with its reason and the two judgment buttons.
+
+    Shared by the columns and the shortlist. They differ only in where the
+    explanation comes from, and keeping one renderer is deliberate: every time
+    a second copy of this feature's display logic has existed, the two have
+    drifted and one of them has ended up telling the editor something untrue.
+    """
     title, stand_in = display_title(e, lang, synthetic)
     line = f"**{rank}.** [{title}]({e.url})" if e.url else f"**{rank}.** {title}"
     meta_bits = [e.program, e.date, _fmt_minutes(e.duration_seconds, lang)]
@@ -794,7 +801,7 @@ def _render_scored(
     body, up, down = st.columns([12, 1, 1])
     with body:
         st.markdown(f"{line}  \n{meta}")
-        st.caption(r.explain())
+        st.caption(explanation)
     if seed_id and e.content_id:
         mark = (marks or {}).get((seed_id, e.content_id))
         key = f"fb_{column}_{seed_id}_{e.content_id}"
@@ -804,6 +811,14 @@ def _render_scored(
         if down.button("✗" if mark == "bad" else "👎", key=f"{key}_b", disabled=mark == "bad"):
             append_feedback(seed_id, e.content_id, column, rank, "bad")
             st.rerun()
+
+
+def _render_scored(rank: int, r: Scored, lang: str, **kw: Any) -> None:
+    _render_suggestion(rank, r.episode, r.explain(), lang, **kw)
+
+
+def _render_blended(rank: int, b: Blended, lang: str, **kw: Any) -> None:
+    _render_suggestion(rank, b.episode, b.explain(lang), lang, **kw)
 
 
 def render_similar_tab(episodes: list[Episode], lang: str) -> None:
@@ -938,13 +953,19 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         st.subheader(_t("top5", lang))
         st.caption(_t("top5_note", lang))
         for i, b in enumerate(shortlist, 1):
-            # display_title already escapes a stand-in and leaves a CMS title
-            # alone; escaping again here doubled the backslashes. Same shape as
-            # the columns in _render_scored.
-            title, _stand_in = display_title(b.episode, lang, synthetic)
-            link = f"[{title}]({b.episode.url})" if b.episode.url else title
-            st.markdown(f"{i}. {link}")
-            st.caption(b.explain(lang))
+            # The same renderer the columns use, so the shortlist carries the
+            # judgment buttons too. It is the list an editor reads first and it
+            # was the only one collecting no ground truth, which is what the
+            # weights have to be retuned against.
+            _render_blended(
+                i,
+                b,
+                lang,
+                seed_id=seed.content_id,
+                column="top5",
+                marks=marks,
+                synthetic=synthetic,
+            )
         st.divider()
 
     speaker_col, theme_col = st.columns(2)
