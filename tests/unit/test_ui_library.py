@@ -635,3 +635,20 @@ def test_a_detour_through_a_seed_with_no_filter_drops_the_old_ticks():
     state = _speaker_state("old")
     stale = stale_speaker_keys(state, speaker_state_keys("untagged"))
     assert sorted(stale) == sorted(speaker_state_keys("old"))
+
+
+def test_the_shortlist_pool_draws_on_both_columns_not_just_the_first():
+    """With a full speaker column the theme pool must still reach the top 5."""
+    from ui_library import SIMILAR_POOL_LIMIT, visible_results
+
+    same = [_scored(f"s{i}", ["Ирина Хакамада"]) for i in range(SIMILAR_POOL_LIMIT)]
+    themed = [_scored(f"t{i}", ["Кто-то Другой"]) for i in range(SIMILAR_POOL_LIMIT)]
+    pool = [
+        r.episode
+        for rows in (same, themed)
+        for r in visible_results(rows, None, limit=SIMILAR_POOL_LIMIT)
+    ]
+    hashes = {e.video_hash for e in pool}
+    assert any(h.startswith("s") for h in hashes)
+    assert any(h.startswith("t") for h in hashes)
+    assert len(pool) == SIMILAR_POOL_LIMIT * 2
