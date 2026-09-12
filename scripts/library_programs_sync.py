@@ -93,7 +93,11 @@ def _csv_from_workbook(path: Path, table: Path) -> None:
     sheet = openpyxl.load_workbook(path)["Programs"]
     rows = list(sheet.iter_rows(values_only=True))
     header = [str(c or "").strip() for c in rows[0]]
-    width = len([h for h in header if h])
+    # The index after the last named column, not the count of named columns:
+    # a blank column in the middle would otherwise shorten the row and drop
+    # the trailing headers, and losing "genre" makes every programme read as
+    # having none.
+    width = max((i for i, value in enumerate(header) if value), default=-1) + 1
     body = [r for r in rows[1:] if any(c not in (None, "") for c in r[:width])]
     with open(table, "w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
@@ -112,6 +116,10 @@ def load_excluded(path: Path) -> set[str]:
     try:
         titles = json.loads(path.read_text(encoding="utf-8"))
     except ValueError:
+        return set()
+    # A bare string is iterable, so without this a file containing "Архив"
+    # would exclude six single letters instead of one programme.
+    if not isinstance(titles, list):
         return set()
     return {normalise_title(str(t)) for t in titles if str(t).strip()}
 
@@ -239,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         table.parent.mkdir(parents=True, exist_ok=True)
         if source.suffix.lower() == ".xlsx":
             excluded = excluded_from_workbook(source)
+            excluded_path.parent.mkdir(parents=True, exist_ok=True)
             excluded_path.write_text(
                 json.dumps(excluded, ensure_ascii=False, indent=1), encoding="utf-8"
             )

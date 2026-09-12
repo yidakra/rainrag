@@ -175,3 +175,61 @@ def test_a_workbook_without_the_programs_sheet_is_rejected(tmp_path: Path):
     wb.save(path)
     with pytest.raises(SystemExit, match="Programs"):
         excluded_from_workbook(path)
+
+
+def test_a_blank_column_in_the_header_does_not_truncate_the_row(tmp_path: Path):
+    """Counting named columns instead of locating the last one dropped genre."""
+    openpyxl = pytest.importorskip("openpyxl")
+    from library_programs_sync import _csv_from_workbook
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Programs"
+    ws.append(["content_id", None, "title", "genre"])
+    ws.append(["1", None, "Синдеева", "интервью"])
+    book = tmp_path / "book.xlsx"
+    wb.save(book)
+    table = tmp_path / "programs.csv"
+    _csv_from_workbook(book, table)
+
+    from rainrag.library_programs import load_programmes, programme_for
+
+    sindeeva = programme_for("Синдеева", load_programmes(table))
+    assert sindeeva is not None
+    assert sindeeva.genres == ("интервью",)
+
+
+def test_an_exclusion_file_that_is_not_a_list_is_ignored(tmp_path: Path):
+    """A bare JSON string is iterable and would exclude single letters."""
+    from library_programs_sync import load_excluded
+
+    for payload in ('"Архив"', "null", "42", '{"a": 1}'):
+        path = tmp_path / "excluded.json"
+        path.write_text(payload, encoding="utf-8")
+        assert load_excluded(path) == set(), payload
+
+
+def test_the_exclusion_file_directory_is_created_if_missing(tmp_path: Path):
+    openpyxl = pytest.importorskip("openpyxl")
+    import library_programs_sync as sync
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Programs"
+    ws.append(["content_id", "title", "genre"])
+    ws.append(["1", "Синдеева", "интервью"])
+    book = tmp_path / "book.xlsx"
+    wb.save(book)
+    nested = tmp_path / "reports" / "current" / "excluded.json"
+    sync.main(
+        [
+            str(book),
+            "--table",
+            str(tmp_path / "programs.csv"),
+            "--tags",
+            str(tmp_path / "absent.jsonl"),
+            "--excluded",
+            str(nested),
+        ]
+    )
+    assert nested.exists()
