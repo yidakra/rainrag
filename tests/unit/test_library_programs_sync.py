@@ -79,3 +79,14 @@ def test_an_empty_export_is_rejected(tmp_path: Path):
     empty.write_text("title,genre\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="no data rows"):
         validate_export(empty)
+
+
+def test_a_padded_header_is_still_counted_as_a_genre(tmp_path: Path):
+    """The report said "0 with a genre" for a table the loader reads fine."""
+    from library_programs_sync import validate_export
+
+    export = tmp_path / "export.csv"
+    export.write_text(" title , genre \nСиндеева,интервью\n", encoding="utf-8")
+    rows = validate_export(export)
+    assert rows[0]["genre"] == "интервью"
+    assert rows[0]["title"] == "Синдеева"

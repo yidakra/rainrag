@@ -42,10 +42,18 @@ REQUIRED_COLUMNS = {"title", "genre"}
 def validate_export(path: Path) -> list[dict[str, str]]:
     """Read the export, failing loudly if it is not the Programs tab."""
     with open(path, encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.DictReader(handle))
+        reader = csv.DictReader(handle)
+        # Strip the header names here too, the way load_programmes does.
+        # Validating against stripped names while the rows keep the padded
+        # ones meant a header of " genre " passed the check and then read as
+        # missing on every row, so the write report announced "0 with a
+        # genre" for a table the loader reads perfectly well.
+        if reader.fieldnames:
+            reader.fieldnames = [(name or "").strip() for name in reader.fieldnames]
+        rows = list(reader)
     if not rows:
         raise SystemExit(f"{path} has no data rows")
-    missing = REQUIRED_COLUMNS - {(name or "").strip() for name in rows[0]}
+    missing = REQUIRED_COLUMNS - set(rows[0])
     if missing:
         raise SystemExit(
             f"{path} is missing the column(s) {sorted(missing)}. "
