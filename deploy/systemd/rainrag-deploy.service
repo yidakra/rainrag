@@ -1,0 +1,21 @@
+[Unit]
+Description=RainRAG deploy on merge (fetch, fast-forward, restart Streamlit, verify)
+Documentation=file:///home/ubuntu/rainrag/deploy/systemd/DEPLOY_ON_MERGE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/rainrag
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/home/ubuntu/rainrag/.env
+# The channel is the bot's own (#rainrag-test), not the team channel.
+ExecStart=/home/ubuntu/rainrag/.venv/bin/python3 /home/ubuntu/rainrag/scripts/deploy_on_merge.py --slack-channel C0BSBNC8AN7
+# A restart plus health wait for two units comfortably fits; anything longer is
+# a hang and should be killed rather than block the next tick.
+TimeoutStartSec=8m
+
+[Install]
+WantedBy=multi-user.target
