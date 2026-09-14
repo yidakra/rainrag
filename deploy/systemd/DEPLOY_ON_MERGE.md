@@ -29,7 +29,13 @@ service runs `scripts/deploy_on_merge.py` as `ubuntu`, which:
    rag.tvrain.tv). If the canary fails to come up healthy within 90 seconds it
    stops there, leaves the public unit on the previous code, and posts a
    failure. Nothing is rolled back; a person decides.
-6. Posts a one-line summary to the bot channel (`#rainrag-test`, C0BSBNC8AN7)
+6. Treats "tree ahead of what the units run" as work too. The script keeps
+   the last fully deployed sha in `data/deploy_on_merge.state.json`. If a tick
+   pulled and then failed on sync or restart, or if a person pulled by hand
+   and forgot the restart, the next tick finishes the job. A failed step is
+   retried once; after two failures on the same commit it holds, posts one
+   notice, and waits for a new commit or for the state file to be cleared.
+7. Posts a one-line summary to the bot channel (`#rainrag-test`, C0BSBNC8AN7)
    when units were restarted or something needs a hand. Docs-only merges pull
    silently and show up only in the journal.
 

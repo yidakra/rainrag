@@ -219,7 +219,9 @@ def test_a_failed_health_check_stops_before_the_public_unit(repos, tmp_path):
     assert failure and "rainrag-streamlit-ip" in failure[0]
     # The pull itself is not undone: the code is on disk, one unit is still up.
     assert _git(box, "rev-parse", "HEAD") == new
-    assert dom.load_state(tmp_path / "state.json")["failed_unit"] == "rainrag-streamlit"
+    state = dom.load_state(tmp_path / "state.json")
+    assert state["failed_step"] == "health rainrag-streamlit"
+    assert state["last_failed_sha"] == new
 
 
 def test_docs_only_merges_pull_quietly(repos, tmp_path, capsys):
@@ -261,3 +263,112 @@ def test_state_file_survives_garbage(tmp_path):
     assert dom.load_state(path) == {}
     path.write_text("[1, 2]", encoding="utf-8")
     assert dom.load_state(path) == {}
+
+
+# --------------------------------------------------------------------------- #
+# Failures after the pull must be recorded, retried, then held
+# --------------------------------------------------------------------------- #
+
+
+class Flaky:
+    """A sync that fails a given number of times, then works."""
+
+    def __init__(self, failures: int):
+        self.failures = failures
+        self.calls = 0
+
+    def __call__(self, repo: Path) -> None:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise subprocess.CalledProcessError(1, ["uv", "sync"], stderr="network down")
+
+
+def test_a_failed_sync_is_reported_and_retried_on_the_next_tick(repos, tmp_path):
+    """Before: the pull had moved HEAD, so the next tick saw nothing to do, forever."""
+    github, box = repos
+    _commit(github, "uv.lock", "lock\n", "deps")
+    _git(github, "push", "-q")
+    fakes = Fakes()
+    flaky = Flaky(failures=1)
+    d = _deployer(box, fakes, tmp_path)
+    d.sync_dependencies = flaky
+    assert d.run() == 1
+    assert any("DEPLOY FAILED at uv sync" in n and "retry" in n for n in fakes.notices)
+    assert fakes.restarted == []
+    # Next tick: HEAD already equals origin, and the deploy still happens.
+    assert d.run() == 0
+    assert flaky.calls == 2
+    assert fakes.restarted == ["rainrag-streamlit", "rainrag-streamlit-ip"]
+    state = dom.load_state(tmp_path / "state.json")
+    assert "last_failed_sha" not in state
+    assert state["last_deployed_sha"] == _git(box, "rev-parse", "HEAD")
+
+
+def test_repeated_failure_holds_with_one_notice_instead_of_looping(repos, tmp_path):
+    github, box = repos
+    _commit(github, "uv.lock", "lock\n", "deps")
+    _git(github, "push", "-q")
+    fakes = Fakes()
+    d = _deployer(box, fakes, tmp_path)
+    d.sync_dependencies = Flaky(failures=99)
+    assert d.run() == 1
+    assert d.run() == 1
+    before = len(fakes.notices)
+    assert d.run() == 0  # held, not attempted
+    assert d.run() == 0
+    held = fakes.notices[before:]
+    assert len(held) == 1 and "holding" in held[0]
+    assert fakes.restarted == []
+
+
+def test_a_new_commit_lifts_the_hold(repos, tmp_path):
+    github, box = repos
+    _commit(github, "uv.lock", "lock\n", "deps")
+    _git(github, "push", "-q")
+    fakes = Fakes()
+    d = _deployer(box, fakes, tmp_path)
+    d.sync_dependencies = Flaky(failures=2)
+    assert d.run() == 1 and d.run() == 1 and d.run() == 0
+    _commit(github, "src/rainrag/y.py", "y = 1\n", "another")
+    _git(github, "push", "-q")
+    assert d.run() == 0
+    assert fakes.restarted == ["rainrag-streamlit", "rainrag-streamlit-ip"]
+
+
+def test_a_restart_that_raises_goes_through_the_failure_path(repos, tmp_path):
+    github, box = repos
+    _commit(github, "ui_library.py", "ui = 1\n", "feat")
+    _git(github, "push", "-q")
+    fakes = Fakes()
+
+    def broken(unit: str) -> None:
+        raise subprocess.CalledProcessError(1, ["systemctl"], stderr="sudo: a password is required")
+
+    d = _deployer(box, fakes, tmp_path)
+    d.restart = broken
+    assert d.run() == 1
+    assert any("DEPLOY FAILED at restart rainrag-streamlit" in n for n in fakes.notices)
+    assert dom.load_state(tmp_path / "state.json")["failed_step"] == "restart rainrag-streamlit"
+
+
+def test_a_manual_pull_without_a_restart_is_finished_on_the_next_tick(repos, tmp_path):
+    """The 12 to 14 September failure mode, caught automatically this time."""
+    github, box = repos
+    fakes = Fakes()
+    d = _deployer(box, fakes, tmp_path)
+    assert d.run() == 0  # baseline recorded
+    _commit(github, "ui_library.py", "ui = 1\n", "feat")
+    _git(github, "push", "-q")
+    _git(box, "pull", "-q", "--ff-only")  # a person pulled and walked away
+    assert d.run() == 0
+    assert fakes.restarted == ["rainrag-streamlit", "rainrag-streamlit-ip"]
+
+
+def test_first_run_on_a_current_box_records_a_baseline_silently(repos, tmp_path):
+    _, box = repos
+    fakes = Fakes()
+    assert _deployer(box, fakes, tmp_path).run() == 0
+    assert fakes.restarted == [] and fakes.notices == []
+    assert dom.load_state(tmp_path / "state.json")["last_deployed_sha"] == _git(
+        box, "rev-parse", "HEAD"
+    )

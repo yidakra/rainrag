@@ -182,6 +182,9 @@ def save_state(state: dict, path: Path = STATE_FILE) -> None:
     path.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
+MAX_ATTEMPTS = 2
+
+
 @dataclass
 class Deployer:
     repo: Path
@@ -209,6 +212,15 @@ class Deployer:
         return 0
 
     def plan(self) -> Plan | None:
+        """What to deploy, if anything.
+
+        Two sources of work, not one. The obvious one is origin being ahead of
+        the tree. The other is the tree being ahead of what the units actually
+        run: a previous tick pulled and then failed on sync or restart, or a
+        person pulled by hand and forgot the restart, which is how six merges
+        sat unloaded for two days. Comparing origin to HEAD alone would call
+        both situations "nothing to do" forever.
+        """
         git = Git(self.repo)
         if git.branch() != self.branch:
             self._skip(f"tree is on '{git.branch()}', not '{self.branch}'")
@@ -218,15 +230,33 @@ class Deployer:
             return None
         git.fetch(self.remote, self.branch)
         target = f"{self.remote}/{self.branch}"
-        old, new = git.sha("HEAD"), git.sha(target)
-        if old == new:
-            return None
+        head, new = git.sha("HEAD"), git.sha(target)
         if git.count(target, "HEAD"):
             self._skip(f"local {self.branch} has commits not on {target}; not a fast-forward")
             return None
-        changed = git.changed(old, new)
+
+        state = load_state(self.state_path)
+        deployed = state.get("last_deployed_sha")
+        if deployed is None:
+            # First run on a box that is current: take what is running as the
+            # baseline rather than restarting everything for no reason.
+            if head == new:
+                state["last_deployed_sha"] = head
+                save_state(state, self.state_path)
+                return None
+            deployed = head
+        if deployed == new:
+            return None
+        if state.get("last_failed_sha") == new and state.get("failed_attempts", 0) >= MAX_ATTEMPTS:
+            self._skip(
+                f"deploy of {new[:7]} failed {MAX_ATTEMPTS} times at "
+                f"'{state.get('failed_step')}'; holding until a new commit lands "
+                f"or {self.state_path.name} is cleared"
+            )
+            return None
+        changed = git.changed(deployed, new)
         return Plan(
-            old=old,
+            old=deployed,
             new=new,
             changed=changed,
             units=units_to_restart(changed),
@@ -234,37 +264,67 @@ class Deployer:
             notes=manual_attention(changed),
         )
 
+    def _fail(self, plan: Plan, step: str, detail: str) -> int:
+        state = load_state(self.state_path)
+        attempts = (
+            state.get("failed_attempts", 0) + 1 if state.get("last_failed_sha") == plan.new else 1
+        )
+        # What the units are still running is the sha we set out from. Without
+        # this, a first-ever run that failed left no baseline, the next tick
+        # took the now-current tree as "deployed", and the retry never came.
+        state.setdefault("last_deployed_sha", plan.old)
+        state.update(
+            {"last_failed_sha": plan.new, "failed_step": step, "failed_attempts": attempts}
+        )
+        state.pop("last_skip_reason", None)
+        save_state(state, self.state_path)
+        again = (
+            "Will retry on the next tick."
+            if attempts < MAX_ATTEMPTS
+            else f"Attempt {attempts} of {MAX_ATTEMPTS}; not retrying until a new commit lands."
+        )
+        self.notify(
+            f"DEPLOY FAILED at {step}: {plan.summary()}. {detail} Nothing was rolled back. {again}"
+        )
+        return 1
+
     def apply(self, plan: Plan) -> int:
         git = Git(self.repo)
-        state = load_state(self.state_path)
-        state.pop("last_skip_reason", None)
         if self.dry_run:
             self.notify(f"dry run: would deploy {plan.summary()}")
             return 0
-        git.fast_forward(f"{self.remote}/{self.branch}")
+        try:
+            if git.sha("HEAD") != plan.new:
+                git.fast_forward(f"{self.remote}/{self.branch}")
+        except subprocess.CalledProcessError as exc:
+            return self._fail(plan, "fast-forward", f"git said: {exc.stderr or exc}".strip())
         if plan.sync:
-            self.sync_dependencies(self.repo)
+            try:
+                self.sync_dependencies(self.repo)
+            except Exception as exc:  # noqa: BLE001 - reported through the failure path
+                return self._fail(plan, "uv sync", f"{type(exc).__name__}: {exc}")
         restarted: list[str] = []
         for unit in plan.units:
-            self.restart(unit)
+            try:
+                self.restart(unit)
+            except Exception as exc:  # noqa: BLE001 - reported through the failure path
+                return self._fail(plan, f"restart {unit}", f"{type(exc).__name__}: {exc}")
             if not self.health(STREAMLIT_UNITS[unit], self.health_timeout):
                 still_old = [u for u in plan.units if u not in restarted and u != unit]
-                self.notify(
-                    f"DEPLOY FAILED at {unit}: pulled {plan.summary()} but the unit did not "
-                    f"report healthy within {self.health_timeout:.0f}s. "
-                    + (f"Left on the previous code: {', '.join(still_old)}. " if still_old else "")
-                    + "Nothing was rolled back; check journalctl -u "
-                    + unit
+                left = f" Left on the previous code: {', '.join(still_old)}." if still_old else ""
+                return self._fail(
+                    plan,
+                    f"health {unit}",
+                    f"the unit did not report healthy within {self.health_timeout:.0f}s.{left} "
+                    f"Check journalctl -u {unit}.",
                 )
-                state.update({"last_failed_sha": plan.new, "failed_unit": unit})
-                save_state(state, self.state_path)
-                return 1
             restarted.append(unit)
+        state = load_state(self.state_path)
+        for key in ("last_skip_reason", "last_failed_sha", "failed_step", "failed_attempts"):
+            state.pop(key, None)
         state.update(
             {"last_deployed_sha": plan.new, "deployed_at": time.strftime("%FT%TZ", time.gmtime())}
         )
-        state.pop("last_failed_sha", None)
-        state.pop("failed_unit", None)
         save_state(state, self.state_path)
         if plan.units or plan.notes:
             lines = [f"deployed {plan.summary()}"]
