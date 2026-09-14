@@ -330,8 +330,9 @@ def fetch_video_demographics(
     to a few minutes. httplib2 is not thread-safe, so each worker builds its
     own service object.
 
-    One retry, after a short pause, on a rate limit or a server-side error.
-    Anything else counts the video as failed and moves on. A video with no
+    One retry, after a short pause, on a rate limit, a server-side error, or
+    a transport failure such as the socket timeout the script sets. Anything
+    else counts the video as failed and moves on; nothing escapes the worker. A video with no
     rows is not a failure: YouTube withholds demographics below a views
     threshold, and that video simply gets no cell.
 
@@ -367,9 +368,15 @@ def fetch_video_demographics(
                     .execute()
                 )
                 break
-            except HttpError as exc:
+            except Exception as exc:  # noqa: BLE001 - one video must not sink the night
+                # HttpError carries a status; a socket timeout or any other
+                # transport failure does not, and letting it escape the worker
+                # aborted the whole pull before the snapshot was written. Both
+                # kinds get one retry when they look transient, then count the
+                # video as failed and let the rest continue.
                 status = getattr(getattr(exc, "resp", None), "status", None)
-                if attempt == 1 and status in RETRYABLE_STATUSES:
+                transient = status in RETRYABLE_STATUSES or not isinstance(exc, HttpError)
+                if attempt == 1 and transient:
                     time.sleep(2.0)
                     continue
                 return vid, None, True

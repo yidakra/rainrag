@@ -387,3 +387,25 @@ def test_demographics_retries_once_on_a_rate_limit_then_gives_up(monkeypatch):
     assert "recovers" in out and failed == ["keeps_failing"]
     assert len([c for c in reports.calls if "recovers" in c["filters"]]) == 2
     assert len([c for c in reports.calls if "keeps_failing" in c["filters"]]) == 2
+
+
+def test_a_socket_timeout_marks_one_video_failed_instead_of_aborting_the_pull(monkeypatch):
+    """The script sets a socket timeout; a timeout is not an HttpError."""
+    from rainrag.youtube_analytics import fetch_video_demographics
+
+    monkeypatch.setattr("rainrag.youtube_analytics.time.sleep", lambda s: None)
+    headers = [{"name": "ageGroup"}, {"name": "gender"}, {"name": "viewerPercentage"}]
+    ok = {"columnHeaders": headers, "rows": [["age18-24", "male", 100.0]]}
+    reports = _FakeReports(
+        {
+            "hangs": [TimeoutError("timed out"), TimeoutError("timed out")],
+            "flaky_then_ok": [TimeoutError("timed out"), ok],
+            "fine": ok,
+        }
+    )
+    _stub_discovery(monkeypatch, reports)
+    out, failed = fetch_video_demographics(
+        object(), ["hangs", "flaky_then_ok", "fine"], "2015-01-01", "2026-09-14", workers=3
+    )
+    assert failed == ["hangs"]
+    assert set(out) == {"flaky_then_ok", "fine"}
