@@ -9,12 +9,15 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/rainrag
 Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TZ=UTC
 EnvironmentFile=-/home/ubuntu/rainrag/.env
 # Outcome goes to the bot channel (#rainrag-test). A consent that has expired
 # is the failure this exists to catch: the message says what to do.
 ExecStart=/home/ubuntu/rainrag/.venv/bin/python3 /home/ubuntu/rainrag/scripts/youtube_analytics_pull.py --slack-channel C0BSBNC8AN7
-# ~240 sequential API requests take 10 to 15 minutes; a hang should still die.
-TimeoutStartSec=45m
+# A normal run is 3 to 4 minutes with eight workers. The budget covers the
+# worst case instead: every request timing out at 90 s, retried once, over
+# 30 waves, which is about 90 minutes. A hang beyond that should still die.
+TimeoutStartSec=2h
 Nice=10
 
 [Install]

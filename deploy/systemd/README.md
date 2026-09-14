@@ -48,8 +48,10 @@ Deploy on merge (every two minutes, fetch + fast-forward + restart Streamlit)
 
 Daily YouTube Analytics snapshot (05:20 UTC, metrics + age/gender per upload)
 1) Needs data/google_oauth_token.json from a one-time consent by the channel owner
-   (scripts/youtube_analytics_pull.py --auth, then --auth-code; pick the Library
-   brand account in Google's chooser).
+   (scripts/youtube_analytics_pull.py --auth prints a consent URL; the channel
+   owner opens it, picks the Library brand account in Google's chooser, and
+   sends back the address; then scripts/youtube_analytics_pull.py --auth-code
+   '<the code= value from that address>').
 2) Install and enable:
    sudo cp /home/ubuntu/rainrag/deploy/systemd/rainrag-analytics.service /etc/systemd/system/
    sudo cp /home/ubuntu/rainrag/deploy/systemd/rainrag-analytics.timer /etc/systemd/system/

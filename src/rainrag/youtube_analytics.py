@@ -148,6 +148,15 @@ def chunked(items: list[str], size: int = FILTER_BATCH) -> list[list[str]]:
 # ------------------------------------------------------------------ Google side
 
 
+class ConsentRequired(SystemExit):
+    """The --auth run stopping to hand a consent URL to a person.
+
+    A SystemExit so the CLI still exits non-zero with the URL on stdout, and a
+    distinct type so the pull script can tell it apart from a real failure
+    and not alert on it.
+    """
+
+
 def _write_private(path: Path, data: str) -> None:
     """Write owner-only: these files grant read access to channel revenue."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -211,13 +220,16 @@ def load_credentials(client_json: Path, token_json: Path, auth_code: str | None 
     verifier_path = _verifier_path(token_json)
     if auth_code is None:
         url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+        # ConsentRequired, not a bare SystemExit: the --auth run is supposed
+        # to stop here, and the pull script must not alert on it as if the
+        # nightly job had failed.
         # authorization_url() mints a PKCE verifier that fetch_token() has to
         # send back. --auth and --auth-code are separate processes, so an
         # in-memory verifier is gone by the time the code arrives and Google
         # rejects the exchange. Keep it on disk, owner-only, until it is used.
         if flow.code_verifier:
             _write_private(verifier_path, flow.code_verifier)
-        raise SystemExit(
+        raise ConsentRequired(
             "Open this URL as the channel owner, grant access, then re-run with\n"
             "  --auth-code <the 'code=' value from the address bar after the redirect>\n\n"
             f"{url}"

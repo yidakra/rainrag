@@ -438,3 +438,19 @@ def test_metrics_batch_gives_up_after_three_transport_failures(monkeypatch):
     with pytest.raises(TimeoutError):
         fetch_video_metrics(object(), ["a"], "2015-01-01", "2026-09-14")
     assert len(reports.calls) == 3
+
+
+def test_the_consent_url_exit_is_distinguishable_from_a_failure(tmp_path: Path, monkeypatch):
+    """The pull script must not alert on the --auth run stopping as designed."""
+    import pytest
+
+    from rainrag.youtube_analytics import ConsentRequired, load_credentials
+
+    _stub_google(monkeypatch)
+    client = tmp_path / "client.json"
+    client.write_text("{}", encoding="utf-8")
+    with pytest.raises(ConsentRequired) as info:
+        load_credentials(client, tmp_path / "token.json", auth_code=None)
+    assert isinstance(info.value, SystemExit)
+    assert info.value.code not in (0, None)
+    assert "accounts.google.com" in str(info.value)

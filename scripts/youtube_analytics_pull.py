@@ -49,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     notify = _notifier(args.slack_channel)
 
     from rainrag.youtube_analytics import (
+        ConsentRequired,
         append_snapshot,
         fetch_video_demographics,
         fetch_video_metrics,
@@ -69,7 +70,9 @@ def main(argv: list[str] | None = None) -> int:
         if not video_ids:
             print(f"no youtube ids in {args.map}; nothing to pull")
             return 0
-        today = dt.date.today().isoformat()
+        # UTC explicitly: the timer fires at 05:20 UTC and the snapshot date
+        # must not depend on the host's zone. dt.date.today() is process-local.
+        today = dt.datetime.now(dt.timezone.utc).date().isoformat()
         records = fetch_video_metrics(creds, video_ids, args.start, today)
         if not records:
             notify(f"YouTube pull {today}: the API returned no rows for {len(video_ids)} videos")
@@ -88,9 +91,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"snapshot {today}: {n} videos, metrics {metrics_seen} -> {args.out}")
         notify(f"YouTube pull {today}: {n} videos, {demo_note}")
         return 0
+    except ConsentRequired:
+        # The --auth run stopping to print a consent URL is the expected
+        # outcome, not a failure; nothing to alert on.
+        raise
     except SystemExit as exc:
-        # load_credentials explains consent problems in its message; a timer
-        # run must surface that in Slack, not only in the journal.
+        # Everything else load_credentials refuses (expired consent, missing
+        # client, missing PKCE verifier) is worth surfacing in Slack, not only
+        # in the journal, whichever flags the run had.
         if exc.code not in (0, None):
             notify(f"YouTube pull failed: {exc}")
         raise
