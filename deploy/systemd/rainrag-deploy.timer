@@ -1,0 +1,12 @@
+[Unit]
+Description=Deploy merged rainrag code every two minutes
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=2m
+# Not on the same second as the health probe or the hourly updater.
+RandomizedDelaySec=20s
+Unit=rainrag-deploy.service
+
+[Install]
+WantedBy=timers.target

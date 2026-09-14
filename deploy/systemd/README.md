@@ -37,6 +37,15 @@ Notes:
 - It refuses to run when `incremental.enabled` is false.
 - It performs a manifest sanity check to avoid accidental full rebuilds when manifest state is stale.
 
+Deploy on merge (every two minutes, fetch + fast-forward + restart Streamlit)
+1) Install and enable:
+   sudo cp /home/ubuntu/rainrag/deploy/systemd/rainrag-deploy.service /etc/systemd/system/
+   sudo cp /home/ubuntu/rainrag/deploy/systemd/rainrag-deploy.timer /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now rainrag-deploy.timer
+
+2) Details, refusals and what it will not restart: deploy/systemd/DEPLOY_ON_MERGE.md
+
 Nginx config
 - Copy the vhost file from deploy/nginx and enable it in your nginx setup.
 - The config assumes TLS certs at:
