@@ -774,6 +774,23 @@ def _episode_label(e: Episode, synthetic: dict[str, str] | None = None) -> str:
     return " — ".join(bits)
 
 
+def feedback_widget_key(column: str, seed_id: str, e: Episode) -> str:
+    """Widget key for one suggestion's judgment buttons.
+
+    Keyed on ``video_hash``, the identity the ranker itself uses, and not on
+    ``content_id``. 327 content_ids in the pool exist as several archive cuts
+    with different hashes (the 2021 New Year broadcast has four), and the
+    ranker keeps them apart on purpose. Two cuts score alike and land in the
+    same list together; keyed on content_id their buttons collided and
+    Streamlit raised ``StreamlitDuplicateElementKey``, taking the whole
+    Library page down for that seed. Found by Varya on 2026-09-14.
+
+    The judgment itself is still recorded per content_id: an editor's verdict
+    on an episode is about the episode, not about which cut of it they saw.
+    """
+    return f"fb_{column}_{seed_id}_{e.video_hash}"
+
+
 def _render_suggestion(
     rank: int,
     e: Episode,
@@ -804,7 +821,7 @@ def _render_suggestion(
         st.caption(explanation)
     if seed_id and e.content_id:
         mark = (marks or {}).get((seed_id, e.content_id))
-        key = f"fb_{column}_{seed_id}_{e.content_id}"
+        key = feedback_widget_key(column, seed_id, e)
         if up.button("✓" if mark == "good" else "👍", key=f"{key}_g", disabled=mark == "good"):
             append_feedback(seed_id, e.content_id, column, rank, "good")
             st.rerun()
