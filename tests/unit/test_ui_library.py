@@ -675,3 +675,36 @@ def test_shortlist_feedback_is_recorded_under_its_own_column(tmp_path):
     marks = load_feedback(path)
     assert marks[("seed1", "cand1")] == "good"
     assert marks[("seed1", "cand2")] == "bad"
+
+
+def test_two_cuts_of_one_episode_get_distinct_feedback_widget_keys():
+    """Four cuts of the 2021 New Year broadcast share content_id 545139."""
+    from ui_library import feedback_widget_key
+
+    cut_a = _ep("ff8e5a46", content_id="545139")
+    cut_b = _ep("84df6ed5", content_id="545139")
+    keys = {
+        feedback_widget_key("top5", "544243", cut_a),
+        feedback_widget_key("top5", "544243", cut_b),
+    }
+    assert len(keys) == 2
+
+
+def test_feedback_widget_key_is_stable_and_scoped_by_column_and_seed():
+    from ui_library import feedback_widget_key
+
+    e = _ep("ff8e5a46", content_id="545139")
+    assert feedback_widget_key("top5", "s1", e) == feedback_widget_key("top5", "s1", e)
+    assert feedback_widget_key("top5", "s1", e) != feedback_widget_key("speaker", "s1", e)
+    assert feedback_widget_key("top5", "s1", e) != feedback_widget_key("top5", "s2", e)
+
+
+def test_the_renderer_uses_the_shared_key_helper_not_content_id():
+    """Two copies of the key expression is how this drifted in the first place."""
+    import inspect
+
+    import ui_library
+
+    body = inspect.getsource(ui_library._render_suggestion)
+    assert "feedback_widget_key(" in body
+    assert "{e.content_id}" not in body
