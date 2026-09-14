@@ -31,8 +31,11 @@ import csv
 import fcntl
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
+
+from rainrag.library_performance import DISTRIBUTION_COLUMNS, format_distribution
 
 
 SCOPES = [
@@ -110,6 +113,9 @@ def rows_to_snapshot(records: list[dict[str, Any]], snapshot_date: str) -> list[
         for m in API_METRICS:
             if rec.get(m) is not None:
                 csv_row[m] = rec[m]
+        for col in DISTRIBUTION_COLUMNS:
+            if rec.get(col):
+                csv_row[col] = rec[col]
         out.append(csv_row)
     return out
 
@@ -176,7 +182,20 @@ def load_credentials(client_json: Path, token_json: Path, auth_code: str | None 
     if creds and creds.valid:
         return creds
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        from google.auth.exceptions import RefreshError
+
+        try:
+            creds.refresh(Request())
+        except RefreshError as exc:
+            # The one failure a nightly timer must explain rather than dump.
+            # An app left in Testing issues refresh tokens that die after
+            # seven days; a revoked grant looks the same from here.
+            raise SystemExit(
+                "YouTube consent has expired or was revoked (refresh failed: "
+                f"{exc}). Re-run with --auth and have the channel owner consent "
+                "again, choosing the Library brand account. If this recurs "
+                "weekly, the OAuth app is still in Testing: publish it."
+            ) from exc
         _write_token(token_json, creds.to_json())
         return creds
     if not client_json.exists():
@@ -272,3 +291,119 @@ def _rejected_metric(message: str, metrics: list[str]) -> str | None:
         if re.search(rf"(?<![A-Za-z]){re.escape(m)}(?![A-Za-z])", message):
             return m
     return None
+
+
+def marginals(rows: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, float]]:
+    """Age and gender marginals from joint (ageGroup, gender, viewerPercentage) rows.
+
+    One request per video returns the joint table; summing it both ways gives
+    the two columns the sheet has, and one API call instead of two.
+    """
+    age: dict[str, float] = {}
+    gender: dict[str, float] = {}
+    for r in rows:
+        pct = float(r.get("viewerPercentage") or 0.0)
+        a, g = str(r.get("ageGroup") or ""), str(r.get("gender") or "")
+        if a:
+            age[a] = age.get(a, 0.0) + pct
+        if g:
+            gender[g] = gender.get(g, 0.0) + pct
+    return age, gender
+
+
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def fetch_video_demographics(
+    creds: Any,
+    video_ids: list[str],
+    start_date: str,
+    end_date: str,
+    workers: int = 8,
+) -> tuple[dict[str, dict[str, str]], list[str]]:
+    """Age and gender mix per video: one request each, by API design.
+
+    The demographics report accepts ``video`` only as a filter, never as a
+    dimension, so 239 uploads mean 239 requests, and the API answers each in
+    anything from under a second to sixteen. Sequentially that is half an
+    hour; measured on the live channel, 2026-09-14. Eight workers bring it
+    to a few minutes. httplib2 is not thread-safe, so each worker builds its
+    own service object.
+
+    One retry, after a short pause, on a rate limit or a server-side error.
+    Anything else counts the video as failed and moves on. A video with no
+    rows is not a failure: YouTube withholds demographics below a views
+    threshold, and that video simply gets no cell.
+
+    Returns the formatted cells per video and the ids whose request failed.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+
+    local = threading.local()
+
+    def service() -> Any:
+        if not hasattr(local, "svc"):
+            local.svc = build("youtubeAnalytics", "v2", credentials=creds, cache_discovery=False)
+        return local.svc
+
+    def one(vid: str) -> tuple[str, dict[str, str] | None, bool]:
+        for attempt in (1, 2):
+            try:
+                resp = (
+                    service()
+                    .reports()
+                    .query(
+                        ids="channel==MINE",
+                        startDate=start_date,
+                        endDate=end_date,
+                        metrics="viewerPercentage",
+                        dimensions="ageGroup,gender",
+                        filters=f"video=={vid}",
+                    )
+                    .execute()
+                )
+                break
+            except HttpError as exc:
+                status = getattr(getattr(exc, "resp", None), "status", None)
+                if attempt == 1 and status in RETRYABLE_STATUSES:
+                    time.sleep(2.0)
+                    continue
+                return vid, None, True
+        names = [c["name"] for c in resp.get("columnHeaders", [])]
+        rows = [dict(zip(names, r, strict=False)) for r in resp.get("rows") or []]
+        if not rows:
+            return vid, None, False
+        age, gender = marginals(rows)
+        return (
+            vid,
+            {
+                DISTRIBUTION_COLUMNS[0]: format_distribution(age),
+                DISTRIBUTION_COLUMNS[1]: format_distribution(gender),
+            },
+            False,
+        )
+
+    out: dict[str, dict[str, str]] = {}
+    failed: list[str] = []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for vid, cells, bad in pool.map(one, video_ids):
+            if bad:
+                failed.append(vid)
+            elif cells:
+                out[vid] = cells
+    return out, failed
+
+
+def merge_demographics(
+    records: list[dict[str, Any]], demographics: dict[str, dict[str, str]]
+) -> list[dict[str, Any]]:
+    """Attach the demographic cells to the metric records they belong to."""
+    for rec in records:
+        extra = demographics.get(str(rec.get("video")))
+        if extra:
+            rec.update(extra)
+    return records

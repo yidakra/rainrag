@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import socket
 import sys
 from pathlib import Path
 
@@ -30,35 +31,89 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start", default="2015-01-01", help="lifetime start for totals")
     parser.add_argument("--auth", action="store_true", help="print the consent URL and exit")
     parser.add_argument("--auth-code", default=None)
+    parser.add_argument(
+        "--no-demographics",
+        action="store_true",
+        help="skip the per-video age/gender requests (one API call per upload)",
+    )
+    parser.add_argument(
+        "--slack-channel", default="", help="post the outcome here; empty means stdout only"
+    )
+    parser.add_argument(
+        "--workers", type=int, default=8, help="parallel requests for the per-video demographics"
+    )
     args = parser.parse_args(argv)
+    # The demographics report can take 16 s per answer; a request that never
+    # answers must not pin a worker for the rest of the night.
+    socket.setdefaulttimeout(90)
+    notify = _notifier(args.slack_channel)
 
     from rainrag.youtube_analytics import (
         append_snapshot,
+        fetch_video_demographics,
         fetch_video_metrics,
         load_credentials,
+        merge_demographics,
         rows_to_snapshot,
     )
 
-    creds = load_credentials(Path(args.client), Path(args.token), auth_code=args.auth_code)
-    if args.auth or args.auth_code:
-        print("credentials stored; run again without flags to pull")
-        return 0
+    try:
+        creds = load_credentials(Path(args.client), Path(args.token), auth_code=args.auth_code)
+        if args.auth or args.auth_code:
+            print("credentials stored; run again without flags to pull")
+            return 0
 
-    video_ids = sorted(
-        {m["youtube_id"] for m in json.loads(Path(args.map).read_text(encoding="utf-8"))}
-    )
-    if not video_ids:
-        print(f"no youtube ids in {args.map}; nothing to pull")
+        video_ids = sorted(
+            {m["youtube_id"] for m in json.loads(Path(args.map).read_text(encoding="utf-8"))}
+        )
+        if not video_ids:
+            print(f"no youtube ids in {args.map}; nothing to pull")
+            return 0
+        today = dt.date.today().isoformat()
+        records = fetch_video_metrics(creds, video_ids, args.start, today)
+        if not records:
+            notify(f"YouTube pull {today}: the API returned no rows for {len(video_ids)} videos")
+            return 1
+        demo_note = "demographics skipped"
+        if not args.no_demographics:
+            demographics, failed = fetch_video_demographics(
+                creds, video_ids, args.start, today, workers=args.workers
+            )
+            merge_demographics(records, demographics)
+            demo_note = f"age/gender on {len(demographics)}"
+            if failed:
+                demo_note += f", {len(failed)} request(s) failed"
+        n = append_snapshot(Path(args.out), rows_to_snapshot(records, today))
+        metrics_seen = sorted({k for r in records for k in r if k != "video"})
+        print(f"snapshot {today}: {n} videos, metrics {metrics_seen} -> {args.out}")
+        notify(f"YouTube pull {today}: {n} videos, {demo_note}")
         return 0
-    today = dt.date.today().isoformat()
-    records = fetch_video_metrics(creds, video_ids, args.start, today)
-    if not records:
-        print(f"the API returned no rows for {len(video_ids)} videos; nothing written")
-        return 0
-    n = append_snapshot(Path(args.out), rows_to_snapshot(records, today))
-    metrics_seen = sorted({k for r in records for k in r if k != "video"})
-    print(f"snapshot {today}: {n} videos, metrics {metrics_seen} -> {args.out}")
-    return 0
+    except SystemExit as exc:
+        # load_credentials explains consent problems in its message; a timer
+        # run must surface that in Slack, not only in the journal.
+        if exc.code not in (0, None):
+            notify(f"YouTube pull failed: {exc}")
+        raise
+    except Exception as exc:  # noqa: BLE001 - reported, then re-raised for the journal
+        notify(f"YouTube pull failed: {type(exc).__name__}: {exc}")
+        raise
+
+
+def _notifier(channel: str):
+    """Print always; post to Slack too when a channel is given and a token exists."""
+    import os
+
+    token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+
+    def notify(text: str) -> None:
+        print(text)
+        if channel and token:
+            sys.path.insert(0, str(REPO_ROOT))
+            from scripts.health_check import post_slack_alert
+
+            post_slack_alert(f":bar_chart: {text}", token=token, channel=channel)
+
+    return notify
 
 
 if __name__ == "__main__":

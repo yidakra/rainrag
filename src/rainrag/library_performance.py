@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import re
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
@@ -66,6 +67,67 @@ class Upload:
     speakers: list[str] = field(default_factory=list)
     tagged: bool = False
     metrics: dict[str, float] = field(default_factory=dict)
+
+
+DISTRIBUTION_COLUMNS = ("viewerPercentage: ageGroup", "viewerPercentage: gender")
+
+
+def format_distribution(values: Mapping[str, float]) -> str:
+    """One cell for a whole distribution: ``age25-34:31.2;age35-44:24.9``.
+
+    Human-readable in the sheet, one decimal, keys sorted so two snapshots of
+    the same audience diff cleanly.
+    """
+    return ";".join(f"{k}:{float(v):.1f}" for k, v in sorted(values.items()) if v is not None)
+
+
+def parse_distribution(cell: str | None) -> dict[str, float]:
+    """Inverse of ``format_distribution``; tolerant of blanks, junk and decimal commas."""
+    out: dict[str, float] = {}
+    for part in (cell or "").split(";"):
+        key, sep, raw = part.rpartition(":")
+        if not sep or not key.strip():
+            continue
+        try:
+            out[key.strip()] = float(raw.replace(",", ".").strip())
+        except ValueError:
+            continue
+    return out
+
+
+def load_audience(path: Path) -> dict[str, dict[str, float]]:
+    """youtube_id -> merged age and gender distribution, newest snapshot per column.
+
+    Age bands and genders share one vector because the blend compares whole
+    audience shapes; their keys never collide (``age25-34`` vs ``female``).
+    YouTube withholds demographics for videos with too few views, so a video
+    can have every other metric and no entry here; that reads as "unmeasured"
+    downstream, which is the honest reading.
+    """
+    if not path.exists():
+        return {}
+    latest: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)
+    with open(path, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            yt = (row.get("youtube_id") or "").strip()
+            if not yt:
+                continue
+            snap = (row.get("snapshot_date") or "").strip()
+            for col in DISTRIBUTION_COLUMNS:
+                cell = (row.get(col) or "").strip()
+                if not cell:
+                    continue
+                prev = latest[yt].get(col)
+                if prev is None or snap >= prev[0]:
+                    latest[yt][col] = (snap, cell)
+    out: dict[str, dict[str, float]] = {}
+    for yt, cols in latest.items():
+        merged: dict[str, float] = {}
+        for _col, (_snap, cell) in cols.items():
+            merged.update(parse_distribution(cell))
+        if merged:
+            out[yt] = merged
+    return out
 
 
 def load_metrics(path: Path) -> dict[str, dict[str, float]]:

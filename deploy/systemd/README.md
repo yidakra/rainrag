@@ -46,6 +46,19 @@ Deploy on merge (every two minutes, fetch + fast-forward + restart Streamlit)
 
 2) Details, refusals and what it will not restart: deploy/systemd/DEPLOY_ON_MERGE.md
 
+Daily YouTube Analytics snapshot (05:20 UTC, metrics + age/gender per upload)
+1) Needs data/google_oauth_token.json from a one-time consent by the channel owner
+   (scripts/youtube_analytics_pull.py --auth, then --auth-code; pick the Library
+   brand account in Google's chooser).
+2) Install and enable:
+   sudo cp /home/ubuntu/rainrag/deploy/systemd/rainrag-analytics.service /etc/systemd/system/
+   sudo cp /home/ubuntu/rainrag/deploy/systemd/rainrag-analytics.timer /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now rainrag-analytics.timer
+
+3) Outcome of every run is posted to #rainrag-test; an expired consent says so
+   and how to renew it.
+
 Nginx config
 - Copy the vhost file from deploy/nginx and enable it in your nginx setup.
 - The config assumes TLS certs at:
