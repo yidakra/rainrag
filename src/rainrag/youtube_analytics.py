@@ -81,6 +81,7 @@ API_METRICS = [
 ]
 
 FILTER_BATCH = 500  # the API caps a video== filter at 500 ids
+MAX_TRANSPORT_ATTEMPTS = 3  # per batch, on timeouts and other non-HTTP failures
 
 
 def rows_to_dicts(
@@ -255,6 +256,7 @@ def fetch_video_metrics(
     metrics = list(API_METRICS)
     records: list[dict[str, Any]] = []
     for batch in chunked(video_ids):
+        transport_failures = 0
         while True:
             try:
                 resp = (
@@ -276,6 +278,16 @@ def fetch_video_metrics(
                 if bad is None:
                     raise
                 metrics.remove(bad)
+            except Exception:  # noqa: BLE001 - transport failure, bounded retry below
+                # The pull script sets a process-wide socket timeout so a hung
+                # request cannot pin the night. That timeout applies here too,
+                # and a single slow batch must not discard the whole snapshot.
+                # Three tries, then raise: metrics are the snapshot, and if
+                # they cannot be fetched the run should fail loudly.
+                transport_failures += 1
+                if transport_failures >= MAX_TRANSPORT_ATTEMPTS:
+                    raise
+                time.sleep(2.0 * transport_failures)
         records.extend(rows_to_dicts(resp.get("columnHeaders", []), resp.get("rows", [])))
     return records
 

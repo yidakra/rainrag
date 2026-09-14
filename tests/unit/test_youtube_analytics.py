@@ -409,3 +409,32 @@ def test_a_socket_timeout_marks_one_video_failed_instead_of_aborting_the_pull(mo
     )
     assert failed == ["hangs"]
     assert set(out) == {"flaky_then_ok", "fine"}
+
+
+def test_metrics_batch_retries_a_timeout_then_succeeds(monkeypatch):
+    """The process-wide socket timeout must not turn one slow batch into a lost night."""
+    from rainrag.youtube_analytics import fetch_video_metrics
+
+    monkeypatch.setattr("rainrag.youtube_analytics.time.sleep", lambda s: None)
+    headers = [{"name": "video"}, {"name": "views"}]
+    ok = {"columnHeaders": headers, "rows": [["a", 10], ["b", 20]]}
+    reports = _FakeReports({"a,b": [TimeoutError("timed out"), TimeoutError("timed out"), ok]})
+    _stub_discovery(monkeypatch, reports)
+    records = fetch_video_metrics(object(), ["a", "b"], "2015-01-01", "2026-09-14")
+    assert [r["video"] for r in records] == ["a", "b"]
+    assert len(reports.calls) == 3
+
+
+def test_metrics_batch_gives_up_after_three_transport_failures(monkeypatch):
+    import pytest
+
+    from rainrag.youtube_analytics import fetch_video_metrics
+
+    monkeypatch.setattr("rainrag.youtube_analytics.time.sleep", lambda s: None)
+    reports = _FakeReports(
+        {"a": [TimeoutError("t"), TimeoutError("t"), TimeoutError("t"), TimeoutError("t")]}
+    )
+    _stub_discovery(monkeypatch, reports)
+    with pytest.raises(TimeoutError):
+        fetch_video_metrics(object(), ["a"], "2015-01-01", "2026-09-14")
+    assert len(reports.calls) == 3
