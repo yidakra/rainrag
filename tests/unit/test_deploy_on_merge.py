@@ -372,3 +372,61 @@ def test_first_run_on_a_current_box_records_a_baseline_silently(repos, tmp_path)
     assert dom.load_state(tmp_path / "state.json")["last_deployed_sha"] == _git(
         box, "rev-parse", "HEAD"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Git itself failing must not crash the tick
+# --------------------------------------------------------------------------- #
+
+
+def test_a_fetch_failure_is_noticed_once_and_never_crashes(repos, tmp_path, monkeypatch):
+    """A network blip used to raise out of the oneshot every two minutes."""
+    _, box = repos
+    fakes = Fakes()
+    d = _deployer(box, fakes, tmp_path)
+
+    def offline(self, remote, branch):
+        raise dom.GitError("fetch", "could not resolve host: github.com")
+
+    monkeypatch.setattr(dom.Git, "fetch", offline)
+    assert d.run() == 0
+    assert d.run() == 0
+    assert len(fakes.notices) == 1
+    assert "git fetch failed" in fakes.notices[0]
+    assert fakes.restarted == []
+
+
+def test_when_git_recovers_the_pending_commit_deploys_and_the_outage_is_forgotten(
+    repos, tmp_path, monkeypatch
+):
+    github, box = repos
+    fakes = Fakes()
+    d = _deployer(box, fakes, tmp_path)
+    assert d.run() == 0  # baseline
+    _commit(github, "ui_library.py", "ui = 1\n", "feat")
+    _git(github, "push", "-q")
+    real_fetch = dom.Git.fetch
+
+    def offline(self, remote, branch):
+        raise dom.GitError("fetch", "timeout")
+
+    monkeypatch.setattr(dom.Git, "fetch", offline)
+    assert d.run() == 0
+    assert dom.load_state(tmp_path / "state.json")["last_skip_reason"].startswith("git ")
+    monkeypatch.setattr(dom.Git, "fetch", real_fetch)
+    assert d.run() == 0
+    assert fakes.restarted == ["rainrag-streamlit", "rainrag-streamlit-ip"]
+    assert "last_skip_reason" not in dom.load_state(tmp_path / "state.json")
+    # A second outage later is announced again, not swallowed by the first.
+    monkeypatch.setattr(dom.Git, "fetch", offline)
+    before = len(fakes.notices)
+    assert d.run() == 0
+    assert len(fakes.notices) == before + 1
+
+
+def test_git_errors_carry_the_subcommand_and_stderr(tmp_path):
+    _git(tmp_path, "init", "-q", str(tmp_path / "r"))
+    with pytest.raises(dom.GitError) as info:
+        dom.Git(tmp_path / "r").run("rev-parse", "definitely-not-a-ref")
+    assert info.value.step == "rev-parse"
+    assert info.value.detail

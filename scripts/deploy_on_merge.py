@@ -109,14 +109,26 @@ class Plan:
         return head
 
 
+class GitError(RuntimeError):
+    """A git command failed. Carries the subcommand so notices stay stable."""
+
+    def __init__(self, step: str, detail: str):
+        super().__init__(f"git {step}: {detail}")
+        self.step = step
+        self.detail = detail
+
+
 class Git:
     def __init__(self, repo: Path):
         self.repo = repo
 
     def run(self, *args: str) -> str:
-        result = subprocess.run(
-            ["git", *args], cwd=self.repo, check=True, capture_output=True, text=True
-        )
+        try:
+            result = subprocess.run(
+                ["git", *args], cwd=self.repo, check=True, capture_output=True, text=True
+            )
+        except subprocess.CalledProcessError as exc:
+            raise GitError(args[0], (exc.stderr or str(exc)).strip()) from exc
         return result.stdout.strip()
 
     def branch(self) -> str:
@@ -222,20 +234,32 @@ class Deployer:
         both situations "nothing to do" forever.
         """
         git = Git(self.repo)
-        if git.branch() != self.branch:
-            self._skip(f"tree is on '{git.branch()}', not '{self.branch}'")
-            return None
-        if git.dirty():
-            self._skip("working tree has uncommitted changes")
-            return None
-        git.fetch(self.remote, self.branch)
-        target = f"{self.remote}/{self.branch}"
-        head, new = git.sha("HEAD"), git.sha(target)
-        if git.count(target, "HEAD"):
-            self._skip(f"local {self.branch} has commits not on {target}; not a fast-forward")
+        try:
+            if git.branch() != self.branch:
+                self._skip(f"tree is on '{git.branch()}', not '{self.branch}'")
+                return None
+            if git.dirty():
+                self._skip("working tree has uncommitted changes")
+                return None
+            git.fetch(self.remote, self.branch)
+            target = f"{self.remote}/{self.branch}"
+            head, new = git.sha("HEAD"), git.sha(target)
+            if git.count(target, "HEAD"):
+                self._skip(f"local {self.branch} has commits not on {target}; not a fast-forward")
+                return None
+        except GitError as exc:
+            # A network blip during fetch must not crash the tick. Log the
+            # detail every time for the journal, notify once per subcommand,
+            # and let the next tick simply try again.
+            print(f"git {exc.step} failed: {exc.detail}")
+            self._skip(f"git {exc.step} failed; retrying every tick")
             return None
 
         state = load_state(self.state_path)
+        if str(state.get("last_skip_reason", "")).startswith("git "):
+            # Git is back. Forget the outage so a later one is announced again.
+            state.pop("last_skip_reason", None)
+            save_state(state, self.state_path)
         deployed = state.get("last_deployed_sha")
         if deployed is None:
             # First run on a box that is current: take what is running as the
@@ -296,8 +320,8 @@ class Deployer:
         try:
             if git.sha("HEAD") != plan.new:
                 git.fast_forward(f"{self.remote}/{self.branch}")
-        except subprocess.CalledProcessError as exc:
-            return self._fail(plan, "fast-forward", f"git said: {exc.stderr or exc}".strip())
+        except GitError as exc:
+            return self._fail(plan, "fast-forward", f"git said: {exc.detail}")
         if plan.sync:
             try:
                 self.sync_dependencies(self.repo)
