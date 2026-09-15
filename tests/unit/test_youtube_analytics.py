@@ -494,3 +494,37 @@ def test_metrics_batch_still_raises_immediately_on_a_non_transient_http_error(mo
     with pytest.raises(_FakeHttpError):
         fetch_video_metrics(object(), ["a"], "2015-01-01", "2026-09-14")
     assert len(reports.calls) == 1
+
+
+def test_marginals_skip_an_unavailable_cell_rather_than_raising():
+    """YouTube renders an unavailable value as "-"."""
+    from rainrag.youtube_analytics import marginals
+
+    rows = [
+        {"ageGroup": "age25-34", "gender": "female", "viewerPercentage": "-"},
+        {"ageGroup": "age25-34", "gender": "male", "viewerPercentage": 40.0},
+    ]
+    assert marginals(rows) == ({"age25-34": 40.0}, {"male": 40.0})
+
+
+def test_a_malformed_response_marks_that_video_failed_and_the_pull_continues(monkeypatch):
+    """Shaping used to run outside the worker's guard and abort the pool."""
+    from rainrag.youtube_analytics import fetch_video_demographics
+
+    monkeypatch.setattr("rainrag.youtube_analytics.time.sleep", lambda s: None)
+    headers = [{"name": "ageGroup"}, {"name": "gender"}, {"name": "viewerPercentage"}]
+    ok = {"columnHeaders": headers, "rows": [["age18-24", "male", 100.0]]}
+    reports = _FakeReports(
+        {
+            "garbled": {"columnHeaders": "not-a-list", "rows": [["x"]]},
+            "dashes": {"columnHeaders": headers, "rows": [["age18-24", "male", "-"]]},
+            "fine": ok,
+        }
+    )
+    _stub_discovery(monkeypatch, reports)
+    out, failed = fetch_video_demographics(
+        object(), ["garbled", "dashes", "fine"], "2015-01-01", "2026-09-14", workers=3
+    )
+    assert "fine" in out
+    assert "dashes" not in out  # every cell unavailable reads as withheld, not failed
+    assert failed == ["garbled"]

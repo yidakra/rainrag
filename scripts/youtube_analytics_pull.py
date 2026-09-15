@@ -78,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
             notify(f"YouTube pull {today}: the API returned no rows for {len(video_ids)} videos")
             return 1
         demo_note = "demographics skipped"
+        all_demographics_failed = False
         if not args.no_demographics:
             demographics, failed = fetch_video_demographics(
                 creds, video_ids, args.start, today, workers=args.workers
@@ -86,9 +87,18 @@ def main(argv: list[str] | None = None) -> int:
             demo_note = f"age/gender on {len(demographics)}"
             if failed:
                 demo_note += f", {len(failed)} request(s) failed"
+            all_demographics_failed = bool(failed) and len(failed) == len(video_ids)
         n = append_snapshot(Path(args.out), rows_to_snapshot(records, today))
         metrics_seen = sorted({k for r in records for k in r if k != "video"})
         print(f"snapshot {today}: {n} videos, metrics {metrics_seen} -> {args.out}")
+        if all_demographics_failed:
+            # The metrics are safe on disk, but every demographics request
+            # failing is a systemic problem, not noise, and the timer should
+            # show it rather than stay green.
+            notify(
+                f"YouTube pull {today}: {n} videos written, but EVERY demographics request failed"
+            )
+            return 2
         notify(f"YouTube pull {today}: {n} videos, {demo_note}")
         return 0
     except ConsentRequired:

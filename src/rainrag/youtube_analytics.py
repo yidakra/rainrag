@@ -337,7 +337,12 @@ def marginals(rows: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, f
     age: dict[str, float] = {}
     gender: dict[str, float] = {}
     for r in rows:
-        pct = float(r.get("viewerPercentage") or 0.0)
+        try:
+            pct = float(r.get("viewerPercentage") or 0.0)
+        except (TypeError, ValueError):
+            # YouTube renders an unavailable value as "-"; skip the cell
+            # rather than lose the video, let alone the night.
+            continue
         a, g = str(r.get("ageGroup") or ""), str(r.get("gender") or "")
         if a:
             age[a] = age.get(a, 0.0) + pct
@@ -399,7 +404,10 @@ def fetch_video_demographics(
                     )
                     .execute()
                 )
-                break
+                # Shaping stays inside the guard: a malformed response is as
+                # much this video's problem as a failed request, and letting
+                # it escape the worker aborted the pool.
+                return vid, _demographic_cells(resp), False
             except Exception as exc:  # noqa: BLE001 - one video must not sink the night
                 # HttpError carries a status; a socket timeout or any other
                 # transport failure does not, and letting it escape the worker
@@ -412,19 +420,7 @@ def fetch_video_demographics(
                     time.sleep(2.0)
                     continue
                 return vid, None, True
-        names = [c["name"] for c in resp.get("columnHeaders", [])]
-        rows = [dict(zip(names, r, strict=False)) for r in resp.get("rows") or []]
-        if not rows:
-            return vid, None, False
-        age, gender = marginals(rows)
-        return (
-            vid,
-            {
-                DISTRIBUTION_COLUMNS[0]: format_distribution(age),
-                DISTRIBUTION_COLUMNS[1]: format_distribution(gender),
-            },
-            False,
-        )
+        return vid, None, True  # pragma: no cover - loop always returns
 
     out: dict[str, dict[str, str]] = {}
     failed: list[str] = []
@@ -435,6 +431,21 @@ def fetch_video_demographics(
             elif cells:
                 out[vid] = cells
     return out, failed
+
+
+def _demographic_cells(resp: dict[str, Any]) -> dict[str, str] | None:
+    """The two sheet cells from one demographics response, or None if withheld."""
+    names = [c["name"] for c in resp.get("columnHeaders", [])]
+    rows = [dict(zip(names, r, strict=False)) for r in resp.get("rows") or []]
+    if not rows:
+        return None
+    age, gender = marginals(rows)
+    if not age and not gender:
+        return None
+    return {
+        DISTRIBUTION_COLUMNS[0]: format_distribution(age),
+        DISTRIBUTION_COLUMNS[1]: format_distribution(gender),
+    }
 
 
 def merge_demographics(

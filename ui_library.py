@@ -301,11 +301,12 @@ def audience_by_hash(
     for row in load_map_rows(map_path):
         video_hash = row.get("archive_video_hash")
         youtube_id = row.get("youtube_id") or ""
-        measured = metrics.get(youtube_id)
-        if not video_hash or not measured:
+        measured = metrics.get(youtube_id) or {}
+        shape = audience.get(youtube_id) or None
+        if not video_hash or not (measured or shape):
             continue
         profiles[str(video_hash)] = Audience(
-            age_gender=audience.get(youtube_id) or None,
+            age_gender=shape,
             average_view_duration=measured.get("averageViewDuration"),
             playback_based_cpm=measured.get("playbackBasedCpm"),
         )
