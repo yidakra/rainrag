@@ -784,6 +784,42 @@ def _episode_label(e: Episode, synthetic: dict[str, str] | None = None) -> str:
     return " — ".join(bits)
 
 
+# ``st.feedback("thumbs")`` reports 0 for thumbs-down and 1 for thumbs-up.
+THUMBS_VERDICTS: tuple[str, str] = ("bad", "good")
+
+
+def verdict_index(mark: str | None) -> int | None:
+    """The thumbs position for a recorded verdict; None when unmarked."""
+    return THUMBS_VERDICTS.index(mark) if mark in THUMBS_VERDICTS else None
+
+
+def verdict_to_record(chosen: int | None, known: int | None) -> str | None:
+    """What one paint of the thumbs widget means for the feedback file.
+
+    ``chosen`` is what the widget shows now, ``known`` what the file says.
+    Only a thumb that differs from the record is a new judgment. A widget
+    showing nothing records nothing: that is the untouched state, and also
+    what Streamlit reports when a selected thumb is clicked a second time.
+    A verdict can be flipped but not withdrawn, same as before.
+    """
+    if chosen is None or chosen == known:
+        return None
+    return THUMBS_VERDICTS[chosen]
+
+
+def _record_thumb(
+    *, key: str, seed_id: str, candidate_id: str, column: str, rank: int, known: int | None
+) -> None:
+    """Change callback of one thumbs widget: write the judgment, if it is one.
+
+    ``known`` is the verdict the widget was showing when it was painted, so a
+    click that merely repeats it, or deselects it, records nothing.
+    """
+    verdict = verdict_to_record(st.session_state.get(key), known)
+    if verdict:
+        append_feedback(seed_id, candidate_id, column, rank, verdict)
+
+
 def feedback_widget_key(column: str, seed_id: str, e: Episode) -> str:
     """Widget key for one suggestion's judgment buttons.
 
@@ -825,19 +861,43 @@ def _render_suggestion(
     if stand_in:
         meta_bits.append(_t("no_cms_mark", lang))
     meta = " · ".join(x for x in meta_bits if x)
-    body, up, down = st.columns([12, 1, 1])
-    with body:
-        st.markdown(f"{line}  \n{meta}")
-        st.caption(explanation)
+    st.markdown(f"{line}  \n{meta}")
+    st.caption(explanation)
     if seed_id and e.content_id:
-        mark = (marks or {}).get((seed_id, e.content_id))
+        # One thumbs widget under the caption, not two buttons beside the
+        # title. The buttons lived in a 12:1:1 column split inside a column
+        # that is already half the page; Safari does not shrink them below
+        # their natural width, so they overflowed and pushed the title into
+        # a ragged wrap (Yulia, 2026-09-15). The widget has no minimum width
+        # to fight over.
+        known = verdict_index((marks or {}).get((seed_id, e.content_id)))
         key = feedback_widget_key(column, seed_id, e)
-        if up.button("✓" if mark == "good" else "👍", key=f"{key}_g", disabled=mark == "good"):
-            append_feedback(seed_id, e.content_id, column, rank, "good")
-            st.rerun()
-        if down.button("✗" if mark == "bad" else "👎", key=f"{key}_b", disabled=mark == "bad"):
-            append_feedback(seed_id, e.content_id, column, rank, "bad")
-            st.rerun()
+        if known is not None:
+            # Every widget for this pair shows the file's verdict, every run.
+            # One candidate can sit in the top-5 and in its source column at
+            # once, under two keys. Seeding only an empty widget left the
+            # other one stale after a flip, and a stale widget re-recorded
+            # the old verdict on the next run, ping-ponging with the fresh
+            # one (CodeRabbit on #86). Set through session state, not
+            # ``default``: a widget given both warns on every rerun.
+            st.session_state[key] = known
+        # The judgment is recorded in the change callback, which Streamlit
+        # runs for the one widget the editor touched, before the script
+        # reruns. By the time the widgets are painted again the file has the
+        # new verdict and the line above puts it on all of them.
+        st.feedback(
+            "thumbs",
+            key=key,
+            on_change=_record_thumb,
+            kwargs={
+                "key": key,
+                "seed_id": seed_id,
+                "candidate_id": e.content_id,
+                "column": column,
+                "rank": rank,
+                "known": known,
+            },
+        )
 
 
 def _render_scored(rank: int, r: Scored, lang: str, **kw: Any) -> None:
