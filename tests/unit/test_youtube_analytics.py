@@ -364,8 +364,33 @@ def test_an_expired_refresh_token_is_explained_not_dumped(tmp_path: Path, monkey
         monkeypatch.setitem(sys.modules, name, mod)
     token = tmp_path / "token.json"
     token.write_text("{}", encoding="utf-8")
+    verifier = tmp_path / "token.json.verifier"
+    verifier.write_text("stale", encoding="utf-8")
     with pytest.raises(SystemExit, match="consent has expired"):
         load_credentials(tmp_path / "client.json", token)
+    # The dead token is retired, not deleted, and the stale verifier is gone,
+    # so the advertised recovery (re-run --auth) can actually reach consent.
+    assert not token.exists()
+    assert (tmp_path / "token.json.expired").exists()
+    assert stat.S_IMODE((tmp_path / "token.json.expired").stat().st_mode) == 0o600
+    assert not verifier.exists()
+
+
+def test_after_an_expired_token_is_retired_the_auth_run_reaches_consent(
+    tmp_path: Path, monkeypatch
+):
+    """Before: --auth reloaded the dead token and failed the same way, forever."""
+    import pytest
+
+    from rainrag.youtube_analytics import ConsentRequired, load_credentials
+
+    _stub_google(monkeypatch)
+    client = tmp_path / "client.json"
+    client.write_text("{}", encoding="utf-8")
+    token = tmp_path / "token.json"
+    (tmp_path / "token.json.expired").write_text("{}", encoding="utf-8")  # retired earlier
+    with pytest.raises(ConsentRequired):
+        load_credentials(client, token, auth_code=None)
 
 
 def test_demographics_retries_once_on_a_rate_limit_then_gives_up(monkeypatch):

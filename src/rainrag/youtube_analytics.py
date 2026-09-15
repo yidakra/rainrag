@@ -171,6 +171,20 @@ def _write_token(token_json: Path, data: str) -> None:
     _write_private(token_json, data)
 
 
+def _retire_token(token_json: Path) -> Path:
+    """Move a token that no longer refreshes out of the way, keeping it.
+
+    Also drops a stale PKCE verifier, so the next --auth mints a fresh pair
+    rather than trying to marry a new code to an old challenge.
+    """
+    retired = token_json.with_name(token_json.name + ".expired")
+    if token_json.exists():
+        token_json.replace(retired)
+        retired.chmod(0o600)
+    _verifier_path(token_json).unlink(missing_ok=True)
+    return retired
+
+
 def _verifier_path(token_json: Path) -> Path:
     """Where the PKCE verifier waits between the --auth and --auth-code runs."""
     return token_json.with_name(token_json.name + ".verifier")
@@ -201,11 +215,19 @@ def load_credentials(client_json: Path, token_json: Path, auth_code: str | None 
             # The one failure a nightly timer must explain rather than dump.
             # An app left in Testing issues refresh tokens that die after
             # seven days; a revoked grant looks the same from here.
+            #
+            # Retire the dead token before saying "re-run with --auth": with
+            # it still on disk, that run would load it, land in this same
+            # branch, and fail identically, so the advice would be a loop.
+            # Renamed rather than deleted, so nothing is lost if this was a
+            # transient outage misread as expiry.
+            retired = _retire_token(token_json)
             raise SystemExit(
                 "YouTube consent has expired or was revoked (refresh failed: "
-                f"{exc}). Re-run with --auth and have the channel owner consent "
-                "again, choosing the Library brand account. If this recurs "
-                "weekly, the OAuth app is still in Testing: publish it."
+                f"{exc}). The dead token was moved to {retired.name}. Re-run with "
+                "--auth and have the channel owner consent again, choosing the "
+                "Library brand account. If this recurs weekly, the OAuth app is "
+                "still in Testing: publish it."
             ) from exc
         _write_token(token_json, creds.to_json())
         return creds
