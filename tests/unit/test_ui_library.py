@@ -804,8 +804,96 @@ def test_the_renderer_has_no_side_columns_for_the_thumbs():
 
     body = inspect.getsource(ui_library._render_suggestion)
     assert "st.columns(" not in body
-    assert 'st.feedback("thumbs"' in body
-    assert "verdict_to_record(" in body
+    assert "st.feedback(" in body
+    assert "on_change=_record_thumb" in body
     # Recorded verdicts are shown through session state, never ``default``:
     # a widget given both warns on every rerun.
     assert "default=" not in body
+
+
+class _FakeSt:
+    """Records the renderer's calls in order; enough of ``st`` for one row."""
+
+    def __init__(self, state: dict | None = None):
+        self.calls: list[tuple] = []
+        self.session_state = dict(state or {})
+
+    def markdown(self, text):
+        self.calls.append(("markdown", text))
+
+    def caption(self, text):
+        self.calls.append(("caption", text))
+
+    def feedback(self, kind, *, key, on_change, kwargs):
+        self.calls.append(("feedback", kind, key, dict(self.session_state), kwargs))
+        return self.session_state.get(key)
+
+
+def _episode(video_hash: str, content_id: str = "484740"):
+    from rainrag.library_similar import Episode
+
+    return Episode(
+        video_hash=video_hash,
+        content_id=content_id,
+        title="Выпуск",
+        program="Лекции",
+        date="2018-01-08",
+        duration_seconds=2400,
+        speakers=["Ирина Хакамада"],
+        url="https://example.test/e",
+    )
+
+
+def test_thumbs_come_after_the_caption_and_every_widget_shows_the_stored_verdict(monkeypatch):
+    """The same pair can be painted twice (top-5 and its source column) under
+    two keys; each paint shows the file's verdict, even over a stale widget."""
+    import ui_library
+
+    fake = _FakeSt(state={"fb_speaker_s1_h1": 0})  # stale: flipped elsewhere since
+    monkeypatch.setattr(ui_library, "st", fake)
+    e = _episode("h1")
+    marks = {("s1", e.content_id): "good"}
+    for column in ("top5", "speaker"):
+        ui_library._render_suggestion(
+            1, e, "почему", "ru", seed_id="s1", column=column, marks=marks
+        )
+
+    kinds = [c[0] for c in fake.calls]
+    assert kinds == ["markdown", "caption", "feedback"] * 2
+    feedbacks = [c for c in fake.calls if c[0] == "feedback"]
+    for _, kind, key, state_at_paint, kwargs in feedbacks:
+        assert kind == "thumbs"
+        assert state_at_paint[key] == 1, key  # good, from the file, set before the paint
+        assert kwargs["known"] == 1 and kwargs["key"] == key
+    assert {c[2] for c in feedbacks} == {"fb_top5_s1_h1", "fb_speaker_s1_h1"}
+
+
+def test_an_unjudged_pair_is_not_seeded_and_the_callback_records_only_a_change(monkeypatch):
+    import ui_library
+
+    fake = _FakeSt()
+    monkeypatch.setattr(ui_library, "st", fake)
+    ui_library._render_suggestion(
+        3, _episode("h2"), "почему", "ru", seed_id="s1", column="theme", marks={}
+    )
+    (_, _, key, state_at_paint, kwargs) = [c for c in fake.calls if c[0] == "feedback"][0]
+    assert key not in state_at_paint  # nothing to show, nothing forced
+    assert kwargs["known"] is None
+
+    written: list[tuple] = []
+    monkeypatch.setattr(ui_library, "append_feedback", lambda *a: written.append(a))
+    fake.session_state[key] = 1  # the editor clicked thumbs up
+    ui_library._record_thumb(**kwargs)
+    assert written == [("s1", "484740", "theme", 3, "good")]
+
+    # repaint after the write: known is now 1, a repeated value records nothing
+    ui_library._record_thumb(**{**kwargs, "known": 1})
+    assert len(written) == 1
+    # a deselect (widget reports None) records nothing either
+    fake.session_state[key] = None
+    ui_library._record_thumb(**{**kwargs, "known": 1})
+    assert len(written) == 1
+    # a flip does
+    fake.session_state[key] = 0
+    ui_library._record_thumb(**{**kwargs, "known": 1})
+    assert written[-1] == ("s1", "484740", "theme", 3, "bad")

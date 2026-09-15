@@ -807,6 +807,19 @@ def verdict_to_record(chosen: int | None, known: int | None) -> str | None:
     return THUMBS_VERDICTS[chosen]
 
 
+def _record_thumb(
+    *, key: str, seed_id: str, candidate_id: str, column: str, rank: int, known: int | None
+) -> None:
+    """Change callback of one thumbs widget: write the judgment, if it is one.
+
+    ``known`` is the verdict the widget was showing when it was painted, so a
+    click that merely repeats it, or deselects it, records nothing.
+    """
+    verdict = verdict_to_record(st.session_state.get(key), known)
+    if verdict:
+        append_feedback(seed_id, candidate_id, column, rank, verdict)
+
+
 def feedback_widget_key(column: str, seed_id: str, e: Episode) -> str:
     """Widget key for one suggestion's judgment buttons.
 
@@ -859,16 +872,32 @@ def _render_suggestion(
         # to fight over.
         known = verdict_index((marks or {}).get((seed_id, e.content_id)))
         key = feedback_widget_key(column, seed_id, e)
-        if known is not None and st.session_state.get(key) is None:
-            # First paint, or the pair was judged from the other column: the
-            # widget shows the recorded verdict. Set through session state,
-            # not ``default``: a widget given both warns on every rerun.
+        if known is not None:
+            # Every widget for this pair shows the file's verdict, every run.
+            # One candidate can sit in the top-5 and in its source column at
+            # once, under two keys. Seeding only an empty widget left the
+            # other one stale after a flip, and a stale widget re-recorded
+            # the old verdict on the next run, ping-ponging with the fresh
+            # one (CodeRabbit on #86). Set through session state, not
+            # ``default``: a widget given both warns on every rerun.
             st.session_state[key] = known
-        chosen = st.feedback("thumbs", key=key)
-        verdict = verdict_to_record(chosen, known)
-        if verdict:
-            append_feedback(seed_id, e.content_id, column, rank, verdict)
-            st.rerun()
+        # The judgment is recorded in the change callback, which Streamlit
+        # runs for the one widget the editor touched, before the script
+        # reruns. By the time the widgets are painted again the file has the
+        # new verdict and the line above puts it on all of them.
+        st.feedback(
+            "thumbs",
+            key=key,
+            on_change=_record_thumb,
+            kwargs={
+                "key": key,
+                "seed_id": seed_id,
+                "candidate_id": e.content_id,
+                "column": column,
+                "rank": rank,
+                "known": known,
+            },
+        )
 
 
 def _render_scored(rank: int, r: Scored, lang: str, **kw: Any) -> None:
