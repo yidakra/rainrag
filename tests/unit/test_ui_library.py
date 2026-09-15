@@ -767,3 +767,45 @@ def test_demographics_without_metrics_still_give_an_audience_profile(tmp_path):
     profiles = audience_by_hash(map_path, metrics)
     assert profiles["h1"].age_gender == {"age25-34": 100.0, "male": 100.0}
     assert profiles["h1"].average_view_duration is None
+
+
+# ---------------------------------------------------------- thumbs widget
+
+
+def test_thumbs_positions_map_to_verdicts_and_back():
+    """st.feedback("thumbs") reports 0 for down and 1 for up; the file says bad/good."""
+    from ui_library import THUMBS_VERDICTS, verdict_index
+
+    assert THUMBS_VERDICTS == ("bad", "good")
+    assert verdict_index("good") == 1
+    assert verdict_index("bad") == 0
+    assert verdict_index(None) is None
+    assert verdict_index("") is None
+    assert verdict_index("maybe") is None
+
+
+def test_only_a_thumb_that_differs_from_the_record_is_a_new_judgment():
+    from ui_library import verdict_to_record
+
+    assert verdict_to_record(1, None) == "good"  # first judgment
+    assert verdict_to_record(0, None) == "bad"
+    assert verdict_to_record(0, 1) == "bad"  # changed their mind
+    assert verdict_to_record(1, 0) == "good"
+    assert verdict_to_record(1, 1) is None  # repaint of a recorded verdict
+    assert verdict_to_record(None, None) is None  # untouched
+    assert verdict_to_record(None, 1) is None  # deselect is not a withdrawal
+
+
+def test_the_renderer_has_no_side_columns_for_the_thumbs():
+    """The 12:1:1 split is what Safari could not lay out (Yulia, 2026-09-15)."""
+    import inspect
+
+    import ui_library
+
+    body = inspect.getsource(ui_library._render_suggestion)
+    assert "st.columns(" not in body
+    assert 'st.feedback("thumbs"' in body
+    assert "verdict_to_record(" in body
+    # Recorded verdicts are shown through session state, never ``default``:
+    # a widget given both warns on every rerun.
+    assert "default=" not in body
