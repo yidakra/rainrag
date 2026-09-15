@@ -454,3 +454,43 @@ def test_the_consent_url_exit_is_distinguishable_from_a_failure(tmp_path: Path, 
     assert isinstance(info.value, SystemExit)
     assert info.value.code not in (0, None)
     assert "accounts.google.com" in str(info.value)
+
+
+def test_metrics_batch_retries_a_rate_limit_and_still_drops_a_rejected_metric(monkeypatch):
+    """A 429 on the batch is transient and gets the bounded retry; a rejected metric is not."""
+    from rainrag.youtube_analytics import fetch_video_metrics
+
+    monkeypatch.setattr("rainrag.youtube_analytics.time.sleep", lambda s: None)
+    headers = [{"name": "video"}, {"name": "views"}]
+    ok = {"columnHeaders": headers, "rows": [["a", 10]]}
+    reports = _FakeReports({"a": [_FakeHttpError(429), _FakeHttpError(503), ok]})
+    _stub_discovery(monkeypatch, reports)
+    records = fetch_video_metrics(object(), ["a"], "2015-01-01", "2026-09-14")
+    assert [r["video"] for r in records] == ["a"]
+    assert len(reports.calls) == 3
+
+
+def test_metrics_batch_gives_up_after_three_rate_limits(monkeypatch):
+    import pytest
+
+    from rainrag.youtube_analytics import fetch_video_metrics
+
+    monkeypatch.setattr("rainrag.youtube_analytics.time.sleep", lambda s: None)
+    reports = _FakeReports({"a": [_FakeHttpError(429)] * 4})
+    _stub_discovery(monkeypatch, reports)
+    with pytest.raises(_FakeHttpError):
+        fetch_video_metrics(object(), ["a"], "2015-01-01", "2026-09-14")
+    assert len(reports.calls) == 3
+
+
+def test_metrics_batch_still_raises_immediately_on_a_non_transient_http_error(monkeypatch):
+    """403 forbidden is the wrong channel, not a blip; retrying it hides the cause."""
+    import pytest
+
+    from rainrag.youtube_analytics import fetch_video_metrics
+
+    reports = _FakeReports({"a": [_FakeHttpError(403)] * 3})
+    _stub_discovery(monkeypatch, reports)
+    with pytest.raises(_FakeHttpError):
+        fetch_video_metrics(object(), ["a"], "2015-01-01", "2026-09-14")
+    assert len(reports.calls) == 1

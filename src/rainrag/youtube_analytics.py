@@ -81,7 +81,8 @@ API_METRICS = [
 ]
 
 FILTER_BATCH = 500  # the API caps a video== filter at 500 ids
-MAX_TRANSPORT_ATTEMPTS = 3  # per batch, on timeouts and other non-HTTP failures
+MAX_TRANSPORT_ATTEMPTS = 3  # per batch, on timeouts, 429s and 5xx
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
 def rows_to_dicts(
@@ -287,9 +288,19 @@ def fetch_video_metrics(
                 break
             except HttpError as exc:
                 bad = _rejected_metric(str(exc), metrics)
-                if bad is None:
+                if bad is not None:
+                    metrics.remove(bad)
+                    continue
+                status = getattr(getattr(exc, "resp", None), "status", None)
+                if status not in RETRYABLE_STATUSES:
                     raise
-                metrics.remove(bad)
+                # A 429 or a 5xx on the batch is as transient as a timeout and
+                # gets the same bounded retry; raising on the first one threw
+                # the night away for a rate limit.
+                transport_failures += 1
+                if transport_failures >= MAX_TRANSPORT_ATTEMPTS:
+                    raise
+                time.sleep(2.0 * transport_failures)
             except Exception:  # noqa: BLE001 - transport failure, bounded retry below
                 # The pull script sets a process-wide socket timeout so a hung
                 # request cannot pin the night. That timeout applies here too,
@@ -333,9 +344,6 @@ def marginals(rows: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, f
         if g:
             gender[g] = gender.get(g, 0.0) + pct
     return age, gender
-
-
-RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
 def fetch_video_demographics(
