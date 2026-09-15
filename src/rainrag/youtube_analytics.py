@@ -31,8 +31,11 @@ import csv
 import fcntl
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
+
+from rainrag.library_performance import DISTRIBUTION_COLUMNS, format_distribution
 
 
 SCOPES = [
@@ -78,6 +81,8 @@ API_METRICS = [
 ]
 
 FILTER_BATCH = 500  # the API caps a video== filter at 500 ids
+MAX_TRANSPORT_ATTEMPTS = 3  # per batch, on timeouts, 429s and 5xx
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
 def rows_to_dicts(
@@ -110,6 +115,9 @@ def rows_to_snapshot(records: list[dict[str, Any]], snapshot_date: str) -> list[
         for m in API_METRICS:
             if rec.get(m) is not None:
                 csv_row[m] = rec[m]
+        for col in DISTRIBUTION_COLUMNS:
+            if rec.get(col):
+                csv_row[col] = rec[col]
         out.append(csv_row)
     return out
 
@@ -141,6 +149,15 @@ def chunked(items: list[str], size: int = FILTER_BATCH) -> list[list[str]]:
 # ------------------------------------------------------------------ Google side
 
 
+class ConsentRequired(SystemExit):
+    """The --auth run stopping to hand a consent URL to a person.
+
+    A SystemExit so the CLI still exits non-zero with the URL on stdout, and a
+    distinct type so the pull script can tell it apart from a real failure
+    and not alert on it.
+    """
+
+
 def _write_private(path: Path, data: str) -> None:
     """Write owner-only: these files grant read access to channel revenue."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -152,6 +169,20 @@ def _write_private(path: Path, data: str) -> None:
 def _write_token(token_json: Path, data: str) -> None:
     """Owner-only file: the refresh token grants read access to channel revenue."""
     _write_private(token_json, data)
+
+
+def _retire_token(token_json: Path) -> Path:
+    """Move a token that no longer refreshes out of the way, keeping it.
+
+    Also drops a stale PKCE verifier, so the next --auth mints a fresh pair
+    rather than trying to marry a new code to an old challenge.
+    """
+    retired = token_json.with_name(token_json.name + ".expired")
+    if token_json.exists():
+        token_json.replace(retired)
+        retired.chmod(0o600)
+    _verifier_path(token_json).unlink(missing_ok=True)
+    return retired
 
 
 def _verifier_path(token_json: Path) -> Path:
@@ -176,7 +207,28 @@ def load_credentials(client_json: Path, token_json: Path, auth_code: str | None 
     if creds and creds.valid:
         return creds
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        from google.auth.exceptions import RefreshError
+
+        try:
+            creds.refresh(Request())
+        except RefreshError as exc:
+            # The one failure a nightly timer must explain rather than dump.
+            # An app left in Testing issues refresh tokens that die after
+            # seven days; a revoked grant looks the same from here.
+            #
+            # Retire the dead token before saying "re-run with --auth": with
+            # it still on disk, that run would load it, land in this same
+            # branch, and fail identically, so the advice would be a loop.
+            # Renamed rather than deleted, so nothing is lost if this was a
+            # transient outage misread as expiry.
+            retired = _retire_token(token_json)
+            raise SystemExit(
+                "YouTube consent has expired or was revoked (refresh failed: "
+                f"{exc}). The dead token was moved to {retired.name}. Re-run with "
+                "--auth and have the channel owner consent again, choosing the "
+                "Library brand account. If this recurs weekly, the OAuth app is "
+                "still in Testing: publish it."
+            ) from exc
         _write_token(token_json, creds.to_json())
         return creds
     if not client_json.exists():
@@ -191,13 +243,16 @@ def load_credentials(client_json: Path, token_json: Path, auth_code: str | None 
     verifier_path = _verifier_path(token_json)
     if auth_code is None:
         url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+        # ConsentRequired, not a bare SystemExit: the --auth run is supposed
+        # to stop here, and the pull script must not alert on it as if the
+        # nightly job had failed.
         # authorization_url() mints a PKCE verifier that fetch_token() has to
         # send back. --auth and --auth-code are separate processes, so an
         # in-memory verifier is gone by the time the code arrives and Google
         # rejects the exchange. Keep it on disk, owner-only, until it is used.
         if flow.code_verifier:
             _write_private(verifier_path, flow.code_verifier)
-        raise SystemExit(
+        raise ConsentRequired(
             "Open this URL as the channel owner, grant access, then re-run with\n"
             "  --auth-code <the 'code=' value from the address bar after the redirect>\n\n"
             f"{url}"
@@ -236,6 +291,7 @@ def fetch_video_metrics(
     metrics = list(API_METRICS)
     records: list[dict[str, Any]] = []
     for batch in chunked(video_ids):
+        transport_failures = 0
         while True:
             try:
                 resp = (
@@ -254,9 +310,29 @@ def fetch_video_metrics(
                 break
             except HttpError as exc:
                 bad = _rejected_metric(str(exc), metrics)
-                if bad is None:
+                if bad is not None:
+                    metrics.remove(bad)
+                    continue
+                status = getattr(getattr(exc, "resp", None), "status", None)
+                if status not in RETRYABLE_STATUSES:
                     raise
-                metrics.remove(bad)
+                # A 429 or a 5xx on the batch is as transient as a timeout and
+                # gets the same bounded retry; raising on the first one threw
+                # the night away for a rate limit.
+                transport_failures += 1
+                if transport_failures >= MAX_TRANSPORT_ATTEMPTS:
+                    raise
+                time.sleep(2.0 * transport_failures)
+            except Exception:  # noqa: BLE001 - transport failure, bounded retry below
+                # The pull script sets a process-wide socket timeout so a hung
+                # request cannot pin the night. That timeout applies here too,
+                # and a single slow batch must not discard the whole snapshot.
+                # Three tries, then raise: metrics are the snapshot, and if
+                # they cannot be fetched the run should fail loudly.
+                transport_failures += 1
+                if transport_failures >= MAX_TRANSPORT_ATTEMPTS:
+                    raise
+                time.sleep(2.0 * transport_failures)
         records.extend(rows_to_dicts(resp.get("columnHeaders", []), resp.get("rows", [])))
     return records
 
@@ -272,3 +348,134 @@ def _rejected_metric(message: str, metrics: list[str]) -> str | None:
         if re.search(rf"(?<![A-Za-z]){re.escape(m)}(?![A-Za-z])", message):
             return m
     return None
+
+
+def marginals(rows: list[dict[str, Any]]) -> tuple[dict[str, float], dict[str, float]]:
+    """Age and gender marginals from joint (ageGroup, gender, viewerPercentage) rows.
+
+    One request per video returns the joint table; summing it both ways gives
+    the two columns the sheet has, and one API call instead of two.
+    """
+    age: dict[str, float] = {}
+    gender: dict[str, float] = {}
+    for r in rows:
+        try:
+            pct = float(r.get("viewerPercentage") or 0.0)
+        except (TypeError, ValueError):
+            # YouTube renders an unavailable value as "-"; skip the cell
+            # rather than lose the video, let alone the night.
+            continue
+        a, g = str(r.get("ageGroup") or ""), str(r.get("gender") or "")
+        if a:
+            age[a] = age.get(a, 0.0) + pct
+        if g:
+            gender[g] = gender.get(g, 0.0) + pct
+    return age, gender
+
+
+def fetch_video_demographics(
+    creds: Any,
+    video_ids: list[str],
+    start_date: str,
+    end_date: str,
+    workers: int = 8,
+) -> tuple[dict[str, dict[str, str]], list[str]]:
+    """Age and gender mix per video: one request each, by API design.
+
+    The demographics report accepts ``video`` only as a filter, never as a
+    dimension, so 239 uploads mean 239 requests, and the API answers each in
+    anything from under a second to sixteen. Sequentially that is half an
+    hour; measured on the live channel, 2026-09-14. Eight workers bring it
+    to a few minutes. httplib2 is not thread-safe, so each worker builds its
+    own service object.
+
+    One retry, after a short pause, on a rate limit, a server-side error, or
+    a transport failure such as the socket timeout the script sets. Anything
+    else counts the video as failed and moves on; nothing escapes the worker. A video with no
+    rows is not a failure: YouTube withholds demographics below a views
+    threshold, and that video simply gets no cell.
+
+    Returns the formatted cells per video and the ids whose request failed.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+
+    local = threading.local()
+
+    def service() -> Any:
+        if not hasattr(local, "svc"):
+            local.svc = build("youtubeAnalytics", "v2", credentials=creds, cache_discovery=False)
+        return local.svc
+
+    def one(vid: str) -> tuple[str, dict[str, str] | None, bool]:
+        for attempt in (1, 2):
+            try:
+                resp = (
+                    service()
+                    .reports()
+                    .query(
+                        ids="channel==MINE",
+                        startDate=start_date,
+                        endDate=end_date,
+                        metrics="viewerPercentage",
+                        dimensions="ageGroup,gender",
+                        filters=f"video=={vid}",
+                    )
+                    .execute()
+                )
+                # Shaping stays inside the guard: a malformed response is as
+                # much this video's problem as a failed request, and letting
+                # it escape the worker aborted the pool.
+                return vid, _demographic_cells(resp), False
+            except Exception as exc:  # noqa: BLE001 - one video must not sink the night
+                # HttpError carries a status; a socket timeout or any other
+                # transport failure does not, and letting it escape the worker
+                # aborted the whole pull before the snapshot was written. Both
+                # kinds get one retry when they look transient, then count the
+                # video as failed and let the rest continue.
+                status = getattr(getattr(exc, "resp", None), "status", None)
+                transient = status in RETRYABLE_STATUSES or not isinstance(exc, HttpError)
+                if attempt == 1 and transient:
+                    time.sleep(2.0)
+                    continue
+                return vid, None, True
+        return vid, None, True  # pragma: no cover - loop always returns
+
+    out: dict[str, dict[str, str]] = {}
+    failed: list[str] = []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for vid, cells, bad in pool.map(one, video_ids):
+            if bad:
+                failed.append(vid)
+            elif cells:
+                out[vid] = cells
+    return out, failed
+
+
+def _demographic_cells(resp: dict[str, Any]) -> dict[str, str] | None:
+    """The two sheet cells from one demographics response, or None if withheld."""
+    names = [c["name"] for c in resp.get("columnHeaders", [])]
+    rows = [dict(zip(names, r, strict=False)) for r in resp.get("rows") or []]
+    if not rows:
+        return None
+    age, gender = marginals(rows)
+    if not age and not gender:
+        return None
+    return {
+        DISTRIBUTION_COLUMNS[0]: format_distribution(age),
+        DISTRIBUTION_COLUMNS[1]: format_distribution(gender),
+    }
+
+
+def merge_demographics(
+    records: list[dict[str, Any]], demographics: dict[str, dict[str, str]]
+) -> list[dict[str, Any]]:
+    """Attach the demographic cells to the metric records they belong to."""
+    for rec in records:
+        extra = demographics.get(str(rec.get("video")))
+        if extra:
+            rec.update(extra)
+    return records

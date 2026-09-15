@@ -708,3 +708,62 @@ def test_the_renderer_uses_the_shared_key_helper_not_content_id():
     body = inspect.getsource(ui_library._render_suggestion)
     assert "feedback_widget_key(" in body
     assert "{e.content_id}" not in body
+
+
+def test_audience_profiles_carry_age_and_gender_when_the_snapshot_has_them(tmp_path):
+    """The blend's audience axis was wired but empty until demographics existed."""
+    import json
+
+    from ui_library import audience_by_hash
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(
+        json.dumps(
+            [
+                {"youtube_id": "a", "archive_video_hash": "h1"},
+                {"youtube_id": "b", "archive_video_hash": "h2"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    metrics = tmp_path / "m.csv"
+    metrics.write_text(
+        "youtube_id,snapshot_date,views,averageViewDuration,playbackBasedCpm,"
+        "viewerPercentage: ageGroup,viewerPercentage: gender\n"
+        "a,2026-09-14,100,600,6.0,age25-34:70.0;age35-44:30.0,female:40.0;male:60.0\n"
+        "b,2026-09-14,50,300,,,\n",
+        encoding="utf-8",
+    )
+    profiles = audience_by_hash(map_path, metrics)
+    assert profiles["h1"].age_gender == {
+        "age25-34": 70.0,
+        "age35-44": 30.0,
+        "female": 40.0,
+        "male": 60.0,
+    }
+    assert profiles["h1"].average_view_duration == 600.0
+    # Measured but withheld demographics: the axis must read as unmeasured.
+    assert profiles["h2"].age_gender is None
+    assert profiles["h2"].average_view_duration == 300.0
+
+
+def test_demographics_without_metrics_still_give_an_audience_profile(tmp_path):
+    """Newest-per-column can leave a video with a shape and no numbers."""
+    import json
+
+    from ui_library import audience_by_hash
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(
+        json.dumps([{"youtube_id": "a", "archive_video_hash": "h1"}]), encoding="utf-8"
+    )
+    metrics = tmp_path / "m.csv"
+    metrics.write_text(
+        "youtube_id,snapshot_date,views,averageViewDuration,playbackBasedCpm,"
+        "viewerPercentage: ageGroup,viewerPercentage: gender\n"
+        "a,2026-09-14,,,,age25-34:100.0,male:100.0\n",
+        encoding="utf-8",
+    )
+    profiles = audience_by_hash(map_path, metrics)
+    assert profiles["h1"].age_gender == {"age25-34": 100.0, "male": 100.0}
+    assert profiles["h1"].average_view_duration is None

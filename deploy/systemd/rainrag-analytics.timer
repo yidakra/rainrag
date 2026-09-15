@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily YouTube Analytics snapshot for the Library
+
+[Timer]
+# Early morning UTC: yesterday's figures have settled and nobody is editing.
+OnCalendar=*-*-* 05:20:00 UTC
+RandomizedDelaySec=5m
+# A missed day is worth catching up: snapshots are what the retention and CPM
+# history is built from, and a gap is a gap forever.
+Persistent=true
+Unit=rainrag-analytics.service
+
+[Install]
+WantedBy=timers.target

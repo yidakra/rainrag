@@ -44,7 +44,13 @@ import streamlit as st
 
 from rainrag.library import GENRES
 from rainrag.library_blend import Audience, Blended, blended_top
-from rainrag.library_performance import METRIC_COLUMNS, aggregate, build_uploads, load_metrics
+from rainrag.library_performance import (
+    METRIC_COLUMNS,
+    aggregate,
+    build_uploads,
+    load_audience,
+    load_metrics,
+)
 from rainrag.library_programs import load_programmes
 from rainrag.library_similar import (
     Episode,
@@ -284,19 +290,23 @@ def audience_by_hash(
     normal state and the blend is built for it: an episode with no entry here
     simply does not compete on the analytics axes.
 
-    Age and gender are absent for now. The demographics report can only be
-    filtered to one video per request, so it needs its own pull rather than
-    riding along with the batched metrics, and until then the audience axis
-    never fires.
+    Age and gender come from the same snapshot file, pulled one video per
+    request because that is all the demographics report allows. YouTube
+    withholds them below a views threshold, so some measured videos have no
+    audience shape; those simply do not compete on that axis.
     """
     metrics = load_metrics(metrics_path)
+    audience = load_audience(metrics_path)
     profiles: dict[str, Audience] = {}
     for row in load_map_rows(map_path):
         video_hash = row.get("archive_video_hash")
-        measured = metrics.get(row.get("youtube_id") or "")
-        if not video_hash or not measured:
+        youtube_id = row.get("youtube_id") or ""
+        measured = metrics.get(youtube_id) or {}
+        shape = audience.get(youtube_id) or None
+        if not video_hash or not (measured or shape):
             continue
         profiles[str(video_hash)] = Audience(
+            age_gender=shape,
             average_view_duration=measured.get("averageViewDuration"),
             playback_based_cpm=measured.get("playbackBasedCpm"),
         )
