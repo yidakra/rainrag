@@ -115,8 +115,8 @@ def people_match(left: str, right: str) -> bool:
     return given_names_agree(left_given, right_given)
 
 
-def person_identities(names: Iterable[str]) -> list[tuple[str, str]]:
-    """The distinct people a list of spellings refers to.
+def _identify(names: Iterable[str]) -> tuple[list[tuple[str, str]], list[tuple[str, str] | None]]:
+    """(the distinct people named, the person each spelling refers to).
 
     Spellings of one person collapse: «Хакамада», «И. Хакамада» and «Ирина
     Хакамада» are one identity, because a bare surname or an initial is
@@ -125,23 +125,41 @@ def person_identities(names: Iterable[str]) -> list[tuple[str, str]]:
     `speaker_axis` report a full match when half the seed's speakers were
     someone else (CodeRabbit on #87).
     """
+    names = list(names)
+    keys = [person_key(n) for n in names]
     by_surname: dict[str, list[str]] = {}
-    for name in names:
-        surname, given = person_key(name)
+    for surname, given in keys:
         if not surname:
             continue
         givens = by_surname.setdefault(surname, [])
-        # Longest first, so a full name is present before the initial or bare
-        # spelling that should be absorbed into it.
-        if given and not any(given_names_agree(given, seen) for seen in givens):
+        if not given:
+            continue
+        match = next((g for g in givens if given_names_agree(given, g)), None)
+        if match is None:
             givens.append(given)
-        elif given and len(given) > 1:
-            for index, seen in enumerate(givens):
-                if len(seen) == 1 and given_names_agree(given, seen):
-                    givens[index] = given
-    return [
+        elif len(given) > len(match):
+            # A full name supersedes the initial it was first seen as.
+            givens[givens.index(match)] = given
+    identities = [
         (surname, given) for surname, givens in by_surname.items() for given in (givens or [""])
     ]
+
+    def resolve(key: tuple[str, str]) -> tuple[str, str] | None:
+        surname, given = key
+        if not surname:
+            return None
+        fits = [i for i in identities if i[0] == surname and given_names_agree(given, i[1])]
+        if not fits:
+            return None
+        # Prefer the identity whose given name this spelling actually carries.
+        return next((i for i in fits if given and i[1] == given), fits[0])
+
+    return identities, [resolve(k) for k in keys]
+
+
+def person_identities(names: Iterable[str]) -> list[tuple[str, str]]:
+    """The distinct people a list of spellings refers to."""
+    return _identify(names)[0]
 
 
 def shared_people(
@@ -150,23 +168,44 @@ def shared_people(
     """(candidate spellings the seed also has, the seed identities they matched).
 
     The names are for the reason line and keep the candidate's own spelling.
-    The identities are what a score counts, and they are the *seed's*: a
-    candidate crediting both «Хакамада» and «Ирина Хакамада» matches one
-    person, and a seed crediting two different Быковы is only half matched by
-    a candidate with one of them.
+    The identities are the *seed's*, and each side is spent once: a candidate
+    crediting both «Хакамада» and «Ирина Хакамада» matches one person, and a
+    seed crediting two different Быковы is only half matched by a candidate
+    with one of them.
+
+    One spelling cannot be two people. A bare «Быков» agrees with every
+    Быков in the seed, so without the spend-once rule it earned full credit
+    against a seed naming two of them (Tenki on #87). Unambiguous pairs are
+    taken first, so a candidate naming Дмитрий outright is never consumed by
+    a bare surname that could have gone elsewhere.
     """
     candidate_names = list(candidate_names)
-    matched: list[tuple[str, str]] = []
-    for identity in person_identities(seed_names):
-        surname, given = identity
-        if any(
-            person_key(candidate)[0] == surname
-            and given_names_agree(given, person_key(candidate)[1])
-            for candidate in candidate_names
-        ):
-            matched.append(identity)
-    seed_names = list(seed_names)
-    names = [c for c in candidate_names if any(people_match(c, s) for s in seed_names)]
+    seed_ids = person_identities(seed_names)
+    cand_ids, cand_of_name = _identify(candidate_names)
+
+    pairs = sorted(
+        # Specific pairs (both sides name a person) sort before ambiguous ones.
+        (0 if seed_given and cand_given else 1, s_index, c_index)
+        for s_index, (seed_surname, seed_given) in enumerate(seed_ids)
+        for c_index, (cand_surname, cand_given) in enumerate(cand_ids)
+        if seed_surname == cand_surname and given_names_agree(seed_given, cand_given)
+    )
+
+    used_seed: set[int] = set()
+    used_cand: set[int] = set()
+    for _, s_index, c_index in pairs:
+        if s_index in used_seed or c_index in used_cand:
+            continue
+        used_seed.add(s_index)
+        used_cand.add(c_index)
+
+    matched = [seed_ids[i] for i in sorted(used_seed)]
+    matched_cand = {cand_ids[i] for i in used_cand}
+    names = [
+        name
+        for name, identity in zip(candidate_names, cand_of_name, strict=True)
+        if identity in matched_cand
+    ]
     return names, matched
 
 

@@ -317,3 +317,12 @@ def test_two_spellings_of_one_person_are_still_one_full_match():
     score, names = speaker_axis(seed, candidate)
     assert score == 1.0
     assert names == ["Хакамада", "Ирина Хакамада"]
+
+
+def test_an_ambiguous_candidate_cannot_fully_match_two_namesakes():
+    """Tenki on #87 (second round)."""
+    from rainrag.library_blend import speaker_axis
+    from rainrag.library_similar import Episode
+
+    seed = Episode(video_hash="a", speakers=["Дмитрий Быков", "Юрий Быков"])
+    assert speaker_axis(seed, Episode(video_hash="b", speakers=["Быков"])) == (0.5, ["Быков"])

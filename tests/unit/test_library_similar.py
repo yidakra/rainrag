@@ -528,3 +528,33 @@ class TestPersonIdentities:
         one = Episode(video_hash="b", speakers=["Дмитрий Быков"])
         both = Episode(video_hash="c", speakers=["Дмитрий Быков", "Юрий Быков"])
         assert score_pair(seed, one, {})[0] < score_pair(seed, both, {})[0]
+
+
+class TestOneSpellingIsOnePerson:
+    """Tenki on #87 (second round): a bare surname credited every namesake."""
+
+    def test_a_bare_surname_matches_only_one_of_two_namesakes(self):
+        from rainrag.library_similar import shared_people
+
+        names, matched = shared_people(["Дмитрий Быков", "Юрий Быков"], ["Быков"])
+        assert names == ["Быков"]
+        assert len(matched) == 1
+
+    def test_a_named_candidate_is_not_consumed_by_an_ambiguous_one(self):
+        """Unambiguous pairs are taken first, so «Юрий» wins its own slot."""
+        from rainrag.library_similar import shared_people
+
+        _, matched = shared_people(["Дмитрий Быков", "Юрий Быков"], ["Быков", "Юрий Быков"])
+        assert matched == [("быков", "юрий")]
+
+    def test_naming_both_namesakes_still_matches_both(self):
+        from rainrag.library_similar import shared_people
+
+        _, matched = shared_people(["Дмитрий Быков", "Юрий Быков"], ["Юрий Быков", "Дмитрий Быков"])
+        assert matched == [("быков", "дмитрий"), ("быков", "юрий")]
+
+    def test_a_bare_surname_is_still_a_full_match_for_a_single_seed_speaker(self):
+        from rainrag.library_similar import shared_people
+
+        names, matched = shared_people(["Дмитрий Быков"], ["Быков"])
+        assert names == ["Быков"] and matched == [("быков", "дмитрий")]
