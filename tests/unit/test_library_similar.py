@@ -350,17 +350,18 @@ class TestPeopleMatch:
 
         assert person_key("Ирина Хакамада") == ("хакамада", "ирина")
         assert person_key("Хакамада") == ("хакамада", "")
-        assert person_key("И. Хакамада") == ("хакамада", "")
+        # An initial is kept, not discarded: see TestInitialsAreNotAnAbsentGivenName.
+        assert person_key("И. Хакамада") == ("хакамада", "и")
         assert person_key("") == ("", "")
 
     def test_shared_people_counts_one_person_once_but_keeps_both_spellings(self):
         from rainrag.library_similar import shared_people
 
-        names, keys = shared_people(
+        names, matched = shared_people(
             ["Ирина Хакамада"], ["Хакамада", "Юрий Быков", "Ирина Хакамада"]
         )
         assert names == ["Хакамада", "Ирина Хакамада"]
-        assert keys == ["хакамада"]
+        assert matched == [("хакамада", "ирина")]
 
     def test_the_wrong_namesake_no_longer_scores_as_a_shared_speaker(self):
         from rainrag.library_similar import Episode, score_pair
@@ -443,3 +444,87 @@ class TestFilterGenres:
         )
         assert episode.programme_genres == []
         assert filter_genres(episode) == {"новости", "интервью"}
+
+
+class TestInitialsAreNotAnAbsentGivenName:
+    """Tenki on #87: «Д. Быков» folded to a bare surname and matched any Быков."""
+
+    def test_an_initial_does_not_match_a_different_given_name(self):
+        from rainrag.library_similar import people_match
+
+        assert not people_match("Д. Быков", "Юрий Быков")
+        assert not people_match("Юрий Быков", "Д. Быков")
+        assert not people_match("И. Хакамада", "Юрий Хакамада")
+
+    def test_an_initial_still_matches_the_name_it_abbreviates(self):
+        from rainrag.library_similar import people_match
+
+        assert people_match("Д. Быков", "Дмитрий Быков")
+        assert people_match("И. Хакамада", "Ирина Хакамада")
+
+    def test_person_key_keeps_the_initial_rather_than_dropping_it(self):
+        from rainrag.library_similar import person_key
+
+        assert person_key("И. Хакамада") == ("хакамада", "и")
+        assert person_key("Хакамада") == ("хакамада", "")
+        # A latin suffix is not a surname and leaves no given name behind.
+        assert person_key("Noize MC") == ("noize", "")
+
+    def test_given_names_agree_only_where_they_can(self):
+        from rainrag.library_similar import given_names_agree
+
+        assert given_names_agree("", "ирина")
+        assert given_names_agree("и", "ирина")
+        assert given_names_agree("ирина", "ирина")
+        assert not given_names_agree("д", "юрий")
+        assert not given_names_agree("дмитрий", "юрий")
+
+
+class TestPersonIdentities:
+    """CodeRabbit on #87: counting people by surname mis-scored namesakes."""
+
+    def test_spellings_of_one_person_collapse(self):
+        from rainrag.library_similar import person_identities
+
+        assert person_identities(["Хакамада", "И. Хакамада", "Ирина Хакамада"]) == [
+            ("хакамада", "ирина")
+        ]
+
+    def test_two_people_sharing_a_surname_stay_two(self):
+        from rainrag.library_similar import person_identities
+
+        assert person_identities(["Дмитрий Быков", "Юрий Быков"]) == [
+            ("быков", "дмитрий"),
+            ("быков", "юрий"),
+        ]
+
+    def test_a_bare_surname_alone_is_one_person(self):
+        from rainrag.library_similar import person_identities
+
+        assert person_identities(["Быков"]) == [("быков", "")]
+        assert person_identities([]) == []
+        assert person_identities(["", "  "]) == []
+
+    def test_a_full_name_supersedes_the_initial_regardless_of_order(self):
+        from rainrag.library_similar import person_identities
+
+        assert person_identities(["И. Хакамада", "Ирина Хакамада"]) == [("хакамада", "ирина")]
+        assert person_identities(["Ирина Хакамада", "И. Хакамада"]) == [("хакамада", "ирина")]
+
+    def test_shared_people_reports_the_seed_identities_that_matched(self):
+        from rainrag.library_similar import shared_people
+
+        names, matched = shared_people(
+            ["Дмитрий Быков", "Юрий Быков"], ["Юрий Быков", "Ирина Хакамада"]
+        )
+        assert names == ["Юрий Быков"]
+        assert matched == [("быков", "юрий")]
+
+    def test_a_partly_matched_seed_does_not_score_as_a_whole_one(self):
+        """Half the seed's speakers are someone else, so half the weight."""
+        from rainrag.library_similar import Episode, score_pair
+
+        seed = Episode(video_hash="a", speakers=["Дмитрий Быков", "Юрий Быков"])
+        one = Episode(video_hash="b", speakers=["Дмитрий Быков"])
+        both = Episode(video_hash="c", speakers=["Дмитрий Быков", "Юрий Быков"])
+        assert score_pair(seed, one, {})[0] < score_pair(seed, both, {})[0]

@@ -53,16 +53,22 @@ def person_key(name: str) -> tuple[str, str]:
     their surname: «Екатерина Шульман» folded to «екатерина». Шульман is one
     of the six results the ranking is measured against.
 
-    Tokens of one or two letters are dropped, so initials («И. Хакамада») and
-    a latin suffix («Noize MC») leave no given name rather than a bogus one.
-    A patronymic sits in the middle and is ignored: «Владимир Вольфович
-    Жириновский» is (жириновский, владимир).
+    The surname is the last token longer than two letters, so a latin suffix
+    («Noize MC») cannot become one. The given name is whatever stands before
+    it, which may be an initial: «И. Хакамада» is (хакамада, и), not
+    (хакамада, ""). Keeping the initial matters, because "no given name at
+    all" is what lets two spellings match, and an initial is a real signal
+    that the surname is shared with someone else. A patronymic sits in the
+    middle and is ignored: «Владимир Вольфович Жириновский» is
+    (жириновский, владимир).
     """
-    cleaned = re.sub(r"[^\w\s-]", " ", str(name).lower().replace("ё", "е"))
-    tokens = [t for t in cleaned.split() if len(t) > 2]
-    if not tokens:
+    tokens = re.sub(r"[^\w\s-]", " ", str(name).lower().replace("ё", "е")).split()
+    long_tokens = [t for t in tokens if len(t) > 2]
+    if not long_tokens:
         return "", ""
-    return tokens[-1], tokens[0] if len(tokens) > 1 else ""
+    surname = long_tokens[-1]
+    before = tokens[: len(tokens) - 1 - tokens[::-1].index(surname)]
+    return surname, before[0] if before else ""
 
 
 def normalise_person(name: str) -> str:
@@ -72,6 +78,22 @@ def normalise_person(name: str) -> str:
     and «Юрий Быков» share this key. Use `people_match` for that.
     """
     return person_key(name)[0]
+
+
+def given_names_agree(left: str, right: str) -> bool:
+    """Can these two given names belong to one person?
+
+    An absent given name agrees with anything: the model credits a bare
+    «Хакамада» where the CMS has «Ирина Хакамада». An *initial* is not
+    absent, and treating it as such reopened the bug this guard exists for,
+    because «Д. Быков» then matched «Юрий Быков» (Tenki on #87). An initial
+    agrees with a name that starts with it and with nothing else.
+    """
+    if not left or not right:
+        return True
+    if len(left) == 1 or len(right) == 1:
+        return left[0] == right[0]
+    return left == right
 
 
 def people_match(left: str, right: str) -> bool:
@@ -90,29 +112,62 @@ def people_match(left: str, right: str) -> bool:
     right_surname, right_given = person_key(right)
     if not left_surname or left_surname != right_surname:
         return False
-    return not left_given or not right_given or left_given == right_given
+    return given_names_agree(left_given, right_given)
+
+
+def person_identities(names: Iterable[str]) -> list[tuple[str, str]]:
+    """The distinct people a list of spellings refers to.
+
+    Spellings of one person collapse: «Хакамада», «И. Хакамада» and «Ирина
+    Хакамада» are one identity, because a bare surname or an initial is
+    absorbed by a full name it agrees with. Two people who merely share a
+    surname stay two, which is the whole point -- counting them as one let
+    `speaker_axis` report a full match when half the seed's speakers were
+    someone else (CodeRabbit on #87).
+    """
+    by_surname: dict[str, list[str]] = {}
+    for name in names:
+        surname, given = person_key(name)
+        if not surname:
+            continue
+        givens = by_surname.setdefault(surname, [])
+        # Longest first, so a full name is present before the initial or bare
+        # spelling that should be absorbed into it.
+        if given and not any(given_names_agree(given, seen) for seen in givens):
+            givens.append(given)
+        elif given and len(given) > 1:
+            for index, seen in enumerate(givens):
+                if len(seen) == 1 and given_names_agree(given, seen):
+                    givens[index] = given
+    return [
+        (surname, given) for surname, givens in by_surname.items() for given in (givens or [""])
+    ]
 
 
 def shared_people(
     seed_names: Iterable[str], candidate_names: Iterable[str]
-) -> tuple[list[str], list[str]]:
-    """(candidate spellings the seed also has, one surname key per person).
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """(candidate spellings the seed also has, the seed identities they matched).
 
-    The names are for the reason line and keep the candidate's own spelling;
-    the keys are what a score counts, so a candidate crediting both
-    «Хакамада» and «Ирина Хакамада» counts as one person, not two.
+    The names are for the reason line and keep the candidate's own spelling.
+    The identities are what a score counts, and they are the *seed's*: a
+    candidate crediting both «Хакамада» and «Ирина Хакамада» matches one
+    person, and a seed crediting two different Быковы is only half matched by
+    a candidate with one of them.
     """
+    candidate_names = list(candidate_names)
+    matched: list[tuple[str, str]] = []
+    for identity in person_identities(seed_names):
+        surname, given = identity
+        if any(
+            person_key(candidate)[0] == surname
+            and given_names_agree(given, person_key(candidate)[1])
+            for candidate in candidate_names
+        ):
+            matched.append(identity)
     seed_names = list(seed_names)
-    names: list[str] = []
-    keys: list[str] = []
-    for candidate in candidate_names:
-        if not any(people_match(candidate, seed) for seed in seed_names):
-            continue
-        names.append(candidate)
-        key = person_key(candidate)[0]
-        if key not in keys:
-            keys.append(key)
-    return names, keys
+    names = [c for c in candidate_names if any(people_match(c, s) for s in seed_names)]
+    return names, matched
 
 
 @dataclass

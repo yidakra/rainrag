@@ -943,3 +943,16 @@ def test_genre_options_keep_the_first_spelling_and_sort_case_insensitively():
         Episode(video_hash="b", programme_genres=["мини-док", "аналитика"]),
     ]
     assert ui_library.genre_options(episodes) == ["аналитика", "Мини-док"]
+
+
+def test_a_non_string_genre_does_not_crash_the_options_list():
+    """CodeRabbit on #87: sorted(key=str.casefold) raised TypeError on a stray value."""
+    import ui_library
+    from rainrag.library_similar import Episode, filter_genres
+
+    episodes = [Episode(video_hash="a", genre=["лекция", 7])]  # type: ignore[list-item]
+    options = ui_library.genre_options(episodes)
+    assert options == ["7", "лекция"]
+    # Still mirrors the filter, so the stray value stays reachable rather than
+    # being silently dropped from the dropdown.
+    assert {g.lower() for g in options} == filter_genres(episodes[0])

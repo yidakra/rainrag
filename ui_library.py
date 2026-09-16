@@ -772,7 +772,12 @@ def genre_options(episodes: Iterable[Episode]) -> list[str]:
         for genre in episode.programme_genres or episode.genre:
             key = normalise_tag(genre)
             if key and key not in seen:
-                seen[key] = genre
+                # str(), not a skip: `filter_genres` matches on normalise_tag,
+                # which stringifies too, so a stray non-string in the tagger's
+                # JSONL must still be offered or it becomes unreachable. Left
+                # as-is it reached `str.casefold` below and raised TypeError
+                # (CodeRabbit on #87).
+                seen[key] = str(genre)
     return sorted(seen.values(), key=str.casefold)
 
 

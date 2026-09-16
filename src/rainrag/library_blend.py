@@ -29,7 +29,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from rainrag.library_similar import Episode, normalise_person, normalise_tag, shared_people
+from rainrag.library_similar import (
+    Episode,
+    normalise_tag,
+    person_identities,
+    shared_people,
+)
 
 
 # Varya's opening weights. She expects to move them: «Потом, возможно,
@@ -116,13 +121,15 @@ def speaker_axis(seed: Episode, candidate: Episode) -> tuple[float | None, list[
     thing an editor most wants surfaced, and because the reason line says
     «общие темы» only, so nothing claims a speaker match that was never checked.
     """
-    seed_keys = {normalise_person(s) for s in seed.speakers if normalise_person(s)}
-    if not seed_keys:
+    seed_people = person_identities(seed.speakers)
+    if not seed_people:
         return None, []
-    if not any(normalise_person(s) for s in candidate.speakers):
+    if not person_identities(candidate.speakers):
         return None, []
     names, shared = shared_people(seed.speakers, candidate.speakers)
-    return len(shared) / len(seed_keys), names
+    # Numerator and denominator are the same notion of a person, so a seed
+    # crediting two different Быковы cannot score 1.0 on one of them.
+    return len(shared) / len(seed_people), names
 
 
 def theme_axis(
