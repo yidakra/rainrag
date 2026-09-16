@@ -275,3 +275,54 @@ def test_an_untagged_candidate_outranks_one_tagged_with_other_subjects():
     idf = _idf(seed, untagged, other_theme)
     ranked = blended_top(seed, [other_theme, untagged], idf)
     assert [b.episode.video_hash for b in ranked] == ["u", "o"]
+
+
+def test_the_blended_speaker_axis_rejects_a_namesake_too():
+    """The shortlist and the columns must agree on who is the same person."""
+    from rainrag.library_blend import speaker_axis
+    from rainrag.library_similar import Episode
+
+    seed = Episode(video_hash="a", speakers=["Дмитрий Быков"])
+    namesake = Episode(video_hash="b", speakers=["Юрий Быков"])
+    himself = Episode(video_hash="c", speakers=["Быков"])
+    uncredited = Episode(video_hash="d", speakers=[])
+
+    assert speaker_axis(seed, namesake) == (0.0, [])
+    assert speaker_axis(seed, himself) == (1.0, ["Быков"])
+    # Uncredited stays missing data, not a mismatch: the axis drops out.
+    assert speaker_axis(seed, uncredited) == (None, [])
+
+
+def test_the_speaker_axis_denominator_counts_people_not_surnames():
+    """CodeRabbit on #87: one of two same-surname seed speakers scored 1.0."""
+    from rainrag.library_blend import speaker_axis
+    from rainrag.library_similar import Episode
+
+    seed = Episode(video_hash="a", speakers=["Дмитрий Быков", "Юрий Быков"])
+    assert speaker_axis(seed, Episode(video_hash="b", speakers=["Дмитрий Быков"])) == (
+        0.5,
+        ["Дмитрий Быков"],
+    )
+    assert speaker_axis(
+        seed, Episode(video_hash="c", speakers=["Дмитрий Быков", "Юрий Быков"])
+    ) == (1.0, ["Дмитрий Быков", "Юрий Быков"])
+
+
+def test_two_spellings_of_one_person_are_still_one_full_match():
+    from rainrag.library_blend import speaker_axis
+    from rainrag.library_similar import Episode
+
+    seed = Episode(video_hash="a", speakers=["Ирина Хакамада"])
+    candidate = Episode(video_hash="b", speakers=["Хакамада", "Ирина Хакамада"])
+    score, names = speaker_axis(seed, candidate)
+    assert score == 1.0
+    assert names == ["Хакамада", "Ирина Хакамада"]
+
+
+def test_an_ambiguous_candidate_cannot_fully_match_two_namesakes():
+    """Tenki on #87 (second round)."""
+    from rainrag.library_blend import speaker_axis
+    from rainrag.library_similar import Episode
+
+    seed = Episode(video_hash="a", speakers=["Дмитрий Быков", "Юрий Быков"])
+    assert speaker_axis(seed, Episode(video_hash="b", speakers=["Быков"])) == (0.5, ["Быков"])

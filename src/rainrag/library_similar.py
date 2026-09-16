@@ -29,7 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from rainrag.library_programs import Programme, resolve_speakers
+from rainrag.library_programs import Programme, programme_for, resolve_speakers
 
 
 # A speaker in common is the strongest signal an editor uses -- four of the six
@@ -43,22 +43,170 @@ def normalise_tag(tag: str) -> str:
     return re.sub(r"[^\w\s-]", "", str(tag).lower().replace("ё", "е")).strip()
 
 
-def normalise_person(name: str) -> str:
-    """Fold a person's name to its surname for comparison.
+def person_key(name: str) -> tuple[str, str]:
+    """Split a name into (surname, given name); given name is "" when absent.
 
     Surname-last is the convention in both the CMS and the titles, and the
     surname is the part that stays constant across «Ирина Хакамада» and
-    «Хакамада».
+    «Хакамада». The surname took the *longest* token until review caught it,
+    which silently broke matching for anyone whose given name is longer than
+    their surname: «Екатерина Шульман» folded to «екатерина». Шульман is one
+    of the six results the ranking is measured against.
 
-    This took the *longest* token until review caught it, which silently broke
-    matching for anyone whose given name is longer than their surname:
-    «Екатерина Шульман» folded to «екатерина» and «Дмитрий Быков» to «дмитрий»,
-    so neither matched the bare surname the model returns. Шульман is one of
-    the six results the ranking is measured against.
+    The surname is the last token longer than two letters, so a latin suffix
+    («Noize MC») cannot become one. The given name is whatever stands before
+    it, which may be an initial: «И. Хакамада» is (хакамада, и), not
+    (хакамада, ""). Keeping the initial matters, because "no given name at
+    all" is what lets two spellings match, and an initial is a real signal
+    that the surname is shared with someone else. A patronymic sits in the
+    middle and is ignored: «Владимир Вольфович Жириновский» is
+    (жириновский, владимир).
     """
-    cleaned = re.sub(r"[^\w\s-]", " ", str(name).lower().replace("ё", "е"))
-    tokens = [t for t in cleaned.split() if len(t) > 2]
-    return tokens[-1] if tokens else ""
+    tokens = re.sub(r"[^\w\s-]", " ", str(name).lower().replace("ё", "е")).split()
+    long_tokens = [t for t in tokens if len(t) > 2]
+    if not long_tokens:
+        return "", ""
+    surname = long_tokens[-1]
+    before = tokens[: len(tokens) - 1 - tokens[::-1].index(surname)]
+    return surname, before[0] if before else ""
+
+
+def normalise_person(name: str) -> str:
+    """The surname alone, used to *group* spellings of one name.
+
+    Not a test of whether two names denote the same person: «Дмитрий Быков»
+    and «Юрий Быков» share this key. Use `people_match` for that.
+    """
+    return person_key(name)[0]
+
+
+def given_names_agree(left: str, right: str) -> bool:
+    """Can these two given names belong to one person?
+
+    An absent given name agrees with anything: the model credits a bare
+    «Хакамада» where the CMS has «Ирина Хакамада». An *initial* is not
+    absent, and treating it as such reopened the bug this guard exists for,
+    because «Д. Быков» then matched «Юрий Быков» (Tenki on #87). An initial
+    agrees with a name that starts with it and with nothing else.
+    """
+    if not left or not right:
+        return True
+    if len(left) == 1 or len(right) == 1:
+        return left[0] == right[0]
+    return left == right
+
+
+def people_match(left: str, right: str) -> bool:
+    """Do two spellings denote the same person?
+
+    Surnames must agree. Given names must agree too, unless one side has none
+    at all: the model routinely returns a bare «Хакамада» where the CMS has
+    «Ирина Хакамада», and refusing that match would lose most real overlap.
+
+    Matching on the surname alone was the original rule and it suggested Юрий
+    Быков for Дмитрий Быков, and Алиса Ахеджакова for Лия Ахеджакова, in the
+    «тот же спикер» column, where being the same person is the entire claim
+    (reported by Varya, 2026-09-15).
+    """
+    left_surname, left_given = person_key(left)
+    right_surname, right_given = person_key(right)
+    if not left_surname or left_surname != right_surname:
+        return False
+    return given_names_agree(left_given, right_given)
+
+
+def _identify(names: Iterable[str]) -> tuple[list[tuple[str, str]], list[tuple[str, str] | None]]:
+    """(the distinct people named, the person each spelling refers to).
+
+    Spellings of one person collapse: «Хакамада», «И. Хакамада» and «Ирина
+    Хакамада» are one identity, because a bare surname or an initial is
+    absorbed by a full name it agrees with. Two people who merely share a
+    surname stay two, which is the whole point -- counting them as one let
+    `speaker_axis` report a full match when half the seed's speakers were
+    someone else (CodeRabbit on #87).
+    """
+    names = list(names)
+    keys = [person_key(n) for n in names]
+    by_surname: dict[str, list[str]] = {}
+    for surname, given in keys:
+        if not surname:
+            continue
+        givens = by_surname.setdefault(surname, [])
+        if not given:
+            continue
+        match = next((g for g in givens if given_names_agree(given, g)), None)
+        if match is None:
+            givens.append(given)
+        elif len(given) > len(match):
+            # A full name supersedes the initial it was first seen as.
+            givens[givens.index(match)] = given
+    identities = [
+        (surname, given) for surname, givens in by_surname.items() for given in (givens or [""])
+    ]
+
+    def resolve(key: tuple[str, str]) -> tuple[str, str] | None:
+        surname, given = key
+        if not surname:
+            return None
+        fits = [i for i in identities if i[0] == surname and given_names_agree(given, i[1])]
+        if not fits:
+            return None
+        # Prefer the identity whose given name this spelling actually carries.
+        return next((i for i in fits if given and i[1] == given), fits[0])
+
+    return identities, [resolve(k) for k in keys]
+
+
+def person_identities(names: Iterable[str]) -> list[tuple[str, str]]:
+    """The distinct people a list of spellings refers to."""
+    return _identify(names)[0]
+
+
+def shared_people(
+    seed_names: Iterable[str], candidate_names: Iterable[str]
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """(candidate spellings the seed also has, the seed identities they matched).
+
+    The names are for the reason line and keep the candidate's own spelling.
+    The identities are the *seed's*, and each side is spent once: a candidate
+    crediting both «Хакамада» and «Ирина Хакамада» matches one person, and a
+    seed crediting two different Быковы is only half matched by a candidate
+    with one of them.
+
+    One spelling cannot be two people. A bare «Быков» agrees with every
+    Быков in the seed, so without the spend-once rule it earned full credit
+    against a seed naming two of them (Tenki on #87). Unambiguous pairs are
+    taken first, so a candidate naming Дмитрий outright is never consumed by
+    a bare surname that could have gone elsewhere.
+    """
+    candidate_names = list(candidate_names)
+    seed_ids = person_identities(seed_names)
+    cand_ids, cand_of_name = _identify(candidate_names)
+
+    pairs = sorted(
+        # Specific pairs (both sides name a person) sort before ambiguous ones.
+        (0 if seed_given and cand_given else 1, s_index, c_index)
+        for s_index, (seed_surname, seed_given) in enumerate(seed_ids)
+        for c_index, (cand_surname, cand_given) in enumerate(cand_ids)
+        if seed_surname == cand_surname and given_names_agree(seed_given, cand_given)
+    )
+
+    used_seed: set[int] = set()
+    used_cand: set[int] = set()
+    for _, s_index, c_index in pairs:
+        if s_index in used_seed or c_index in used_cand:
+            continue
+        used_seed.add(s_index)
+        used_cand.add(c_index)
+
+    matched = [seed_ids[i] for i in sorted(used_seed)]
+    matched_cand = {cand_ids[i] for i in used_cand}
+    names = [
+        name
+        for name, identity in zip(candidate_names, cand_of_name, strict=True)
+        if identity in matched_cand
+    ]
+    return names, matched
 
 
 @dataclass
@@ -76,6 +224,11 @@ class Episode:
     speakers: list[str] = field(default_factory=list)
     url: str | None = None
     presenter_demoted: bool = False
+    # Genre as Varya's Programs tab defines it for this episode's programme,
+    # empty when the programme is absent from the table or she left it blank.
+    # `genre` above is the model's per-episode guess and they are different
+    # things: see `filter_genres`.
+    programme_genres: list[str] = field(default_factory=list)
 
     @classmethod
     def from_record(
@@ -94,6 +247,7 @@ class Episode:
         """
         resolution = resolve_speakers(record, programmes)
         speakers = resolution.speakers
+        programme = programme_for(record.get("program"), programmes or {})
         return cls(
             video_hash=record["video_hash"],
             content_id=record.get("content_id"),
@@ -106,6 +260,7 @@ class Episode:
             speakers=speakers,
             url=record.get("url"),
             presenter_demoted=resolution.presenter_demoted,
+            programme_genres=list(programme.genres) if programme else [],
         )
 
 
@@ -186,10 +341,7 @@ def score_pair(
     The reasons matter as much as the number: an editor deciding whether to
     spend an hour watching a tape wants to know *why* it was suggested.
     """
-    seed_speakers = {normalise_person(s) for s in seed.speakers if normalise_person(s)}
-    cand_speakers = {normalise_person(s) for s in candidate.speakers if normalise_person(s)}
-    shared_speaker_keys = seed_speakers & cand_speakers
-    shared_speakers = [s for s in candidate.speakers if normalise_person(s) in shared_speaker_keys]
+    shared_speakers, shared_speaker_keys = shared_people(seed.speakers, candidate.speakers)
 
     seed_subjects = {normalise_tag(t) for t in seed.subject if normalise_tag(t)}
     cand_subjects = {normalise_tag(t) for t in candidate.subject if normalise_tag(t)}
@@ -210,6 +362,25 @@ def score_pair(
         key=lambda t: -idf.get(normalise_tag(t), 0.0),
     )
     return score, shared_speakers, shared_subjects
+
+
+def filter_genres(episode: Episode) -> set[str]:
+    """The genres an episode is filtered on: the programme's, else the model's.
+
+    Varya's Programs tab is the editorial authority on genre -- it is already
+    what decides whether a presenter counts as a speaker -- and the model's
+    per-episode labels are a different, noisier thing. The model gives an
+    episode several genres, so «Утро на Дожде» tagged «новости, интервью»
+    survived a filter of «интервью» even though the programme is news: 114
+    such episodes in that programme alone, and 119 in «Здесь и сейчас»
+    (reported by Varya, 2026-09-15).
+
+    Falling back to the model's labels rather than dropping the episode keeps
+    the 123 tagged episodes whose programme has no reviewed genre, and
+    everything with no programme at all, reachable through the filter.
+    """
+    source = episode.programme_genres or episode.genre
+    return {normalise_tag(g) for g in source if normalise_tag(g)}
 
 
 def find_similar(
@@ -241,9 +412,7 @@ def find_similar(
             min_duration_minutes is not None
             and (candidate.duration_seconds or 0) < min_duration_minutes * 60
         )
-        wrong_genre = bool(wanted_genres) and not (
-            {normalise_tag(g) for g in candidate.genre} & wanted_genres
-        )
+        wrong_genre = bool(wanted_genres) and not (filter_genres(candidate) & wanted_genres)
         if too_short or wrong_genre:
             continue
         score, speakers, subjects = score_pair(seed, candidate, idf)

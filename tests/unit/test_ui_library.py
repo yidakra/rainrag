@@ -897,3 +897,62 @@ def test_an_unjudged_pair_is_not_seeded_and_the_callback_records_only_a_change(m
     fake.session_state[key] = 0
     ui_library._record_thumb(**{**kwargs, "known": 1})
     assert written[-1] == ("s1", "484740", "theme", 3, "bad")
+
+
+# --------------------------------------------------------- genre filter options
+
+
+def test_genre_options_offer_the_reviewed_vocabulary_not_the_taggers():
+    """The filter matches on Varya's Programs tab, so the dropdown must show it."""
+    import ui_library
+    from rainrag.library_similar import Episode
+
+    episodes = [
+        Episode(video_hash="a", genre=["новости", "интервью"], programme_genres=["новости"]),
+        Episode(video_hash="b", genre=["ток-шоу"], programme_genres=["эдьютейнмент"]),
+        Episode(video_hash="c", genre=["дискуссия"], programme_genres=[]),
+    ]
+    options = ui_library.genre_options(episodes)
+    # From the reviewed table where there is one, the model's labels otherwise.
+    assert options == ["дискуссия", "новости", "эдьютейнмент"]
+    # «интервью» and «ток-шоу» are the tagger's guesses on programmes that have
+    # a reviewed genre, so nothing they could match is offered.
+    assert "интервью" not in options and "ток-шоу" not in options
+
+
+def test_every_offered_genre_matches_at_least_one_episode():
+    """Mirrors filter_genres, so the list cannot drift from what filters do."""
+    import ui_library
+    from rainrag.library_similar import Episode, filter_genres
+
+    episodes = [
+        Episode(video_hash="a", genre=["новости"], programme_genres=["аналитика"]),
+        Episode(video_hash="b", genre=["лекция"], programme_genres=[]),
+        Episode(video_hash="c", genre=[], programme_genres=[]),
+    ]
+    matchable = set().union(*(filter_genres(e) for e in episodes))
+    assert {g.lower() for g in ui_library.genre_options(episodes)} == matchable
+
+
+def test_genre_options_keep_the_first_spelling_and_sort_case_insensitively():
+    import ui_library
+    from rainrag.library_similar import Episode
+
+    episodes = [
+        Episode(video_hash="a", programme_genres=["Мини-док"]),
+        Episode(video_hash="b", programme_genres=["мини-док", "аналитика"]),
+    ]
+    assert ui_library.genre_options(episodes) == ["аналитика", "Мини-док"]
+
+
+def test_a_non_string_genre_does_not_crash_the_options_list():
+    """CodeRabbit on #87: sorted(key=str.casefold) raised TypeError on a stray value."""
+    import ui_library
+    from rainrag.library_similar import Episode, filter_genres
+
+    episodes = [Episode(video_hash="a", genre=["лекция", 7])]  # type: ignore[list-item]
+    options = ui_library.genre_options(episodes)
+    assert options == ["7", "лекция"]
+    # Still mirrors the filter, so the stray value stays reachable rather than
+    # being silently dropped from the dropdown.
+    assert {g.lower() for g in options} == filter_genres(episodes[0])
