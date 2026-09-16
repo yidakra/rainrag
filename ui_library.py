@@ -42,7 +42,6 @@ from typing import Any
 
 import streamlit as st
 
-from rainrag.library import GENRES
 from rainrag.library_blend import Audience, Blended, blended_top
 from rainrag.library_performance import (
     METRIC_COLUMNS,
@@ -58,6 +57,7 @@ from rainrag.library_similar import (
     dedupe_latest,
     find_similar,
     normalise_person,
+    normalise_tag,
     subject_idf,
 )
 
@@ -760,6 +760,22 @@ def empty_speaker_reason(seed: Episode) -> str:
     return "no_speaker"
 
 
+def genre_options(episodes: Iterable[Episode]) -> list[str]:
+    """Every genre the filter can actually match, in the pool's own spelling.
+
+    Mirrors `filter_genres`: the programme's reviewed genre where there is
+    one, the model's labels otherwise. The first spelling seen wins, so the
+    list reads as the editors wrote it rather than folded to lowercase.
+    """
+    seen: dict[str, str] = {}
+    for episode in episodes:
+        for genre in episode.programme_genres or episode.genre:
+            key = normalise_tag(genre)
+            if key and key not in seen:
+                seen[key] = genre
+    return sorted(seen.values(), key=str.casefold)
+
+
 def display_title(
     e: Episode, lang: str, synthetic: dict[str, str] | None = None
 ) -> tuple[str, bool]:
@@ -965,7 +981,12 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
             _t("min_minutes", lang), min_value=0, value=30, step=5, key="library_min_minutes"
         )
     with genre_col:
-        genres = st.multiselect(_t("genres", lang), list(GENRES), default=[], key="library_genres")
+        genres = st.multiselect(
+            _t("genres", lang),
+            _cached_genre_options(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH)),
+            default=[],
+            key="library_genres",
+        )
 
     # One IDF map for all three lists. find_similar would otherwise build its
     # own over the same pool on every interaction, which costs 1.3s and lets
@@ -1343,6 +1364,23 @@ def _cached_idf(tags_key: tuple[int, int], programs_key: tuple[int, int]) -> dic
     match is worth.
     """
     return subject_idf(_cached_episodes(tags_key, programs_key))
+
+
+@st.cache_data(show_spinner=False)
+def _cached_genre_options(tags_key: tuple[int, int], programs_key: tuple[int, int]) -> list[str]:
+    """Genres worth offering in the filter, from the pool itself.
+
+    Not the nine the tagger was prompted with: the filter matches on Varya's
+    Programs tab where she has filled it in, and her vocabulary is a different
+    and richer one (36 genres, including «аналитика», «мини-док» and
+    «эдьютейнмент», which the model never emits). Offering the tagger's list
+    against her data would leave most of her genres unreachable and «дискуссия»
+    matching nothing.
+
+    Derived from the same expression the filter uses, so every option matches
+    at least one episode and no matchable genre is missing.
+    """
+    return genre_options(_cached_episodes(tags_key, programs_key))
 
 
 @st.cache_data(show_spinner=False)

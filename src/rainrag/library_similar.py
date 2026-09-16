@@ -29,7 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from rainrag.library_programs import Programme, resolve_speakers
+from rainrag.library_programs import Programme, programme_for, resolve_speakers
 
 
 # A speaker in common is the strongest signal an editor uses -- four of the six
@@ -43,22 +43,76 @@ def normalise_tag(tag: str) -> str:
     return re.sub(r"[^\w\s-]", "", str(tag).lower().replace("ё", "е")).strip()
 
 
-def normalise_person(name: str) -> str:
-    """Fold a person's name to its surname for comparison.
+def person_key(name: str) -> tuple[str, str]:
+    """Split a name into (surname, given name); given name is "" when absent.
 
     Surname-last is the convention in both the CMS and the titles, and the
     surname is the part that stays constant across «Ирина Хакамада» and
-    «Хакамада».
+    «Хакамада». The surname took the *longest* token until review caught it,
+    which silently broke matching for anyone whose given name is longer than
+    their surname: «Екатерина Шульман» folded to «екатерина». Шульман is one
+    of the six results the ranking is measured against.
 
-    This took the *longest* token until review caught it, which silently broke
-    matching for anyone whose given name is longer than their surname:
-    «Екатерина Шульман» folded to «екатерина» and «Дмитрий Быков» to «дмитрий»,
-    so neither matched the bare surname the model returns. Шульман is one of
-    the six results the ranking is measured against.
+    Tokens of one or two letters are dropped, so initials («И. Хакамада») and
+    a latin suffix («Noize MC») leave no given name rather than a bogus one.
+    A patronymic sits in the middle and is ignored: «Владимир Вольфович
+    Жириновский» is (жириновский, владимир).
     """
     cleaned = re.sub(r"[^\w\s-]", " ", str(name).lower().replace("ё", "е"))
     tokens = [t for t in cleaned.split() if len(t) > 2]
-    return tokens[-1] if tokens else ""
+    if not tokens:
+        return "", ""
+    return tokens[-1], tokens[0] if len(tokens) > 1 else ""
+
+
+def normalise_person(name: str) -> str:
+    """The surname alone, used to *group* spellings of one name.
+
+    Not a test of whether two names denote the same person: «Дмитрий Быков»
+    and «Юрий Быков» share this key. Use `people_match` for that.
+    """
+    return person_key(name)[0]
+
+
+def people_match(left: str, right: str) -> bool:
+    """Do two spellings denote the same person?
+
+    Surnames must agree. Given names must agree too, unless one side has none
+    at all: the model routinely returns a bare «Хакамада» where the CMS has
+    «Ирина Хакамада», and refusing that match would lose most real overlap.
+
+    Matching on the surname alone was the original rule and it suggested Юрий
+    Быков for Дмитрий Быков, and Алиса Ахеджакова for Лия Ахеджакова, in the
+    «тот же спикер» column, where being the same person is the entire claim
+    (reported by Varya, 2026-09-15).
+    """
+    left_surname, left_given = person_key(left)
+    right_surname, right_given = person_key(right)
+    if not left_surname or left_surname != right_surname:
+        return False
+    return not left_given or not right_given or left_given == right_given
+
+
+def shared_people(
+    seed_names: Iterable[str], candidate_names: Iterable[str]
+) -> tuple[list[str], list[str]]:
+    """(candidate spellings the seed also has, one surname key per person).
+
+    The names are for the reason line and keep the candidate's own spelling;
+    the keys are what a score counts, so a candidate crediting both
+    «Хакамада» and «Ирина Хакамада» counts as one person, not two.
+    """
+    seed_names = list(seed_names)
+    names: list[str] = []
+    keys: list[str] = []
+    for candidate in candidate_names:
+        if not any(people_match(candidate, seed) for seed in seed_names):
+            continue
+        names.append(candidate)
+        key = person_key(candidate)[0]
+        if key not in keys:
+            keys.append(key)
+    return names, keys
 
 
 @dataclass
@@ -76,6 +130,11 @@ class Episode:
     speakers: list[str] = field(default_factory=list)
     url: str | None = None
     presenter_demoted: bool = False
+    # Genre as Varya's Programs tab defines it for this episode's programme,
+    # empty when the programme is absent from the table or she left it blank.
+    # `genre` above is the model's per-episode guess and they are different
+    # things: see `filter_genres`.
+    programme_genres: list[str] = field(default_factory=list)
 
     @classmethod
     def from_record(
@@ -94,6 +153,7 @@ class Episode:
         """
         resolution = resolve_speakers(record, programmes)
         speakers = resolution.speakers
+        programme = programme_for(record.get("program"), programmes or {})
         return cls(
             video_hash=record["video_hash"],
             content_id=record.get("content_id"),
@@ -106,6 +166,7 @@ class Episode:
             speakers=speakers,
             url=record.get("url"),
             presenter_demoted=resolution.presenter_demoted,
+            programme_genres=list(programme.genres) if programme else [],
         )
 
 
@@ -186,10 +247,7 @@ def score_pair(
     The reasons matter as much as the number: an editor deciding whether to
     spend an hour watching a tape wants to know *why* it was suggested.
     """
-    seed_speakers = {normalise_person(s) for s in seed.speakers if normalise_person(s)}
-    cand_speakers = {normalise_person(s) for s in candidate.speakers if normalise_person(s)}
-    shared_speaker_keys = seed_speakers & cand_speakers
-    shared_speakers = [s for s in candidate.speakers if normalise_person(s) in shared_speaker_keys]
+    shared_speakers, shared_speaker_keys = shared_people(seed.speakers, candidate.speakers)
 
     seed_subjects = {normalise_tag(t) for t in seed.subject if normalise_tag(t)}
     cand_subjects = {normalise_tag(t) for t in candidate.subject if normalise_tag(t)}
@@ -210,6 +268,25 @@ def score_pair(
         key=lambda t: -idf.get(normalise_tag(t), 0.0),
     )
     return score, shared_speakers, shared_subjects
+
+
+def filter_genres(episode: Episode) -> set[str]:
+    """The genres an episode is filtered on: the programme's, else the model's.
+
+    Varya's Programs tab is the editorial authority on genre -- it is already
+    what decides whether a presenter counts as a speaker -- and the model's
+    per-episode labels are a different, noisier thing. The model gives an
+    episode several genres, so «Утро на Дожде» tagged «новости, интервью»
+    survived a filter of «интервью» even though the programme is news: 114
+    such episodes in that programme alone, and 119 in «Здесь и сейчас»
+    (reported by Varya, 2026-09-15).
+
+    Falling back to the model's labels rather than dropping the episode keeps
+    the 123 tagged episodes whose programme has no reviewed genre, and
+    everything with no programme at all, reachable through the filter.
+    """
+    source = episode.programme_genres or episode.genre
+    return {normalise_tag(g) for g in source if normalise_tag(g)}
 
 
 def find_similar(
@@ -241,9 +318,7 @@ def find_similar(
             min_duration_minutes is not None
             and (candidate.duration_seconds or 0) < min_duration_minutes * 60
         )
-        wrong_genre = bool(wanted_genres) and not (
-            {normalise_tag(g) for g in candidate.genre} & wanted_genres
-        )
+        wrong_genre = bool(wanted_genres) and not (filter_genres(candidate) & wanted_genres)
         if too_short or wrong_genre:
             continue
         score, speakers, subjects = score_pair(seed, candidate, idf)

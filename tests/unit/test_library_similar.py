@@ -310,3 +310,136 @@ def test_the_guest_not_the_interviewer_drives_the_ranking():
     assert ranked[0].episode.video_hash == "same"
     assert ranked[0].shared_speakers == ["Михаил Ходорковский"]
     assert not [r for r in ranked if r.episode.video_hash == "other" and r.shared_speakers]
+
+
+# ------------------------------------------------- same surname, other person
+
+
+class TestPeopleMatch:
+    """Varya, 2026-09-15: Юрий Быков was offered for Дмитрий Быков."""
+
+    def test_same_surname_different_given_name_is_not_the_same_person(self):
+        from rainrag.library_similar import people_match
+
+        assert not people_match("Дмитрий Быков", "Юрий Быков")
+        assert not people_match("Лия Ахеджакова", "Алиса Ахеджакова")
+
+    def test_a_bare_surname_still_matches_the_full_name(self):
+        """The model routinely returns only the surname; refusing that would
+        lose most of the real overlap."""
+        from rainrag.library_similar import people_match
+
+        assert people_match("Ирина Хакамада", "Хакамада")
+        assert people_match("Хакамада", "Ирина Хакамада")
+        assert people_match("Екатерина Шульман", "Шульман")
+
+    def test_initials_and_patronymics_do_not_block_a_match(self):
+        from rainrag.library_similar import people_match
+
+        assert people_match("И. Хакамада", "Ирина Хакамада")
+        assert people_match("Владимир Вольфович Жириновский", "Жириновский")
+
+    def test_different_surnames_never_match(self):
+        from rainrag.library_similar import people_match
+
+        assert not people_match("Екатерина Шульман", "Екатерина Шаврина")
+        assert not people_match("", "Хакамада")
+
+    def test_person_key_splits_surname_and_given_name(self):
+        from rainrag.library_similar import person_key
+
+        assert person_key("Ирина Хакамада") == ("хакамада", "ирина")
+        assert person_key("Хакамада") == ("хакамада", "")
+        assert person_key("И. Хакамада") == ("хакамада", "")
+        assert person_key("") == ("", "")
+
+    def test_shared_people_counts_one_person_once_but_keeps_both_spellings(self):
+        from rainrag.library_similar import shared_people
+
+        names, keys = shared_people(
+            ["Ирина Хакамада"], ["Хакамада", "Юрий Быков", "Ирина Хакамада"]
+        )
+        assert names == ["Хакамада", "Ирина Хакамада"]
+        assert keys == ["хакамада"]
+
+    def test_the_wrong_namesake_no_longer_scores_as_a_shared_speaker(self):
+        from rainrag.library_similar import Episode, score_pair
+
+        seed = Episode(video_hash="a", speakers=["Дмитрий Быков"], subject=["литература"])
+        namesake = Episode(video_hash="b", speakers=["Юрий Быков"], subject=["литература"])
+        himself = Episode(video_hash="c", speakers=["Быков"], subject=["литература"])
+        idf = {"литература": 1.0}
+        assert score_pair(seed, namesake, idf)[1] == []
+        assert score_pair(seed, himself, idf)[1] == ["Быков"]
+
+    def test_normalise_person_stays_the_surname_grouping_key(self):
+        """The UI groups spellings by it; it is deliberately looser than a match."""
+        from rainrag.library_similar import normalise_person
+
+        assert normalise_person("Дмитрий Быков") == normalise_person("Юрий Быков") == "быков"
+
+
+# ------------------------------------------------------------- genre filtering
+
+
+class TestFilterGenres:
+    """Varya, 2026-09-15: «Здесь и сейчас» survived a filter that excluded новости."""
+
+    def _episode(self, **kw):
+        from rainrag.library_similar import Episode
+
+        return Episode(video_hash=kw.pop("video_hash", "h"), **kw)
+
+    def test_the_reviewed_programme_genre_wins_over_the_model_labels(self):
+        from rainrag.library_similar import filter_genres
+
+        episode = self._episode(genre=["новости", "интервью"], programme_genres=["новости"])
+        assert filter_genres(episode) == {"новости"}
+
+    def test_the_model_labels_are_the_fallback_when_the_programme_has_none(self):
+        from rainrag.library_similar import filter_genres
+
+        episode = self._episode(genre=["новости", "интервью"], programme_genres=[])
+        assert filter_genres(episode) == {"новости", "интервью"}
+
+    def test_a_news_programme_is_excluded_from_an_interview_filter(self):
+        from rainrag.library_similar import Episode, find_similar
+
+        seed = Episode(video_hash="seed", speakers=["Ирина Хакамада"], subject=["интуиция"])
+        news = Episode(
+            video_hash="news",
+            speakers=["Ирина Хакамада"],
+            subject=["интуиция"],
+            genre=["новости", "интервью"],
+            programme_genres=["новости"],
+        )
+        talk = Episode(
+            video_hash="talk",
+            speakers=["Ирина Хакамада"],
+            subject=["интуиция"],
+            genre=["новости"],
+            programme_genres=["интервью"],
+        )
+        found = find_similar(seed, [news, talk], genres=["интервью"], idf={"интуиция": 1.0})
+        assert [r.episode.video_hash for r in found] == ["talk"]
+
+    def test_from_record_carries_the_reviewed_genre(self):
+        from rainrag.library_programs import Programme
+        from rainrag.library_similar import Episode
+
+        programmes = {"утро на дожде": Programme(title="Утро на Дожде", genres=("новости",))}
+        episode = Episode.from_record(
+            {"video_hash": "h", "program": "Утро на Дожде", "genre": ["новости", "интервью"]},
+            programmes,
+        )
+        assert episode.programme_genres == ["новости"]
+        assert episode.genre == ["новости", "интервью"]
+
+    def test_without_a_programme_table_nothing_changes(self):
+        from rainrag.library_similar import Episode, filter_genres
+
+        episode = Episode.from_record(
+            {"video_hash": "h", "program": "Утро на Дожде", "genre": ["новости", "интервью"]}
+        )
+        assert episode.programme_genres == []
+        assert filter_genres(episode) == {"новости", "интервью"}

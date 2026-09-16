@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from rainrag.library_similar import Episode, normalise_person, normalise_tag
+from rainrag.library_similar import Episode, normalise_person, normalise_tag, shared_people
 
 
 # Varya's opening weights. She expects to move them: «Потом, возможно,
@@ -119,11 +119,9 @@ def speaker_axis(seed: Episode, candidate: Episode) -> tuple[float | None, list[
     seed_keys = {normalise_person(s) for s in seed.speakers if normalise_person(s)}
     if not seed_keys:
         return None, []
-    cand_keys = {normalise_person(s) for s in candidate.speakers if normalise_person(s)}
-    if not cand_keys:
+    if not any(normalise_person(s) for s in candidate.speakers):
         return None, []
-    shared = seed_keys & cand_keys
-    names = [s for s in candidate.speakers if normalise_person(s) in shared]
+    names, shared = shared_people(seed.speakers, candidate.speakers)
     return len(shared) / len(seed_keys), names
 
 

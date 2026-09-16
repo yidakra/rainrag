@@ -275,3 +275,19 @@ def test_an_untagged_candidate_outranks_one_tagged_with_other_subjects():
     idf = _idf(seed, untagged, other_theme)
     ranked = blended_top(seed, [other_theme, untagged], idf)
     assert [b.episode.video_hash for b in ranked] == ["u", "o"]
+
+
+def test_the_blended_speaker_axis_rejects_a_namesake_too():
+    """The shortlist and the columns must agree on who is the same person."""
+    from rainrag.library_blend import speaker_axis
+    from rainrag.library_similar import Episode
+
+    seed = Episode(video_hash="a", speakers=["Дмитрий Быков"])
+    namesake = Episode(video_hash="b", speakers=["Юрий Быков"])
+    himself = Episode(video_hash="c", speakers=["Быков"])
+    uncredited = Episode(video_hash="d", speakers=[])
+
+    assert speaker_axis(seed, namesake) == (0.0, [])
+    assert speaker_axis(seed, himself) == (1.0, ["Быков"])
+    # Uncredited stays missing data, not a mismatch: the axis drops out.
+    assert speaker_axis(seed, uncredited) == (None, [])
