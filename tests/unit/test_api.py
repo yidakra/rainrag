@@ -536,11 +536,9 @@ def test_the_gateway_host_is_trusted_by_default():
     import importlib
 
     api = importlib.import_module("rainrag.api")
-    hosts = api._parse_csv_env(
-        "RAINRAG_ALLOWED_HOSTS",
-        ["rag.tvrain.io", "rag.tvrain.tv", "172.16.52.220", "localhost", "127.0.0.1", "testserver"],
-    )
+    # The module's own values, not a list re-derived here: passing the same
+    # defaults back into _parse_csv_env asserts nothing (Tenki on #88).
     for host in ("rag.tvrain.io", "rag.tvrain.tv", "localhost", "127.0.0.1"):
-        assert host in hosts, host
-    origins = api._parse_csv_env("RAINRAG_CORS_ORIGINS", ["https://rag.tvrain.io"])
-    assert "https://rag.tvrain.io" in origins
+        assert host in api.allowed_hosts, host
+    for origin in ("https://rag.tvrain.io", "https://rag.tvrain.tv"):
+        assert origin in api.cors_origins, origin
