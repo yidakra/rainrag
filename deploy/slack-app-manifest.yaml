@@ -19,7 +19,7 @@ features:
     always_online: true
   slash_commands:
     - command: /rainrag
-      url: https://rag.tvrain.tv/slack/commands
+      url: https://rag.tvrain.io/slack/commands
       description: Ask the TV Rain archive
       usage_hint: "когда впервые обсуждали закон об иноагентах? [top:N] [from:YYYY-MM-DD] [lang:ru|en]"
       should_escape: false
@@ -35,7 +35,7 @@ oauth_config:
       - files:write # post inline clips of retrieved footage
 settings:
   event_subscriptions:
-    request_url: https://rag.tvrain.tv/slack/events
+    request_url: https://rag.tvrain.io/slack/events
     bot_events:
       - app_mention
       - message.im
@@ -43,7 +43,7 @@ settings:
       - reaction_removed
   interactivity:
     is_enabled: true
-    request_url: https://rag.tvrain.tv/slack/interactive
+    request_url: https://rag.tvrain.io/slack/interactive
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false

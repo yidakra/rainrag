@@ -9,8 +9,12 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/rainrag
 Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=RAINRAG_CONFIG=/home/ubuntu/rainrag/config.yaml
-Environment=RAINRAG_ALLOWED_HOSTS=rag.tvrain.tv,localhost,127.0.0.1
-Environment=RAINRAG_CORS_ORIGINS=https://rag.tvrain.tv
+# Host policy deliberately NOT pinned here. These lines used to hard-code
+# rag.tvrain.tv, which overrode .env and made TrustedHostMiddleware reject the
+# browser's Host on the gateway, breaking media playback. The installed unit
+# already had them removed; the repo copy would have reintroduced the break on
+# any reinstall (Tenki on #88). Set RAINRAG_ALLOWED_HOSTS / RAINRAG_CORS_ORIGINS
+# in .env, or leave unset to take the defaults in rainrag.api.
 EnvironmentFile=-/home/ubuntu/rainrag/.env
 ExecStart=/usr/bin/env bash -lc 'cd /home/ubuntu/rainrag && uv run python -m uvicorn rainrag.api:app --host 127.0.0.1 --port 8001'
 Restart=on-failure
