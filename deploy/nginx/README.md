@@ -40,10 +40,16 @@ What the gateway owner adds:
 proxy_pass https://172.16.52.220:8443;
 proxy_ssl_certificate     /path/to/his.crt;
 proxy_ssl_certificate_key /path/to/his.key;
-proxy_ssl_trusted_certificate /path/to/rainrag-origin-ca.crt;
-proxy_ssl_verify on;
-proxy_ssl_name 172.16.52.220;
+proxy_ssl_verify off;
 ```
+
+The two halves are independent and only one of them is ours to insist on.
+Whether the gateway verifies *our* certificate is its own risk decision, and
+Efimov declined it on 2026-09-16 ("мой nginx его не проверяет"), which is why
+there is no `proxy_ssl_trusted_certificate` here. What the origin requires is
+the certificate the gateway *presents*: that is what distinguishes it from any
+other host on the office subnet. Without it nginx answers 400 and nothing is
+served.
 
 Verify before trusting it. A 200 with a valid certificate proves nothing on its
 own; the point is that the other two cases fail:
