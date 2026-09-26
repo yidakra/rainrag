@@ -15,6 +15,7 @@ EMBED_GPU_MIN_FREE_MB="${EMBED_GPU_MIN_FREE_MB:-7000}"
 SKIP_INGEST="${SKIP_INGEST:-0}"
 SKIP_EMBED="${SKIP_EMBED:-0}"
 SKIP_INDEX="${SKIP_INDEX:-0}"
+SKIP_LIBRARY="${SKIP_LIBRARY:-0}"
 
 mkdir -p "$LOG_DIR"
 
@@ -68,11 +69,13 @@ incremental_enabled = bool(cfg.get("incremental", {}).get("enabled", False))
 manifest_path = norm(cfg.get("incremental", {}).get("manifest_path", "./data/manifest.json"))
 docs_output = norm(cfg.get("paths", {}).get("docs_output", "./data/docs.jsonl"))
 embeddings_cache = norm(cfg.get("paths", {}).get("embeddings_cache", "./embeddings"))
+archive_root = norm(cfg.get("paths", {}).get("archive_root", ""))
 
 print("incremental_enabled=" + ("1" if incremental_enabled else "0"))
 print("manifest_path=" + manifest_path)
 print("docs_output=" + docs_output)
 print("embeddings_cache=" + embeddings_cache)
+print("archive_root=" + archive_root)
 PY
 )
 
@@ -83,6 +86,7 @@ for line in "${CFG[@]}"; do
     manifest_path) manifest_path="$value" ;;
     docs_output) docs_output="$value" ;;
     embeddings_cache) embeddings_cache="$value" ;;
+    archive_root) archive_root="$value" ;;
   esac
 done
 
@@ -145,17 +149,17 @@ fi
 log "Starting incremental pipeline run."
 log "config=$CONFIG_PATH manifest_entries=$manifest_entries docs_lines=$docs_lines"
 current_step="ingest"
-log "Step 1/3: incremental ingestion"
+log "Step 1/4: incremental ingestion"
 if [[ "$SKIP_INGEST" == "1" ]]; then
-  log "Step 1/3 skipped via SKIP_INGEST=1"
+  log "Step 1/4 skipped via SKIP_INGEST=1"
 else
   uv run rainrag ingest --config "$CONFIG_PATH" --incremental
 fi
 
 current_step="embed"
-log "Step 2/3: incremental embedding"
+log "Step 2/4: incremental embedding"
 if [[ "$SKIP_EMBED" == "1" ]]; then
-  log "Step 2/3 skipped via SKIP_EMBED=1"
+  log "Step 2/4 skipped via SKIP_EMBED=1"
 else
   if [[ "$EMBED_FORCE_CPU_ON_LOW_GPU" == "1" ]] && command -v nvidia-smi >/dev/null 2>&1; then
     gpu_free_mb="$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -n 1 | tr -d '[:space:]' || true)"
@@ -171,11 +175,45 @@ else
 fi
 
 current_step="index"
-log "Step 3/3: incremental indexing"
+log "Step 3/4: incremental indexing"
 if [[ "$SKIP_INDEX" == "1" ]]; then
-  log "Step 3/3 skipped via SKIP_INDEX=1"
+  log "Step 3/4 skipped via SKIP_INDEX=1"
 else
   uv run rainrag index --config "$CONFIG_PATH" --incremental
+fi
+
+# The Library's two precomputed maps: stand-in titles for episodes with no CMS
+# card, and the archive paths their cards link to. Both are derived from the
+# tag file and the archive, so ingesting new material without regenerating them
+# leaves the Library describing an archive that has moved on.
+#
+# Deliberately non-fatal. Ingest, embed and index are the job; a stale link map
+# is a degraded card, not a broken index, and failing the run over it would
+# withhold `incremental.last_success` and page somebody about the wrong thing.
+# A failure is logged as a warning and the run still finishes.
+current_step="library"
+log "Step 4/4: library stand-in titles and archive links"
+library_tags="$REPO_DIR/data/library_tags.jsonl"
+if [[ "$SKIP_LIBRARY" == "1" ]]; then
+  log "Step 4/4 skipped via SKIP_LIBRARY=1"
+elif [[ ! -f "$library_tags" ]]; then
+  # No tagging run on this deployment: the Library tab has nothing to show
+  # either way, so this is a normal state and not a warning.
+  log "Step 4/4 skipped: no tag file at $library_tags"
+elif [[ -z "${archive_root:-}" || ! -d "${archive_root:-}" ]]; then
+  log "WARNING: Step 4/4 skipped: archive root '${archive_root:-}' is not a directory"
+else
+  # Titles takes the root explicitly because it has no --config flag; media
+  # reads the config itself, since it needs the video root as well and that is
+  # a separate setting.
+  if ! uv run python scripts/library_untitled_titles.py \
+      --tags "$library_tags" --archive-root "$archive_root"; then
+    log "WARNING: stand-in titles were not regenerated; the Library keeps the previous file"
+  fi
+  if ! uv run python scripts/library_untitled_media.py \
+      --tags "$library_tags" --config "$CONFIG_PATH"; then
+    log "WARNING: archive links were not regenerated; the Library keeps the previous file"
+  fi
 fi
 
 current_step="finalize"

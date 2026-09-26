@@ -36,6 +36,14 @@ Notes:
 - The updater script uses a lockfile (`/tmp/rainrag-incremental.lock`) to prevent overlapping runs.
 - It refuses to run when `incremental.enabled` is false.
 - It performs a manifest sanity check to avoid accidental full rebuilds when manifest state is stale.
+- After indexing it regenerates the Library's two precomputed maps: stand-in
+  titles for episodes with no CMS card, and the archive paths their cards link
+  to. Both are derived from `data/library_tags.jsonl` and the archive, so
+  ingesting new material without them leaves the Library describing an archive
+  that has moved on. The step is skipped when there is no tag file, and a
+  failure there is logged as a warning without failing the run — the index is
+  the job, a stale link map is a degraded card. Set `SKIP_LIBRARY=1` to leave
+  both files alone.
 
 Deploy on merge (every two minutes, fetch + fast-forward + restart Streamlit)
 1) Install and enable:
