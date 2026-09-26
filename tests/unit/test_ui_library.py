@@ -956,3 +956,114 @@ def test_a_non_string_genre_does_not_crash_the_options_list():
     # Still mirrors the filter, so the stray value stays reachable rather than
     # being silently dropped from the dropdown.
     assert {g.lower() for g in options} == filter_genres(episodes[0])
+
+
+def test_episode_link_prefers_the_cms_page(monkeypatch):
+    """A card with an article links to the site: that is the publishable URL."""
+    from ui_library import episode_link
+
+    monkeypatch.setenv("RAINRAG_ASSET_URL", "https://rag.tvrain.tv")
+    media = {"a": {"video": "aa/bb/a_720p.mp4"}}
+    assert episode_link(_ep("a", url="https://tvrain.tv/x"), media) == (
+        "https://tvrain.tv/x",
+        None,
+    )
+
+
+def test_episode_without_cms_card_links_into_the_archive(monkeypatch):
+    """The gap Varya reported: these rendered as dead text (86cbgqr9v)."""
+    from ui_library import episode_link
+
+    monkeypatch.setenv("RAINRAG_ASSET_URL", "https://rag.tvrain.tv")
+    monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "s")
+    url, kind = episode_link(_ep("a"), {"a": {"video": "aa/bb/a_720p.mp4"}})
+    assert kind == "video"
+    assert url.startswith("https://rag.tvrain.tv/video/aa/bb/a_720p.mp4?")
+    assert "auth=v1." in url
+
+
+def test_transcript_only_episode_links_to_its_vtt(monkeypatch):
+    from ui_library import episode_link
+
+    monkeypatch.setenv("RAINRAG_ASSET_URL", "https://rag.tvrain.tv")
+    monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
+    assert episode_link(_ep("a"), {"a": {"vtt": "aa/bb/a.ru.vtt"}}) == (
+        "https://rag.tvrain.tv/vtt/aa/bb/a.ru.vtt",
+        "vtt",
+    )
+
+
+def test_episode_link_falls_back_to_plain_text(monkeypatch):
+    """No media, or no asset base: render exactly as before, never a dead URL."""
+    from ui_library import episode_link
+
+    monkeypatch.setenv("RAINRAG_ASSET_URL", "https://rag.tvrain.tv")
+    assert episode_link(_ep("a"), {}) == (None, None)
+    assert episode_link(_ep("a"), None) == (None, None)
+
+    monkeypatch.delenv("RAINRAG_ASSET_URL", raising=False)
+    assert episode_link(_ep("a"), {"a": {"video": "aa/bb/a.mp4"}}) == (None, None)
+
+
+def test_load_untitled_media_tolerates_missing_and_bad_files(tmp_path: Path):
+    from ui_library import load_untitled_media
+
+    assert load_untitled_media(tmp_path / "absent.json") == {}
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert load_untitled_media(bad) == {}
+    listy = tmp_path / "listy.json"
+    listy.write_text('["h1"]', encoding="utf-8")
+    assert load_untitled_media(listy) == {}
+
+
+def test_load_untitled_media_keeps_only_known_kinds_with_real_paths(tmp_path: Path):
+    from ui_library import load_untitled_media
+
+    p = tmp_path / "m.json"
+    p.write_text(
+        json.dumps(
+            {
+                "h1": {"video": " aa/bb.mp4 ", "vtt": "", "thumbnail": "aa/t.jpg"},
+                "h2": {"vtt": None},
+                "h3": "not a dict",
+                "h4": {"video": "aa/c.mp4"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_untitled_media(p) == {"h1": {"video": "aa/bb.mp4"}, "h4": {"video": "aa/c.mp4"}}
+
+
+def test_load_untitled_media_drops_paths_that_leave_the_archive(tmp_path: Path):
+    """A `..` or absolute path cannot resolve inside the archive root.
+
+    The routes refuse it, so keeping the entry would render a clickable link
+    that 403s — worse than the plain text the fallback promises.
+    """
+    from ui_library import load_untitled_media
+
+    p = tmp_path / "m.json"
+    p.write_text(
+        json.dumps(
+            {
+                "h1": {"video": "../escape.mp4"},
+                "h2": {"video": "/etc/passwd"},
+                "h3": {"video": "aa/../../bb.mp4"},
+                "h4": {"video": "aa/bb.mp4", "vtt": "../x.ru.vtt"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_untitled_media(p) == {"h4": {"video": "aa/bb.mp4"}}
+
+
+def test_media_cache_key_changes_within_one_filesystem_tick(tmp_path: Path):
+    """Two rewrites in one mtime second must not serve the first one's links."""
+    from ui_library import _stat_key
+
+    p = tmp_path / "m.json"
+    p.write_text('{"h1": {"video": "aa/bb.mp4"}}', encoding="utf-8")
+    first = _stat_key(p)
+    p.write_text('{"h1": {"video": "aa/bb.mp4"}, "h2": {"video": "cc/dd.mp4"}}', encoding="utf-8")
+    assert _stat_key(p) != first
