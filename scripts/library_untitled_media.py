@@ -188,9 +188,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--archive-root", default=None, help="overrides paths.archive_root")
     parser.add_argument("--video-root", default=None, help="overrides paths.video_root")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="publish even when the result is empty and the previous map was not",
+    )
     args = parser.parse_args(argv)
 
-    from library_untitled_titles import untitled_hashes, write_json_atomic
+    from library_untitled_titles import (
+        listable_dir,
+        refuse_empty_replacement,
+        untitled_hashes,
+        write_json_atomic,
+    )
 
     untitled = untitled_hashes(Path(args.tags).read_text(encoding="utf-8").splitlines())
 
@@ -216,6 +226,8 @@ def main(argv: list[str] | None = None) -> int:
     for label, candidate in (("archive root", root), ("video root", video_root)):
         if not candidate.is_dir():
             parser.error(f"{label} is not a directory: {candidate}")
+        if not listable_dir(candidate):
+            parser.error(f"{label} is not readable: {candidate}")
 
     video_config = _video_config(args.config)
     extensions = tuple(video_config.extensions)
@@ -237,6 +249,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.dry_run:
         return 0
+    problem = refuse_empty_replacement(Path(args.out), out, args.allow_empty)
+    if problem:
+        parser.error(problem)
     write_json_atomic(Path(args.out), out)
     return 0
 

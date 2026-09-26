@@ -21,6 +21,7 @@ import re
 import stat
 import sys
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 
@@ -55,9 +56,61 @@ def write_json_atomic(path: Path, payload: object) -> None:
         # create would give.
         tmp.chmod(_publish_mode(path))
         tmp.replace(path)
+        _fsync_dir(path.parent)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Make the rename durable, not just the bytes it points at.
+
+    Suppressed on failure: by this point the map is already published, and a
+    filesystem that will not fsync a directory handle is not a reason to fail.
+    """
+    with suppress(OSError):
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def listable_dir(path: Path) -> bool:
+    """A root we can actually read, not merely stat.
+
+    ``is_dir()`` is true for a directory whose contents the updater's user
+    cannot list -- and every lookup under it then misses silently, which is
+    the empty map the guards exist to prevent. Probe it for real.
+    """
+    try:
+        next(iter(path.iterdir()), None)
+    except OSError:
+        return False
+    return True
+
+
+def refuse_empty_replacement(out: Path, payload: dict, allow_empty: bool) -> str | None:
+    """Why publishing ``payload`` over ``out`` would destroy the map, if it would.
+
+    A readable but *empty* root -- a stale mount, a tree that came up blank --
+    passes every directory check and produces a map with nothing in it. That is
+    indistinguishable from a legitimate result, so the only thing left to
+    compare against is what is already on disk.
+    """
+    if payload or allow_empty:
+        return None
+    try:
+        previous = json.loads(out.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not previous:
+        return None
+    return (
+        f"refusing to replace {len(previous)} entries in {out} with an empty map; "
+        "the archive is more likely unreadable than genuinely empty. "
+        "Pass --allow-empty if it really is."
+    )
 
 
 def _publish_mode(path: Path) -> int:
@@ -67,7 +120,6 @@ def _publish_mode(path: Path) -> int:
         umask = os.umask(0)
         os.umask(umask)
         return 0o666 & ~umask
-
 
 
 def snippet(text: str, max_chars: int = MAX_CHARS) -> str:
@@ -114,6 +166,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default=str(REPO_ROOT / "data" / "untitled_titles.json"))
     parser.add_argument("--archive-root", default="/mnt/vod/srv/storage/transcoded")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="publish even when the result is empty and the previous map was not",
+    )
     args = parser.parse_args(argv)
 
     from library_tag_batch import transcript_path
@@ -129,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     # report success. Refuse, and the caller keeps what it already has.
     if not root.is_dir():
         parser.error(f"archive root is not a directory: {root}")
+    if not listable_dir(root):
+        parser.error(f"archive root is not readable: {root}")
 
     out: dict[str, str] = {}
     for h in untitled:
@@ -141,6 +200,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"untitled tagged episodes: {len(untitled)}, titles synthesised: {len(out)}")
     if args.dry_run:
         return 0
+    problem = refuse_empty_replacement(Path(args.out), out, args.allow_empty)
+    if problem:
+        parser.error(problem)
     write_json_atomic(Path(args.out), out)
     print(f"written {args.out}")
     return 0

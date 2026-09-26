@@ -495,3 +495,96 @@ def test_publishing_keeps_the_map_readable(tmp_path: Path):
     fresh = tmp_path / "fresh.json"
     write_json_atomic(fresh, {"a": "one"})
     assert stat.S_IMODE(fresh.stat().st_mode) & 0o044, "a new map must be readable too"
+
+
+def test_an_unreadable_root_is_refused_not_treated_as_empty(tmp_path: Path, monkeypatch):
+    """`is_dir()` is true for a directory whose contents we cannot list.
+
+    Permission-denied then reads as "no transcript anywhere": `transcript_path`
+    misses every lookup and `listing()` swallows the OSError, so both scripts
+    would publish an empty map and exit 0. Simulated rather than chmod'd,
+    because the suite may run as root, for whom the mode would not bite.
+    """
+    from library_untitled_titles import listable_dir, main
+
+    root = tmp_path / "arc"
+    root.mkdir()
+    real_iterdir = Path.iterdir
+
+    def deny(self: Path):
+        if self == root:
+            raise PermissionError(13, "Permission denied")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", deny)
+    assert root.is_dir(), "the premise: it still looks like a directory"
+    assert not listable_dir(root)
+
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(json.dumps({"video_hash": HASH}), encoding="utf-8")
+    out = tmp_path / "titles.json"
+    out.write_text('{"kept": "previous"}', encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--tags", str(tags), "--out", str(out), "--archive-root", str(root)])
+    assert excinfo.value.code != 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {"kept": "previous"}
+
+
+def test_an_empty_result_does_not_replace_a_populated_map(tmp_path: Path):
+    """A readable but empty root passes every directory check.
+
+    A stale mount that came up blank is indistinguishable from a legitimate
+    result, so the only thing left to compare against is what is on disk.
+    """
+    from library_untitled_titles import main
+
+    root = tmp_path / "arc"
+    root.mkdir()
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(json.dumps({"video_hash": HASH}), encoding="utf-8")
+    out = tmp_path / "titles.json"
+    out.write_text('{"kept": "previous"}', encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--tags", str(tags), "--out", str(out), "--archive-root", str(root)])
+    assert excinfo.value.code != 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {"kept": "previous"}
+
+    # The escape hatch exists for a deployment where empty really is correct.
+    assert (
+        main(["--tags", str(tags), "--out", str(out), "--archive-root", str(root), "--allow-empty"])
+        == 0
+    )
+    assert json.loads(out.read_text(encoding="utf-8")) == {}
+
+
+def test_an_empty_media_result_does_not_replace_a_populated_map(tmp_path: Path):
+    """Same guard on the media map, whose empty state is equally plausible."""
+    from library_untitled_media import main
+
+    root = tmp_path / "arc"
+    root.mkdir()
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(json.dumps({"video_hash": HASH}), encoding="utf-8")
+    out = tmp_path / "media.json"
+    out.write_text('{"kept": {"video": "previous"}}', encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--tags", str(tags), "--out", str(out), "--archive-root", str(root)])
+    assert excinfo.value.code != 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {"kept": {"video": "previous"}}
+
+
+def test_a_first_run_may_publish_an_empty_map(tmp_path: Path):
+    """The guard compares against what exists; with nothing there, nothing is lost."""
+    from library_untitled_titles import main
+
+    root = tmp_path / "arc"
+    root.mkdir()
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(json.dumps({"video_hash": HASH}), encoding="utf-8")
+    out = tmp_path / "titles.json"
+
+    assert main(["--tags", str(tags), "--out", str(out), "--archive-root", str(root)]) == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {}
