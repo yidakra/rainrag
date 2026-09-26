@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -47,10 +48,25 @@ def write_json_atomic(path: Path, payload: object) -> None:
             json.dump(payload, fh, ensure_ascii=False, indent=0)
             fh.flush()
             os.fsync(fh.fileno())
+        # mkstemp creates 0600 and rename carries that mode onto the target, so
+        # publishing would quietly make a world-readable map private -- and the
+        # Library, which may well run as another user, would lose every entry.
+        # Keep the mode the map already had; a fresh one gets what an ordinary
+        # create would give.
+        tmp.chmod(_publish_mode(path))
         tmp.replace(path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _publish_mode(path: Path) -> int:
+    try:
+        return stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        umask = os.umask(0)
+        os.umask(umask)
+        return 0o666 & ~umask
 
 
 

@@ -473,3 +473,25 @@ def test_a_relative_config_root_resolves_next_to_the_config(tmp_path: Path, monk
     archive, video = archive_roots(str(beside / "config.yaml"))
     assert archive == (beside / "arc").resolve()
     assert video == (beside / "vid").resolve()
+
+
+def test_publishing_keeps_the_map_readable(tmp_path: Path):
+    """Rename carries the temp file's mode, and mkstemp makes it 0600.
+
+    Publishing would silently turn a world-readable map private. The updater
+    and the Library need not run as the same user, and a map the Library
+    cannot open is a Library with no titles and no links at all.
+    """
+    import stat
+
+    from library_untitled_titles import write_json_atomic
+
+    out = tmp_path / "titles.json"
+    out.write_text("{}", encoding="utf-8")
+    out.chmod(0o644)
+    write_json_atomic(out, {"a": "one"})
+    assert stat.S_IMODE(out.stat().st_mode) == 0o644
+
+    fresh = tmp_path / "fresh.json"
+    write_json_atomic(fresh, {"a": "one"})
+    assert stat.S_IMODE(fresh.stat().st_mode) & 0o044, "a new map must be readable too"
