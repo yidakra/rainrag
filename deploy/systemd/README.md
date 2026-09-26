@@ -40,10 +40,10 @@ Notes:
   titles for episodes with no CMS card, and the archive paths their cards link
   to. Both are derived from `data/library_tags.jsonl` and the archive, so
   ingesting new material without them leaves the Library describing an archive
-  that has moved on. The step is skipped when there is no tag file, and a
-  failure there is logged as a warning without failing the run — the index is
-  the job, a stale link map is a degraded card. Set `SKIP_LIBRARY=1` to leave
-  both files alone.
+  that has moved on. The step is skipped when there is no tag file or when
+  `paths.archive_root` is unset or not a directory, and a failure there is
+  logged as a warning without failing the run — the index is the job, a stale
+  link map is a degraded card. Set `SKIP_LIBRARY=1` to leave both files alone.
 
 Deploy on merge (every two minutes, fetch + fast-forward + restart Streamlit)
 1) Install and enable:

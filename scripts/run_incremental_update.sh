@@ -69,7 +69,11 @@ incremental_enabled = bool(cfg.get("incremental", {}).get("enabled", False))
 manifest_path = norm(cfg.get("incremental", {}).get("manifest_path", "./data/manifest.json"))
 docs_output = norm(cfg.get("paths", {}).get("docs_output", "./data/docs.jsonl"))
 embeddings_cache = norm(cfg.get("paths", {}).get("embeddings_cache", "./embeddings"))
-archive_root = norm(cfg.get("paths", {}).get("archive_root", ""))
+archive_root_raw = str(cfg.get("paths", {}).get("archive_root", "") or "").strip()
+# Leave an unset archive root empty rather than normalising it: Path("") is
+# relative, so norm("") would resolve to the repo root and slip past the
+# caller's directory check.
+archive_root = norm(archive_root_raw) if archive_root_raw else ""
 
 print("incremental_enabled=" + ("1" if incremental_enabled else "0"))
 print("manifest_path=" + manifest_path)
@@ -200,8 +204,10 @@ elif [[ ! -f "$library_tags" ]]; then
   # No tagging run on this deployment: the Library tab has nothing to show
   # either way, so this is a normal state and not a warning.
   log "Step 4/4 skipped: no tag file at $library_tags"
-elif [[ -z "${archive_root:-}" || ! -d "${archive_root:-}" ]]; then
-  log "WARNING: Step 4/4 skipped: archive root '${archive_root:-}' is not a directory"
+elif [[ -z "${archive_root:-}" ]]; then
+  log "WARNING: Step 4/4 skipped: paths.archive_root is not set in $CONFIG_PATH"
+elif [[ ! -d "$archive_root" ]]; then
+  log "WARNING: Step 4/4 skipped: archive root '$archive_root' is not a directory"
 else
   # Titles takes the root explicitly because it has no --config flag; media
   # reads the config itself, since it needs the video root as well and that is
