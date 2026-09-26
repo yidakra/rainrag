@@ -161,10 +161,13 @@ def media_for(
     found: dict[str, str] = {}
     video = pick_video(video_files, video_hash, extensions or video_extensions())
     if video is not None:
-        found["video"] = str(shard / video.name)
+        # as_posix, not str: on Windows str() yields backslashes, and
+        # archive_media_url splits the recorded value on "/" alone, so the
+        # whole path would become one encoded segment no route can resolve.
+        found["video"] = (shard / video.name).as_posix()
     vtt = pick_vtt(archive_files, video_hash, vtt_exts or vtt_extensions())
     if vtt is not None:
-        found["vtt"] = str(shard / vtt.name)
+        found["vtt"] = (shard / vtt.name).as_posix()
     return found
 
 

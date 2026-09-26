@@ -351,3 +351,21 @@ def test_an_explicit_archive_root_moves_the_video_root_with_it(tmp_path: Path, c
     assert main(["--tags", str(tags), "--out", str(out), "--archive-root", str(root)]) == 0
     assert "video" in json.loads(out.read_text(encoding="utf-8"))[HASH]
     assert "playable: 1" in capsys.readouterr().out
+
+
+def test_recorded_paths_are_posix_shaped(tmp_path: Path):
+    """The JSON artifact must be separator-independent.
+
+    `archive_media_url` splits the recorded value on "/" alone, so a
+    backslash path would collapse into one encoded segment no route
+    resolves. This asserts the shape; it cannot reproduce a Windows
+    separator on this platform, so the guard is the `.as_posix()` call.
+    """
+    from library_untitled_media import media_for
+
+    root = _archive(tmp_path, [f"{HASH}_720p.mp4", f"{HASH}.ru.vtt"])
+    found = media_for(root, HASH, EXT, VTT)
+    for rel in found.values():
+        assert "\\" not in rel
+        assert rel.count("/") == 20  # twenty shard segments, then the filename
+        assert (root / rel).exists()
