@@ -33,23 +33,33 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 QUALITIES = ("1080p", "720p", "480p", "360p", "180p")
 
 
-def video_extensions(config_path: str | None = None) -> tuple[str, ...]:
-    """The extensions the API will actually serve, from the config it reads.
+def _video_config(config_path: str | None = None):
+    """The API's video settings, from the config file it reads itself.
 
-    Hardcoding them here would drift: the schema default carries `.avi` and
-    `.mov` too, and a deployment is free to narrow or widen the list. Recording
-    a file the player route then refuses is a dead link; skipping one it would
-    have served leaves the dead card this script exists to fix. Falls back to
-    the schema default when there is no config to read.
+    Hardcoding any of this would drift: the schema defaults carry `.avi` and
+    `.mov` too, and a deployment is free to narrow or widen either list.
+    Recording a file the routes then refuse is a dead link; skipping one they
+    would have served leaves the dead card this script exists to fix. Falls
+    back to the schema defaults when there is no config to read.
     """
     from rainrag.config import VideoConfig, load_config
 
     if config_path:
         try:
-            return tuple(load_config(config_path).video.extensions)
+            return load_config(config_path).video
         except Exception:
             pass
-    return tuple(VideoConfig().extensions)
+    return VideoConfig()
+
+
+def video_extensions(config_path: str | None = None) -> tuple[str, ...]:
+    """Extensions `serve_video` will accept."""
+    return tuple(_video_config(config_path).extensions)
+
+
+def vtt_extensions(config_path: str | None = None) -> tuple[str, ...]:
+    """Suffixes `serve_vtt` will accept; it 400s on anything else."""
+    return tuple(_video_config(config_path).vtt_extensions)
 
 
 def pick_video(files: list[Path], video_hash: str, extensions: tuple[str, ...]) -> Path | None:
@@ -75,21 +85,29 @@ def pick_video(files: list[Path], video_hash: str, extensions: tuple[str, ...]) 
     return sorted(videos)[0]
 
 
-def pick_vtt(files: list[Path], video_hash: str) -> Path | None:
+def pick_vtt(files: list[Path], video_hash: str, extensions: tuple[str, ...]) -> Path | None:
     """The transcript to offer, Russian first, as the archive routes prefer.
 
-    Hash-prefixed only, for the same reason as `pick_video`.
+    Hash-prefixed only, for the same reason as `pick_video`, and limited to
+    the suffixes `serve_vtt` accepts: anything else is a link that 400s.
     """
+    candidates = [
+        f
+        for f in files
+        if f.name.startswith(video_hash) and any(f.name.endswith(e) for e in extensions)
+    ]
     for suffix in (".ru.vtt", ".en.vtt"):
-        for f in files:
+        for f in candidates:
             if f.name == f"{video_hash}{suffix}":
                 return f
-    vtts = sorted(f for f in files if f.name.startswith(video_hash) and f.name.endswith(".vtt"))
-    return vtts[0] if vtts else None
+    return sorted(candidates)[0] if candidates else None
 
 
 def media_for(
-    archive_root: Path, video_hash: str, extensions: tuple[str, ...] | None = None
+    archive_root: Path,
+    video_hash: str,
+    extensions: tuple[str, ...] | None = None,
+    vtt_exts: tuple[str, ...] | None = None,
 ) -> dict[str, str]:
     """{"video": rel, "vtt": rel} for one hash; keys absent when the file is not there."""
     from rainrag.ingest import WebMetadataLoader
@@ -110,7 +128,7 @@ def media_for(
     video = pick_video(files, video_hash, extensions or video_extensions())
     if video is not None:
         found["video"] = str(shard / video.name)
-    vtt = pick_vtt(files, video_hash)
+    vtt = pick_vtt(files, video_hash, vtt_exts or vtt_extensions())
     if vtt is not None:
         found["vtt"] = str(shard / vtt.name)
     return found
@@ -130,10 +148,12 @@ def main(argv: list[str] | None = None) -> int:
     untitled = untitled_hashes(Path(args.tags).read_text(encoding="utf-8").splitlines())
 
     root = Path(args.archive_root)
-    extensions = video_extensions(args.config)
+    video_config = _video_config(args.config)
+    extensions = tuple(video_config.extensions)
+    vtt_exts = tuple(video_config.vtt_extensions)
     out: dict[str, dict[str, str]] = {}
     for h in untitled:
-        found = media_for(root, h, extensions)
+        found = media_for(root, h, extensions, vtt_exts)
         if found:
             out[h] = found
 

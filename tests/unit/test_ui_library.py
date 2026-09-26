@@ -1033,3 +1033,37 @@ def test_load_untitled_media_keeps_only_known_kinds_with_real_paths(tmp_path: Pa
         encoding="utf-8",
     )
     assert load_untitled_media(p) == {"h1": {"video": "aa/bb.mp4"}, "h4": {"video": "aa/c.mp4"}}
+
+
+def test_load_untitled_media_drops_paths_that_leave_the_archive(tmp_path: Path):
+    """A `..` or absolute path cannot resolve inside the archive root.
+
+    The routes refuse it, so keeping the entry would render a clickable link
+    that 403s — worse than the plain text the fallback promises.
+    """
+    from ui_library import load_untitled_media
+
+    p = tmp_path / "m.json"
+    p.write_text(
+        json.dumps(
+            {
+                "h1": {"video": "../escape.mp4"},
+                "h2": {"video": "/etc/passwd"},
+                "h3": {"video": "aa/../../bb.mp4"},
+                "h4": {"video": "aa/bb.mp4", "vtt": "../x.ru.vtt"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_untitled_media(p) == {"h4": {"video": "aa/bb.mp4"}}
+
+
+def test_media_cache_key_changes_within_one_filesystem_tick(tmp_path: Path):
+    """Two rewrites in one mtime second must not serve the first one's links."""
+    from ui_library import _stat_key
+
+    p = tmp_path / "m.json"
+    p.write_text('{"h1": {"video": "aa/bb.mp4"}}', encoding="utf-8")
+    first = _stat_key(p)
+    p.write_text('{"h1": {"video": "aa/bb.mp4"}, "h2": {"video": "cc/dd.mp4"}}', encoding="utf-8")
+    assert _stat_key(p) != first

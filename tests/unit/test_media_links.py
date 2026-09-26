@@ -98,6 +98,7 @@ def _archive(tmp_path: Path, names: list[str]) -> Path:
 
 
 EXT = (".mp4", ".mkv", ".webm", ".avi", ".mov")
+VTT = (".vtt", ".en.vtt", ".ru.vtt")
 
 
 def test_video_extensions_come_from_the_config_the_api_reads(tmp_path: Path):
@@ -153,15 +154,15 @@ def test_pick_vtt_prefers_russian():
     from library_untitled_media import pick_vtt
 
     files = [Path(f"{HASH}.en.vtt"), Path(f"{HASH}.ru.vtt")]
-    assert pick_vtt(files, HASH).name == f"{HASH}.ru.vtt"
-    assert pick_vtt([Path(f"{HASH}.en.vtt")], HASH).name == f"{HASH}.en.vtt"
-    assert pick_vtt([Path("other.mp4")], HASH) is None
+    assert pick_vtt(files, HASH, VTT).name == f"{HASH}.ru.vtt"
+    assert pick_vtt([Path(f"{HASH}.en.vtt")], HASH, VTT).name == f"{HASH}.en.vtt"
+    assert pick_vtt([Path("other.mp4")], HASH, VTT) is None
 
 
 def test_pick_vtt_never_returns_another_episodes_transcript():
     from library_untitled_media import pick_vtt
 
-    assert pick_vtt([Path("b" * 40 + ".ru.vtt")], HASH) is None
+    assert pick_vtt([Path("b" * 40 + ".ru.vtt")], HASH, VTT) is None
 
 
 def test_media_for_reports_paths_relative_to_the_archive_root(tmp_path: Path):
@@ -223,3 +224,48 @@ def test_bad_ttl_env_does_not_take_the_page_down(monkeypatch):
     assert _ttl_seconds() == 60
     monkeypatch.delenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS")
     assert _ttl_seconds() == _DEFAULT_TTL_SECONDS
+
+
+def test_pick_vtt_skips_suffixes_the_route_would_reject():
+    """`serve_vtt` 400s on anything outside config.video.vtt_extensions."""
+    from library_untitled_media import pick_vtt
+
+    files = [Path(f"{HASH}.srt"), Path(f"{HASH}.de.vtt")]
+    assert pick_vtt(files, HASH, (".ru.vtt", ".en.vtt")) is None
+    assert pick_vtt(files, HASH, (".vtt",)).name == f"{HASH}.de.vtt"
+
+
+def test_vtt_extensions_come_from_the_same_config(tmp_path: Path):
+    from library_untitled_media import vtt_extensions
+
+    assert ".ru.vtt" in vtt_extensions(str(tmp_path / "absent.yaml"))
+
+
+def test_no_token_in_a_plaintext_link(monkeypatch):
+    """A bearer credential in an http URL is readable and replayable.
+
+    Fail closed: no link at all, which degrades to the plain text this
+    feature replaced, rather than leaking the token.
+    """
+    from rainrag.media_links import archive_media_url
+
+    monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "s")
+    monkeypatch.setenv("RAINRAG_ASSET_URL", "http://rag.tvrain.tv")
+    assert archive_media_url(REL) is None
+
+    monkeypatch.setenv("RAINRAG_ASSET_URL", "https://rag.tvrain.tv")
+    assert archive_media_url(REL).startswith("https://rag.tvrain.tv/video/")
+
+
+def test_plaintext_is_fine_without_a_token_and_on_loopback(monkeypatch):
+    from rainrag.media_links import archive_media_url
+
+    # Auth disabled: nothing secret travels, so http is not a leak.
+    monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("RAINRAG_ASSET_URL", "http://rag.tvrain.tv")
+    assert archive_media_url(REL) == f"http://rag.tvrain.tv/video/{REL}"
+
+    # Loopback never leaves the machine, so a dev box with auth still works.
+    monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "s")
+    monkeypatch.setenv("RAINRAG_ASSET_URL", "http://localhost:8001")
+    assert "auth=v1." in archive_media_url(REL)

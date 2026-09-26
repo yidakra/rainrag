@@ -36,7 +36,7 @@ try:
 except ImportError:  # Windows dev box: no flock.
     fcntl = None
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any
 
@@ -738,6 +738,20 @@ def _cached_untitled_titles(mtime: float) -> dict[str, str]:
     return load_untitled_titles()
 
 
+def _is_archive_relative(rel: str) -> bool:
+    """Whether a recorded path can address a file inside the archive root.
+
+    The archive routes resolve the path and refuse anything that leaves the
+    root, so an absolute path or a `..` segment is a link that cannot work.
+    Dropping it here keeps the promise the no-link fallback makes: plain text
+    rather than something clickable and broken.
+    """
+    if not rel or rel.startswith(("/", "\\")):
+        return False
+    parts = PurePosixPath(rel.replace("\\", "/")).parts
+    return bool(parts) and ".." not in parts
+
+
 def load_untitled_media(path: Path = UNTITLED_MEDIA_PATH) -> dict[str, dict[str, str]]:
     """video_hash -> {"video": rel, "vtt": rel}, for episodes with no CMS card.
 
@@ -761,7 +775,9 @@ def load_untitled_media(path: Path = UNTITLED_MEDIA_PATH) -> dict[str, dict[str,
         found = {
             kind: rel.strip()
             for kind, rel in entry.items()
-            if kind in ("video", "vtt") and isinstance(rel, str) and rel.strip()
+            if kind in ("video", "vtt")
+            and isinstance(rel, str)
+            and _is_archive_relative(rel.strip())
         }
         if found:
             out[video_hash] = found
@@ -769,8 +785,8 @@ def load_untitled_media(path: Path = UNTITLED_MEDIA_PATH) -> dict[str, dict[str,
 
 
 @st.cache_data(show_spinner=False)
-def _cached_untitled_media(mtime: float) -> dict[str, dict[str, str]]:
-    del mtime
+def _cached_untitled_media(stat_key: tuple[int, int]) -> dict[str, dict[str, str]]:
+    del stat_key
     return load_untitled_media()
 
 
@@ -1012,9 +1028,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     synthetic = _cached_untitled_titles(
         UNTITLED_TITLES_PATH.stat().st_mtime if UNTITLED_TITLES_PATH.exists() else 0.0
     )
-    media = _cached_untitled_media(
-        UNTITLED_MEDIA_PATH.stat().st_mtime if UNTITLED_MEDIA_PATH.exists() else 0.0
-    )
+    media = _cached_untitled_media(_stat_key(UNTITLED_MEDIA_PATH))
     matches = search_episodes(episodes, needle, synthetic=synthetic)
     tagged_hashes = {e.video_hash for e in episodes}
     if needle and not youtube_id_from_query(needle):

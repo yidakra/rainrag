@@ -83,6 +83,21 @@ def append_auth_query(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(params), parts.fragment))
 
 
+def _carries_credentials_safely(base: str) -> bool:
+    """Whether a signed token may be put in a URL on this base.
+
+    The token is a bearer credential in the query string, so plaintext hands
+    it to any observer to replay before it expires; an http->https redirect
+    does not help, the first request already carried it. Loopback is allowed
+    because that traffic never leaves the machine, which keeps a local dev
+    box with auth enabled working.
+    """
+    parts = urlsplit(base)
+    if parts.scheme == "https":
+        return True
+    return (parts.hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
+
+
 def archive_media_url(rel_path: str, kind: str = "video") -> str | None:
     """URL for an archive-relative media path, or None when it cannot be built.
 
@@ -96,6 +111,14 @@ def archive_media_url(rel_path: str, kind: str = "video") -> str | None:
         return None
     if kind not in {"video", "vtt"}:
         raise ValueError(f"unknown media kind: {kind!r}")
+    if os.getenv("RAINRAG_AUTH_TOKEN") and not _carries_credentials_safely(base):
+        # No link rather than a link that leaks the token: the caller falls
+        # back to plain text, which is where this feature started.
+        logging.getLogger(__name__).warning(
+            "RAINRAG_ASSET_URL is not https, refusing to put a media token in a link: %s",
+            base,
+        )
+        return None
     # The path is segment-encoded, not quoted whole: the slashes are structure.
     encoded = "/".join(quote(seg, safe="") for seg in rel_path.strip("/").split("/"))
     return append_auth_query(f"{base}/{kind}/{encoded}")
