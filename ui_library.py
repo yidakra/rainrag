@@ -60,6 +60,7 @@ from rainrag.library_similar import (
     normalise_tag,
     subject_idf,
 )
+from rainrag.media_links import archive_media_url
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -72,6 +73,9 @@ VIDEOS_CACHE_PATH = REPO_ROOT / "data" / "library_videos.jsonl"
 METRICS_PATH = REPO_ROOT / "data" / "youtube_metrics.csv"
 # Stand-in titles for tagged episodes with no CMS card (scripts/library_untitled_titles.py)
 UNTITLED_TITLES_PATH = REPO_ROOT / "data" / "untitled_titles.json"
+# Archive media for those same episodes (scripts/library_untitled_media.py). They have
+# no CMS page to link to, so the card links into the archive instead of nowhere.
+UNTITLED_MEDIA_PATH = REPO_ROOT / "data" / "untitled_media.json"
 PROGRAMS_PATH = REPO_ROOT / "data" / "library_programs.csv"
 
 _T = {
@@ -115,6 +119,8 @@ _T = {
         "доразметка запланирована.",
         "untagged_mark": "(не размечен)",
         "no_cms_mark": "без карточки в CMS",
+        "archive_link_mark": "ссылка в архив",
+        "transcript_only_mark": "только расшифровка",
         "queue_note": "Сверка всех роликов канала с архивом. Очередь общая и не зависит от "
         "поиска во вкладке «Похожие выпуски».",
         "min_minutes": "Длительность от, мин",
@@ -183,6 +189,8 @@ _T = {
         "a follow-up is planned.",
         "untagged_mark": "(untagged)",
         "no_cms_mark": "no CMS record",
+        "archive_link_mark": "archive link",
+        "transcript_only_mark": "transcript only",
         "queue_note": "Reviews every channel upload against the archive. The queue is global "
         "and independent of the search on the other tab.",
         "min_minutes": "Min duration, min",
@@ -730,6 +738,65 @@ def _cached_untitled_titles(mtime: float) -> dict[str, str]:
     return load_untitled_titles()
 
 
+def load_untitled_media(path: Path = UNTITLED_MEDIA_PATH) -> dict[str, dict[str, str]]:
+    """video_hash -> {"video": rel, "vtt": rel}, for episodes with no CMS card.
+
+    Paths are relative to the archive root, as
+    ``scripts/library_untitled_media.py`` records them. Absent file, bad JSON
+    and unexpected shapes all mean "no links", never a crash: the Library must
+    still open on a box where the archive was never mounted.
+    """
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for video_hash, entry in data.items():
+        if not isinstance(video_hash, str) or not isinstance(entry, dict):
+            continue
+        found = {
+            kind: rel.strip()
+            for kind, rel in entry.items()
+            if kind in ("video", "vtt") and isinstance(rel, str) and rel.strip()
+        }
+        if found:
+            out[video_hash] = found
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def _cached_untitled_media(mtime: float) -> dict[str, dict[str, str]]:
+    del mtime
+    return load_untitled_media()
+
+
+def episode_link(
+    e: Episode, media: dict[str, dict[str, str]] | None = None
+) -> tuple[str | None, str | None]:
+    """(url, kind) for the episode's title: kind is None for a CMS page.
+
+    A CMS card wins, because its page is the one an editor can publish. Without
+    one there is no page to point at, but the media is in the archive, so the
+    video stands in -- and the transcript after it, for the episodes that were
+    ingested from subtitles with no video file beside them. ``(None, None)``
+    when nothing is reachable, which renders as plain text exactly as before.
+    """
+    if e.url:
+        return e.url, None
+    entry = (media or {}).get(e.video_hash) or {}
+    for kind in ("video", "vtt"):
+        relative = entry.get(kind)
+        if relative:
+            url = archive_media_url(relative, kind=kind)
+            if url:
+                return url, kind
+    return None, None
+
+
 _MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+!|<>~])")
 
 
@@ -868,6 +935,7 @@ def _render_suggestion(
     column: str = "",
     marks: dict[tuple[str, str], str] | None = None,
     synthetic: dict[str, str] | None = None,
+    media: dict[str, dict[str, str]] | None = None,
 ) -> None:
     """One suggested episode with its reason and the two judgment buttons.
 
@@ -877,10 +945,18 @@ def _render_suggestion(
     drifted and one of them has ended up telling the editor something untrue.
     """
     title, stand_in = display_title(e, lang, synthetic)
-    line = f"**{rank}.** [{title}]({e.url})" if e.url else f"**{rank}.** {title}"
+    url, kind = episode_link(e, media)
+    line = f"**{rank}.** [{title}]({url})" if url else f"**{rank}.** {title}"
     meta_bits = [e.program, e.date, _fmt_minutes(e.duration_seconds, lang)]
     if stand_in:
         meta_bits.append(_t("no_cms_mark", lang))
+    if kind is not None:
+        # Say where the link goes. An archive URL is signed and expiring, so it
+        # is for judging the episode, not for putting in a published plan --
+        # and if it points at the transcript there is no video to watch at all.
+        meta_bits.append(_t("archive_link_mark", lang))
+        if kind == "vtt":
+            meta_bits.append(_t("transcript_only_mark", lang))
     meta = " · ".join(x for x in meta_bits if x)
     st.markdown(f"{line}  \n{meta}")
     st.caption(explanation)
@@ -935,6 +1011,9 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     )
     synthetic = _cached_untitled_titles(
         UNTITLED_TITLES_PATH.stat().st_mtime if UNTITLED_TITLES_PATH.exists() else 0.0
+    )
+    media = _cached_untitled_media(
+        UNTITLED_MEDIA_PATH.stat().st_mtime if UNTITLED_MEDIA_PATH.exists() else 0.0
     )
     matches = search_episodes(episodes, needle, synthetic=synthetic)
     tagged_hashes = {e.video_hash for e in episodes}
@@ -1078,6 +1157,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
                 column="top5",
                 marks=marks,
                 synthetic=synthetic,
+                media=media,
             )
         st.divider()
 
@@ -1101,6 +1181,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
                 column="speaker",
                 marks=marks,
                 synthetic=synthetic,
+                media=media,
             )
     with theme_col:
         st.subheader(_t("same_theme", lang))
@@ -1115,6 +1196,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
                 column="theme",
                 marks=marks,
                 synthetic=synthetic,
+                media=media,
             )
 
 
