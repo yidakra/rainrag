@@ -29,14 +29,38 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 # The order `rainrag.api.find_video_file` serves, so the link opens the same
-# file the player would. One preference, in one place, or the two drift.
+# file the player would.
 QUALITIES = ("1080p", "720p", "480p", "360p", "180p")
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm")
 
 
-def pick_video(files: list[Path], video_hash: str) -> Path | None:
-    """The file `find_video_file` would serve for this hash, or None."""
-    videos = [f for f in files if f.suffix.lower() in VIDEO_EXTENSIONS]
+def video_extensions(config_path: str | None = None) -> tuple[str, ...]:
+    """The extensions the API will actually serve, from the config it reads.
+
+    Hardcoding them here would drift: the schema default carries `.avi` and
+    `.mov` too, and a deployment is free to narrow or widen the list. Recording
+    a file the player route then refuses is a dead link; skipping one it would
+    have served leaves the dead card this script exists to fix. Falls back to
+    the schema default when there is no config to read.
+    """
+    from rainrag.config import VideoConfig, load_config
+
+    if config_path:
+        try:
+            return tuple(load_config(config_path).video.extensions)
+        except Exception:
+            pass
+    return tuple(VideoConfig().extensions)
+
+
+def pick_video(files: list[Path], video_hash: str, extensions: tuple[str, ...]) -> Path | None:
+    """The file `find_video_file` would serve for this hash, or None.
+
+    The name must start with the hash, exactly as the API's last stage
+    requires. Another episode's transcode sharing the shard is not a
+    candidate: an editor sent to the wrong video is worse served than one
+    sent nowhere.
+    """
+    videos = [f for f in files if f.suffix.lower() in extensions and f.name.startswith(video_hash)]
     if not videos:
         return None
     for quality in QUALITIES:
@@ -46,22 +70,27 @@ def pick_video(files: list[Path], video_hash: str) -> Path | None:
     for f in videos:
         if f.stem == video_hash:
             return f
-    # A hash-prefixed name with an unknown suffix still beats no link at all.
-    named = sorted(f for f in videos if f.name.startswith(video_hash))
-    return named[0] if named else sorted(videos)[0]
+    # Hash-prefixed with an unfamiliar suffix: still this episode, so still a
+    # better answer than no link.
+    return sorted(videos)[0]
 
 
 def pick_vtt(files: list[Path], video_hash: str) -> Path | None:
-    """The transcript to offer, Russian first, as the archive routes prefer."""
+    """The transcript to offer, Russian first, as the archive routes prefer.
+
+    Hash-prefixed only, for the same reason as `pick_video`.
+    """
     for suffix in (".ru.vtt", ".en.vtt"):
         for f in files:
             if f.name == f"{video_hash}{suffix}":
                 return f
-    vtts = sorted(f for f in files if f.name.endswith(".vtt"))
+    vtts = sorted(f for f in files if f.name.startswith(video_hash) and f.name.endswith(".vtt"))
     return vtts[0] if vtts else None
 
 
-def media_for(archive_root: Path, video_hash: str) -> dict[str, str]:
+def media_for(
+    archive_root: Path, video_hash: str, extensions: tuple[str, ...] | None = None
+) -> dict[str, str]:
     """{"video": rel, "vtt": rel} for one hash; keys absent when the file is not there."""
     from rainrag.ingest import WebMetadataLoader
 
@@ -78,7 +107,7 @@ def media_for(archive_root: Path, video_hash: str) -> dict[str, str]:
         return {}
 
     found: dict[str, str] = {}
-    video = pick_video(files, video_hash)
+    video = pick_video(files, video_hash, extensions or video_extensions())
     if video is not None:
         found["video"] = str(shard / video.name)
     vtt = pick_vtt(files, video_hash)
@@ -92,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tags", default=str(REPO_ROOT / "data" / "library_tags.jsonl"))
     parser.add_argument("--out", default=str(REPO_ROOT / "data" / "untitled_media.json"))
     parser.add_argument("--archive-root", default="/mnt/vod/srv/storage/transcoded")
+    parser.add_argument("--config", default=str(REPO_ROOT / "config.yaml"))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -100,9 +130,10 @@ def main(argv: list[str] | None = None) -> int:
     untitled = untitled_hashes(Path(args.tags).read_text(encoding="utf-8").splitlines())
 
     root = Path(args.archive_root)
+    extensions = video_extensions(args.config)
     out: dict[str, dict[str, str]] = {}
     for h in untitled:
-        found = media_for(root, h)
+        found = media_for(root, h, extensions)
         if found:
             out[h] = found
 

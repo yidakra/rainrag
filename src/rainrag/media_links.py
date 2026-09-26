@@ -18,12 +18,32 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import time
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 
-MEDIA_TOKEN_TTL_SECONDS = int(os.getenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", str(12 * 3600)))
+_DEFAULT_TTL_SECONDS = 12 * 3600
+
+
+def _ttl_seconds() -> int:
+    """Token lifetime from the environment, falling back on a bad value.
+
+    Read per call, not at import: a malformed value is a typo in someone's
+    .env, and taking the whole Library page down at import time over it would
+    be a worse answer than quietly using the default.
+    """
+    raw = os.getenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", "")
+    if not raw.strip():
+        return _DEFAULT_TTL_SECONDS
+    try:
+        return int(raw)
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "Invalid RAINRAG_MEDIA_TOKEN_TTL_SECONDS=%r, using %d", raw, _DEFAULT_TTL_SECONDS
+        )
+        return _DEFAULT_TTL_SECONDS
 
 
 def asset_base() -> str:
@@ -46,7 +66,7 @@ def issue_media_token() -> str:
     secret = os.getenv("RAINRAG_AUTH_TOKEN")
     if not secret:
         return ""
-    expires = int(time.time()) + MEDIA_TOKEN_TTL_SECONDS
+    expires = int(time.time()) + _ttl_seconds()
     payload = str(expires)
     signature = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
     return f"v1.{payload}.{signature}"

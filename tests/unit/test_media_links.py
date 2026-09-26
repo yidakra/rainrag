@@ -97,14 +97,56 @@ def _archive(tmp_path: Path, names: list[str]) -> Path:
     return tmp_path
 
 
+EXT = (".mp4", ".mkv", ".webm", ".avi", ".mov")
+
+
+def test_video_extensions_come_from_the_config_the_api_reads(tmp_path: Path):
+    """Hardcoding them drifts from `find_video_file` the moment either moves."""
+    from library_untitled_media import video_extensions
+
+    # No config to read: the schema default, which carries .avi and .mov.
+    fallback = video_extensions(str(tmp_path / "absent.yaml"))
+    assert ".avi" in fallback and ".mov" in fallback and ".mp4" in fallback
+
+    # The repo's own config wins when it is there.
+    from rainrag.config import load_config
+
+    repo_config = REPO_ROOT / "config.yaml"
+    assert video_extensions(str(repo_config)) == tuple(
+        load_config(str(repo_config)).video.extensions
+    )
+
+
 def test_pick_video_follows_the_quality_order_the_api_serves():
     from library_untitled_media import pick_video
 
     files = [Path(f"{HASH}_{q}.mp4") for q in ("360p", "1080p", "720p")]
-    assert pick_video(files, HASH).stem == f"{HASH}_1080p"
-    lowest = [Path(f"{HASH}_180p.mp4")]
-    assert pick_video(lowest, HASH).stem == f"{HASH}_180p"
-    assert pick_video([Path("notes.txt")], HASH) is None
+    assert pick_video(files, HASH, EXT).stem == f"{HASH}_1080p"
+    assert pick_video([Path(f"{HASH}_180p.mp4")], HASH, EXT).stem == f"{HASH}_180p"
+    assert pick_video([Path("notes.txt")], HASH, EXT) is None
+
+
+def test_pick_video_serves_an_extension_the_config_allows():
+    """A deployment that adds .avi must not leave those episodes dead cards."""
+    from library_untitled_media import pick_video
+
+    files = [Path(f"{HASH}_480p.avi")]
+    assert pick_video(files, HASH, EXT).name == f"{HASH}_480p.avi"
+    assert pick_video(files, HASH, (".mp4", ".mkv", ".webm")) is None
+
+
+def test_pick_video_never_returns_another_episode(tmp_path: Path):
+    """A stray transcode in the shard must not become this episode's link.
+
+    `find_video_file` requires the hash prefix at every stage; linking an
+    editor to the wrong video is worse than linking her nowhere.
+    """
+    from library_untitled_media import pick_video
+
+    stranger = [Path("b" * 40 + "_1080p.mp4")]
+    assert pick_video(stranger, HASH, EXT) is None
+    both = stranger + [Path(f"{HASH}_360p.mp4")]
+    assert pick_video(both, HASH, EXT).stem == f"{HASH}_360p"
 
 
 def test_pick_vtt_prefers_russian():
@@ -114,6 +156,12 @@ def test_pick_vtt_prefers_russian():
     assert pick_vtt(files, HASH).name == f"{HASH}.ru.vtt"
     assert pick_vtt([Path(f"{HASH}.en.vtt")], HASH).name == f"{HASH}.en.vtt"
     assert pick_vtt([Path("other.mp4")], HASH) is None
+
+
+def test_pick_vtt_never_returns_another_episodes_transcript():
+    from library_untitled_media import pick_vtt
+
+    assert pick_vtt([Path("b" * 40 + ".ru.vtt")], HASH) is None
 
 
 def test_media_for_reports_paths_relative_to_the_archive_root(tmp_path: Path):
@@ -160,3 +208,18 @@ def test_script_writes_only_episodes_with_media(tmp_path: Path, capsys):
     written = json.loads(out.read_text(encoding="utf-8"))
     assert list(written) == [HASH]
     assert "playable: 1" in capsys.readouterr().out
+
+
+def test_bad_ttl_env_does_not_take_the_page_down(monkeypatch):
+    """A typo in .env should cost the default TTL, not the whole Library."""
+    from rainrag.media_links import _DEFAULT_TTL_SECONDS, _ttl_seconds, issue_media_token
+
+    monkeypatch.setenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", "twelve hours")
+    assert _ttl_seconds() == _DEFAULT_TTL_SECONDS
+    monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "s")
+    assert issue_media_token().startswith("v1.")
+
+    monkeypatch.setenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", "60")
+    assert _ttl_seconds() == 60
+    monkeypatch.delenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS")
+    assert _ttl_seconds() == _DEFAULT_TTL_SECONDS
