@@ -47,14 +47,15 @@ def write_json_atomic(path: Path, payload: object) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False, indent=0)
+            # mkstemp creates 0600 and rename carries that mode onto the
+            # target, so publishing would quietly make a world-readable map
+            # private -- and the Library, which may well run as another user,
+            # would lose every entry. Keep the mode the map already had; a
+            # fresh one gets what an ordinary create would give. Set before the
+            # fsync so the sync covers the new mode, not just the bytes.
+            tmp.chmod(_publish_mode(path))
             fh.flush()
             os.fsync(fh.fileno())
-        # mkstemp creates 0600 and rename carries that mode onto the target, so
-        # publishing would quietly make a world-readable map private -- and the
-        # Library, which may well run as another user, would lose every entry.
-        # Keep the mode the map already had; a fresh one gets what an ordinary
-        # create would give.
-        tmp.chmod(_publish_mode(path))
         tmp.replace(path)
         _fsync_dir(path.parent)
     except BaseException:
