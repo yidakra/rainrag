@@ -369,3 +369,78 @@ def test_recorded_paths_are_posix_shaped(tmp_path: Path):
         assert "\\" not in rel
         assert rel.count("/") == 20  # twenty shard segments, then the filename
         assert (root / rel).exists()
+
+
+def test_an_unavailable_video_root_is_refused_not_recorded(tmp_path: Path):
+    """A video mount that is down must not quietly become "no video anywhere".
+
+    `listing()` reads an unreadable directory as empty, so the walk would
+    still find the VTTs under the archive root, write a map where every
+    playable card has degraded to transcript-only, and exit zero -- which the
+    hourly updater reads as success before replacing the good map.
+    """
+    from library_untitled_media import main
+
+    root = _archive(tmp_path / "arc", [f"{HASH}_720p.mp4", f"{HASH}.ru.vtt"])
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(json.dumps({"video_hash": HASH}), encoding="utf-8")
+    out = tmp_path / "media.json"
+    out.write_text('{"kept": {"video": "previous"}}', encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "--tags",
+                str(tags),
+                "--out",
+                str(out),
+                "--archive-root",
+                str(root),
+                "--video-root",
+                str(tmp_path / "not-mounted"),
+            ]
+        )
+    assert excinfo.value.code != 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {"kept": {"video": "previous"}}
+
+
+def test_an_unavailable_archive_root_is_refused_not_recorded(tmp_path: Path):
+    """The same guard for the titles map, whose empty state is indistinguishable."""
+    from library_untitled_titles import main
+
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(json.dumps({"video_hash": HASH}), encoding="utf-8")
+    out = tmp_path / "titles.json"
+    out.write_text('{"kept": "previous"}', encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--tags", str(tags), "--out", str(out), "--archive-root", str(tmp_path / "gone")])
+    assert excinfo.value.code != 0
+    assert json.loads(out.read_text(encoding="utf-8")) == {"kept": "previous"}
+
+
+def test_a_failed_write_leaves_the_previous_map_intact(tmp_path: Path):
+    """The map is published by rename, so a write that dies mid-way loses nothing."""
+    from library_untitled_titles import write_json_atomic
+
+    out = tmp_path / "titles.json"
+    out.write_text('{"kept": "previous"}', encoding="utf-8")
+
+    with pytest.raises(TypeError):
+        write_json_atomic(out, {"broken": object()})
+
+    assert json.loads(out.read_text(encoding="utf-8")) == {"kept": "previous"}
+    assert list(tmp_path.iterdir()) == [out]  # no temp file left behind
+
+
+def test_the_published_map_is_never_seen_half_written(tmp_path: Path):
+    """Whatever a reader opens at the target path parses -- old content or new."""
+    from library_untitled_titles import write_json_atomic
+
+    out = tmp_path / "titles.json"
+    write_json_atomic(out, {"a": "one"})
+    assert json.loads(out.read_text(encoding="utf-8")) == {"a": "one"}
+
+    write_json_atomic(out, {"b": "two"})
+    assert json.loads(out.read_text(encoding="utf-8")) == {"b": "two"}
+    assert list(tmp_path.iterdir()) == [out]

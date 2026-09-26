@@ -44,6 +44,10 @@ Notes:
   `paths.archive_root` is unset or not a directory, and a failure there is
   logged as a warning without failing the run — the index is the job, a stale
   link map is a degraded card. Set `SKIP_LIBRARY=1` to leave both files alone.
+- Each generator refuses to run when the tree it reads is not mounted, rather
+  than writing the empty map an absent mount would otherwise produce, and
+  publishes its map by rename so an interrupted run leaves the previous file
+  intact. Either way the Library keeps what it already had.
 
 Deploy on merge (every two minutes, fetch + fast-forward + restart Streamlit)
 1) Install and enable:

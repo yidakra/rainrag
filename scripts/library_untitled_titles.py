@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -26,6 +28,30 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 MAX_CHARS = 90
+
+
+def write_json_atomic(path: Path, payload: object) -> None:
+    """Publish a map by rename so an interrupted run keeps the previous file.
+
+    ``write_text`` truncates in place, and these maps are now rewritten hourly
+    by the incremental updater: a run killed between truncate and flush leaves
+    half a map, which the Library rejects wholesale, and the good file it
+    replaced is already gone. The temp file sits beside the target so the
+    rename stays on one filesystem.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=0)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
 
 
 def snippet(text: str, max_chars: int = MAX_CHARS) -> str:
@@ -80,8 +106,15 @@ def main(argv: list[str] | None = None) -> int:
 
     untitled = untitled_hashes(Path(args.tags).read_text(encoding="utf-8").splitlines())
 
-    out: dict[str, str] = {}
     root = Path(args.archive_root)
+    # An archive that is not mounted reads as "no transcript anywhere": every
+    # lookup misses, the map comes out empty, and the write still succeeds --
+    # so the hourly updater would replace a good map with an empty one and
+    # report success. Refuse, and the caller keeps what it already has.
+    if not root.is_dir():
+        parser.error(f"archive root is not a directory: {root}")
+
+    out: dict[str, str] = {}
     for h in untitled:
         p = transcript_path(root, h)
         if not p:
@@ -92,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"untitled tagged episodes: {len(untitled)}, titles synthesised: {len(out)}")
     if args.dry_run:
         return 0
-    Path(args.out).write_text(json.dumps(out, ensure_ascii=False, indent=0), encoding="utf-8")
+    write_json_atomic(Path(args.out), out)
     print(f"written {args.out}")
     return 0
 

@@ -19,7 +19,6 @@ neither the API nor the archive itself.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -181,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    from library_untitled_titles import untitled_hashes
+    from library_untitled_titles import untitled_hashes, write_json_atomic
 
     untitled = untitled_hashes(Path(args.tags).read_text(encoding="utf-8").splitlines())
 
@@ -198,6 +197,16 @@ def main(argv: list[str] | None = None) -> int:
         video_root = root
     else:
         video_root = config_video or root
+    # listing() treats an unreadable directory as empty, so a root that is not
+    # mounted yields a map with every playable card quietly downgraded to
+    # transcript-only -- and a zero exit, which the hourly updater reads as
+    # "regenerated fine" before it overwrites the good map. The shell can only
+    # validate the archive root; the video root is resolved here, through the
+    # precedence above, so the check belongs here too.
+    for label, candidate in (("archive root", root), ("video root", video_root)):
+        if not candidate.is_dir():
+            parser.error(f"{label} is not a directory: {candidate}")
+
     video_config = _video_config(args.config)
     extensions = tuple(video_config.extensions)
     vtt_exts = tuple(video_config.vtt_extensions)
@@ -218,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.dry_run:
         return 0
-    Path(args.out).write_text(json.dumps(out, ensure_ascii=False, indent=0), encoding="utf-8")
+    write_json_atomic(Path(args.out), out)
     return 0
 
 
