@@ -80,9 +80,7 @@ def _deployment(tmp_path: Path, *, with_tags: bool = True) -> Path:
     (root / "embeddings" / "embeddings.npy").touch()
     (root / "embeddings" / "metadata.jsonl").touch()
     if with_tags:
-        (root / "data" / "library_tags.jsonl").write_text(
-            '{"video_hash": "a"}\n', encoding="utf-8"
-        )
+        (root / "data" / "library_tags.jsonl").write_text('{"video_hash": "a"}\n', encoding="utf-8")
     return root
 
 
@@ -176,7 +174,8 @@ def test_an_unset_archive_root_skips_rather_than_using_the_repo(tmp_path: Path):
     config = root / "config.yaml"
     config.write_text(
         "\n".join(
-            line for line in config.read_text(encoding="utf-8").splitlines()
+            line
+            for line in config.read_text(encoding="utf-8").splitlines()
             if "archive_root" not in line
         )
         + "\n",
