@@ -19,7 +19,6 @@ neither the API nor the archive itself.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -69,8 +68,18 @@ def archive_roots(config_path: str | None = None) -> tuple[Path | None, Path | N
         paths = load_config(config_path).paths
     except Exception:
         return None, None
-    archive = Path(paths.archive_root) if paths.archive_root else None
-    video = Path(paths.video_root) if paths.video_root else archive
+    config_dir = Path(config_path).resolve().parent
+
+    def rooted(value: str) -> Path:
+        # A relative path written in a config file means "next to that config",
+        # which is how run_incremental_update.sh resolves it before validating
+        # the mount. Resolving against the cwd instead would let this script
+        # walk a different tree than its caller just checked.
+        candidate = Path(value)
+        return candidate if candidate.is_absolute() else (config_dir / candidate).resolve()
+
+    archive = rooted(paths.archive_root) if paths.archive_root else None
+    video = rooted(paths.video_root) if paths.video_root else archive
     return archive, video
 
 
@@ -179,9 +188,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--archive-root", default=None, help="overrides paths.archive_root")
     parser.add_argument("--video-root", default=None, help="overrides paths.video_root")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="publish even when the result is empty and the previous map was not",
+    )
     args = parser.parse_args(argv)
 
-    from library_untitled_titles import untitled_hashes
+    from library_untitled_titles import (
+        listable_dir,
+        refuse_empty_replacement,
+        untitled_hashes,
+        write_json_atomic,
+    )
 
     untitled = untitled_hashes(Path(args.tags).read_text(encoding="utf-8").splitlines())
 
@@ -198,6 +217,18 @@ def main(argv: list[str] | None = None) -> int:
         video_root = root
     else:
         video_root = config_video or root
+    # listing() treats an unreadable directory as empty, so a root that is not
+    # mounted yields a map with every playable card quietly downgraded to
+    # transcript-only -- and a zero exit, which the hourly updater reads as
+    # "regenerated fine" before it overwrites the good map. The shell can only
+    # validate the archive root; the video root is resolved here, through the
+    # precedence above, so the check belongs here too.
+    for label, candidate in (("archive root", root), ("video root", video_root)):
+        if not candidate.is_dir():
+            parser.error(f"{label} is not a directory: {candidate}")
+        if not listable_dir(candidate):
+            parser.error(f"{label} is not readable: {candidate}")
+
     video_config = _video_config(args.config)
     extensions = tuple(video_config.extensions)
     vtt_exts = tuple(video_config.vtt_extensions)
@@ -218,7 +249,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.dry_run:
         return 0
-    Path(args.out).write_text(json.dumps(out, ensure_ascii=False, indent=0), encoding="utf-8")
+    problem = refuse_empty_replacement(Path(args.out), out, args.allow_empty)
+    if problem:
+        parser.error(problem)
+    write_json_atomic(Path(args.out), out)
     return 0
 
 
