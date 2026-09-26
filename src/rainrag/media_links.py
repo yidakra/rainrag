@@ -25,6 +25,11 @@ from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 
 _DEFAULT_TTL_SECONDS = 12 * 3600
+# A token only has to outlive the editor's visit to the page. Below a minute is
+# a typo that mints links dead on arrival; a week is already generous for a
+# credential that exists so a pasted link stops working.
+_MIN_TTL_SECONDS = 60
+_MAX_TTL_SECONDS = 7 * 24 * 3600
 
 
 def _ttl_seconds() -> int:
@@ -38,12 +43,21 @@ def _ttl_seconds() -> int:
     if not raw.strip():
         return _DEFAULT_TTL_SECONDS
     try:
-        return int(raw)
+        seconds = int(raw)
     except ValueError:
         logging.getLogger(__name__).warning(
             "Invalid RAINRAG_MEDIA_TOKEN_TTL_SECONDS=%r, using %d", raw, _DEFAULT_TTL_SECONDS
         )
         return _DEFAULT_TTL_SECONDS
+    clamped = max(_MIN_TTL_SECONDS, min(seconds, _MAX_TTL_SECONDS))
+    if clamped != seconds:
+        # Both directions are failures worth naming: zero or negative mints
+        # links that are dead before the editor clicks them, and an extra
+        # digit quietly turns an expiring credential into a standing one.
+        logging.getLogger(__name__).warning(
+            "RAINRAG_MEDIA_TOKEN_TTL_SECONDS=%d out of range, using %d", seconds, clamped
+        )
+    return clamped
 
 
 def asset_base() -> str:

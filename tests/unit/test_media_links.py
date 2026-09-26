@@ -211,6 +211,29 @@ def test_script_writes_only_episodes_with_media(tmp_path: Path, capsys):
     assert "playable: 1" in capsys.readouterr().out
 
 
+def test_ttl_is_clamped_to_a_usable_range(monkeypatch):
+    """Zero mints links dead on arrival; an extra digit mints standing ones."""
+    from rainrag.media_links import _MAX_TTL_SECONDS, _MIN_TTL_SECONDS, _ttl_seconds
+
+    monkeypatch.setenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", "0")
+    assert _ttl_seconds() == _MIN_TTL_SECONDS
+    monkeypatch.setenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", "-3600")
+    assert _ttl_seconds() == _MIN_TTL_SECONDS
+    monkeypatch.setenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", "315360000")  # ten years
+    assert _ttl_seconds() == _MAX_TTL_SECONDS
+    monkeypatch.setenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", "3600")
+    assert _ttl_seconds() == 3600
+
+
+def test_a_clamped_ttl_still_mints_a_live_token(monkeypatch):
+    from rainrag.api import _media_token_is_valid
+    from rainrag.media_links import issue_media_token
+
+    monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "s")
+    monkeypatch.setenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", "0")
+    assert _media_token_is_valid(issue_media_token(), "s")
+
+
 def test_bad_ttl_env_does_not_take_the_page_down(monkeypatch):
     """A typo in .env should cost the default TTL, not the whole Library."""
     from rainrag.media_links import _DEFAULT_TTL_SECONDS, _ttl_seconds, issue_media_token
@@ -220,8 +243,8 @@ def test_bad_ttl_env_does_not_take_the_page_down(monkeypatch):
     monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "s")
     assert issue_media_token().startswith("v1.")
 
-    monkeypatch.setenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", "60")
-    assert _ttl_seconds() == 60
+    monkeypatch.setenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS", "600")
+    assert _ttl_seconds() == 600
     monkeypatch.delenv("RAINRAG_MEDIA_TOKEN_TTL_SECONDS")
     assert _ttl_seconds() == _DEFAULT_TTL_SECONDS
 
@@ -269,3 +292,62 @@ def test_plaintext_is_fine_without_a_token_and_on_loopback(monkeypatch):
     monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "s")
     monkeypatch.setenv("RAINRAG_ASSET_URL", "http://localhost:8001")
     assert "auth=v1." in archive_media_url(REL)
+
+
+def test_video_and_vtt_resolve_against_their_own_roots(tmp_path: Path):
+    """`/video` joins onto video_root, `/vtt` onto archive_root.
+
+    A deployment that separates them would otherwise get a 404 on every video
+    link, because the path was recorded relative to the wrong tree.
+    """
+    from library_untitled_media import media_for
+
+    shard = Path(*[HASH[i : i + 2] for i in range(0, 40, 2)])
+    archive, video = tmp_path / "archive", tmp_path / "video"
+    (archive / shard).mkdir(parents=True)
+    (video / shard).mkdir(parents=True)
+    (archive / shard / f"{HASH}.ru.vtt").write_text("x")
+    (video / shard / f"{HASH}_720p.mp4").write_bytes(b"v")
+
+    found = media_for(archive, HASH, EXT, VTT, video)
+    assert (video / found["video"]).exists()
+    assert (archive / found["vtt"]).exists()
+
+    # Looking for the video under the archive root finds nothing, which is the
+    # bug this guards: same shard path, wrong tree.
+    assert "video" not in media_for(archive, HASH, EXT, VTT, archive)
+
+
+def test_roots_come_from_the_config_the_routes_read(tmp_path: Path):
+    from library_untitled_media import archive_roots
+
+    assert archive_roots(str(tmp_path / "absent.yaml")) == (None, None)
+    repo_archive, repo_video = archive_roots(str(REPO_ROOT / "config.yaml"))
+    from rainrag.config import load_config
+
+    paths = load_config(str(REPO_ROOT / "config.yaml")).paths
+    assert repo_archive == Path(paths.archive_root)
+    assert repo_video == Path(paths.video_root or paths.archive_root)
+
+
+def test_an_explicit_archive_root_moves_the_video_root_with_it(tmp_path: Path, capsys):
+    """Pointing at a copy of the tree must not leave videos on the config path.
+
+    Otherwise the run silently records transcripts only, which reads as "these
+    episodes have no video" rather than "you pointed me at the wrong tree".
+    """
+    from library_untitled_media import main
+
+    shard = Path(*[HASH[i : i + 2] for i in range(0, 40, 2)])
+    root = tmp_path / "copy"
+    (root / shard).mkdir(parents=True)
+    (root / shard / f"{HASH}_720p.mp4").write_bytes(b"v")
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(json.dumps({"video_hash": HASH}), encoding="utf-8")
+    out = tmp_path / "media.json"
+
+    # --config still points at the repo's real config, whose video_root is the
+    # production mount; the explicit --archive-root must win.
+    assert main(["--tags", str(tags), "--out", str(out), "--archive-root", str(root)]) == 0
+    assert "video" in json.loads(out.read_text(encoding="utf-8"))[HASH]
+    assert "playable: 1" in capsys.readouterr().out
