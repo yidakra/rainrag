@@ -444,3 +444,32 @@ def test_the_published_map_is_never_seen_half_written(tmp_path: Path):
     write_json_atomic(out, {"b": "two"})
     assert json.loads(out.read_text(encoding="utf-8")) == {"b": "two"}
     assert list(tmp_path.iterdir()) == [out]
+
+
+def test_a_relative_config_root_resolves_next_to_the_config(tmp_path: Path, monkeypatch):
+    """A root written in a config means "next to that config", not "next to the cwd".
+
+    `run_incremental_update.sh` normalises a relative `paths.archive_root`
+    against the config's directory before checking the mount, then runs the
+    media script from the repo. Resolving against the cwd here would walk a
+    different tree than the one the caller just validated.
+    """
+    import yaml
+    from library_untitled_media import archive_roots
+
+    raw = yaml.safe_load((REPO_ROOT / "config.yaml").read_text(encoding="utf-8"))
+    raw["paths"]["archive_root"] = "./arc"
+    raw["paths"]["video_root"] = "./vid"
+
+    beside = tmp_path / "elsewhere"
+    (beside / "arc").mkdir(parents=True)
+    (beside / "vid").mkdir()
+    (beside / "config.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    cwd = tmp_path / "cwd"
+    (cwd / "arc").mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+
+    archive, video = archive_roots(str(beside / "config.yaml"))
+    assert archive == (beside / "arc").resolve()
+    assert video == (beside / "vid").resolve()

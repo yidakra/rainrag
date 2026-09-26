@@ -68,8 +68,18 @@ def archive_roots(config_path: str | None = None) -> tuple[Path | None, Path | N
         paths = load_config(config_path).paths
     except Exception:
         return None, None
-    archive = Path(paths.archive_root) if paths.archive_root else None
-    video = Path(paths.video_root) if paths.video_root else archive
+    config_dir = Path(config_path).resolve().parent
+
+    def rooted(value: str) -> Path:
+        # A relative path written in a config file means "next to that config",
+        # which is how run_incremental_update.sh resolves it before validating
+        # the mount. Resolving against the cwd instead would let this script
+        # walk a different tree than its caller just checked.
+        candidate = Path(value)
+        return candidate if candidate.is_absolute() else (config_dir / candidate).resolve()
+
+    archive = rooted(paths.archive_root) if paths.archive_root else None
+    video = rooted(paths.video_root) if paths.video_root else archive
     return archive, video
 
 
