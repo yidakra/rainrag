@@ -9,6 +9,7 @@ the archive, so the answer is a better label, not hiding them.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -20,7 +21,9 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from library_untitled_titles import (  # noqa: E402
     UBIQUITOUS_SHARE,
     descriptor,
+    latest_records,
     subject_frequency,
+    untitled_hashes,
 )
 
 
@@ -85,10 +88,54 @@ def test_nothing_usable_returns_empty_so_the_caller_falls_back():
     assert descriptor({"guest": ["  "], "subject": [" "]}, {}) == ""
 
 
-def test_the_label_is_capped():
-    freq = {"a" * 80: 0.001}
-    label = descriptor({"guest": ["Имя Фамилия"], "subject": ["a" * 80]}, freq, max_chars=40)
-    assert len(label) <= 40
+def test_a_guest_longer_than_the_cap_truncates_and_keeps_no_subjects():
+    """The negative-room branch: room goes below zero and every subject is skipped."""
+    label = descriptor({"guest": ["x" * 50], "subject": ["балет"]}, {"балет": 0.001}, max_chars=40)
+    assert label == "x" * 39 + "…"
+    assert " · " not in label
+
+
+def test_truncation_cuts_cleanly_and_marks_the_cut():
+    """Pins the marker and the rstrip, not just the length."""
+    label = descriptor({"guest": ["Имя Фамилия"]}, {}, max_chars=5)
+    assert label == "Имя…"  # cut lands on a space, which is stripped before the marker
+
+
+def test_a_label_that_fits_is_left_alone():
+    label = descriptor({"guest": ["Имя"], "subject": ["балет"]}, {"балет": 0.001}, max_chars=40)
+    assert label == "Имя · балет"
+
+
+def test_subject_frequency_survives_having_nothing_to_count():
+    """The denominator guard: a plain count/total would raise here."""
+    assert subject_frequency([]) == {}
+    assert subject_frequency([{"subject": []}, {"subject": None}, {}]) == {}
+
+
+def test_latest_row_wins_and_unusable_rows_are_ignored():
+    """Must agree with the UI's dedupe_latest or the two disagree about a re-tag."""
+    lines = [
+        json.dumps({"video_hash": "a", "title": None, "subject": ["один"]}),
+        "",
+        "not json at all",
+        json.dumps({"video_hash": "a", "title": None, "subject": ["два"]}),
+        json.dumps({"video_hash": "b", "title": None, "error": "boom"}),
+        json.dumps({"title": None, "subject": ["без хэша"]}),
+    ]
+    records = latest_records(lines)
+    assert set(records) == {"a"}
+    assert records["a"]["subject"] == ["два"]
+
+
+def test_a_re_tagged_episode_that_gained_a_title_stops_getting_a_stand_in():
+    lines = [
+        json.dumps({"video_hash": "a", "title": None}),
+        json.dumps({"video_hash": "a", "title": "Настоящее название"}),
+        json.dumps({"video_hash": "b", "title": "Было название"}),
+        json.dumps({"video_hash": "b", "title": None}),
+    ]
+    # a gained a title, b lost one: the stand-in follows the latest row both ways.
+    assert untitled_hashes(lines) == ["b"]
 
 
 def test_a_tag_that_normalises_to_nothing_is_dropped():
