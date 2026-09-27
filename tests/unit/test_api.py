@@ -549,4 +549,9 @@ def test_the_gateway_host_is_trusted_by_default(monkeypatch):
         for origin in ("https://rag.tvrain.io", "https://rag.tvrain.tv"):
             assert origin in api.cors_origins, origin
     finally:
+        # Undo before the reload, as the media-link tests do: reloading while
+        # the overrides are still deleted leaves the cached module holding a
+        # policy built without them, and every later importer sees it
+        # (both reviewers on #88).
+        monkeypatch.undo()
         importlib.reload(rainrag.api)

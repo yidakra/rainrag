@@ -12,6 +12,10 @@ Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
 # API rather than out through the public name and back. The old value was
 # rag.tvrain.tv, whose public path now returns 522.
 Environment=RAINRAG_API_URL=http://127.0.0.1:8001
+# Precedence: EnvironmentFile= below is read after these lines and wins, so a
+# RAINRAG_API_URL in .env overrides this one. It did: the deployed .env still
+# carried the public name and this inline value never took effect (Tenki on
+# #88). Change .env, not just this line.
 EnvironmentFile=-/home/ubuntu/rainrag/.env
 ExecStart=/usr/bin/env bash -lc 'uv run streamlit run app.py --server.address 127.0.0.1 --server.port 7861 --server.headless true'
 Restart=on-failure
