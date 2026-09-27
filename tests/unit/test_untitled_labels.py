@@ -89,3 +89,23 @@ def test_the_label_is_capped():
     freq = {"a" * 80: 0.001}
     label = descriptor({"guest": ["Имя Фамилия"], "subject": ["a" * 80]}, freq, max_chars=40)
     assert len(label) <= 40
+
+
+def test_a_tag_that_normalises_to_nothing_is_dropped():
+    """It misses the frequency map, so the filter used to wave it through."""
+    assert descriptor({"subject": ["—", "!!!", "балет"]}, {"балет": 0.001}) == "балет"
+
+
+def test_two_spellings_of_one_subject_take_one_slot():
+    """«балет» and «балет!» normalise the same; they used to take two."""
+    freq = {"балет": 0.001, "опера": 0.001}
+    label = descriptor({"subject": ["Балет", "балет!", "опера"]}, freq)
+    assert label == "Балет, опера"
+
+
+def test_the_filter_and_the_frequency_map_agree_on_the_key():
+    """Both sides must key on the normalised form or the filter is bypassed."""
+    freq = subject_frequency([{"subject": ["Политика"]}, {"subject": ["политика!"]}])
+    # One subject seen on both episodes, not two subjects on one each.
+    assert freq == {"политика": 1.0}
+    assert descriptor({"subject": ["политика!"]}, freq) == ""

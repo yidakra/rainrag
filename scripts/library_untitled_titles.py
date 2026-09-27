@@ -185,11 +185,20 @@ def descriptor(record: dict, frequency: dict[str, float], max_chars: int = MAX_C
     the caller falls back to the transcript opening.
     """
     guests = [g.strip() for g in (record.get("guest") or []) if g and g.strip()]
-    subjects = [
-        t.strip()
-        for t in (record.get("subject") or [])
-        if t and t.strip() and frequency.get(normalise_tag(t), 0.0) <= UBIQUITOUS_SHARE
-    ]
+
+    # Filter and de-duplicate on the same normalised form `subject_frequency`
+    # counts, or the two disagree: a punctuation-only tag normalises to "",
+    # misses the frequency map, defaults to 0.0 and sails through the filter,
+    # and «балет» with «балет!» take two slots for one subject (review on #91).
+    subjects: list[str] = []
+    seen: set[str] = set()
+    for tag in record.get("subject") or []:
+        text = (tag or "").strip()
+        key = normalise_tag(text)
+        if not key or key in seen or frequency.get(key, 0.0) > UBIQUITOUS_SHARE:
+            continue
+        seen.add(key)
+        subjects.append(text)
 
     parts: list[str] = []
     if guests:
@@ -253,7 +262,11 @@ def main(argv: list[str] | None = None) -> int:
 
     from rainrag.library_tagger import read_vtt_text
 
-    untitled = untitled_hashes(Path(args.tags).read_text(encoding="utf-8").splitlines())
+    # One read, one snapshot. The tag file is append-only and rewritten hourly:
+    # reading it twice let the selection and the labels disagree, so a hash
+    # whose latest row gained a title could still get a stand-in (review on #91).
+    records = latest_records(Path(args.tags).read_text(encoding="utf-8").splitlines())
+    untitled = [h for h, r in records.items() if not r.get("title")]
 
     root = Path(args.archive_root)
     # An archive that is not mounted reads as "no transcript anywhere": every
@@ -265,7 +278,6 @@ def main(argv: list[str] | None = None) -> int:
     if not listable_dir(root):
         parser.error(f"archive root is not readable: {root}")
 
-    records = latest_records(Path(args.tags).read_text(encoding="utf-8").splitlines())
     frequency = subject_frequency(records.values())
 
     out: dict[str, str] = {}
