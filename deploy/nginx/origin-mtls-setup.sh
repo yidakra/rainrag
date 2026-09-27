@@ -18,6 +18,11 @@
 #
 set -euo pipefail
 
+# openssl's progress chatter goes to stderr and used to be discarded. set -e
+# still aborted on failure, but with no reason printed, which is the worst way
+# for a setup script run under sudo to fail (Tenki on #88). Noise is cheaper
+# than a silent broken CA.
+
 DIR=/etc/ssl/rainrag-origin
 ORIGIN_CN=172.16.52.220
 DAYS_CA=3650
@@ -33,7 +38,7 @@ init() {
   else
     openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days "$DAYS_CA" \
       -keyout "$DIR/private/ca.key" -out "$DIR/ca.crt" \
-      -subj "/CN=RainRAG origin CA" 2>/dev/null
+      -subj "/CN=RainRAG origin CA"
     chmod 600 "$DIR/private/ca.key"
     echo "created CA $DIR/ca.crt"
   fi
@@ -42,10 +47,10 @@ init() {
   else
     openssl req -newkey rsa:2048 -nodes -sha256 \
       -keyout "$DIR/private/origin.key" -out "$DIR/origin.csr" \
-      -subj "/CN=$ORIGIN_CN" 2>/dev/null
+      -subj "/CN=$ORIGIN_CN"
     openssl x509 -req -in "$DIR/origin.csr" -CA "$DIR/ca.crt" -CAkey "$DIR/private/ca.key" \
       -CAcreateserial -days "$DAYS_LEAF" -sha256 -out "$DIR/origin.crt" \
-      -extfile <(printf 'subjectAltName=IP:%s\nextendedKeyUsage=serverAuth\n' "$ORIGIN_CN") 2>/dev/null
+      -extfile <(printf 'subjectAltName=IP:%s\nextendedKeyUsage=serverAuth\n' "$ORIGIN_CN")
     chmod 600 "$DIR/private/origin.key"
     rm -f "$DIR/origin.csr"
     echo "created origin cert $DIR/origin.crt"
@@ -64,7 +69,7 @@ sign() {
   echo "signing: $subject"
   openssl x509 -req -in "$csr" -CA "$DIR/ca.crt" -CAkey "$DIR/private/ca.key" \
     -CAcreateserial -days "$DAYS_LEAF" -sha256 -out "${csr%.csr}.crt" \
-    -extfile <(printf 'extendedKeyUsage=clientAuth\n') 2>/dev/null
+    -extfile <(printf 'extendedKeyUsage=clientAuth\n')
   echo "wrote ${csr%.csr}.crt -- send back only this file, never a key"
 }
 
@@ -74,10 +79,10 @@ selftest() {
   local t=${DIR}/selftest
   install -d -m 700 "$t"
   openssl req -newkey rsa:2048 -nodes -sha256 -keyout "$t/c.key" -out "$t/c.csr" \
-    -subj "/CN=selftest" 2>/dev/null
+    -subj "/CN=selftest"
   openssl x509 -req -in "$t/c.csr" -CA "$DIR/ca.crt" -CAkey "$DIR/private/ca.key" \
     -CAcreateserial -days 1 -sha256 -out "$t/c.crt" \
-    -extfile <(printf 'extendedKeyUsage=clientAuth\n') 2>/dev/null
+    -extfile <(printf 'extendedKeyUsage=clientAuth\n')
   chmod 644 "$t/c.crt"
   chmod 600 "$t/c.key"  # a private key, even a throwaway one
   echo "$t/c.crt $t/c.key"
