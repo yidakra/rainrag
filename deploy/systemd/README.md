@@ -71,11 +71,23 @@ Environment
 - Put secrets in /home/ubuntu/rainrag/.env (RAINRAG_PASSWORD_HASH already added per your note).
 - Set MISTRAL_API_KEY or other provider keys as needed.
 - Optional: RAINRAG_AUTH_TOKEN for API protection.
-- For external DNS deployments, set:
-  - RAINRAG_ALLOWED_HOSTS=rag.tvrain.tv,localhost,127.0.0.1
-  - RAINRAG_CORS_ORIGINS=https://rag.tvrain.tv
+- For external DNS deployments, prefer leaving RAINRAG_ALLOWED_HOSTS and
+  RAINRAG_CORS_ORIGINS unset and taking the defaults in `rainrag.api`, which
+  already list both `rag.tvrain.io` and `rag.tvrain.tv`. If you do set them,
+  include every hostname a browser will use. Pinning them to `.tv` only is what
+  made TrustedHostMiddleware reject the gateway's Host and killed media
+  playback; those lines were removed from `rainrag-api.service` for that reason.
 
 Notes
-- The Streamlit service sets RAINRAG_API_URL=https://rag.tvrain.tv/api and nginx strips /api before proxying.
+- The Streamlit services set RAINRAG_API_URL=http://127.0.0.1:8001. That call is
+  made by the Streamlit process itself, so it goes straight to the API rather
+  than out through a public name and back. The old value was
+  https://rag.tvrain.tv/api, whose public path now returns 522.
+- **`.env` wins.** `EnvironmentFile=` is read after the inline `Environment=`
+  lines, so a variable set in `/home/ubuntu/rainrag/.env` overrides the unit.
+  Change the file, not just the unit line.
+- Browser-facing media URLs come from RAINRAG_ASSET_URL, which is separate on
+  purpose: leave it unset for same-origin relative URLs, which is correct behind
+  a proxy. Never let it inherit a loopback address, or the reader's browser is
+  told to fetch video from itself.
 - If you want to use /embeddings, either update config.yaml or symlink ./embeddings to /embeddings.
-- The alternate Streamlit service (`rainrag-streamlit-ip.service`) also targets https://rag.tvrain.tv/api (no intranet IP dependency).
