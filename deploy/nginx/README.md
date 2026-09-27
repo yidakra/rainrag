@@ -36,20 +36,30 @@ a CSR, we return only the certificate.
 
 What the gateway owner adds:
 
+What we require, and what we should also ask for:
+
 ```nginx
 proxy_pass https://172.16.52.220:8443;
-proxy_ssl_certificate     /path/to/his.crt;
+proxy_ssl_certificate     /path/to/his.crt;      # required by the origin
 proxy_ssl_certificate_key /path/to/his.key;
-proxy_ssl_verify off;
+proxy_ssl_trusted_certificate /path/to/rainrag-origin-ca.crt;   # wanted
+proxy_ssl_verify on;                                            # wanted
+proxy_ssl_name 172.16.52.220;
 ```
 
-The two halves are independent and only one of them is ours to insist on.
-Whether the gateway verifies *our* certificate is its own risk decision, and
-Efimov declined it on 2026-09-16 ("мой nginx его не проверяет"), which is why
-there is no `proxy_ssl_trusted_certificate` here. What the origin requires is
-the certificate the gateway *presents*: that is what distinguishes it from any
-other host on the office subnet. Without it nginx answers 400 and nothing is
-served.
+The origin can only enforce the first half. It refuses any client without a
+certificate from our CA, which is what distinguishes the gateway from any other
+host on the subnet; without it nginx answers 400 and serves nothing.
+
+The second half is the gateway's to set, and it is not a formality. With
+`proxy_ssl_verify off` the gateway accepts any certificate, so an attacker who
+can intercept that hop can impersonate the origin and receive the login form
+(CWE-295, raised by review on #88). Client authentication does not protect
+against this: it proves who the *client* is, not who the *server* is.
+
+Efimov declined it on 2026-09-16 ("мой nginx его не проверяет"). Worth asking
+again: it is one file and one directive, the origin certificate already carries
+the upstream IP in its SAN, and `init` prints the CA to hand over.
 
 Verify before trusting it. A 200 with a valid certificate proves nothing on its
 own; the point is that the other two cases fail:
