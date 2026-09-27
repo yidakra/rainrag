@@ -5,8 +5,16 @@
 title and no programme. They are not junk: mostly the 2021-2022 relaunch
 period and 2025-2026 output (news digests, итоги года, the ЧГК game), which
 is the freshest content the Library could publish. Hiding them would hide
-exactly that. Instead the first sentence of the transcript stands in as a
-title, and the UI marks the card as having no CMS record.
+exactly that. Instead a stand-in is composed from what the tagger already
+knows about the episode -- its guests and its most distinctive subjects --
+and the UI marks the card as having no CMS record.
+
+The stand-in used to be the transcript's first sentence. That is the least
+identifying part of a broadcast: Varya was shown «21 час в Москве.» and
+«Должна кое-что вам сказать.» while researching the October plan, could not
+tell the episodes apart, and proposed dropping them from results altogether
+(2026-09-25). The opening survives only as a fallback for the handful with no
+tags at all.
 
     scripts/library_untitled_titles.py            # write data/untitled_titles.json
     scripts/library_untitled_titles.py --dry-run  # report only
@@ -21,6 +29,8 @@ import re
 import stat
 import sys
 import tempfile
+from collections import Counter
+from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path
 
@@ -28,6 +38,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+from rainrag.library_similar import normalise_tag  # noqa: E402
+
 
 MAX_CHARS = 90
 
@@ -139,6 +152,72 @@ def snippet(text: str, max_chars: int = MAX_CHARS) -> str:
     return text[: max_chars - 1].rstrip() + "…"
 
 
+# A subject on more than this share of tagged episodes says nothing about any
+# one of them: «политика» and «новости» sit on thousands.
+UBIQUITOUS_SHARE = 0.05
+
+
+def subject_frequency(records: Iterable[dict]) -> dict[str, float]:
+    """Share of tagged episodes carrying each subject."""
+    counts: Counter[str] = Counter()
+    total = 0
+    for record in records:
+        subjects = {normalise_tag(t) for t in (record.get("subject") or []) if normalise_tag(t)}
+        if subjects:
+            total += 1
+            counts.update(subjects)
+    return {tag: count / max(total, 1) for tag, count in counts.items()}
+
+
+def descriptor(record: dict, frequency: dict[str, float], max_chars: int = MAX_CHARS) -> str:
+    """A stand-in title built from the episode's own tags.
+
+    Guests first: a name is the strongest thing an editor can recognise. Then
+    subjects in the tagger's own order, which puts what the episode is about
+    before the incidental detail, with the ubiquitous ones removed.
+
+    Ordering by rarity instead was tried and is worse: it promotes whatever is
+    unique, and what is unique is often a typo or a throwaway mention. One
+    episode led with «торт» and another with «дримборкс». Frequency is used
+    only to drop tags that cannot distinguish anything, never to rank.
+
+    Returns "" when the tagger found neither guests nor usable subjects, and
+    the caller falls back to the transcript opening.
+    """
+    guests = [g.strip() for g in (record.get("guest") or []) if g and g.strip()]
+
+    # Filter and de-duplicate on the same normalised form `subject_frequency`
+    # counts, or the two disagree: a punctuation-only tag normalises to "",
+    # misses the frequency map, defaults to 0.0 and sails through the filter,
+    # and «балет» with «балет!» take two slots for one subject (review on #91).
+    subjects: list[str] = []
+    seen: set[str] = set()
+    for tag in record.get("subject") or []:
+        text = (tag or "").strip()
+        key = normalise_tag(text)
+        if not key or key in seen or frequency.get(key, 0.0) > UBIQUITOUS_SHARE:
+            continue
+        seen.add(key)
+        subjects.append(text)
+
+    parts: list[str] = []
+    if guests:
+        parts.append(", ".join(guests[:2]))
+    room = max_chars - len(parts[0]) - 3 if parts else max_chars
+    picked: list[str] = []
+    for tag in subjects:
+        if len(picked) >= 4:
+            break
+        # Skip a tag that does not fit rather than stopping: one long tag early
+        # in the list used to cost every shorter one after it.
+        if len(", ".join([*picked, tag])) <= room:
+            picked.append(tag)
+    if picked:
+        parts.append(", ".join(picked))
+    label = " · ".join(parts)
+    return label[: max_chars - 1].rstrip() + "…" if len(label) > max_chars else label
+
+
 def untitled_hashes(lines: list[str]) -> list[str]:
     """Hashes whose *latest* successful row has no title.
 
@@ -147,6 +226,11 @@ def untitled_hashes(lines: list[str]) -> list[str]:
     row gained a title would still get a stand-in, and one whose newer row
     lost it would get none.
     """
+    return [h for h, r in latest_records(lines).items() if not r.get("title")]
+
+
+def latest_records(lines: list[str]) -> dict[str, dict]:
+    """Last successful row per video hash, matching the UI's dedupe_latest."""
     latest: dict[str, dict] = {}
     for line in lines:
         if not line.strip():
@@ -158,7 +242,7 @@ def untitled_hashes(lines: list[str]) -> list[str]:
         if r.get("error") or not r.get("video_hash"):
             continue
         latest[r["video_hash"]] = r
-    return [h for h, r in latest.items() if not r.get("title")]
+    return latest
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -178,7 +262,11 @@ def main(argv: list[str] | None = None) -> int:
 
     from rainrag.library_tagger import read_vtt_text
 
-    untitled = untitled_hashes(Path(args.tags).read_text(encoding="utf-8").splitlines())
+    # One read, one snapshot. The tag file is append-only and rewritten hourly:
+    # reading it twice let the selection and the labels disagree, so a hash
+    # whose latest row gained a title could still get a stand-in (review on #91).
+    records = latest_records(Path(args.tags).read_text(encoding="utf-8").splitlines())
+    untitled = [h for h, r in records.items() if not r.get("title")]
 
     root = Path(args.archive_root)
     # An archive that is not mounted reads as "no transcript anywhere": every
@@ -190,8 +278,17 @@ def main(argv: list[str] | None = None) -> int:
     if not listable_dir(root):
         parser.error(f"archive root is not readable: {root}")
 
+    frequency = subject_frequency(records.values())
+
     out: dict[str, str] = {}
+    from_tags = 0
     for h in untitled:
+        label = descriptor(records.get(h, {}), frequency)
+        if label:
+            out[h] = label
+            from_tags += 1
+            continue
+        # Nothing tagged: the opening is all there is.
         p = transcript_path(root, h)
         if not p:
             continue
