@@ -78,7 +78,8 @@ selftest() {
   openssl x509 -req -in "$t/c.csr" -CA "$DIR/ca.crt" -CAkey "$DIR/private/ca.key" \
     -CAcreateserial -days 1 -sha256 -out "$t/c.crt" \
     -extfile <(printf 'extendedKeyUsage=clientAuth\n') 2>/dev/null
-  chmod 644 "$t/c.crt" "$t/c.key"
+  chmod 644 "$t/c.crt"
+  chmod 600 "$t/c.key"  # a private key, even a throwaway one
   echo "$t/c.crt $t/c.key"
 }
 

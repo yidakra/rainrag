@@ -900,6 +900,21 @@ def get_api_headers() -> dict[str, str]:
     return headers
 
 
+def build_api_url(path_or_url: str) -> str:
+    """Absolute URL for a call this process makes itself.
+
+    Not `build_asset_url`: that one is browser-facing and now yields a
+    same-origin relative path, which `requests` rejects with MissingSchema.
+    The exception was swallowed by a broad except and the caller just saw
+    None, so subtitles quietly stopped loading (Tenki on #88).
+    """
+    if path_or_url.startswith(("http://", "https://")):
+        return path_or_url
+    if path_or_url.startswith("/"):
+        return f"{API_BASE}{path_or_url}"
+    return f"{API_BASE}/{path_or_url}"
+
+
 def build_asset_url(path_or_url: str) -> str:
     """Build an absolute URL for browser-facing media assets.
 
@@ -1450,7 +1465,7 @@ def fetch_vtt_content(vtt_url: str) -> str | None:
     try:
         import requests
 
-        vtt_full_url = build_asset_url(vtt_url)
+        vtt_full_url = build_api_url(vtt_url)
         headers = get_api_headers()
         response = requests.get(vtt_full_url, headers=headers, timeout=10, verify=API_VERIFY_SSL)
         response.raise_for_status()
