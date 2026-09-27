@@ -32,8 +32,15 @@ API_BASE_URL = os.getenv("RAINRAG_API_URL", "http://localhost:8001").rstrip("/")
 # API base for server-side calls (health/query)
 API_BASE = API_BASE_URL
 # Asset base for browser-facing URLs (video/vtt/docs).
-# Defaults to API base. Override with RAINRAG_ASSET_URL when assets are served elsewhere.
-ASSET_BASE_URL = os.getenv("RAINRAG_ASSET_URL", API_BASE_URL).rstrip("/")
+#
+# Empty by default, which makes them same-origin relative paths: whatever host
+# served the page also serves its media, which is right behind any proxy and
+# needs no configuration. It used to default to API_BASE_URL, and that is a
+# server-side address. Once the Streamlit units pointed API_BASE_URL at
+# 127.0.0.1:8001 every <video> src became the reader's own loopback and
+# playback broke silently (Tenki on #88). Set RAINRAG_ASSET_URL only when the
+# media genuinely lives on another host.
+ASSET_BASE_URL = os.getenv("RAINRAG_ASSET_URL", "").rstrip("/")
 # Allow disabling SSL verification for self-signed/internal certs
 API_VERIFY_SSL = os.getenv("RAINRAG_API_VERIFY", "true").lower() not in ("0", "false", "no", "off")
 

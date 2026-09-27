@@ -524,7 +524,7 @@ def test_video_clip_endpoint_disabled(test_client, temp_dir: Path, archive_with_
         assert response.status_code == 404
 
 
-def test_the_gateway_host_is_trusted_by_default():
+def test_the_gateway_host_is_trusted_by_default(monkeypatch):
     """Browsers reach the app on rag.tvrain.io since 2026-09-16.
 
     TrustedHostMiddleware sees the browser's Host because the proxy passes it
@@ -535,10 +535,18 @@ def test_the_gateway_host_is_trusted_by_default():
     """
     import importlib
 
-    api = importlib.import_module("rainrag.api")
-    # The module's own values, not a list re-derived here: passing the same
-    # defaults back into _parse_csv_env asserts nothing (Tenki on #88).
-    for host in ("rag.tvrain.io", "rag.tvrain.tv", "localhost", "127.0.0.1"):
-        assert host in api.allowed_hosts, host
-    for origin in ("https://rag.tvrain.io", "https://rag.tvrain.tv"):
-        assert origin in api.cors_origins, origin
+    import rainrag.api
+
+    # Reload with the overrides cleared, or the deployment's own .env values
+    # satisfy the assertions and the source defaults go unchecked (CodeRabbit
+    # on #88). The reloaded module is discarded; the cached one stays as it was.
+    monkeypatch.delenv("RAINRAG_ALLOWED_HOSTS", raising=False)
+    monkeypatch.delenv("RAINRAG_CORS_ORIGINS", raising=False)
+    api = importlib.reload(rainrag.api)
+    try:
+        for host in ("rag.tvrain.io", "rag.tvrain.tv", "localhost", "127.0.0.1"):
+            assert host in api.allowed_hosts, host
+        for origin in ("https://rag.tvrain.io", "https://rag.tvrain.tv"):
+            assert origin in api.cors_origins, origin
+    finally:
+        importlib.reload(rainrag.api)
