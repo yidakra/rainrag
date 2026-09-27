@@ -20,6 +20,10 @@ def test_browser_media_urls_are_same_origin_when_no_asset_host_is_set(monkeypatc
         # An absolute URL is still passed through untouched.
         assert app.build_asset_url("https://cdn.example/x.mp4") == "https://cdn.example/x.mp4"
     finally:
+        # Undo before the reload: monkeypatch teardown runs after the test
+        # returns, so reloading first bakes the test's env into the cached
+        # module and the next importer inherits it (Tenki on #88).
+        monkeypatch.undo()
         importlib.reload(app)
 
 
@@ -31,6 +35,10 @@ def test_an_explicit_asset_host_is_still_honoured(monkeypatch):
     try:
         assert app.build_asset_url("/video/x.mp4") == "https://rag.tvrain.io/video/x.mp4"
     finally:
+        # Undo before the reload: monkeypatch teardown runs after the test
+        # returns, so reloading first bakes the test's env into the cached
+        # module and the next importer inherits it (Tenki on #88).
+        monkeypatch.undo()
         importlib.reload(app)
 
 
@@ -49,6 +57,10 @@ def test_server_side_fetches_get_an_absolute_url(monkeypatch):
         # The browser-facing builder stays relative; the two must not converge.
         assert app.build_asset_url("/vtt/ab/x.ru.vtt") == "/vtt/ab/x.ru.vtt"
     finally:
+        # Undo before the reload: monkeypatch teardown runs after the test
+        # returns, so reloading first bakes the test's env into the cached
+        # module and the next importer inherits it (Tenki on #88).
+        monkeypatch.undo()
         importlib.reload(app)
 
 

@@ -112,6 +112,11 @@ the gateway's address. That file already carries the `/slack/` location, so
 installing it is enough:
 
 ```bash
+# First: the file's 8443 block references the origin certificate and key, and
+# nginx -t fails if they are absent, which would leave every route down and
+# not just the mTLS one. This creates them and is safe to re-run.
+sudo bash deploy/nginx/origin-mtls-setup.sh init
+
 sudo cp deploy/nginx/rag-gateway-origin.conf /etc/nginx/sites-available/
 sudo ln -sf /etc/nginx/sites-available/rag-gateway-origin.conf /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
