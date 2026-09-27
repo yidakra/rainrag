@@ -522,3 +522,23 @@ def test_video_clip_endpoint_disabled(test_client, temp_dir: Path, archive_with_
             params={"start": 0, "end": 5},
         )
         assert response.status_code == 404
+
+
+def test_the_gateway_host_is_trusted_by_default():
+    """Browsers reach the app on rag.tvrain.io since 2026-09-16.
+
+    TrustedHostMiddleware sees the browser's Host because the proxy passes it
+    through, so a name missing from this list answers every media request with
+    "Invalid host header" while the page itself still loads. That is exactly
+    what happened on #88: playback was dead on the new host and the failure was
+    invisible from the status code of the page.
+    """
+    import importlib
+
+    api = importlib.import_module("rainrag.api")
+    # The module's own values, not a list re-derived here: passing the same
+    # defaults back into _parse_csv_env asserts nothing (Tenki on #88).
+    for host in ("rag.tvrain.io", "rag.tvrain.tv", "localhost", "127.0.0.1"):
+        assert host in api.allowed_hosts, host
+    for origin in ("https://rag.tvrain.io", "https://rag.tvrain.tv"):
+        assert origin in api.cors_origins, origin

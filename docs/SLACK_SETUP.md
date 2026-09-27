@@ -87,7 +87,8 @@ Add to `.env` (see `.env.example`):
 SLACK_SIGNING_SECRET=<signing secret>
 SLACK_BOT_TOKEN=xoxb-...
 # RAINRAG_API_URL and RAINRAG_AUTH_TOKEN as for the Streamlit UI
-# RAINRAG_ASSET_URL=https://rag.tvrain.tv   # enables media links in answers
+# RAINRAG_ASSET_URL=https://rag.tvrain.io   # enables media links in answers
+# Must be the host the reader's browser can reach, not the origin port.
 ```
 
 Run it:
@@ -104,12 +105,27 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now rainrag-slack
 ```
 
-Expose it through nginx by adding the `/slack/` location block from
-`deploy/nginx/slack-location.conf` to the existing `server { listen 443 ... }`
-block for `rag.tvrain.tv` (in `/etc/nginx/`), then `sudo nginx -t && sudo
-systemctl reload nginx`. The live server config is deliberately not kept in
-the repo — cert paths and the internal-IP vhost differ per deployment, and a
-stale full copy is a footgun.
+Expose it through nginx. Since 2026-09-16 the public entry point is an
+external TLS gateway on `rag.tvrain.io`, which proxies to a plain-HTTP origin
+on this box: `deploy/nginx/rag-gateway-origin.conf`, port 8080, restricted to
+the gateway's address. That file already carries the `/slack/` location, so
+installing it is enough:
+
+```bash
+sudo cp deploy/nginx/rag-gateway-origin.conf /etc/nginx/sites-available/
+sudo ln -sf /etc/nginx/sites-available/rag-gateway-origin.conf /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+`deploy/nginx/slack-location.conf` is the older snippet for a deployment that
+terminates TLS itself; add it to that deployment's `server { listen 443 ... }`
+block instead. A full live server config is deliberately not kept in the repo:
+cert paths and the internal-IP vhost differ per deployment, and a stale copy
+is a footgun.
+
+**Do not use `rag.tvrain.tv` for webhooks.** Its public path returns 522:
+Cloudflare cannot reach this box, which has no public address and no tunnel.
+The bot received nothing until the URLs were moved to `rag.tvrain.io`.
 
 Check it's alive:
 
@@ -123,16 +139,16 @@ curl -s http://127.0.0.1:8002/health
 Back in the Slack app settings:
 
 1. **Event Subscriptions** → enable, set Request URL to
-   `https://rag.tvrain.tv/slack/events`. Slack sends a verification challenge;
+   `https://rag.tvrain.io/slack/events`. Slack sends a verification challenge;
    the connector answers it automatically, so the URL should turn green.
 2. Under **Subscribe to bot events**, add:
    - `app_mention`
    - `message.im`
    - `reaction_added` and `reaction_removed` (👍/👎 feedback)
 3. **Interactivity & Shortcuts** → enable, set Request URL to
-   `https://rag.tvrain.tv/slack/interactive` (powers the "Related" buttons).
+   `https://rag.tvrain.io/slack/interactive` (powers the "Related" buttons).
 4. **Slash Commands** → create `/rainrag` with Request URL
-   `https://rag.tvrain.tv/slack/commands`.
+   `https://rag.tvrain.io/slack/commands`.
 5. Reinstall the app if Slack prompts you to.
 
 Invite the bot to the channels where journalists work: `/invite @RainRAG`.

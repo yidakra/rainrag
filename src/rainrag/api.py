@@ -1208,13 +1208,26 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# External deployment defaults (can be overridden in environment)
+# External deployment defaults (can be overridden in environment).
+# rag.tvrain.io is the host browsers actually use since 2026-09-16: the public
+# path for rag.tvrain.tv returns 522 and access moved to an external TLS
+# gateway. The proxy passes the browser's Host through, so leaving it out of
+# this list made TrustedHostMiddleware answer every media request with
+# "Invalid host header" and killed playback on the new host, while the page
+# itself still loaded (CodeRabbit and Tenki on #88). The old name stays: it is
+# still what the 443 vhost answers to on the internal network.
 allowed_hosts = _parse_csv_env(
-    "RAINRAG_ALLOWED_HOSTS", ["rag.tvrain.tv", "localhost", "127.0.0.1", "testserver"]
+    "RAINRAG_ALLOWED_HOSTS",
+    ["rag.tvrain.io", "rag.tvrain.tv", "172.16.52.220", "localhost", "127.0.0.1", "testserver"],
 )
 cors_origins = _parse_csv_env(
     "RAINRAG_CORS_ORIGINS",
-    ["https://rag.tvrain.tv", "http://localhost:7860", "http://127.0.0.1:7860"],
+    [
+        "https://rag.tvrain.io",
+        "https://rag.tvrain.tv",
+        "http://localhost:7860",
+        "http://127.0.0.1:7860",
+    ],
 )
 
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
