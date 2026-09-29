@@ -1367,12 +1367,10 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
     )
     st.caption(_t("perf_intro", lang, n=len(uploads), metric=metric))
 
-    # Formatting belongs to the column, not to the value. Numbers used to be
-    # turned into strings here, and a column header then sorted them as text:
-    # "9 447" came out above "68 499", because '9' > '6' (Varya, 2026-09-29).
-    # Streamlit sorts a styled frame by its displayed text too, so the numbers
-    # have to reach it unformatted and be formatted by column_config.
-    number_format = "%,d" if metric == "views" else "%,.2f"
+    def _fmt(v: float | None) -> str:
+        if v is None:
+            return ""
+        return f"{v:,.0f}".replace(",", " ") if metric == "views" else f"{v:,.2f}".replace(",", " ")
 
     def _val(u: Any) -> float | None:
         if metric == "views":
@@ -1380,23 +1378,19 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
         return u.metrics.get(metric)
 
     def _table(rows: list[dict[str, Any]], key: str) -> None:
-        numeric = [_t(c, lang) for c in ("col_total", "col_median", "col_best")]
         st.dataframe(
             [
                 {
                     _t(f"col_{key}", lang): r[key],
                     _t("col_uploads", lang): r["uploads"],
-                    numeric[0]: r["total"],
-                    numeric[1]: r["median"],
-                    numeric[2]: r["best"],
+                    _t("col_total", lang): _fmt(r["total"]),
+                    _t("col_median", lang): _fmt(r["median"]),
+                    _t("col_best", lang): _fmt(r["best"]),
                 }
                 for r in rows[:30]
             ],
             hide_index=True,
             width="stretch",
-            column_config={
-                column: st.column_config.NumberColumn(format=number_format) for column in numeric
-            },
         )
 
     sp_col, pr_col = st.columns(2)
@@ -1410,7 +1404,6 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
     st.subheader(_t("perf_uploads", lang))
     # Uploads without the metric sort last and render blank, not as zero.
     ordered = sorted(uploads, key=lambda u: (_val(u) is None, -(_val(u) or 0.0)))
-    metric_column = _t("col_views", lang) if metric == "views" else metric
     st.dataframe(
         [
             {
@@ -1418,7 +1411,7 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
                 _t("col_archive", lang): u.archive_title or u.content_id,
                 _t("col_program", lang): u.program or "",
                 _t("col_speakers", lang): ", ".join(u.speakers),
-                metric_column: _val(u),
+                _t("col_views", lang) if metric == "views" else metric: _fmt(_val(u)),
                 _t("col_published", lang): u.published_at or "",
                 "youtube": f"https://youtu.be/{u.youtube_id}",
             }
@@ -1426,10 +1419,7 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
         ],
         hide_index=True,
         width="stretch",
-        column_config={
-            "youtube": st.column_config.LinkColumn(),
-            metric_column: st.column_config.NumberColumn(format=number_format),
-        },
+        column_config={"youtube": st.column_config.LinkColumn()},
     )
 
 
