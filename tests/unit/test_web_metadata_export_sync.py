@@ -21,6 +21,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from web_metadata_export_sync import (  # noqa: E402
     articles_in_period,
     drop_from_misses,
+    retry_delay,
     windows,
     write_article,
 )
@@ -249,3 +250,75 @@ def test_a_hash_recovered_into_an_existing_file_still_leaves_the_misses_file(tmp
     )
 
     assert misses.read_text(encoding="utf-8").split() == ["c" * 40]
+
+
+class _Response:
+    def __init__(self, status_code: int, retry_after: str | None = None):
+        self.status_code = status_code
+        self.headers = {"Retry-After": retry_after} if retry_after else {}
+
+
+def _throttler(monkeypatch, *, always: bool):
+    """A client that answers 429, and a record of every sleep it caused."""
+    import httpx
+    import web_metadata_export_sync as sync
+
+    slept: list[float] = []
+    monkeypatch.setattr(sync.time, "sleep", slept.append)
+
+    class _Throttled:
+        def __init__(self):
+            self.calls: list[int] = []
+
+        def export_batch(self, start_time: int, end_time: int):
+            self.calls.append(int((end_time - start_time) / 86400))
+            if always or len(self.calls) == 1:
+                raise httpx.HTTPStatusError(
+                    "429", request=httpx.Request("GET", "https://x"), response=_Response(429, "7")
+                )
+            return [{"video_hash": f"{start_time:040x}", "url": "u", "name": "n"}]
+
+    return _Throttled(), slept
+
+
+def test_a_throttled_window_is_waited_out_not_sliced_into_more_requests(monkeypatch):
+    """Slicing a 429 turns one refused call into four while the server sheds
+    load, which is how a soft limit becomes a blocked token (Tenki on #93)."""
+    client, slept = _throttler(monkeypatch, always=True)
+    found, failed = articles_in_period(client, dt.datetime(2024, 1, 1), dt.datetime(2024, 3, 1))
+
+    assert found == {}
+    assert failed == [(dt.datetime(2024, 1, 1), dt.datetime(2024, 3, 1))], "the window, not slices"
+    assert len(client.calls) == 4, "the first call plus the retry budget, and no slice retries"
+    assert slept == [7.0, 7.0, 7.0], "the server's own Retry-After, honoured each time"
+
+
+def test_a_window_that_recovers_after_waiting_is_kept(monkeypatch):
+    client, slept = _throttler(monkeypatch, always=False)
+    found, failed = articles_in_period(client, dt.datetime(2024, 1, 1), dt.datetime(2024, 3, 1))
+
+    assert found and failed == []
+    assert slept == [7.0]
+
+
+def test_the_wait_falls_back_to_backoff_when_the_server_names_no_period():
+    """And is capped: an hour-long Retry-After would hang a hand-run script."""
+    assert retry_delay(_Response(429), 0) < retry_delay(_Response(429), 3)
+    assert retry_delay(_Response(429), 99) == retry_delay(_Response(429, "99999"), 0)
+    assert retry_delay(_Response(429, "12"), 0) == 12.0
+    assert retry_delay(_Response(429, "not a number"), 0) == retry_delay(_Response(429), 0)
+
+
+def test_a_published_article_survives_a_crash_right_after_the_rename(tmp_path, monkeypatch):
+    """The rename is only durable once the directory entry is flushed too."""
+    import web_metadata_export_sync as sync
+
+    synced: list[bool] = []
+    real = sync._fsync_dir
+    monkeypatch.setattr(sync, "_fsync_dir", lambda d: (synced.append(True), real(d))[1])
+    sync.write_article(tmp_path, "d" * 40, {"name": "x"})
+    misses = tmp_path / "m.txt"
+    misses.write_text("d" * 40 + "\n", encoding="utf-8")
+    sync.drop_from_misses(misses, {"d" * 40})
+
+    assert len(synced) == 2, "both the cache write and the misses rewrite"

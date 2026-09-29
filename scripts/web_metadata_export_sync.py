@@ -32,6 +32,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,11 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 # before being given up on.
 WINDOW_DAYS = 179
 RETRY_SLICE_DAYS = 59
+
+# A 429 is waited out rather than retried immediately, up to this many times.
+THROTTLE_RETRIES = 3
+THROTTLE_BASE_WAIT = 30.0
+THROTTLE_MAX_WAIT = 300.0
 
 
 def safe_hash(video_hash: Any) -> str | None:
@@ -94,6 +100,28 @@ def _collect(batch: list[dict[str, Any]], found: dict[str, dict[str, Any]]) -> i
     return rejected
 
 
+# A window the server refused to serve for rate reasons, as opposed to one that
+# failed and may yet succeed in smaller pieces.
+THROTTLED = object()
+
+
+def retry_delay(response: Any, attempt_number: int) -> float:
+    """How long to wait after a 429: what the server asked for, or a backoff.
+
+    `Retry-After` may be seconds or an HTTP date; only the seconds form is read,
+    because that is what this API sends and a misparsed date would either sleep
+    for nothing or for hours. Capped either way, since this is run by hand.
+    """
+    header = ""
+    try:
+        header = (response.headers.get("Retry-After") or "").strip()
+    except Exception:
+        header = ""
+    if header.isdigit():
+        return min(float(header), THROTTLE_MAX_WAIT)
+    return min(THROTTLE_BASE_WAIT * (2**attempt_number), THROTTLE_MAX_WAIT)
+
+
 def articles_in_period(
     client: Any, since: dt.datetime, until: dt.datetime
 ) -> tuple[dict[str, dict[str, Any]], list[tuple[dt.datetime, dt.datetime]]]:
@@ -113,13 +141,28 @@ def articles_in_period(
     failed: list[tuple[dt.datetime, dt.datetime]] = []
     rejected = 0
 
-    def attempt(start: dt.datetime, end: dt.datetime) -> list[dict[str, Any]] | None:
+    def attempt(
+        start: dt.datetime, end: dt.datetime, budget: int = THROTTLE_RETRIES
+    ) -> list[dict[str, Any]] | object | None:
         try:
             return fetch_window(client, start, end)
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (401, 403):
+            status = exc.response.status_code
+            if status in (401, 403):
                 raise
-            print(f"  window {start.date()} to {end.date()}: {exc.response.status_code}")
+            if status == 429:
+                # Not a flaky window. Slicing a throttled request turns one
+                # refused call into four, at the moment the server is shedding
+                # load, which is how a soft limit becomes a blocked token
+                # (Tenki on #93). Wait the period out, then stop asking.
+                if budget <= 0:
+                    print(f"  window {start.date()} to {end.date()}: 429, giving up")
+                    return THROTTLED
+                delay = retry_delay(exc.response, THROTTLE_RETRIES - budget)
+                print(f"  window {start.date()} to {end.date()}: 429, waiting {delay:.0f}s")
+                time.sleep(delay)
+                return attempt(start, end, budget - 1)
+            print(f"  window {start.date()} to {end.date()}: {status}")
             return None
         except Exception as exc:  # network, timeout, malformed zip
             print(f"  window {start.date()} to {end.date()}: {type(exc).__name__}: {exc}"[:160])
@@ -127,18 +170,33 @@ def articles_in_period(
 
     for start, end in windows(since, until, WINDOW_DAYS):
         batch = attempt(start, end)
+        if batch is THROTTLED:
+            failed.append((start, end))
+            continue
         if batch is not None:
-            rejected += _collect(batch, found)
+            rejected += _collect(batch, found)  # type: ignore[arg-type]
             continue
         for slice_start, slice_end in windows(start, end, RETRY_SLICE_DAYS):
             sliced = attempt(slice_start, slice_end)
-            if sliced is None:
+            if sliced is None or sliced is THROTTLED:
                 failed.append((slice_start, slice_end))
                 continue
-            rejected += _collect(sliced, found)
+            rejected += _collect(sliced, found)  # type: ignore[arg-type]
     if rejected:
         print(f"  {rejected} article(s) skipped: unusable video_hash")
     return found, failed
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Make a rename durable. Without this the file can survive a crash while
+    the directory entry pointing at it does not (Tenki on #93)."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass  # not every filesystem allows it; the rename itself still stands
+    finally:
+        os.close(fd)
 
 
 def write_article(directory: Path, video_hash: str, article: dict[str, Any]) -> None:
@@ -159,6 +217,7 @@ def write_article(directory: Path, video_hash: str, article: dict[str, Any]) -> 
             handle.flush()
             os.fsync(handle.fileno())
         Path(tmp).replace(directory / f"{video_hash}.json")
+        _fsync_dir(directory)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
@@ -182,6 +241,7 @@ def drop_from_misses(path: Path, recovered: set[str]) -> int:
         handle.flush()
         os.fsync(handle.fileno())
     Path(tmp).replace(path)
+    _fsync_dir(path.parent)
     return len(kept) - len(remaining)
 
 
