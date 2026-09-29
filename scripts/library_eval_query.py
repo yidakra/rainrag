@@ -40,7 +40,7 @@ DEFAULT_GOLD = REPO_ROOT / "data" / "library_gold.json"
 
 def load_episodes(path: Path, programs_path: Path | None = None) -> list:
     from rainrag.library_programs import load_programmes
-    from rainrag.library_similar import Episode, dedupe_latest
+    from rainrag.library_similar import Episode, dedupe_latest, split_people_from_subjects
 
     # Same speaker rule as the interface, or the eval measures a ranking
     # nobody sees.
@@ -61,7 +61,10 @@ def load_episodes(path: Path, programs_path: Path | None = None) -> list:
     # The tag file is appended to, so a re-tagged episode has more than one
     # row. Counting those separately would overstate the pool and rank the
     # same episode twice.
-    return dedupe_latest(episodes)
+    #
+    # Person names then leave the theme axis, exactly as the app does it, or
+    # the eval would be measuring a ranking nobody sees.
+    return split_people_from_subjects(dedupe_latest(episodes))
 
 
 def main(argv: list[str] | None = None) -> int:
