@@ -2789,6 +2789,16 @@ def main():
     st.title(get_text("title", lang))
     st.caption(get_text("subtitle", lang))
 
+    # A permanent link to one episode, for the archive material that has no
+    # page on the site to link to. Handled before the mode selector because it
+    # is a destination, not a mode: the editor arrives here from a saved link.
+    from ui_library import render_episode_page, requested_episode
+
+    episode_hash = requested_episode(st.query_params)
+    if episode_hash:
+        render_episode_page(episode_hash, lang)
+        return
+
     # Search-mode selector: content RAG / name search / single-video upload
     modes = ["content", "name", "video", "library"]
     current_mode = (
