@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -1166,3 +1168,23 @@ def test_the_page_plays_the_video_and_offers_the_transcript_beside_it(monkeypatc
 
     assert ("video", "https://a/aa/bb/h1.mp4?auth=t") in fake.calls
     assert any(c[0] == "markdown" and "h1.ru.vtt" in c[1] for c in fake.calls)
+
+
+def test_a_permalink_opened_without_the_tags_file_says_so_instead_of_crashing(
+    monkeypatch, tmp_path
+):
+    """The permalink is routed before the mode selector, so it bypasses the
+    library tab's guard and would reach an unguarded read (Tenki on #94)."""
+    import ui_library
+
+    fake = _FakePage()
+    monkeypatch.setattr(ui_library, "st", fake)
+    monkeypatch.setattr(ui_library, "TAGS_PATH", tmp_path / "absent.jsonl")
+    monkeypatch.setattr(
+        ui_library,
+        "_cached_episodes",
+        lambda *a: pytest.fail("the guard must return before any read"),
+    )
+    ui_library.render_episode_page("h1", "ru")
+
+    assert [c[0] for c in fake.calls] == ["button", "warning"]

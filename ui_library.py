@@ -1545,6 +1545,14 @@ def render_episode_page(video_hash: str, lang: str) -> None:
         st.query_params.clear()
         st.rerun()
 
+    # The same guard the library tab applies. This page is reached straight
+    # from a saved link, before the mode selector, so without it a checkout
+    # with no tags file answers the permalink with a FileNotFoundError
+    # traceback instead of a sentence (Tenki on #94).
+    if not TAGS_PATH.exists():
+        st.warning(_t("no_tags", lang, path=TAGS_PATH.name))
+        return
+
     episodes = _cached_episodes(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH))
     episode = next((e for e in episodes if e.video_hash == video_hash), None)
     if episode is None:
