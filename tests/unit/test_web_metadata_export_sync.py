@@ -53,7 +53,8 @@ class _Client:
         self.calls.append(int(span_days))
         if self.fail_all or (self.fail_wide and span_days > 100):
             raise RuntimeError("500 Internal Server Error")
-        return [{"video_hash": f"h{int(start_time)}", "url": "https://tvrain.tv/x", "name": "x"}]
+        # A real 40-hex hash: the writer refuses anything else.
+        return [{"video_hash": f"{start_time:040x}", "url": "https://tvrain.tv/x", "name": "x"}]
 
 
 def test_a_failed_window_is_retried_in_slices_rather_than_lost():
@@ -82,11 +83,12 @@ def test_articles_without_a_hash_are_skipped():
 
 
 def test_write_article_publishes_by_rename(tmp_path):
-    write_article(tmp_path, "abc", {"video_hash": "abc", "name": "Заголовок"})
-    written = json.loads((tmp_path / "abc.json").read_text(encoding="utf-8"))
+    video_hash = "a" * 40
+    write_article(tmp_path, video_hash, {"video_hash": video_hash, "name": "Заголовок"})
+    written = json.loads((tmp_path / f"{video_hash}.json").read_text(encoding="utf-8"))
     assert written["name"] == "Заголовок"
     # No temporary files left behind.
-    assert [p.name for p in tmp_path.iterdir()] == ["abc.json"]
+    assert [p.name for p in tmp_path.iterdir()] == [f"{video_hash}.json"]
 
 
 def test_recovered_hashes_leave_the_misses_file(tmp_path):
@@ -115,3 +117,90 @@ def test_an_empty_misses_file_survives(tmp_path, content):
     misses = tmp_path / "misses.txt"
     misses.write_text(content, encoding="utf-8")
     assert drop_from_misses(misses, {"aaa"}) == 0
+
+
+class TestHashSafety:
+    """Tenki on #93: the export is remote input and the hash becomes a filename."""
+
+    def test_a_valid_hash_is_lowercased(self):
+        from web_metadata_export_sync import safe_hash
+
+        assert safe_hash("A" * 40) == "a" * 40
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "../../etc/passwd",
+            "/absolute/path",
+            "sub/dir",
+            "a" * 39,
+            "a" * 41,
+            "z" * 40,
+            "",
+            "   ",
+            None,
+            12345,
+        ],
+    )
+    def test_anything_that_is_not_a_bare_40_hex_string_is_refused(self, bad):
+        from web_metadata_export_sync import safe_hash
+
+        assert safe_hash(bad) is None
+
+    def test_write_article_refuses_an_unsafe_hash_rather_than_writing_it(self, tmp_path):
+        from web_metadata_export_sync import write_article
+
+        with pytest.raises(ValueError):
+            write_article(tmp_path, "../escape", {"name": "x"})
+        assert list(tmp_path.iterdir()) == []
+
+    def test_articles_with_an_unusable_hash_never_reach_the_cache(self):
+        class Hostile:
+            def export_batch(self, start_time: int, end_time: int):
+                return [
+                    {"video_hash": "../../etc/passwd", "name": "bad"},
+                    {"video_hash": "b" * 40, "name": "good"},
+                ]
+
+        found, _ = articles_in_period(Hostile(), dt.datetime(2024, 1, 1), dt.datetime(2024, 2, 1))
+        assert list(found) == ["b" * 40]
+
+
+def test_an_auth_failure_is_raised_not_counted_as_a_flaky_window():
+    """A stale token would otherwise look exactly like the API's known 500s."""
+    import httpx
+
+    class Unauthorised:
+        def export_batch(self, start_time: int, end_time: int):
+            request = httpx.Request("GET", "https://library.tvrain.tv/article/export")
+            raise httpx.HTTPStatusError(
+                "401", request=request, response=httpx.Response(401, request=request)
+            )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        articles_in_period(Unauthorised(), dt.datetime(2024, 1, 1), dt.datetime(2024, 2, 1))
+
+
+def test_a_server_error_is_still_treated_as_a_flaky_window():
+    import httpx
+
+    class Broken:
+        def export_batch(self, start_time: int, end_time: int):
+            request = httpx.Request("GET", "https://library.tvrain.tv/article/export")
+            raise httpx.HTTPStatusError(
+                "500", request=request, response=httpx.Response(500, request=request)
+            )
+
+    found, failed = articles_in_period(Broken(), dt.datetime(2024, 1, 1), dt.datetime(2024, 2, 1))
+    assert found == {} and failed
+
+
+def test_naive_dates_are_read_as_utc_not_as_the_hosts_timezone():
+    """Local-time boundaries shift every window and can drop edge articles."""
+    from web_metadata_export_sync import _as_utc
+
+    naive = dt.datetime(2024, 1, 1)
+    assert _as_utc(naive).tzinfo is dt.timezone.utc
+    assert _as_utc(naive).timestamp() == dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc).timestamp()
+    aware = dt.datetime(2024, 1, 1, tzinfo=dt.timezone(dt.timedelta(hours=3)))
+    assert _as_utc(aware) == aware

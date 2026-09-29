@@ -29,10 +29,13 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +46,22 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 # before being given up on.
 WINDOW_DAYS = 179
 RETRY_SLICE_DAYS = 59
+
+
+def safe_hash(video_hash: Any) -> str | None:
+    """The hash as a filename, or None when it cannot be trusted as one.
+
+    The same rule `WebMetadataLoader._safe_metadata_hash` applies: 40 hex
+    characters, lowercased, no path separators. The export is remote input and
+    this value becomes a filename, so accepting it raw would let a malformed
+    or hostile `video_hash` write outside the cache (Tenki on #93).
+    """
+    candidate = str(video_hash or "").strip()
+    if not candidate or Path(candidate).name != candidate:
+        return None
+    if not re.fullmatch(r"[a-fA-F0-9]{40}", candidate):
+        return None
+    return candidate.lower()
 
 
 def windows(
@@ -63,6 +82,18 @@ def fetch_window(client: Any, start: dt.datetime, end: dt.datetime) -> list[dict
     return client.export_batch(start_time=int(start.timestamp()), end_time=int(end.timestamp()))
 
 
+def _collect(batch: list[dict[str, Any]], found: dict[str, dict[str, Any]]) -> int:
+    """Take the articles with a usable hash; returns how many were rejected."""
+    rejected = 0
+    for article in batch:
+        key = safe_hash(article.get("video_hash"))
+        if key is None:
+            rejected += 1
+            continue
+        found[key] = article
+    return rejected
+
+
 def articles_in_period(
     client: Any, since: dt.datetime, until: dt.datetime
 ) -> tuple[dict[str, dict[str, Any]], list[tuple[dt.datetime, dt.datetime]]]:
@@ -72,33 +103,54 @@ def articles_in_period(
     refusing everything because of that would recover nothing at all. The
     failures are returned so the caller can report exactly which periods went
     unchecked rather than implying full coverage.
+
+    An authentication failure is different and is raised, not absorbed. A stale
+    LIBRARY_API_TOKEN would otherwise look identical to the API's known
+    flakiness: every window "fails", nothing is recovered, and the operator is
+    told the export is empty (Tenki on #93).
     """
     found: dict[str, dict[str, Any]] = {}
     failed: list[tuple[dt.datetime, dt.datetime]] = []
-    for start, end in windows(since, until, WINDOW_DAYS):
+    rejected = 0
+
+    def attempt(start: dt.datetime, end: dt.datetime) -> list[dict[str, Any]] | None:
         try:
-            batch = fetch_window(client, start, end)
-        except Exception:
-            batch = None
-        if batch is None:
-            for slice_start, slice_end in windows(start, end, RETRY_SLICE_DAYS):
-                try:
-                    batch = fetch_window(client, slice_start, slice_end)
-                except Exception:
-                    failed.append((slice_start, slice_end))
-                    continue
-                for article in batch:
-                    if article.get("video_hash"):
-                        found[str(article["video_hash"])] = article
+            return fetch_window(client, start, end)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                raise
+            print(f"  window {start.date()} to {end.date()}: {exc.response.status_code}")
+            return None
+        except Exception as exc:  # network, timeout, malformed zip
+            print(f"  window {start.date()} to {end.date()}: {type(exc).__name__}: {exc}"[:160])
+            return None
+
+    for start, end in windows(since, until, WINDOW_DAYS):
+        batch = attempt(start, end)
+        if batch is not None:
+            rejected += _collect(batch, found)
             continue
-        for article in batch:
-            if article.get("video_hash"):
-                found[str(article["video_hash"])] = article
+        for slice_start, slice_end in windows(start, end, RETRY_SLICE_DAYS):
+            sliced = attempt(slice_start, slice_end)
+            if sliced is None:
+                failed.append((slice_start, slice_end))
+                continue
+            rejected += _collect(sliced, found)
+    if rejected:
+        print(f"  {rejected} article(s) skipped: unusable video_hash")
     return found, failed
 
 
 def write_article(directory: Path, video_hash: str, article: dict[str, Any]) -> None:
-    """Publish one article into the cache by rename."""
+    """Publish one article into the cache by rename.
+
+    Raises on a hash that cannot be a filename rather than writing it: callers
+    get their keys from `safe_hash`, so reaching here with a bad one is a bug.
+    """
+    key = safe_hash(video_hash)
+    if key is None:
+        raise ValueError(f"unsafe video_hash: {video_hash!r}")
+    video_hash = key
     directory.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{video_hash}.", suffix=".json")
     try:
@@ -133,6 +185,11 @@ def drop_from_misses(path: Path, recovered: set[str]) -> int:
     return len(kept) - len(remaining)
 
 
+def _as_utc(value: dt.datetime) -> dt.datetime:
+    """Read a naive datetime as UTC, keep an aware one as given."""
+    return value.replace(tzinfo=dt.timezone.utc) if value.tzinfo is None else value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--since", default="2019-01-01")
@@ -151,8 +208,15 @@ def main(argv: list[str] | None = None) -> int:
 
     from rainrag.web_metadata_api import WebMetadataAPIClient
 
-    since = dt.datetime.fromisoformat(args.since)
-    until = dt.datetime.fromisoformat(args.until) if args.until else dt.datetime.now()
+    # UTC throughout: naive datetimes take the host's offset in timestamp(),
+    # which shifts every window boundary and can drop articles that sit near an
+    # edge out of all of them (Tenki on #93).
+    since = _as_utc(dt.datetime.fromisoformat(args.since))
+    until = (
+        _as_utc(dt.datetime.fromisoformat(args.until))
+        if args.until
+        else dt.datetime.now(dt.timezone.utc)
+    )
     directory = Path(args.metadata_dir)
 
     client = WebMetadataAPIClient.from_env()
