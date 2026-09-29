@@ -1025,10 +1025,14 @@ def _render_suggestion(
         if kind == "vtt":
             meta_bits.append(_t("transcript_only_mark", lang))
     meta = " · ".join(x for x in meta_bits if x)
+    # Stand-ins arrive escaped; a CMS title never was, and it reaches markdown
+    # on both paths below, where a bracket or a backtick in it would break out
+    # of the link or the colour span (Tenki on #94).
+    label = title if stand_in else escape_markdown(title)
     if kind is None:
         # A CMS card, or nothing to link at all. Its page lives on tvrain.tv,
         # so an ordinary link in a new tab is exactly right.
-        line = f"**{rank}.** [{title}]({url})" if url else f"**{rank}.** {title}"
+        line = f"**{rank}.** [{label}]({url})" if url else f"**{rank}.** {label}"
         st.markdown(f"{line}  \n{meta}")
     else:
         # The episode page is inside this app, so it is opened in place: see
@@ -1038,7 +1042,6 @@ def _render_suggestion(
         # its label in the body colour, which is exactly what these rows
         # looked like when they were dead text and the editor could not tell
         # there was anything to open.
-        label = title if stand_in else escape_markdown(title)
         st.button(
             f"**{rank}.** :blue[{label}]",
             key=episode_open_key(column, seed_id, e, rank),

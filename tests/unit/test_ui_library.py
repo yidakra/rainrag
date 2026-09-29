@@ -1323,3 +1323,17 @@ def test_the_permalink_a_card_hands_out_is_lower_case(monkeypatch):
     mixed = "AbCd" + "e" * 36
     url, kind = ui_library.episode_link(_ep(mixed), {mixed.lower(): {"video": "a/b.mp4"}})
     assert url == f"?video={mixed.lower()}" and kind == "video"
+
+
+def test_a_cms_title_is_escaped_on_the_link_path_too(monkeypatch):
+    """Stand-ins arrive escaped; a CMS title never was, and it lands inside
+    a markdown link label where a bracket breaks out of it."""
+    import ui_library
+
+    fake = _FakeSt()
+    monkeypatch.setattr(ui_library, "st", fake)
+    e = _ep("h1", title="Итоги [дня]", url="https://tvrain.tv/x", date="2020-01-01")
+    ui_library._render_suggestion(1, e, "почему", "ru", column="theme")
+
+    line = [c for c in fake.calls if c[0] == "markdown"][0][1]
+    assert r"\[дня\]" in line and "](https://tvrain.tv/x)" in line
