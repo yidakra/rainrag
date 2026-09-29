@@ -1396,8 +1396,15 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
             hide_index=True,
             width="stretch",
             column_config={
-                c: st.column_config.NumberColumn(format=number_format)
-                for c in (total, median, best)
+                total: st.column_config.NumberColumn(format=number_format),
+                best: st.column_config.NumberColumn(format=number_format),
+                # The median of an even number of uploads is a half: two
+                # videos with 1 and 2 views have a median of 1.5. `%,d`
+                # truncates that to 1, and the old string formatting rounded
+                # it to 2, so this column is the one that needs decimals
+                # (CodeRabbit on #93, where an earlier copy of this change
+                # had landed by accident).
+                median: st.column_config.NumberColumn(format="%,.2f"),
             },
         )
 

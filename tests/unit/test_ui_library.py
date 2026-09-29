@@ -1080,6 +1080,8 @@ def test_the_performance_tables_hand_streamlit_numbers_not_formatted_text():
     import ui_library
 
     body = inspect.getsource(ui_library.render_performance_tab)
-    assert body.count("st.column_config.NumberColumn(format=number_format)") == 2
+    assert body.count("st.column_config.NumberColumn(format=number_format)") == 3
+    # The median can be a half and the counts cannot, so it formats apart.
+    assert 'NumberColumn(format="%,.2f")' in body
     assert ".style.format" not in body, "a styled frame sorts by its display text"
     assert "def _fmt" not in body, "nothing is turned into a string before it is sorted"
