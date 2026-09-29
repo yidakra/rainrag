@@ -322,3 +322,21 @@ def test_a_published_article_survives_a_crash_right_after_the_rename(tmp_path, m
     sync.drop_from_misses(misses, {"d" * 40})
 
     assert len(synced) == 2, "both the cache write and the misses rewrite"
+
+
+def test_a_failed_misses_rewrite_leaves_no_temporary_file_behind(tmp_path, monkeypatch):
+    """A full disk would otherwise litter data/ with a dot-file per run."""
+    import web_metadata_export_sync as sync
+
+    misses = tmp_path / "misses.txt"
+    misses.write_text("e" * 40 + "\n", encoding="utf-8")
+
+    def _boom(*a, **kw):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(sync.os, "fsync", _boom)
+    with pytest.raises(OSError):
+        sync.drop_from_misses(misses, {"e" * 40})
+
+    assert [p.name for p in tmp_path.iterdir()] == ["misses.txt"]
+    assert misses.read_text(encoding="utf-8").split() == ["e" * 40], "untouched"

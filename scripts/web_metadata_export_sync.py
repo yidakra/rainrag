@@ -236,11 +236,17 @@ def drop_from_misses(path: Path, recovered: set[str]) -> int:
     if len(remaining) == len(kept):
         return 0
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(remaining) + ("\n" if remaining else ""))
-        handle.flush()
-        os.fsync(handle.fileno())
-    Path(tmp).replace(path)
+    # Cleaned up like the article writer's: a full disk would otherwise leave
+    # a dot-file in data/ behind on every run (Tenki on #93).
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(remaining) + ("\n" if remaining else ""))
+            handle.flush()
+            os.fsync(handle.fileno())
+        Path(tmp).replace(path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
     _fsync_dir(path.parent)
     return len(kept) - len(remaining)
 
