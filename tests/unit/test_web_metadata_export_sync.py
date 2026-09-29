@@ -450,11 +450,44 @@ def test_one_failed_write_does_not_abandon_the_rest_of_the_run(tmp_path, monkeyp
     monkeypatch.setattr(
         api.WebMetadataAPIClient, "from_env", classmethod(lambda cls, **kw: _Export())
     )
-    assert (
-        sync.main(["--since", "2024-01-01", "--until", "2024-01-10", "--misses-file", str(misses)])
-        == 0
+    code = sync.main(
+        ["--since", "2024-01-01", "--until", "2024-01-10", "--misses-file", str(misses)]
     )
 
+    assert code == 1, "the run finished, but not everything it found was recovered"
     assert (cache / f"{good}.json").exists(), "the run carried on past the failure"
     assert misses.read_text(encoding="utf-8").split() == [bad], "only the one still missing"
     assert "write failed" in capsys.readouterr().out
+
+
+def _run(monkeypatch, tmp_path, client, extra=()):
+    import web_metadata_export_sync as sync
+
+    import rainrag.web_metadata_api as api
+
+    cache = tmp_path / "web_metadata"
+    cache.mkdir(exist_ok=True)
+    monkeypatch.setattr("rainrag.config.load_config", lambda p: _FakeConfig(cache))
+    monkeypatch.setattr(api.WebMetadataAPIClient, "from_env", classmethod(lambda cls, **kw: client))
+    return sync.main(
+        [
+            "--since",
+            "2024-01-01",
+            "--until",
+            "2024-03-01",
+            "--misses-file",
+            str(tmp_path / "misses.txt"),
+            *extra,
+        ]
+    )
+
+
+def test_a_run_that_could_not_check_the_whole_period_exits_non_zero(monkeypatch, tmp_path):
+    """Otherwise a run where every window 500s looks like full coverage, and
+    the caller concludes those videos genuinely have no article."""
+    assert _run(monkeypatch, tmp_path, _Client(fail_all=True)) == 1
+    assert _run(monkeypatch, tmp_path, _Client(fail_all=True), ("--dry-run",)) == 1
+
+
+def test_a_complete_run_exits_zero(monkeypatch, tmp_path):
+    assert _run(monkeypatch, tmp_path, _Client()) == 0

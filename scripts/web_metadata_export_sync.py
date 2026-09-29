@@ -332,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  not in the local cache: {len(new)}")
     if args.dry_run:
         print("dry run, nothing written")
-        return 0
+        return 1 if failed else 0
 
     # One failed write does not abandon the rest of the run. Raising here
     # jumped straight past the miss-clearing, leaving every article already
@@ -361,7 +361,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {len(unwritten)} failed to write and stay in the misses file")
     print(f"  cleared from the misses file: {cleared}")
     print("\nNext: scripts/backfill_web_metadata.py, then library_catalogue.py --refresh.")
-    return 0
+    # Non-zero when part of the period went unchecked, so a run where every
+    # window 500s or exhausts its 429 budget cannot look like full coverage
+    # (Tenki on #93). Everything recovered is already on disk and the script
+    # is idempotent, so the answer to a non-zero exit is to run it again for
+    # the periods named above.
+    return 1 if (failed or unwritten) else 0
 
 
 if __name__ == "__main__":
