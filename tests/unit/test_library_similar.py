@@ -554,7 +554,127 @@ class TestOneSpellingIsOnePerson:
         assert matched == [("быков", "дмитрий"), ("быков", "юрий")]
 
     def test_a_bare_surname_is_still_a_full_match_for_a_single_seed_speaker(self):
+        """With one Быков in the seed, a bare «Быков» can only be him."""
         from rainrag.library_similar import shared_people
 
         names, matched = shared_people(["Дмитрий Быков"], ["Быков"])
         assert names == ["Быков"] and matched == [("быков", "дмитрий")]
+
+
+# ------------------------------------------------ the headline names the seed
+
+
+class TestHeadlineSpeakers:
+    """A seed speaks as the person its title names, and only as that person.
+
+    «Юрий Шевчук: «Сейчас даже Высоцкий не объединил бы страну»» (Hard Day's
+    Night, 2016) credits three guests: Шевчук, and the two journalists who
+    interviewed him. Seeding on it ranked an interview *with* one of those
+    journalists second as «тот же спикер» (reported by Varya, 2026-09-25).
+    """
+
+    def test_title_people_reads_the_leading_name(self):
+        """One name, a bare surname, a dash instead of a colon, two surnames."""
+        from rainrag.library_similar import title_people
+
+        assert title_people("Юрий Шевчук: «Сейчас даже Высоцкий не объединил бы страну»") == [
+            "Юрий Шевчук"
+        ]
+        assert title_people("Белковский: «Керри прибыл в Сочи»") == ["Белковский"]
+        assert title_people('Стас Намин - "Сильнее времени"') == ["Стас Намин"]
+        assert title_people("Мединский и Быков: «Скрепы»") == ["Мединский", "Быков"]
+
+    def test_title_people_reads_every_joined_full_name(self):
+        """Two full names, three, a mixed list, and a comma with no space.
+
+        The first joiner was «, | и » followed by a literal space, so two full
+        names joined by «и» matched only with a double space and the seed fell
+        back to every credit (Tenki and CodeRabbit on #92).
+        """
+        from rainrag.library_similar import title_people
+
+        assert title_people("Юрий Шевчук и Андрей Бухарин: «Салон»") == [
+            "Юрий Шевчук",
+            "Андрей Бухарин",
+        ]
+        assert title_people("Иван Иванов, Пётр Петров и Анна Сидорова: «Трое»") == [
+            "Иван Иванов",
+            "Пётр Петров",
+            "Анна Сидорова",
+        ]
+        assert title_people("Иванов,Петров: «Двое»") == ["Иванов", "Петров"]
+        assert title_people("Иванов  и  Петров: «Двое»") == ["Иванов", "Петров"]
+
+    def test_title_people_ignores_names_inside_the_quotation(self):
+        """A name after the quotation, or with no separator, is not a headline."""
+        from rainrag.library_similar import title_people
+
+        # The name after the quotation is the guest, but the title does not
+        # lead with it, so nothing is claimed rather than something wrong.
+        assert title_people("«Они же не говорят ртом»: Роман Баданин о Кремле") == []
+        assert title_people("Спор Владимира Мединского и Дмитрия Быкова") == []
+        assert title_people(None) == []
+
+    def test_headline_speakers_are_the_credited_people_the_title_names(self):
+        """The Shevchuk seed speaks as Шевчук; the two journalists are set aside."""
+        from rainrag.library_similar import headline_speakers, seed_speakers
+
+        shevchuk = ep(
+            "seed",
+            title="Юрий Шевчук: «Сейчас даже Высоцкий не объединил бы страну»",
+            speakers=["Юрий Шевчук", "Андрей Бухарин", "Евгений Левкович"],
+        )
+        assert headline_speakers(shevchuk) == ["Юрий Шевчук"]
+        assert seed_speakers(shevchuk) == ["Юрий Шевчук"]
+
+    def test_a_title_naming_nobody_credited_changes_nothing(self):
+        """A leading word that matches no credit leaves the credit list whole."""
+        from rainrag.library_similar import headline_speakers, seed_speakers
+
+        # «Москва» parses as a name; it matches no credit, so the whole
+        # credit list stands. Same for a title with no leading name at all.
+        city = ep("c", title="Москва: «город»", speakers=["Иван Иванов", "Пётр Петров"])
+        assert headline_speakers(city) == []
+        assert seed_speakers(city) == ["Иван Иванов", "Пётр Петров"]
+        plain = ep("p", title="Что ждет гастарбайтеров", speakers=["Иван Иванов"])
+        assert seed_speakers(plain) == ["Иван Иванов"]
+
+    def test_a_co_interviewer_is_not_the_same_speaker(self):
+        """Varya's case: an interview with Бухарин is not «тот же спикер»."""
+        from rainrag.library_similar import find_similar
+
+        shevchuk = ep(
+            "seed",
+            title="Юрий Шевчук: «Сейчас даже Высоцкий не объединил бы страну»",
+            speakers=["Юрий Шевчук", "Андрей Бухарин", "Евгений Левкович"],
+            subject=["рок-музыка"],
+        )
+        with_shevchuk = ep("s", speakers=["Юрий Шевчук"], subject=["рок-музыка"])
+        with_bukharin = ep(
+            "b",
+            title="Андрей Бухарин: «Я держал такой салон»",
+            speakers=["Андрей Бухарин"],
+            subject=["рок-музыка"],
+        )
+        ranked = {
+            r.episode.video_hash: r for r in find_similar(shevchuk, [with_shevchuk, with_bukharin])
+        }
+        assert ranked["s"].shared_speakers == ["Юрий Шевчук"]
+        assert ranked["b"].shared_speakers == []
+
+    def test_the_rule_narrows_the_seed_only(self):
+        """Бухарин did speak in the Shevchuk episode, so it is still his match."""
+        from rainrag.library_similar import find_similar
+
+        shevchuk = ep(
+            "seed",
+            title="Юрий Шевчук: «Сейчас даже Высоцкий не объединил бы страну»",
+            speakers=["Юрий Шевчук", "Андрей Бухарин", "Евгений Левкович"],
+        )
+        with_bukharin = ep(
+            "b",
+            title="Андрей Бухарин: «Я держал такой салон»",
+            speakers=["Андрей Бухарин"],
+        )
+        ranked = find_similar(with_bukharin, [shevchuk])
+        assert ranked[0].shared_speakers == ["Андрей Бухарин"]

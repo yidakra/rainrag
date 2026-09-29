@@ -33,6 +33,7 @@ from rainrag.library_similar import (
     Episode,
     normalise_tag,
     person_identities,
+    seed_speakers,
     shared_people,
 )
 
@@ -121,12 +122,16 @@ def speaker_axis(seed: Episode, candidate: Episode) -> tuple[float | None, list[
     thing an editor most wants surfaced, and because the reason line says
     «общие темы» only, so nothing claims a speaker match that was never checked.
     """
-    seed_people = person_identities(seed.speakers)
+    # The headline's people when the title names one of the credits, so a
+    # panel interview is matched on its guest and not on the journalists at
+    # the table (see `headline_speakers`). The candidate side stays whole.
+    matched_on = seed_speakers(seed)
+    seed_people = person_identities(matched_on)
     if not seed_people:
         return None, []
     if not person_identities(candidate.speakers):
         return None, []
-    names, shared = shared_people(seed.speakers, candidate.speakers)
+    names, shared = shared_people(matched_on, candidate.speakers)
     # Numerator and denominator are the same notion of a person, so a seed
     # crediting two different Быковы cannot score 1.0 on one of them.
     return len(shared) / len(seed_people), names
