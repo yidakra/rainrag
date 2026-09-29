@@ -1133,10 +1133,16 @@ class _FakePage(_FakeSt):
         self.calls.append(("code", text))
 
 
-def _page(monkeypatch, media: dict[str, str], episodes=None):
+def _page(monkeypatch, tmp_path, media: dict[str, str], episodes=None):
     import ui_library
 
     fake = _FakePage()
+    # The real tags file is not in the repository, and the page returns early
+    # without one, so these tests passed only on a checkout that had been run
+    # (CodeRabbit on #94). Its contents are irrelevant: the loader is stubbed.
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text("", encoding="utf-8")
+    monkeypatch.setattr(ui_library, "TAGS_PATH", tags)
     monkeypatch.setattr(ui_library, "st", fake)
     monkeypatch.setattr(ui_library, "_cached_episodes", lambda *a: episodes or [_episode("h1")])
     monkeypatch.setattr(ui_library, "_cached_untitled_titles", lambda *a: {})
@@ -1148,10 +1154,10 @@ def _page(monkeypatch, media: dict[str, str], episodes=None):
     return fake
 
 
-def test_a_transcript_only_episode_still_gets_its_transcript(monkeypatch):
+def test_a_transcript_only_episode_still_gets_its_transcript(monkeypatch, tmp_path):
     """The card marks these "only transcript" and links them, so the page owes
     one. Showing "no media" here would be the dead end the link replaced."""
-    fake = _page(monkeypatch, {"vtt": "aa/bb/h1.ru.vtt"})
+    fake = _page(monkeypatch, tmp_path, {"vtt": "aa/bb/h1.ru.vtt"})
 
     kinds = [c[0] for c in fake.calls]
     assert "info" not in kinds, "a transcript is media enough"
@@ -1159,15 +1165,15 @@ def test_a_transcript_only_episode_still_gets_its_transcript(monkeypatch):
     assert any(c[0] == "markdown" and "h1.ru.vtt" in c[1] for c in fake.calls)
 
 
-def test_an_episode_with_nothing_in_the_archive_says_so(monkeypatch):
-    fake = _page(monkeypatch, {})
+def test_an_episode_with_nothing_in_the_archive_says_so(monkeypatch, tmp_path):
+    fake = _page(monkeypatch, tmp_path, {})
 
     assert [c for c in fake.calls if c[0] == "info"], "the editor is told, not shown a blank page"
     assert not [c for c in fake.calls if c[0] in ("video", "markdown")]
 
 
-def test_the_page_plays_the_video_and_offers_the_transcript_beside_it(monkeypatch):
-    fake = _page(monkeypatch, {"video": "aa/bb/h1.mp4", "vtt": "aa/bb/h1.ru.vtt"})
+def test_the_page_plays_the_video_and_offers_the_transcript_beside_it(monkeypatch, tmp_path):
+    fake = _page(monkeypatch, tmp_path, {"video": "aa/bb/h1.mp4", "vtt": "aa/bb/h1.ru.vtt"})
 
     assert ("video", "https://a/aa/bb/h1.mp4?auth=t") in fake.calls
     assert any(c[0] == "markdown" and "h1.ru.vtt" in c[1] for c in fake.calls)
