@@ -29,6 +29,7 @@ import re
 import threading
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 
 try:
@@ -803,7 +804,11 @@ def load_untitled_media(path: Path = UNTITLED_MEDIA_PATH) -> dict[str, dict[str,
 @st.cache_data(show_spinner=False)
 def _cached_untitled_media(stat_key: tuple[int, int]) -> dict[str, dict[str, str]]:
     del stat_key
-    return load_untitled_media()
+    # Keyed in lower case, once, here. A hash keeps whatever case the archive
+    # filename had, and a permalink carries it lowercased, so a mixed-case
+    # hash would produce a link of ours that answers "episode not found"
+    # (CodeRabbit on #94).
+    return {key.lower(): value for key, value in load_untitled_media().items()}
 
 
 def episode_link(
@@ -819,7 +824,7 @@ def episode_link(
     """
     if e.url:
         return e.url, None
-    entry = (media or {}).get(e.video_hash) or {}
+    entry = (media or {}).get(e.video_hash.lower()) or {}
     for kind in ("video", "vtt"):
         relative = entry.get(kind)
         # Built and thrown away, only to answer "could this page serve
@@ -832,7 +837,7 @@ def episode_link(
             # every media path rather than that one. This link holds no
             # credential and does not expire: the token is minted when the
             # page is opened (Varya, 2026-09-29).
-            return f"?{EPISODE_PARAM}={e.video_hash}", kind
+            return f"?{EPISODE_PARAM}={e.video_hash.lower()}", kind
     return None, None
 
 
@@ -964,6 +969,30 @@ def feedback_widget_key(column: str, seed_id: str, e: Episode) -> str:
     return f"fb_{column}_{seed_id}_{e.video_hash}"
 
 
+def episode_open_key(column: str, seed_id: str | None, e: Episode, rank: int) -> str:
+    """Widget key for one suggestion's open button.
+
+    Keyed like the judgment buttons, on ``video_hash`` rather than
+    ``content_id``, for the same reason: several archive cuts of one broadcast
+    can share a list, and a collision takes the whole page down. The rank is in
+    the key too, because a shortlist can hold the same cut a second time.
+    """
+    return f"open_{column}_{seed_id}_{rank}_{e.video_hash}"
+
+
+def _open_episode(video_hash: str) -> None:
+    """Show the episode page in this session, without a page load.
+
+    A markdown link would do the same, and one was the first attempt, but
+    Streamlit renders links with ``target="_blank"``. The new tab is a new
+    Streamlit session, and authentication lives in session state, so the
+    editor typed the password again for every episode she opened. Setting the
+    query parameter reruns in place; the address bar still ends up holding the
+    permanent link, which the page itself also prints for copying.
+    """
+    st.query_params[EPISODE_PARAM] = video_hash
+
+
 def _render_suggestion(
     rank: int,
     e: Episode,
@@ -985,7 +1014,6 @@ def _render_suggestion(
     """
     title, stand_in = display_title(e, lang, synthetic)
     url, kind = episode_link(e, media)
-    line = f"**{rank}.** [{title}]({url})" if url else f"**{rank}.** {title}"
     meta_bits = [e.program, e.date, _fmt_minutes(e.duration_seconds, lang)]
     if stand_in:
         meta_bits.append(_t("no_cms_mark", lang))
@@ -997,7 +1025,28 @@ def _render_suggestion(
         if kind == "vtt":
             meta_bits.append(_t("transcript_only_mark", lang))
     meta = " · ".join(x for x in meta_bits if x)
-    st.markdown(f"{line}  \n{meta}")
+    if kind is None:
+        # A CMS card, or nothing to link at all. Its page lives on tvrain.tv,
+        # so an ordinary link in a new tab is exactly right.
+        line = f"**{rank}.** [{title}]({url})" if url else f"**{rank}.** {title}"
+        st.markdown(f"{line}  \n{meta}")
+    else:
+        # The episode page is inside this app, so it is opened in place: see
+        # ``_open_episode``. Tertiary is Streamlit's borderless, link-coloured
+        # button, so the row still reads as a title rather than a control.
+        # Coloured like the links above it. Streamlit's tertiary button draws
+        # its label in the body colour, which is exactly what these rows
+        # looked like when they were dead text and the editor could not tell
+        # there was anything to open.
+        label = title if stand_in else escape_markdown(title)
+        st.button(
+            f"**{rank}.** :blue[{label}]",
+            key=episode_open_key(column, seed_id, e, rank),
+            type="tertiary",
+            on_click=_open_episode,
+            args=(e.video_hash,),
+        )
+        st.markdown(meta)
     st.caption(explanation)
     if seed_id and e.content_id:
         # One thumbs widget under the caption, not two buttons beside the
@@ -1531,6 +1580,24 @@ def requested_episode(params: Mapping[str, object]) -> str | None:
     return candidate.lower() if _HASH_RE.match(candidate) else None
 
 
+def _absolute_permalink(video_hash: str) -> str | None:
+    """The full address of this page, to paste into a content plan.
+
+    Taken from the address the browser actually used. There is no configured
+    public URL for the app, and a guessed host would print a link that does
+    not open; printing nothing is better than that.
+    """
+    try:
+        current = str(getattr(st.context, "url", "") or "")
+    except Exception:
+        return None
+    parts = urlsplit(current)
+    if not parts.scheme or not parts.netloc:
+        return None
+    query = urlencode({EPISODE_PARAM: video_hash})
+    return urlunsplit((parts.scheme, parts.netloc, parts.path or "/", query, ""))
+
+
 def render_episode_page(video_hash: str, lang: str) -> None:
     """One episode, opened by permanent link.
 
@@ -1554,7 +1621,7 @@ def render_episode_page(video_hash: str, lang: str) -> None:
         return
 
     episodes = _cached_episodes(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH))
-    episode = next((e for e in episodes if e.video_hash == video_hash), None)
+    episode = next((e for e in episodes if e.video_hash.lower() == video_hash), None)
     if episode is None:
         st.warning(_t("episode_page_unknown", lang))
         return
@@ -1590,6 +1657,9 @@ def render_episode_page(video_hash: str, lang: str) -> None:
     if vtt_url:
         st.markdown(f"[{_t('episode_page_transcript', lang)}]({vtt_url})")
     st.caption(_t("episode_page_hint", lang))
+    permalink = _absolute_permalink(video_hash)
+    if permalink:
+        st.code(permalink, language=None)
 
 
 def render_library_mode(lang: str) -> None:

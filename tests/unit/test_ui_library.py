@@ -830,6 +830,10 @@ class _FakeSt:
         self.calls.append(("feedback", kind, key, dict(self.session_state), kwargs))
         return self.session_state.get(key)
 
+    def button(self, label, **kw):
+        self.calls.append(("button", label, kw))
+        return False
+
 
 def _episode(video_hash: str, content_id: str = "484740"):
     from rainrag.library_similar import Episode
@@ -1113,10 +1117,6 @@ class _FakePage(_FakeSt):
         super().__init__()
         self.query_params: dict = {}
 
-    def button(self, label):
-        self.calls.append(("button", label))
-        return False
-
     def subheader(self, text):
         self.calls.append(("subheader", text))
 
@@ -1128,6 +1128,9 @@ class _FakePage(_FakeSt):
 
     def warning(self, text):
         self.calls.append(("warning", text))
+
+    def code(self, text, language=None):
+        self.calls.append(("code", text))
 
 
 def _page(monkeypatch, media: dict[str, str], episodes=None):
@@ -1188,3 +1191,129 @@ def test_a_permalink_opened_without_the_tags_file_says_so_instead_of_crashing(
     ui_library.render_episode_page("h1", "ru")
 
     assert [c[0] for c in fake.calls] == ["button", "warning"]
+
+
+def test_an_uncarded_episode_opens_in_place_rather_than_in_a_new_tab(monkeypatch):
+    """Streamlit renders markdown links with target="_blank", and a new tab is
+    a new session: authentication lives in session state, so a link would ask
+    for the password on every episode the editor opened."""
+    import ui_library
+
+    fake = _FakeSt()
+    monkeypatch.setattr(ui_library, "st", fake)
+    monkeypatch.setattr(ui_library, "archive_media_url", lambda rel, kind: f"https://a/{rel}")
+    e = _ep("h1", title=None, date="2020-01-01", duration_seconds=600)
+    ui_library._render_suggestion(
+        2, e, "почему", "ru", column="theme", media={"h1": {"video": "a/b.mp4"}}
+    )
+
+    buttons = [c for c in fake.calls if c[0] == "button"]
+    assert len(buttons) == 1, "the title itself is the control"
+    assert buttons[0][2]["type"] == "tertiary"
+    assert buttons[0][2]["on_click"] is ui_library._open_episode
+    assert buttons[0][2]["args"] == ("h1",)
+    assert not [c for c in fake.calls if c[0] == "markdown" and "](" in c[1]], "no link to follow"
+
+
+def test_the_open_button_sets_the_permalink_parameter(monkeypatch):
+    import ui_library
+
+    fake = _FakeSt()
+    fake.query_params = {}
+    monkeypatch.setattr(ui_library, "st", fake)
+    ui_library._open_episode("h9")
+
+    assert fake.query_params == {ui_library.EPISODE_PARAM: "h9"}
+
+
+def test_a_cms_carded_episode_keeps_its_ordinary_link(monkeypatch):
+    """Its page is on tvrain.tv, so a new tab is exactly right."""
+    import ui_library
+
+    fake = _FakeSt()
+    monkeypatch.setattr(ui_library, "st", fake)
+    ui_library._render_suggestion(1, _episode("h1"), "почему", "ru", column="theme")
+
+    assert not [c for c in fake.calls if c[0] == "button"]
+    assert any(c[0] == "markdown" and "](https://example.test/e)" in c[1] for c in fake.calls)
+
+
+def test_the_page_prints_its_own_permanent_address_for_copying(monkeypatch):
+    """The editor puts this into a content plan, so it has to be selectable
+    text and it has to be the address that actually opens."""
+    import ui_library
+
+    class _Ctx:
+        url = "https://rag.tvrain.io/?video=old&x=1#frag"
+
+    monkeypatch.setattr(ui_library.st, "context", _Ctx(), raising=False)
+    assert ui_library._absolute_permalink("h7") == "https://rag.tvrain.io/?video=h7"
+
+
+def test_no_address_is_printed_when_streamlit_cannot_say_what_it_is(monkeypatch):
+    """A guessed host would be a link that does not open."""
+    import ui_library
+
+    class _Ctx:
+        url = ""
+
+    monkeypatch.setattr(ui_library.st, "context", _Ctx(), raising=False)
+    assert ui_library._absolute_permalink("h7") is None
+
+
+def test_an_address_with_no_path_still_prints_a_well_formed_link(monkeypatch):
+    import ui_library
+
+    class _Ctx:
+        url = "http://127.0.0.1:7870"
+
+    monkeypatch.setattr(ui_library.st, "context", _Ctx(), raising=False)
+    assert ui_library._absolute_permalink("h7") == "http://127.0.0.1:7870/?video=h7"
+
+
+def test_the_open_button_reads_as_a_link_and_cannot_be_broken_by_a_title(monkeypatch):
+    """Streamlit draws a tertiary button's label in the body colour, which is
+    what these rows looked like as dead text. A CMS title reaching this path
+    is markdown-escaped; stand-ins arrive escaped already."""
+    import ui_library
+
+    fake = _FakeSt()
+    monkeypatch.setattr(ui_library, "st", fake)
+    monkeypatch.setattr(ui_library, "archive_media_url", lambda rel, kind: f"https://a/{rel}")
+    e = _ep("h1", title="Итоги дня [эфир]", date="2020-01-01", duration_seconds=600)
+    ui_library._render_suggestion(
+        4, e, "почему", "ru", column="theme", media={"h1": {"video": "a/b.mp4"}}
+    )
+
+    label = [c for c in fake.calls if c[0] == "button"][0][1]
+    assert label.startswith("**4.** :blue["), "coloured like the links beside it"
+    assert r"\[эфир\]" in label, "a bracket in the title must not close the colour span"
+
+
+def test_a_mixed_case_hash_still_finds_its_episode(monkeypatch, tmp_path):
+    """The hash keeps whatever case the archive filename had, and the permalink
+    carries it lowercased, so a link of ours would answer "not found"."""
+    import ui_library
+
+    fake = _FakePage()
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text("", encoding="utf-8")
+    monkeypatch.setattr(ui_library, "st", fake)
+    monkeypatch.setattr(ui_library, "TAGS_PATH", tags)
+    mixed = "AbCd" + "e" * 36
+    monkeypatch.setattr(ui_library, "_cached_episodes", lambda *a: [_episode(mixed)])
+    monkeypatch.setattr(ui_library, "_cached_untitled_titles", lambda *a: {})
+    monkeypatch.setattr(ui_library, "_cached_untitled_media", lambda *a: {})
+    ui_library.render_episode_page(mixed.lower(), "ru")
+
+    assert not [c for c in fake.calls if c[0] == "warning"], "the episode is there"
+    assert [c for c in fake.calls if c[0] == "subheader"]
+
+
+def test_the_permalink_a_card_hands_out_is_lower_case(monkeypatch):
+    import ui_library
+
+    monkeypatch.setattr(ui_library, "archive_media_url", lambda rel, kind: f"https://a/{rel}")
+    mixed = "AbCd" + "e" * 36
+    url, kind = ui_library.episode_link(_ep(mixed), {mixed.lower(): {"video": "a/b.mp4"}})
+    assert url == f"?video={mixed.lower()}" and kind == "video"
