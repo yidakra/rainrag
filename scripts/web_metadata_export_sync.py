@@ -237,7 +237,12 @@ def main(argv: list[str] | None = None) -> int:
 
     for video_hash, article in new.items():
         write_article(directory, video_hash, article)
-    cleared = drop_from_misses(Path(args.misses_file), set(new))
+    # Every hash the export returned, not just the newly written ones. A run
+    # that crashed between writing an article and clearing the misses file
+    # leaves the hash in both places, and the backfill checks the misses file
+    # before the cache -- so that video would be skipped forever with its
+    # article sitting right there (Tenki on #93).
+    cleared = drop_from_misses(Path(args.misses_file), set(found))
     print(f"  written: {len(new)}")
     print(f"  cleared from the misses file: {cleared}")
     print("\nNext: scripts/backfill_web_metadata.py, then library_catalogue.py --refresh.")

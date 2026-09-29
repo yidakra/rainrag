@@ -204,3 +204,48 @@ def test_naive_dates_are_read_as_utc_not_as_the_hosts_timezone():
     assert _as_utc(naive).timestamp() == dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc).timestamp()
     aware = dt.datetime(2024, 1, 1, tzinfo=dt.timezone(dt.timedelta(hours=3)))
     assert _as_utc(aware) == aware
+
+
+def test_a_hash_recovered_into_an_existing_file_still_leaves_the_misses_file(tmp_path, monkeypatch):
+    """A run that crashed between writing the article and clearing the misses.
+
+    The hash then sits in both places, and the backfill consults the misses
+    file before the cache, so that video would be skipped forever with its
+    article already on disk. Clearing only the newly written hashes leaves it
+    stuck (Tenki on #93).
+    """
+    from web_metadata_export_sync import main
+
+    import rainrag.web_metadata_api as api
+
+    video_hash = "b" * 40
+    directory = tmp_path / "web_metadata"
+    directory.mkdir()
+    (directory / f"{video_hash}.json").write_text(
+        json.dumps({"video_hash": video_hash, "name": "уже записано"}), encoding="utf-8"
+    )
+    misses = tmp_path / "misses.txt"
+    misses.write_text(f"{video_hash}\n{'c' * 40}\n", encoding="utf-8")
+
+    class _Export:
+        def export_batch(self, start_time: int, end_time: int):
+            return [{"video_hash": video_hash, "url": "https://tvrain.tv/x", "name": "x"}]
+
+    monkeypatch.setattr(api.WebMetadataAPIClient, "from_env", classmethod(lambda cls: _Export()))
+    assert (
+        main(
+            [
+                "--since",
+                "2024-01-01",
+                "--until",
+                "2024-01-10",
+                "--metadata-dir",
+                str(directory),
+                "--misses-file",
+                str(misses),
+            ]
+        )
+        == 0
+    )
+
+    assert misses.read_text(encoding="utf-8").split() == ["c" * 40]
