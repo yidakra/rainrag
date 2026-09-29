@@ -28,7 +28,7 @@ import os
 import re
 import threading
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 
 try:
@@ -76,6 +76,10 @@ UNTITLED_TITLES_PATH = REPO_ROOT / "data" / "untitled_titles.json"
 # Archive media for those same episodes (scripts/library_untitled_media.py). They have
 # no CMS page to link to, so the card links into the archive instead of nowhere.
 UNTITLED_MEDIA_PATH = REPO_ROOT / "data" / "untitled_media.json"
+
+# Query parameter for a permanent link to one episode.
+EPISODE_PARAM = "video"
+_HASH_RE = re.compile(r"^[a-fA-F0-9]{40}$")
 PROGRAMS_PATH = REPO_ROOT / "data" / "library_programs.csv"
 
 _T = {
@@ -120,6 +124,12 @@ _T = {
         "untagged_mark": "(не размечен)",
         "no_cms_mark": "без карточки в CMS",
         "archive_link_mark": "ссылка в архив",
+        "episode_page_unknown": "Выпуск не найден. Ссылка могла устареть, или этот выпуск "
+        "не входит в размеченный пул.",
+        "episode_page_no_media": "Файл этого выпуска не найден в архиве.",
+        "episode_page_back": "К подбору похожих",
+        "episode_page_hint": "Постоянная ссылка на этот выпуск, её можно сохранить.",
+        "episode_page_transcript": "Расшифровка",
         "transcript_only_mark": "только расшифровка",
         "queue_note": "Сверка всех роликов канала с архивом. Очередь общая и не зависит от "
         "поиска во вкладке «Похожие выпуски».",
@@ -190,6 +200,12 @@ _T = {
         "untagged_mark": "(untagged)",
         "no_cms_mark": "no CMS record",
         "archive_link_mark": "archive link",
+        "episode_page_unknown": "Episode not found. The link may be stale, or this episode "
+        "is not in the tagged pool.",
+        "episode_page_no_media": "No media file for this episode in the archive.",
+        "episode_page_back": "Back to similar episodes",
+        "episode_page_hint": "A permanent link to this episode; it is safe to save.",
+        "episode_page_transcript": "Transcript",
         "transcript_only_mark": "transcript only",
         "queue_note": "Reviews every channel upload against the archive. The queue is global "
         "and independent of the search on the other tab.",
@@ -806,10 +822,17 @@ def episode_link(
     entry = (media or {}).get(e.video_hash) or {}
     for kind in ("video", "vtt"):
         relative = entry.get(kind)
-        if relative:
-            url = archive_media_url(relative, kind=kind)
-            if url:
-                return url, kind
+        # Built and thrown away, only to answer "could this page serve
+        # anything?". Without an asset base there is nothing to play, and a
+        # link to an empty page is the dead text this feature replaced.
+        if relative and archive_media_url(relative, kind=kind):
+            # The episode page, not the media file. A media URL carries a
+            # token that expires within hours, so one copied into a content
+            # plan is dead by the next day, and while it lives it authorises
+            # every media path rather than that one. This link holds no
+            # credential and does not expire: the token is minted when the
+            # page is opened (Varya, 2026-09-29).
+            return f"?{EPISODE_PARAM}={e.video_hash}", kind
     return None, None
 
 
@@ -967,9 +990,9 @@ def _render_suggestion(
     if stand_in:
         meta_bits.append(_t("no_cms_mark", lang))
     if kind is not None:
-        # Say where the link goes. An archive URL is signed and expiring, so it
-        # is for judging the episode, not for putting in a published plan --
-        # and if it points at the transcript there is no video to watch at all.
+        # Say where the link goes. It is the archive, not a CMS card, so the
+        # editor knows there is no page on the site behind it -- and if the
+        # archive holds only the transcript there is no video to watch at all.
         meta_bits.append(_t("archive_link_mark", lang))
         if kind == "vtt":
             meta_bits.append(_t("transcript_only_mark", lang))
@@ -1492,6 +1515,73 @@ def _cached_episodes(tags_key: tuple[int, int], programs_key: tuple[int, int]) -
     speaker, and that must not need a restart either."""
     del tags_key, programs_key
     return load_tagged_episodes()
+
+
+def requested_episode(params: Mapping[str, object]) -> str | None:
+    """The episode hash a `?video=` link asks for, lowercased, or None.
+
+    Validated here rather than trusted: the value reaches a filesystem-derived
+    lookup and a URL, and a 40-hex hash is the only shape either accepts.
+    Streamlit hands back a list when a parameter repeats, so the first wins.
+    """
+    raw = params.get(EPISODE_PARAM)
+    if isinstance(raw, list | tuple):
+        raw = raw[0] if raw else None
+    candidate = str(raw or "").strip()
+    return candidate.lower() if _HASH_RE.match(candidate) else None
+
+
+def render_episode_page(video_hash: str, lang: str) -> None:
+    """One episode, opened by permanent link.
+
+    Exists because the uncarded episodes have no page anywhere. A media URL
+    carries a signed token that expires within hours, so a link pasted into a
+    content plan stops working; this link does not, because the token is
+    minted when the page is opened rather than when the link is written. The
+    token also authorises any media path, not just one, so handing out
+    long-lived ones would be handing out the archive (Varya, 2026-09-29).
+    """
+    if st.button(_t("episode_page_back", lang)):
+        st.query_params.clear()
+        st.rerun()
+
+    episodes = _cached_episodes(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH))
+    episode = next((e for e in episodes if e.video_hash == video_hash), None)
+    if episode is None:
+        st.warning(_t("episode_page_unknown", lang))
+        return
+
+    synthetic = _cached_untitled_titles(
+        UNTITLED_TITLES_PATH.stat().st_mtime if UNTITLED_TITLES_PATH.exists() else 0.0
+    )
+    title, stand_in = display_title(episode, lang, synthetic)
+    st.subheader(title)
+    meta = [episode.program, episode.date, _fmt_minutes(episode.duration_seconds, lang)]
+    if stand_in:
+        meta.append(_t("no_cms_mark", lang))
+    st.caption(" · ".join(x for x in meta if x))
+
+    media = _cached_untitled_media(_stat_key(UNTITLED_MEDIA_PATH)).get(video_hash) or {}
+    # Both minted now, not stored: see the docstring. The transcript stands on
+    # its own because some episodes were ingested from subtitles with no video
+    # file beside them, and the card links those too -- it marks them "only
+    # transcript", so the page must have the transcript to show.
+    video_url = (
+        archive_media_url(media.get("video", ""), kind="video") if media.get("video") else None
+    )
+    vtt_url = archive_media_url(media.get("vtt", ""), kind="vtt") if media.get("vtt") else None
+    if not video_url and not vtt_url:
+        st.info(_t("episode_page_no_media", lang))
+        return
+    if video_url:
+        st.video(video_url)
+    # Not st.video(subtitles=...): that parameter takes VTT *content*, and
+    # handing it a URL raises "neither matches valid VTT nor SRT format". This
+    # module reaches neither the archive nor the API, so the transcript is
+    # offered as its own link rather than fetched here.
+    if vtt_url:
+        st.markdown(f"[{_t('episode_page_transcript', lang)}]({vtt_url})")
+    st.caption(_t("episode_page_hint", lang))
 
 
 def render_library_mode(lang: str) -> None:

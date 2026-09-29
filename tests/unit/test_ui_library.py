@@ -978,8 +978,10 @@ def test_episode_without_cms_card_links_into_the_archive(monkeypatch):
     monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "s")
     url, kind = episode_link(_ep("a"), {"a": {"video": "aa/bb/a_720p.mp4"}})
     assert kind == "video"
-    assert url.startswith("https://rag.tvrain.tv/video/aa/bb/a_720p.mp4?")
-    assert "auth=v1." in url
+    # The episode page, not the media file: a link with a token in it expires
+    # within hours and authorises every media path while it lives.
+    assert url == "?video=a"
+    assert "auth=" not in url
 
 
 def test_transcript_only_episode_links_to_its_vtt(monkeypatch):
@@ -987,10 +989,7 @@ def test_transcript_only_episode_links_to_its_vtt(monkeypatch):
 
     monkeypatch.setenv("RAINRAG_ASSET_URL", "https://rag.tvrain.tv")
     monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
-    assert episode_link(_ep("a"), {"a": {"vtt": "aa/bb/a.ru.vtt"}}) == (
-        "https://rag.tvrain.tv/vtt/aa/bb/a.ru.vtt",
-        "vtt",
-    )
+    assert episode_link(_ep("a"), {"a": {"vtt": "aa/bb/a.ru.vtt"}}) == ("?video=a", "vtt")
 
 
 def test_episode_link_falls_back_to_plain_text(monkeypatch):
@@ -1067,3 +1066,103 @@ def test_media_cache_key_changes_within_one_filesystem_tick(tmp_path: Path):
     first = _stat_key(p)
     p.write_text('{"h1": {"video": "aa/bb.mp4"}, "h2": {"video": "cc/dd.mp4"}}', encoding="utf-8")
     assert _stat_key(p) != first
+
+
+# ------------------------------------------------------- episode permalink
+
+
+def test_a_permalink_accepts_only_a_bare_40_hex_hash():
+    """The value reaches a filesystem-derived lookup and a URL."""
+    import ui_library
+
+    assert ui_library.requested_episode({"video": "A" * 40}) == "a" * 40
+    for bad in ("../../etc/passwd", "abc", "z" * 40, "a" * 39, "a" * 41, "", None):
+        assert ui_library.requested_episode({"video": bad}) is None, bad
+    assert ui_library.requested_episode({}) is None
+
+
+def test_a_repeated_parameter_takes_the_first_value():
+    """Streamlit hands back a list when a query parameter repeats."""
+    import ui_library
+
+    assert ui_library.requested_episode({"video": ["b" * 40, "c" * 40]}) == "b" * 40
+    assert ui_library.requested_episode({"video": []}) is None
+
+
+def test_the_permalink_carries_no_credential_of_its_own():
+    """The whole point: the token is minted on open, not written into the link.
+
+    A media token authorises any path and expires in hours, so a link that
+    embedded one would both rot and, while it lived, hand over the archive.
+    """
+    import inspect
+
+    import ui_library
+
+    source = inspect.getsource(ui_library.render_episode_page)
+    assert "archive_media_url" in source, "the URL is built at render time"
+    assert "auth=" not in source, "no token is ever baked into the permalink itself"
+
+
+class _FakePage(_FakeSt):
+    """``_FakeSt`` plus the few calls the episode page makes."""
+
+    def __init__(self):
+        super().__init__()
+        self.query_params: dict = {}
+
+    def button(self, label):
+        self.calls.append(("button", label))
+        return False
+
+    def subheader(self, text):
+        self.calls.append(("subheader", text))
+
+    def video(self, url):
+        self.calls.append(("video", url))
+
+    def info(self, text):
+        self.calls.append(("info", text))
+
+    def warning(self, text):
+        self.calls.append(("warning", text))
+
+
+def _page(monkeypatch, media: dict[str, str], episodes=None):
+    import ui_library
+
+    fake = _FakePage()
+    monkeypatch.setattr(ui_library, "st", fake)
+    monkeypatch.setattr(ui_library, "_cached_episodes", lambda *a: episodes or [_episode("h1")])
+    monkeypatch.setattr(ui_library, "_cached_untitled_titles", lambda *a: {})
+    monkeypatch.setattr(ui_library, "_cached_untitled_media", lambda *a: {"h1": media})
+    monkeypatch.setattr(
+        ui_library, "archive_media_url", lambda rel, kind: f"https://a/{rel}?auth=t"
+    )
+    ui_library.render_episode_page("h1", "ru")
+    return fake
+
+
+def test_a_transcript_only_episode_still_gets_its_transcript(monkeypatch):
+    """The card marks these "only transcript" and links them, so the page owes
+    one. Showing "no media" here would be the dead end the link replaced."""
+    fake = _page(monkeypatch, {"vtt": "aa/bb/h1.ru.vtt"})
+
+    kinds = [c[0] for c in fake.calls]
+    assert "info" not in kinds, "a transcript is media enough"
+    assert "video" not in kinds
+    assert any(c[0] == "markdown" and "h1.ru.vtt" in c[1] for c in fake.calls)
+
+
+def test_an_episode_with_nothing_in_the_archive_says_so(monkeypatch):
+    fake = _page(monkeypatch, {})
+
+    assert [c for c in fake.calls if c[0] == "info"], "the editor is told, not shown a blank page"
+    assert not [c for c in fake.calls if c[0] in ("video", "markdown")]
+
+
+def test_the_page_plays_the_video_and_offers_the_transcript_beside_it(monkeypatch):
+    fake = _page(monkeypatch, {"video": "aa/bb/h1.mp4", "vtt": "aa/bb/h1.ru.vtt"})
+
+    assert ("video", "https://a/aa/bb/h1.mp4?auth=t") in fake.calls
+    assert any(c[0] == "markdown" and "h1.ru.vtt" in c[1] for c in fake.calls)
