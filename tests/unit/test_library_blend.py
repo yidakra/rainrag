@@ -326,3 +326,24 @@ def test_an_ambiguous_candidate_cannot_fully_match_two_namesakes():
 
     seed = Episode(video_hash="a", speakers=["Дмитрий Быков", "Юрий Быков"])
     assert speaker_axis(seed, Episode(video_hash="b", speakers=["Быков"])) == (0.5, ["Быков"])
+
+
+def test_the_speaker_axis_matches_the_seed_on_its_headline_only():
+    """A panel interview is matched on its guest, not on the journalists.
+
+    The Shevchuk seed credits three people and the title names one. Before,
+    an interview with a co-interviewer scored 1/3 on this axis, the same as
+    an interview with Шевчук himself; that put it second in the top five
+    (Varya, 2026-09-25). The denominator is the headline too, so the real
+    match now scores the full axis.
+    """
+    seed = Episode(
+        video_hash="seed",
+        title="Юрий Шевчук: «Сейчас даже Высоцкий не объединил бы страну»",
+        speakers=["Юрий Шевчук", "Андрей Бухарин", "Евгений Левкович"],
+    )
+    assert speaker_axis(seed, _ep("s", speakers=["Юрий Шевчук"])) == (1.0, ["Юрий Шевчук"])
+    assert speaker_axis(seed, _ep("b", speakers=["Андрей Бухарин"])) == (0.0, [])
+    # The candidate side stays whole: seeded on Бухарин, the panel is his match.
+    bukharin = Episode(video_hash="b", title="Андрей Бухарин: «Салон»", speakers=["Андрей Бухарин"])
+    assert speaker_axis(bukharin, seed) == (1.0, ["Андрей Бухарин"])

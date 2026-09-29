@@ -298,6 +298,58 @@ def dedupe_latest(episodes: Iterable[Episode]) -> list[Episode]:
     return list(latest.values())
 
 
+# «Юрий Шевчук: «Сейчас даже Высоцкий не объединил бы страну»» names whose
+# episode this is. A colon, a dash or a quotation mark separates the name from
+# the words; a comma or «и» joins two names («Мединский и Быков: ...»).
+_TITLE_NAME = r"[^\W\d_][\w\-\.]*(?: [^\W\d_][\w\-\.]*){0,2}"
+_TITLE_LEAD = re.compile(
+    r"^\s*(?P<names>" + _TITLE_NAME + r"(?:(?:,| и ) " + _TITLE_NAME + r")*)\s*[:—–-]\s*[«\"]"
+)
+
+
+def title_people(title: str | None) -> list[str]:
+    """The people a headline names, in the «Имя Фамилия: «...»» form.
+
+    Only the leading position counts: a name inside the quotation is someone
+    the guest talks about, not someone who speaks. Nothing here checks that
+    the words are a person; `headline_speakers` does that against the credits,
+    so «Москва: «...»» names nobody credited and changes nothing.
+    """
+    match = _TITLE_LEAD.match(title or "")
+    if not match:
+        return []
+    return [part.strip() for part in re.split(r",| и ", match.group("names")) if part.strip()]
+
+
+def headline_speakers(episode: Episode) -> list[str]:
+    """The credited speakers the title names, or nothing when it names none.
+
+    The tagging model lists everyone who spoke as a `guest`, and in a panel
+    interview that includes the journalists at the table. «Юрий Шевчук:
+    «Сейчас даже Высоцкий не объединил бы страну»» (Hard Day's Night, 2016)
+    credits Шевчук, Бухарин and Левкович; the second and third interviewed
+    him. Seeding on that episode then put an interview *with* Бухарин second
+    in the top five as «тот же спикер» (reported by Varya, 2026-09-25).
+
+    The title is the editorial statement of whose episode it is, so when it
+    names a credited person the seed speaks as that person only. Measured
+    over the 13,808 tagged episodes this narrows 49 seeds; in every one the
+    people set aside are co-hosts, panel members or a presenter the genre
+    rule kept. It applies to the seed alone: an interview with Бухарин still
+    matches the Shevchuk episode on the candidate side, because he did speak
+    there.
+    """
+    named = title_people(episode.title)
+    if not named:
+        return []
+    return [s for s in episode.speakers if any(people_match(s, n) for n in named)]
+
+
+def seed_speakers(episode: Episode) -> list[str]:
+    """The speakers a seed is matched on: the headline's, else everyone credited."""
+    return headline_speakers(episode) or episode.speakers
+
+
 @dataclass
 class Scored:
     """An episode with its score and the reason for it, for display."""
@@ -341,7 +393,7 @@ def score_pair(
     The reasons matter as much as the number: an editor deciding whether to
     spend an hour watching a tape wants to know *why* it was suggested.
     """
-    shared_speakers, shared_speaker_keys = shared_people(seed.speakers, candidate.speakers)
+    shared_speakers, shared_speaker_keys = shared_people(seed_speakers(seed), candidate.speakers)
 
     seed_subjects = {normalise_tag(t) for t in seed.subject if normalise_tag(t)}
     cand_subjects = {normalise_tag(t) for t in candidate.subject if normalise_tag(t)}
