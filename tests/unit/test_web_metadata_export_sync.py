@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -340,3 +341,56 @@ def test_a_failed_misses_rewrite_leaves_no_temporary_file_behind(tmp_path, monke
 
     assert [p.name for p in tmp_path.iterdir()] == ["misses.txt"]
     assert misses.read_text(encoding="utf-8").split() == ["e" * 40], "untouched"
+
+
+def test_a_published_article_is_readable_like_the_rest_of_the_cache(tmp_path):
+    """mkstemp creates 0600, and a bare rename would publish that: a file in
+    the middle of the shared cache that no other account can open."""
+    import web_metadata_export_sync as sync
+
+    misses = tmp_path / "misses.txt"
+    misses.write_text("f" * 40 + "\n", encoding="utf-8")
+    sync.write_article(tmp_path, "f" * 40, {"name": "x"})
+    sync.drop_from_misses(misses, {"f" * 40})
+
+    mask = os.umask(0)
+    os.umask(mask)
+    expected = 0o666 & ~mask
+    assert (tmp_path / f"{'f' * 40}.json").stat().st_mode & 0o777 == expected
+    assert misses.stat().st_mode & 0o777 == expected
+
+
+def test_a_unicode_digit_in_retry_after_falls_back_instead_of_crashing():
+    """``str.isdigit`` is true for superscripts that ``float`` then refuses."""
+    assert retry_delay(_Response(429, "²"), 0) == retry_delay(_Response(429), 0)
+
+
+def test_the_defaults_resolve_where_the_backfill_looks(monkeypatch, tmp_path):
+    """Anchoring these to the script's own repository would let a deployment
+    root run the two against different files, and the recovered article and
+    the cleared miss would both be invisible to the backfill."""
+    import web_metadata_export_sync as sync
+
+    import rainrag.web_metadata_api as api
+
+    cache = tmp_path / "from-the-config"
+    (tmp_path / "data").mkdir()
+    (tmp_path / "config.yaml").write_text("unused", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    class _Config:
+        class web_metadata:  # noqa: N801
+            path = str(cache)
+
+    monkeypatch.setattr("rainrag.config.load_config", lambda p: _Config())
+
+    video_hash = "1" * 40
+
+    class _Export:
+        def export_batch(self, start_time: int, end_time: int):
+            return [{"video_hash": video_hash, "url": "u", "name": "n"}]
+
+    monkeypatch.setattr(api.WebMetadataAPIClient, "from_env", classmethod(lambda cls: _Export()))
+    assert sync.main(["--since", "2024-01-01", "--until", "2024-01-10"]) == 0
+
+    assert (cache / f"{video_hash}.json").exists(), "the cache directory from the config"

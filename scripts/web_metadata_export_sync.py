@@ -117,7 +117,9 @@ def retry_delay(response: Any, attempt_number: int) -> float:
         header = (response.headers.get("Retry-After") or "").strip()
     except Exception:
         header = ""
-    if header.isdigit():
+    # ``str.isdigit`` is true for superscripts and other Unicode digits that
+    # ``float`` then refuses, so the header is matched, not classified.
+    if re.fullmatch(r"[0-9]+", header):
         return min(float(header), THROTTLE_MAX_WAIT)
     return min(THROTTLE_BASE_WAIT * (2**attempt_number), THROTTLE_MAX_WAIT)
 
@@ -187,6 +189,21 @@ def articles_in_period(
     return found, failed
 
 
+def _publish(tmp: Path, target: Path) -> None:
+    """Rename a finished temp file into place, readable like its neighbours.
+
+    `mkstemp` creates 0600 and a bare rename would publish that mode. The rest
+    of the cache is written with `write_text`, so it carries the umask and any
+    other account sharing the archive can read it; a 0600 file dropped in the
+    middle of that is one nobody else can open (Tenki on #93).
+    """
+    mask = os.umask(0)
+    os.umask(mask)
+    tmp.chmod(0o666 & ~mask)
+    tmp.replace(target)
+    _fsync_dir(target.parent)
+
+
 def _fsync_dir(directory: Path) -> None:
     """Make a rename durable. Without this the file can survive a crash while
     the directory entry pointing at it does not (Tenki on #93)."""
@@ -216,8 +233,7 @@ def write_article(directory: Path, video_hash: str, article: dict[str, Any]) -> 
             json.dump(article, handle, ensure_ascii=False)
             handle.flush()
             os.fsync(handle.fileno())
-        Path(tmp).replace(directory / f"{video_hash}.json")
-        _fsync_dir(directory)
+        _publish(Path(tmp), directory / f"{video_hash}.json")
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
@@ -243,11 +259,10 @@ def drop_from_misses(path: Path, recovered: set[str]) -> int:
             handle.write("\n".join(remaining) + ("\n" if remaining else ""))
             handle.flush()
             os.fsync(handle.fileno())
-        Path(tmp).replace(path)
+        _publish(Path(tmp), path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-    _fsync_dir(path.parent)
     return len(kept) - len(remaining)
 
 
@@ -260,8 +275,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--since", default="2019-01-01")
     parser.add_argument("--until", default=None, help="default: now")
-    parser.add_argument("--metadata-dir", default=str(REPO_ROOT / "web_metadata"))
-    parser.add_argument("--misses-file", default=str(REPO_ROOT / "data/web_metadata_misses.txt"))
+    parser.add_argument("--config", default="config.yaml")
+    # Resolved the way backfill_web_metadata.py resolves them: the cache
+    # directory from the config, the misses file relative to the working
+    # directory. Anchoring these to the script's own repository instead would
+    # let a deployment root run the two against different files, so a
+    # recovered article and a cleared miss would both be invisible to the
+    # backfill -- the very failure this script exists to undo (Tenki on #93).
+    parser.add_argument("--metadata-dir", default=None)
+    parser.add_argument("--misses-file", default="data/web_metadata_misses.txt")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -283,7 +305,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.until
         else dt.datetime.now(dt.timezone.utc)
     )
-    directory = Path(args.metadata_dir)
+    if args.metadata_dir:
+        directory = Path(args.metadata_dir)
+    else:
+        from rainrag.config import load_config
+
+        directory = Path(load_config(args.config).web_metadata.path)
 
     client = WebMetadataAPIClient.from_env()
     found, failed = articles_in_period(client, since, until)
