@@ -554,6 +554,7 @@ class TestOneSpellingIsOnePerson:
         assert matched == [("быков", "дмитрий"), ("быков", "юрий")]
 
     def test_a_bare_surname_is_still_a_full_match_for_a_single_seed_speaker(self):
+        """With one Быков in the seed, a bare «Быков» can only be him."""
         from rainrag.library_similar import shared_people
 
         names, matched = shared_people(["Дмитрий Быков"], ["Быков"])
@@ -573,6 +574,7 @@ class TestHeadlineSpeakers:
     """
 
     def test_title_people_reads_the_leading_name(self):
+        """One name, a bare surname, a dash instead of a colon, two surnames."""
         from rainrag.library_similar import title_people
 
         assert title_people("Юрий Шевчук: «Сейчас даже Высоцкий не объединил бы страну»") == [
@@ -582,7 +584,29 @@ class TestHeadlineSpeakers:
         assert title_people('Стас Намин - "Сильнее времени"') == ["Стас Намин"]
         assert title_people("Мединский и Быков: «Скрепы»") == ["Мединский", "Быков"]
 
+    def test_title_people_reads_every_joined_full_name(self):
+        """Two full names, three, a mixed list, and a comma with no space.
+
+        The first joiner was «, | и » followed by a literal space, so two full
+        names joined by «и» matched only with a double space and the seed fell
+        back to every credit (Tenki and CodeRabbit on #92).
+        """
+        from rainrag.library_similar import title_people
+
+        assert title_people("Юрий Шевчук и Андрей Бухарин: «Салон»") == [
+            "Юрий Шевчук",
+            "Андрей Бухарин",
+        ]
+        assert title_people("Иван Иванов, Пётр Петров и Анна Сидорова: «Трое»") == [
+            "Иван Иванов",
+            "Пётр Петров",
+            "Анна Сидорова",
+        ]
+        assert title_people("Иванов,Петров: «Двое»") == ["Иванов", "Петров"]
+        assert title_people("Иванов  и  Петров: «Двое»") == ["Иванов", "Петров"]
+
     def test_title_people_ignores_names_inside_the_quotation(self):
+        """A name after the quotation, or with no separator, is not a headline."""
         from rainrag.library_similar import title_people
 
         # The name after the quotation is the guest, but the title does not
@@ -592,6 +616,7 @@ class TestHeadlineSpeakers:
         assert title_people(None) == []
 
     def test_headline_speakers_are_the_credited_people_the_title_names(self):
+        """The Shevchuk seed speaks as Шевчук; the two journalists are set aside."""
         from rainrag.library_similar import headline_speakers, seed_speakers
 
         shevchuk = ep(
@@ -603,6 +628,7 @@ class TestHeadlineSpeakers:
         assert seed_speakers(shevchuk) == ["Юрий Шевчук"]
 
     def test_a_title_naming_nobody_credited_changes_nothing(self):
+        """A leading word that matches no credit leaves the credit list whole."""
         from rainrag.library_similar import headline_speakers, seed_speakers
 
         # «Москва» parses as a name; it matches no credit, so the whole
@@ -614,6 +640,7 @@ class TestHeadlineSpeakers:
         assert seed_speakers(plain) == ["Иван Иванов"]
 
     def test_a_co_interviewer_is_not_the_same_speaker(self):
+        """Varya's case: an interview with Бухарин is not «тот же спикер»."""
         from rainrag.library_similar import find_similar
 
         shevchuk = ep(

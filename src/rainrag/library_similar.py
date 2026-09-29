@@ -300,11 +300,18 @@ def dedupe_latest(episodes: Iterable[Episode]) -> list[Episode]:
 
 # «Юрий Шевчук: «Сейчас даже Высоцкий не объединил бы страну»» names whose
 # episode this is. A colon, a dash or a quotation mark separates the name from
-# the words; a comma or «и» joins two names («Мединский и Быков: ...»).
-_TITLE_NAME = r"[^\W\d_][\w\-\.]*(?: [^\W\d_][\w\-\.]*){0,2}"
+# the words; a comma or «и» joins names («Мединский и Быков: ...», «Иванов,
+# Петров и Сидоров: ...»). A name is one to three capitalised tokens, so the
+# lowercase «и» can only ever be the joiner, never a middle token that lets a
+# three-token match swallow two names. The joiner accepts any spacing on
+# either side (Tenki and CodeRabbit on #92: «, | и » needed two spaces).
 _TITLE_LEAD = re.compile(
-    r"^\s*(?P<names>" + _TITLE_NAME + r"(?:(?:,| и ) " + _TITLE_NAME + r")*)\s*[:—–-]\s*[«\"]"
+    r"^\s*(?P<names>"
+    r"[^\W\d_a-zа-яё][\w\-\.]*(?: [^\W\d_a-zа-яё][\w\-\.]*){0,2}"
+    r"(?:(?:,\s*|\s+и\s+)[^\W\d_a-zа-яё][\w\-\.]*(?: [^\W\d_a-zа-яё][\w\-\.]*){0,2})*"
+    r")\s*[:—–-]\s*[«\"]"
 )
+_TITLE_JOINER = re.compile(r",\s*|\s+и\s+")
 
 
 def title_people(title: str | None) -> list[str]:
@@ -318,7 +325,7 @@ def title_people(title: str | None) -> list[str]:
     match = _TITLE_LEAD.match(title or "")
     if not match:
         return []
-    return [part.strip() for part in re.split(r",| и ", match.group("names")) if part.strip()]
+    return [part.strip() for part in _TITLE_JOINER.split(match.group("names")) if part.strip()]
 
 
 def headline_speakers(episode: Episode) -> list[str]:
