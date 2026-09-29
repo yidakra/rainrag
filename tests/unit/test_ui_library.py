@@ -1231,6 +1231,11 @@ def test_the_open_button_sets_the_permalink_parameter(monkeypatch):
 
     assert fake.query_params == {ui_library.EPISODE_PARAM: "h9"}
 
+    # Lower case, matching the permalink a card hands out and the address the
+    # page prints: the editor copies one of them and they must agree.
+    ui_library._open_episode("AbC9")
+    assert fake.query_params == {ui_library.EPISODE_PARAM: "abc9"}
+
 
 def test_a_cms_carded_episode_keeps_its_ordinary_link(monkeypatch):
     """Its page is on tvrain.tv, so a new tab is exactly right."""

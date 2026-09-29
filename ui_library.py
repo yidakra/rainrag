@@ -990,7 +990,9 @@ def _open_episode(video_hash: str) -> None:
     query parameter reruns in place; the address bar still ends up holding the
     permanent link, which the page itself also prints for copying.
     """
-    st.query_params[EPISODE_PARAM] = video_hash
+    # Lower case, as the copyable permalink is: the address bar is where the
+    # editor copies it from, so the two must not differ (Tenki on #94).
+    st.query_params[EPISODE_PARAM] = video_hash.lower()
 
 
 def _render_suggestion(
