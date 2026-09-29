@@ -14,6 +14,11 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 
+# A real hash shape: the episode page accepts only forty hex digits, and a
+# card must not offer a link the page would refuse.
+HASH = "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4"
+
+
 def _ep(video_hash, **kw):
     from rainrag.library_similar import Episode
 
@@ -982,11 +987,11 @@ def test_episode_without_cms_card_links_into_the_archive(monkeypatch):
 
     monkeypatch.setenv("RAINRAG_ASSET_URL", "https://rag.tvrain.tv")
     monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "s")
-    url, kind = episode_link(_ep("a"), {"a": {"video": "aa/bb/a_720p.mp4"}})
+    url, kind = episode_link(_ep(HASH), {HASH: {"video": "aa/bb/a_720p.mp4"}})
     assert kind == "video"
     # The episode page, not the media file: a link with a token in it expires
     # within hours and authorises every media path while it lives.
-    assert url == "?video=a"
+    assert url == f"?video={HASH}"
     assert "auth=" not in url
 
 
@@ -995,7 +1000,10 @@ def test_transcript_only_episode_links_to_its_vtt(monkeypatch):
 
     monkeypatch.setenv("RAINRAG_ASSET_URL", "https://rag.tvrain.tv")
     monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
-    assert episode_link(_ep("a"), {"a": {"vtt": "aa/bb/a.ru.vtt"}}) == ("?video=a", "vtt")
+    assert episode_link(_ep(HASH), {HASH: {"vtt": "aa/bb/a.ru.vtt"}}) == (
+        f"?video={HASH}",
+        "vtt",
+    )
 
 
 def test_episode_link_falls_back_to_plain_text(monkeypatch):
@@ -1208,16 +1216,16 @@ def test_an_uncarded_episode_opens_in_place_rather_than_in_a_new_tab(monkeypatch
     fake = _FakeSt()
     monkeypatch.setattr(ui_library, "st", fake)
     monkeypatch.setattr(ui_library, "archive_media_url", lambda rel, kind: f"https://a/{rel}")
-    e = _ep("h1", title=None, date="2020-01-01", duration_seconds=600)
+    e = _ep(HASH, title=None, date="2020-01-01", duration_seconds=600)
     ui_library._render_suggestion(
-        2, e, "почему", "ru", column="theme", media={"h1": {"video": "a/b.mp4"}}
+        2, e, "почему", "ru", column="theme", media={HASH: {"video": "a/b.mp4"}}
     )
 
     buttons = [c for c in fake.calls if c[0] == "button"]
     assert len(buttons) == 1, "the title itself is the control"
     assert buttons[0][2]["type"] == "tertiary"
     assert buttons[0][2]["on_click"] is ui_library._open_episode
-    assert buttons[0][2]["args"] == ("h1",)
+    assert buttons[0][2]["args"] == (HASH,)
     assert not [c for c in fake.calls if c[0] == "markdown" and "](" in c[1]], "no link to follow"
 
 
@@ -1291,9 +1299,9 @@ def test_the_open_button_reads_as_a_link_and_cannot_be_broken_by_a_title(monkeyp
     fake = _FakeSt()
     monkeypatch.setattr(ui_library, "st", fake)
     monkeypatch.setattr(ui_library, "archive_media_url", lambda rel, kind: f"https://a/{rel}")
-    e = _ep("h1", title="Итоги дня [эфир]", date="2020-01-01", duration_seconds=600)
+    e = _ep(HASH, title="Итоги дня [эфир]", date="2020-01-01", duration_seconds=600)
     ui_library._render_suggestion(
-        4, e, "почему", "ru", column="theme", media={"h1": {"video": "a/b.mp4"}}
+        4, e, "почему", "ru", column="theme", media={HASH: {"video": "a/b.mp4"}}
     )
 
     label = [c for c in fake.calls if c[0] == "button"][0][1]
@@ -1342,3 +1350,22 @@ def test_a_cms_title_is_escaped_on_the_link_path_too(monkeypatch):
 
     line = [c for c in fake.calls if c[0] == "markdown"][0][1]
     assert r"\[дня\]" in line and "](https://tvrain.tv/x)" in line
+
+
+def test_a_hash_the_page_would_refuse_is_not_offered_as_a_link(monkeypatch):
+    """The archive map is built from filenames, so a hex name of the wrong
+    length reaches here; the card would render a control that opens nothing
+    because `requested_episode` rejects it (CodeRabbit on #94)."""
+    import ui_library
+
+    monkeypatch.setattr(ui_library, "archive_media_url", lambda rel, kind: f"https://a/{rel}")
+    short = "ab" * 8
+    assert ui_library.requested_episode({"video": short}) is None, "the page refuses it"
+    assert ui_library.episode_link(_ep(short), {short: {"video": "a/b.mp4"}}) == (None, None)
+
+
+def test_a_trailing_newline_does_not_pass_for_a_hash():
+    """Python's ``$`` matches before a final newline; ``\\Z`` does not."""
+    import ui_library
+
+    assert ui_library._HASH_RE.match("a" * 40 + "\n") is None

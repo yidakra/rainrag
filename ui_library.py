@@ -80,7 +80,10 @@ UNTITLED_MEDIA_PATH = REPO_ROOT / "data" / "untitled_media.json"
 
 # Query parameter for a permanent link to one episode.
 EPISODE_PARAM = "video"
-_HASH_RE = re.compile(r"^[a-fA-F0-9]{40}$")
+# ``\Z``, not ``$``: in Python ``$`` also matches just before a final
+# newline, so a forty-hex value with one appended would validate. The only
+# caller strips first, but the next one may not (Tenki on #94).
+_HASH_RE = re.compile(r"\A[a-fA-F0-9]{40}\Z")
 PROGRAMS_PATH = REPO_ROOT / "data" / "library_programs.csv"
 
 _T = {
@@ -837,6 +840,13 @@ def episode_link(
             # every media path rather than that one. This link holds no
             # credential and does not expire: the token is minted when the
             # page is opened (Varya, 2026-09-29).
+            if not _HASH_RE.match(e.video_hash):
+                # The page would refuse this hash, so the card must not offer
+                # it: the archive map is built from filenames and an
+                # even-length hex name of the wrong length reaches here, where
+                # it would render a control that opens nothing (CodeRabbit on
+                # #94). Plain text is the honest answer, as it was before.
+                return None, None
             return f"?{EPISODE_PARAM}={e.video_hash.lower()}", kind
     return None, None
 
