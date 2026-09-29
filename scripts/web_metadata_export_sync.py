@@ -305,14 +305,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.until
         else dt.datetime.now(dt.timezone.utc)
     )
-    if args.metadata_dir:
-        directory = Path(args.metadata_dir)
-    else:
-        from rainrag.config import load_config
+    from rainrag.config import load_config
 
-        directory = Path(load_config(args.config).web_metadata.path)
+    config = load_config(args.config)
+    directory = Path(args.metadata_dir or config.web_metadata.path)
 
-    client = WebMetadataAPIClient.from_env()
+    # The endpoint and token the backfill uses, not `from_env`'s hardcoded
+    # defaults. A deployment that points `web_metadata.api_url` elsewhere
+    # would otherwise have the two scripts talking to different CMS
+    # installations, or this one refusing to start over a token env var the
+    # deployment does not use (Tenki on #93).
+    client = WebMetadataAPIClient.from_env(
+        base_url=config.web_metadata.api_url,
+        token_env=config.web_metadata.api_token_env,
+    )
     found, failed = articles_in_period(client, since, until)
     print(f"export returned {len(found)} articles between {since.date()} and {until.date()}")
     if failed:
@@ -328,15 +334,31 @@ def main(argv: list[str] | None = None) -> int:
         print("dry run, nothing written")
         return 0
 
+    # One failed write does not abandon the rest of the run. Raising here
+    # jumped straight past the miss-clearing, leaving every article already
+    # renamed into the cache with its hash still in the misses file: the
+    # skip-forever state this script exists to undo, produced by an ordinary
+    # disk error (Tenki on #93).
+    written = 0
+    unwritten: set[str] = set()
     for video_hash, article in new.items():
-        write_article(directory, video_hash, article)
+        try:
+            write_article(directory, video_hash, article)
+        except Exception as exc:
+            unwritten.add(video_hash)
+            print(f"  {video_hash}: write failed: {type(exc).__name__}: {exc}"[:160])
+            continue
+        written += 1
     # Every hash the export returned, not just the newly written ones. A run
     # that crashed between writing an article and clearing the misses file
     # leaves the hash in both places, and the backfill checks the misses file
     # before the cache -- so that video would be skipped forever with its
-    # article sitting right there (Tenki on #93).
-    cleared = drop_from_misses(Path(args.misses_file), set(found))
-    print(f"  written: {len(new)}")
+    # article sitting right there (Tenki on #93). The ones that failed to
+    # write are the exception: they are still genuinely missing.
+    cleared = drop_from_misses(Path(args.misses_file), set(found) - unwritten)
+    print(f"  written: {written} of {len(new)}")
+    if unwritten:
+        print(f"  {len(unwritten)} failed to write and stay in the misses file")
     print(f"  cleared from the misses file: {cleared}")
     print("\nNext: scripts/backfill_web_metadata.py, then library_catalogue.py --refresh.")
     return 0

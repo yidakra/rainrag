@@ -233,7 +233,10 @@ def test_a_hash_recovered_into_an_existing_file_still_leaves_the_misses_file(tmp
         def export_batch(self, start_time: int, end_time: int):
             return [{"video_hash": video_hash, "url": "https://tvrain.tv/x", "name": "x"}]
 
-    monkeypatch.setattr(api.WebMetadataAPIClient, "from_env", classmethod(lambda cls: _Export()))
+    monkeypatch.setattr("rainrag.config.load_config", lambda p: _FakeConfig(directory))
+    monkeypatch.setattr(
+        api.WebMetadataAPIClient, "from_env", classmethod(lambda cls, **kw: _Export())
+    )
     assert (
         main(
             [
@@ -251,6 +254,21 @@ def test_a_hash_recovered_into_an_existing_file_still_leaves_the_misses_file(tmp
     )
 
     assert misses.read_text(encoding="utf-8").split() == ["c" * 40]
+
+
+class _FakeConfig:
+    """Just the `web_metadata` section the script reads."""
+
+    def __init__(self, path):
+        self.web_metadata = type(
+            "_Section",
+            (),
+            {
+                "path": str(path),
+                "api_url": "https://cms.test",
+                "api_token_env": "DEPLOY_TOKEN",
+            },
+        )()
 
 
 class _Response:
@@ -378,11 +396,7 @@ def test_the_defaults_resolve_where_the_backfill_looks(monkeypatch, tmp_path):
     (tmp_path / "config.yaml").write_text("unused", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    class _Config:
-        class web_metadata:  # noqa: N801
-            path = str(cache)
-
-    monkeypatch.setattr("rainrag.config.load_config", lambda p: _Config())
+    monkeypatch.setattr("rainrag.config.load_config", lambda p: _FakeConfig(cache))
 
     video_hash = "1" * 40
 
@@ -390,7 +404,57 @@ def test_the_defaults_resolve_where_the_backfill_looks(monkeypatch, tmp_path):
         def export_batch(self, start_time: int, end_time: int):
             return [{"video_hash": video_hash, "url": "u", "name": "n"}]
 
-    monkeypatch.setattr(api.WebMetadataAPIClient, "from_env", classmethod(lambda cls: _Export()))
+    seen: dict = {}
+
+    def _from_env(cls, **kw):
+        seen.update(kw)
+        return _Export()
+
+    monkeypatch.setattr(api.WebMetadataAPIClient, "from_env", classmethod(_from_env))
     assert sync.main(["--since", "2024-01-01", "--until", "2024-01-10"]) == 0
 
+    assert seen == {"base_url": "https://cms.test", "token_env": "DEPLOY_TOKEN"}, (
+        "the endpoint the backfill uses, not from_env's hardcoded default"
+    )
+
     assert (cache / f"{video_hash}.json").exists(), "the cache directory from the config"
+
+
+def test_one_failed_write_does_not_abandon_the_rest_of_the_run(tmp_path, monkeypatch, capsys):
+    """Raising here jumped past the miss-clearing entirely, leaving every
+    article already in the cache with its hash still in the misses file: the
+    skip-forever state, produced by an ordinary disk error."""
+    import web_metadata_export_sync as sync
+
+    import rainrag.web_metadata_api as api
+
+    good, bad = "2" * 40, "3" * 40
+    cache = tmp_path / "web_metadata"
+    cache.mkdir()
+    misses = tmp_path / "misses.txt"
+    misses.write_text(f"{good}\n{bad}\n", encoding="utf-8")
+
+    class _Export:
+        def export_batch(self, start_time: int, end_time: int):
+            return [{"video_hash": h, "url": "u", "name": "n"} for h in (good, bad)]
+
+    real = sync.write_article
+
+    def _flaky(directory, video_hash, article):
+        if video_hash == bad:
+            raise OSError("No space left on device")
+        return real(directory, video_hash, article)
+
+    monkeypatch.setattr(sync, "write_article", _flaky)
+    monkeypatch.setattr("rainrag.config.load_config", lambda p: _FakeConfig(cache))
+    monkeypatch.setattr(
+        api.WebMetadataAPIClient, "from_env", classmethod(lambda cls, **kw: _Export())
+    )
+    assert (
+        sync.main(["--since", "2024-01-01", "--until", "2024-01-10", "--misses-file", str(misses)])
+        == 0
+    )
+
+    assert (cache / f"{good}.json").exists(), "the run carried on past the failure"
+    assert misses.read_text(encoding="utf-8").split() == [bad], "only the one still missing"
+    assert "write failed" in capsys.readouterr().out
