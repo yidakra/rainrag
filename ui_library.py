@@ -1367,10 +1367,13 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
     )
     st.caption(_t("perf_intro", lang, n=len(uploads), metric=metric))
 
-    def _fmt(v: float | None) -> str:
-        if v is None:
-            return ""
-        return f"{v:,.0f}".replace(",", " ") if metric == "views" else f"{v:,.2f}".replace(",", " ")
+    # The numbers reach Streamlit as numbers, and only their display is
+    # formatted. They used to be formatted into strings here, and a column
+    # header sorts by whatever it was given: "9 447" came out above "68 499",
+    # because '9' is greater than '6' (Varya, 2026-09-29). A pandas Styler
+    # does not fix it either -- measured in a browser, it sorts the styled
+    # text -- so the formatting lives in column_config, which is display only.
+    number_format = "%,d" if metric == "views" else "%,.2f"
 
     def _val(u: Any) -> float | None:
         if metric == "views":
@@ -1378,19 +1381,24 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
         return u.metrics.get(metric)
 
     def _table(rows: list[dict[str, Any]], key: str) -> None:
+        total, median, best = (_t(c, lang) for c in ("col_total", "col_median", "col_best"))
         st.dataframe(
             [
                 {
                     _t(f"col_{key}", lang): r[key],
                     _t("col_uploads", lang): r["uploads"],
-                    _t("col_total", lang): _fmt(r["total"]),
-                    _t("col_median", lang): _fmt(r["median"]),
-                    _t("col_best", lang): _fmt(r["best"]),
+                    total: r["total"],
+                    median: r["median"],
+                    best: r["best"],
                 }
                 for r in rows[:30]
             ],
             hide_index=True,
             width="stretch",
+            column_config={
+                c: st.column_config.NumberColumn(format=number_format)
+                for c in (total, median, best)
+            },
         )
 
     sp_col, pr_col = st.columns(2)
@@ -1404,6 +1412,7 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
     st.subheader(_t("perf_uploads", lang))
     # Uploads without the metric sort last and render blank, not as zero.
     ordered = sorted(uploads, key=lambda u: (_val(u) is None, -(_val(u) or 0.0)))
+    metric_column = _t("col_views", lang) if metric == "views" else metric
     st.dataframe(
         [
             {
@@ -1411,7 +1420,7 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
                 _t("col_archive", lang): u.archive_title or u.content_id,
                 _t("col_program", lang): u.program or "",
                 _t("col_speakers", lang): ", ".join(u.speakers),
-                _t("col_views", lang) if metric == "views" else metric: _fmt(_val(u)),
+                metric_column: _val(u),
                 _t("col_published", lang): u.published_at or "",
                 "youtube": f"https://youtu.be/{u.youtube_id}",
             }
@@ -1419,7 +1428,10 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
         ],
         hide_index=True,
         width="stretch",
-        column_config={"youtube": st.column_config.LinkColumn()},
+        column_config={
+            "youtube": st.column_config.LinkColumn(),
+            metric_column: st.column_config.NumberColumn(format=number_format),
+        },
     )
 
 

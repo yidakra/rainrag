@@ -1067,3 +1067,19 @@ def test_media_cache_key_changes_within_one_filesystem_tick(tmp_path: Path):
     first = _stat_key(p)
     p.write_text('{"h1": {"video": "aa/bb.mp4"}, "h2": {"video": "cc/dd.mp4"}}', encoding="utf-8")
     assert _stat_key(p) != first
+
+
+def test_the_performance_tables_hand_streamlit_numbers_not_formatted_text():
+    """A column header sorts by what Streamlit was given. These were given
+    strings, so "9 447" sorted above "68 499": '9' > '6' (Varya,
+    2026-09-29). A pandas Styler does not help either, tried and measured in
+    a browser: the styled text is what it sorts. Only unformatted numbers
+    with the formatting in column_config sort as numbers."""
+    import inspect
+
+    import ui_library
+
+    body = inspect.getsource(ui_library.render_performance_tab)
+    assert body.count("st.column_config.NumberColumn(format=number_format)") == 2
+    assert ".style.format" not in body, "a styled frame sorts by its display text"
+    assert "def _fmt" not in body, "nothing is turned into a string before it is sorted"
