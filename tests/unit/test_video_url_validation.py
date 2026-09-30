@@ -203,3 +203,45 @@ def test_ip_literal_in_env_var_has_no_effect(monkeypatch, entry):
     assert _refused(f"http://{host}/v.mp4") == "URL targets a non-public address"
     # The literal also does not stand in for the default name list.
     assert _refused("https://tvrain.tv/v.mp4") == "URL targets a non-public address"
+
+
+# An allowlisted internal server may run Qdrant (6333/6334) or Redis (6379) on
+# 0.0.0.0, so an internal answer is accepted only on the scheme's default port.
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://tvrain.tv:6333/collections",
+        "http://rag.tvrain.tv:6334/",
+        "http://tvrain.tv:6379/",
+        "https://www.tvrain.tv:8080/v.mp4",
+        "http://tvrain.tv:443/v.mp4",
+        "https://tvrain.tv:80/v.mp4",
+    ],
+)
+def test_allowlisted_internal_answer_on_another_port_is_refused(monkeypatch, url):
+    monkeypatch.setattr(socket, "getaddrinfo", _answer("172.16.50.100"))
+    assert _refused(url) == "URL targets a non-public address"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://tvrain.tv/v.mp4",
+        "https://tvrain.tv/v.mp4",
+        "http://tvrain.tv:80/v.mp4",
+        "https://www.tvrain.tv:443/v.mp4",
+    ],
+)
+def test_allowlisted_internal_answer_on_the_default_port_passes(monkeypatch, url):
+    monkeypatch.setattr(socket, "getaddrinfo", _answer("172.16.50.100"))
+    _validate_video_url(url)
+
+
+@pytest.mark.parametrize(
+    "url", ["https://www.youtube.com:8080/v.mp4", "http://tvrain.tv:8080/v.mp4"]
+)
+def test_public_answer_keeps_any_port(monkeypatch, url):
+    monkeypatch.setattr(socket, "getaddrinfo", _answer("93.184.216.34"))
+    _validate_video_url(url)

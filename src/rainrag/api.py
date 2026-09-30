@@ -2162,7 +2162,11 @@ def _validate_video_url(url: str) -> None:
     RFC 1918 or ULA answer is accepted. A loopback, link-local or metadata
     answer (127.0.0.0/8, ::1, 169.254.0.0/16, fe80::/10) is still refused,
     and so is any other non-global answer. IP literals in the list are
-    ignored, and IP literal hosts never use the allowlist.
+    ignored, and IP literal hosts never use the allowlist. An internal answer
+    is accepted only on the scheme's default port (no port, 80 for http, 443
+    for https). Any other port is refused, so a URL such as
+    "http://rag.tvrain.tv:6333/" cannot reach Qdrant or Redis on an
+    allowlisted internal server. A public answer keeps any port.
 
     The resolution blocks. The async endpoints call this function through
     ``asyncio.to_thread``, so a slow DNS server does not stall the event loop.
@@ -2205,7 +2209,10 @@ def _validate_video_url(url: str) -> None:
     addresses = {str(info[4][0]) for info in infos}
     if not addresses:
         raise HTTPException(status_code=400, detail="URL host name does not resolve")
-    internal_ok = _is_internal_host_allowed(hostname)
+    # An internal answer is accepted only on the scheme's default port: the
+    # allowlisted server may run other services (Qdrant, Redis) on other ports.
+    default_port = port is None or port == {"http": 80, "https": 443}[parsed.scheme]
+    internal_ok = default_port and _is_internal_host_allowed(hostname)
     for raw in addresses:
         try:
             allowed = _is_public_address(raw) or (
