@@ -1498,3 +1498,75 @@ def test_confirming_the_map_keeps_the_cut_the_map_named(tmp_path):
         encoding="utf-8",
     )
     assert set(audience_by_hash(map_path, metrics, decisions, tags)) == {"cut_a"}
+
+
+def test_a_published_episode_is_marked_and_linked_on_the_card(monkeypatch):
+    """Already published is the first thing an editor planning uploads needs,
+    and it was only visible by opening the YouTube tab (86cbhrwnu)."""
+    import ui_library
+
+    fake = _FakeSt()
+    monkeypatch.setattr(ui_library, "st", fake)
+    ui_library._render_suggestion(
+        1,
+        _episode("h1", content_id="484740"),
+        "почему",
+        "ru",
+        column="theme",
+        youtube={"484740": "abc123"},
+    )
+
+    line = [c for c in fake.calls if c[0] == "markdown"][0][1]
+    assert "https://youtu.be/abc123" in line
+    assert "уже на YouTube" in line
+
+
+def test_an_unpublished_episode_says_nothing_about_youtube(monkeypatch):
+    import ui_library
+
+    fake = _FakeSt()
+    monkeypatch.setattr(ui_library, "st", fake)
+    ui_library._render_suggestion(
+        1, _episode("h1", content_id="484740"), "почему", "ru", column="theme", youtube={}
+    )
+
+    assert "youtu.be" not in [c for c in fake.calls if c[0] == "markdown"][0][1]
+
+
+def _map_and_decisions(tmp_path, confidence="strong"):
+    import json
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(
+        json.dumps(
+            [
+                {"youtube_id": "yt1", "content_id": "111", "confidence": confidence},
+                {"youtube_id": "yt2", "content_id": "222", "confidence": "review"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return map_path, tmp_path / "d.csv"
+
+
+def test_only_the_confident_tiers_of_the_map_count_as_published(tmp_path):
+    """The review band was right about 40% of the time when it was audited,
+    so a card must not claim an episode is already up on that evidence."""
+    from ui_library import youtube_by_content_id
+
+    map_path, decisions = _map_and_decisions(tmp_path)
+    decisions.write_text("youtube_id,content_id,verdict,decided_at\n", encoding="utf-8")
+    assert youtube_by_content_id(map_path, decisions) == {"111": "yt1"}
+
+
+def test_the_editor_overrides_the_map_in_both_directions(tmp_path):
+    from ui_library import youtube_by_content_id
+
+    map_path, decisions = _map_and_decisions(tmp_path)
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\n"
+        "yt1,111,no_match,2026-09-30T00:00:00\n"
+        "yt2,333,match,2026-09-30T00:00:00\n",
+        encoding="utf-8",
+    )
+    assert youtube_by_content_id(map_path, decisions) == {"333": "yt2"}
