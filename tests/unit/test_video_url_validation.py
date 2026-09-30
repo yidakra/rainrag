@@ -16,6 +16,12 @@ from fastapi import HTTPException
 from rainrag.api import _validate_video_url
 
 
+@pytest.fixture(autouse=True)
+def default_internal_hosts(monkeypatch):
+    """Start every test from the default allowlist, whatever the shell has set."""
+    monkeypatch.delenv("RAINRAG_URL_INTERNAL_HOSTS", raising=False)
+
+
 def _answer(*addresses: str):
     """Return a fake getaddrinfo that answers with ``addresses``."""
 
@@ -119,3 +125,81 @@ def test_empty_answer_is_refused(monkeypatch):
 def test_existing_checks_still_refuse(monkeypatch, url, detail):
     monkeypatch.setattr(socket, "getaddrinfo", _answer("93.184.216.34"))
     assert _refused(url) == detail
+
+
+# Split DNS: tvrain.tv resolves to an internal address from the TV Rain server.
+
+
+@pytest.mark.parametrize("host", ["tvrain.tv", "www.tvrain.tv", "WWW.TvRain.tv", "tvrain.tv."])
+def test_allowlisted_name_may_resolve_to_a_private_address(monkeypatch, host):
+    monkeypatch.setattr(socket, "getaddrinfo", _answer("172.16.50.100"))
+    _validate_video_url(f"https://{host}/news/some-story")
+
+
+def test_allowlisted_name_may_resolve_to_a_ula_address(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _answer("fd12:3456:789a::1"))
+    _validate_video_url("https://www.tvrain.tv/news/some-story")
+
+
+@pytest.mark.parametrize("host", ["eviltvrain.tv", "tvrain.tv.evil.com", "nottvrain.tv"])
+def test_lookalike_name_is_not_allowlisted(monkeypatch, host):
+    monkeypatch.setattr(socket, "getaddrinfo", _answer("172.16.50.100"))
+    assert _refused(f"https://{host}/v.mp4") == "URL targets a non-public address"
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["127.0.0.1", "127.8.8.8", "::1", "169.254.169.254", "fe80::1", "0.0.0.0", "100.64.0.1"],
+)
+def test_allowlisted_name_never_admits_loopback_or_link_local(monkeypatch, address):
+    monkeypatch.setattr(socket, "getaddrinfo", _answer(address))
+    assert _refused("https://tvrain.tv/v.mp4") == "URL targets a non-public address"
+
+
+def test_allowlisted_name_with_one_loopback_answer_is_refused(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _answer("172.16.50.100", "127.0.0.1"))
+    assert _refused("https://tvrain.tv/v.mp4") == "URL targets a non-public address"
+
+
+def test_allowlisted_name_still_needs_to_resolve(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _unresolvable)
+    assert _refused("https://tvrain.tv/v.mp4") == "URL host name does not resolve"
+
+
+@pytest.mark.parametrize(
+    ("url", "detail"),
+    [
+        ("ftp://tvrain.tv/v.mp4", "Only http and https URLs are supported"),
+        ("https://user:pw@tvrain.tv/v.mp4", "URLs with embedded credentials are not supported"),
+        ("https://tvrain.tv:99999/v.mp4", "Invalid URL"),
+    ],
+)
+def test_allowlisted_name_keeps_the_other_checks(monkeypatch, url, detail):
+    monkeypatch.setattr(socket, "getaddrinfo", _answer("172.16.50.100"))
+    assert _refused(url) == detail
+
+
+def test_env_var_replaces_the_default(monkeypatch):
+    monkeypatch.setenv("RAINRAG_URL_INTERNAL_HOSTS", " intranet.example.org , .other.test ")
+    monkeypatch.setattr(socket, "getaddrinfo", _answer("10.20.30.40"))
+    _validate_video_url("https://intranet.example.org/v.mp4")
+    _validate_video_url("https://media.other.test/v.mp4")
+    assert _refused("https://tvrain.tv/v.mp4") == "URL targets a non-public address"
+
+
+def test_empty_env_var_allowlists_nothing(monkeypatch):
+    monkeypatch.setenv("RAINRAG_URL_INTERNAL_HOSTS", "")
+    monkeypatch.setattr(socket, "getaddrinfo", _answer("172.16.50.100"))
+    assert _refused("https://tvrain.tv/v.mp4") == "URL targets a non-public address"
+
+
+@pytest.mark.parametrize(
+    "entry", ["172.16.50.100", "10.0.0.5", "127.0.0.1", "::1", "[::1]", "169.254.169.254"]
+)
+def test_ip_literal_in_env_var_has_no_effect(monkeypatch, entry):
+    monkeypatch.setenv("RAINRAG_URL_INTERNAL_HOSTS", entry)
+    monkeypatch.setattr(socket, "getaddrinfo", _answer("172.16.50.100"))
+    host = f"[{entry.strip('[]')}]" if ":" in entry else entry
+    assert _refused(f"http://{host}/v.mp4") == "URL targets a non-public address"
+    # The literal also does not stand in for the default name list.
+    assert _refused("https://tvrain.tv/v.mp4") == "URL targets a non-public address"
