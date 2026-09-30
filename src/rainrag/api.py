@@ -6,9 +6,11 @@ import hmac
 import ipaddress
 import json
 import logging
+import mimetypes
 import os
 import queue
 import re
+import shutil
 import string
 import subprocess
 import tempfile
@@ -326,6 +328,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
@@ -1958,46 +1961,9 @@ async def _create_session_from_telegram(
     ref: Any, manager: Any, max_bytes: int, tmp_root: Path, usage: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Download one Telegram video over MTProto and hand it to the session manager."""
-    from rainrag.telegram_media import (  # noqa: PLC0415
-        TelegramNotDownloadableError,
-        TelegramUnavailableError,
-        download_telegram_video,
-    )
-
     cfg = manager.cfg
-    api_id_raw = os.getenv(cfg.telegram_api_id_env, "")
-    api_hash = os.getenv(cfg.telegram_api_hash_env, "")
-    if not api_id_raw or not api_hash:
-        raise HTTPException(
-            status_code=503,
-            detail="Telegram downloading is enabled but its API credentials are not configured",
-        )
-    try:
-        api_id = int(api_id_raw)
-    except ValueError as exc:
-        raise HTTPException(status_code=503, detail="Telegram api_id must be an integer") from exc
-
     with tempfile.TemporaryDirectory(dir=str(tmp_root), prefix="telegram_") as work_dir:
-        try:
-            downloaded = await download_telegram_video(
-                ref,
-                Path(work_dir),
-                api_id=api_id,
-                api_hash=api_hash,
-                session_path=cfg.telegram_session_path,
-                max_bytes=max_bytes,
-                flood_sleep_threshold=cfg.telegram_flood_sleep_threshold,
-            )
-        except TelegramNotDownloadableError as exc:
-            # An ordinary bad link, an empty post, or protected content.
-            logger.info("Telegram link not downloadable ({}): {}", ref.describe(), exc)
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except TelegramUnavailableError as exc:
-            logger.warning("Telegram downloading unavailable: {}", exc)
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except Exception as exc:
-            logger.exception("Telegram download failed for {}", ref.describe())
-            raise HTTPException(status_code=422, detail="Video download failed") from exc
+        downloaded = await _download_telegram_to(ref, cfg, Path(work_dir), max_bytes)
 
         size = downloaded.stat().st_size
         if usage is not None:
@@ -2017,6 +1983,104 @@ async def _create_session_from_telegram(
         suffix = downloaded.suffix or ".mp4"
         session = manager.create_session(downloaded, f"{ref.describe()}{suffix}")
         return session.public_dict()
+
+
+class _TelegramDownloadRequest(BaseModel):
+    url: str
+    max_mb: int | None = None
+
+
+@app.post("/telegram/download")
+async def download_telegram_file(
+    body: _TelegramDownloadRequest,
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """Download one Telegram video over rainrag's MTProto session and return the file.
+
+    For a trusted service that needs the video but not a rainrag session (the
+    danbi try page). The Telegram login stays on this server: a second copy of
+    the session used from another machine at the same time makes Telegram
+    revoke it (AUTH_KEY_DUPLICATED). Nothing is transcribed or kept; the file
+    is deleted once it has been sent.
+    """
+    with usage_span("telegram_download", source="telegram") as usage:
+        verify_auth_token(authorization=authorization)
+        manager = _require_video_manager()
+        cfg = manager.cfg
+        url = (body.url or "").strip()
+        _validate_video_url(url)
+        ref = _telegram_ref_if_enabled(url, cfg)
+        if ref is None:
+            if not getattr(cfg, "telegram_enabled", False):
+                raise HTTPException(status_code=503, detail="Telegram downloading is not enabled")
+            raise HTTPException(status_code=400, detail="Not a Telegram post link")
+
+        limit_mb = (
+            cfg.max_upload_mb if not body.max_mb else min(int(body.max_mb), cfg.max_upload_mb)
+        )
+        max_bytes = max(1, limit_mb) * 1024 * 1024
+        tmp_root = Path(cfg.tmp_root)
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        work_dir = tempfile.mkdtemp(dir=str(tmp_root), prefix="telegram_dl_")
+        try:
+            downloaded = await _download_telegram_to(ref, cfg, Path(work_dir), max_bytes)
+        except BaseException:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            raise
+        usage["bytes"] = downloaded.stat().st_size
+        return FileResponse(
+            path=str(downloaded),
+            media_type=mimetypes.guess_type(downloaded.name)[0] or "video/mp4",
+            filename=f"{ref.describe()}{downloaded.suffix or '.mp4'}",
+            background=BackgroundTask(shutil.rmtree, work_dir, ignore_errors=True),
+        )
+
+
+async def _download_telegram_to(ref: Any, cfg: Any, dest: Path, max_bytes: int) -> Path:
+    """Download ``ref`` into ``dest`` with rainrag's session; map failures to HTTP errors.
+
+    Shared by the session import and the download-only endpoint, so both give
+    the same answer for the same link.
+    """
+    from rainrag.telegram_media import (  # noqa: PLC0415
+        TelegramNotDownloadableError,
+        TelegramUnavailableError,
+        download_telegram_video,
+    )
+
+    api_id_raw = os.getenv(cfg.telegram_api_id_env, "")
+    api_hash = os.getenv(cfg.telegram_api_hash_env, "")
+    if not api_id_raw or not api_hash:
+        raise HTTPException(
+            status_code=503,
+            detail="Telegram downloading is enabled but its API credentials are not configured",
+        )
+    try:
+        api_id = int(api_id_raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail="Telegram api_id must be an integer") from exc
+    try:
+        downloaded = await download_telegram_video(
+            ref,
+            dest,
+            api_id=api_id,
+            api_hash=api_hash,
+            session_path=cfg.telegram_session_path,
+            max_bytes=max_bytes,
+            flood_sleep_threshold=cfg.telegram_flood_sleep_threshold,
+        )
+    except TelegramNotDownloadableError as exc:
+        logger.info("Telegram link not downloadable ({}): {}", ref.describe(), exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TelegramUnavailableError as exc:
+        logger.warning("Telegram downloading unavailable: {}", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Telegram download failed for {}", ref.describe())
+        raise HTTPException(status_code=422, detail="Video download failed") from exc
+    if downloaded.stat().st_size == 0:
+        raise HTTPException(status_code=400, detail="Downloaded file is empty")
+    return downloaded
 
 
 def _validate_video_url(url: str) -> None:
