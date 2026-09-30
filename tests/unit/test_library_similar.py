@@ -771,3 +771,34 @@ class TestMentionedAxis:
         by_rare = score_pair(seed, rare, idf, people)[0]
         by_common = score_pair(seed, common[0], idf, people)[0]
         assert by_rare > by_common
+
+    def test_a_subject_naming_the_episodes_own_guest_does_not_become_a_mention(self):
+        """A record can list one person as both a guest and a subject, and
+        adding them back here would undo `from_record`'s exclusion, putting
+        the seed's own guest on the mentioned axis (CodeRabbit on #96)."""
+        from rainrag.library_similar import Episode, split_people_from_subjects
+
+        pool = [
+            Episode.from_record(
+                {"video_hash": "a", "guest": ["Юрий Шевчук"], "subject": ["Юрий Шевчук", "музыка"]}
+            ),
+            Episode.from_record({"video_hash": "b", "mentioned_extra": ["Юрий Шевчук"]}),
+        ]
+        moved = split_people_from_subjects(pool)
+        assert moved[0].subject == ["музыка"], "the name leaves the theme axis either way"
+        assert moved[0].mentioned == [], "but he speaks here, so he is not a mention"
+
+    def test_two_spellings_of_one_person_do_not_halve_the_credit(self):
+        """`shared_people` counts an identity once in the numerator; summing
+        spellings in the denominator counted it twice (CodeRabbit on #96)."""
+        from rainrag.library_similar import mentioned_idf, score_pair, subject_idf
+
+        filler = [self._ep(f"f{i}", mentioned=["Кто-то Другой"]) for i in range(9)]
+        one_spelling = self._ep("s1", mentioned=["Ирина Хакамада"])
+        two_spellings = self._ep("s2", mentioned=["Ирина Хакамада", "Хакамада"])
+        cand = self._ep("c", mentioned=["Ирина Хакамада"])
+        pool = [one_spelling, two_spellings, cand, *filler]
+        idf, people = subject_idf(pool), mentioned_idf(pool)
+        assert score_pair(two_spellings, cand, idf, people)[0] == pytest.approx(
+            score_pair(one_spelling, cand, idf, people)[0]
+        )

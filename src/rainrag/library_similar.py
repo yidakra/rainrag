@@ -480,7 +480,14 @@ def split_people_from_subjects(episodes: Iterable[Episode]) -> list[Episode]:
             replace(
                 episode,
                 subject=[t for t in episode.subject if normalise_tag(t) not in keys],
-                mentioned=_dedupe([*episode.mentioned, *people]),
+                # Speakers filtered again, not just in `from_record`: a record
+                # can list one person as both a guest and a subject, and
+                # adding them here would put the episode's own guest back on
+                # the mentioned axis after `from_record` removed them
+                # (CodeRabbit on #96).
+                mentioned=_without_speakers(
+                    _dedupe([*episode.mentioned, *people]), episode.speakers
+                ),
             )
         )
     return moved
@@ -553,8 +560,13 @@ def score_pair(
     # episode is about is also discussed there".
     shared_mentioned, shared_mentioned_keys = shared_people(seed.mentioned, candidate.mentioned)
     people_idf = people_idf or {}
+    # Per identity, not per spelling. A seed crediting both «Ирина Хакамада»
+    # and «Хакамада» names one person, and `shared_people` counts it once in
+    # the numerator; summing spellings here counted it twice and halved the
+    # credit a candidate could earn (CodeRabbit on #96).
     seed_people_weight = (
-        sum(people_idf.get(normalise_person(n), 0.0) for n in seed.mentioned) or 1.0
+        sum(people_idf.get(surname, 0.0) for surname, _given in person_identities(seed.mentioned))
+        or 1.0
     )
     mentioned_score = (
         sum(people_idf.get(surname, 0.0) for surname, _given in shared_mentioned_keys)

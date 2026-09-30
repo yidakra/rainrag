@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from rainrag.library_blend import (
     WEIGHTS,
     Audience,
@@ -14,8 +16,13 @@ from rainrag.library_blend import (
 from rainrag.library_similar import Episode, subject_idf
 
 
-def _ep(video_hash: str, speakers=(), subject=()) -> Episode:
-    return Episode(video_hash=video_hash, speakers=list(speakers), subject=list(subject))
+def _ep(video_hash: str, speakers=(), subject=(), mentioned=()) -> Episode:
+    return Episode(
+        video_hash=video_hash,
+        speakers=list(speakers),
+        subject=list(subject),
+        mentioned=list(mentioned),
+    )
 
 
 def _idf(*episodes: Episode) -> dict[str, float]:
@@ -85,13 +92,18 @@ def test_a_poor_audience_match_does_cost_the_candidate():
 
 
 def test_the_weights_are_the_ones_varya_specified():
-    assert WEIGHTS == {
+    """Her four are untouched. «mentioned» is not hers: she asked for the
+    category to exist (2026-09-29) and said nothing about its weight, so it
+    is set here below «theme», because being discussed is weaker evidence
+    than the episode being about the subject. Expect her to move it."""
+    assert {k: v for k, v in WEIGHTS.items() if k != "mentioned"} == {
         "speaker": 40.0,
         "theme": 30.0,
         "audience": 20.0,
         "depth": 5.0,
         "cpm": 5.0,
     }
+    assert 0 < WEIGHTS["mentioned"] < WEIGHTS["theme"]
 
 
 def test_speaker_outweighs_theme_at_the_stated_ratio():
@@ -347,3 +359,28 @@ def test_the_speaker_axis_matches_the_seed_on_its_headline_only():
     # The candidate side stays whole: seeded on Бухарин, the panel is his match.
     bukharin = Episode(video_hash="b", title="Андрей Бухарин: «Салон»", speakers=["Андрей Бухарин"])
     assert speaker_axis(bukharin, seed) == (1.0, ["Андрей Бухарин"])
+
+
+def test_a_candidate_sharing_only_a_mentioned_person_reaches_the_shortlist():
+    """It scored zero here and was dropped, while find_similar ranked it and
+    explained it: the shortlist and the columns contradicting each other is
+    the failure this module's docstring warns about (CodeRabbit on #96)."""
+    from rainrag.library_similar import mentioned_idf
+
+    seed = _ep("s", subject=["интуиция"], mentioned=["Надежда Савченко"])
+    only_mention = _ep("a", subject=["другое"], mentioned=["Надежда Савченко"])
+    filler = [_ep(f"f{i}", subject=["другое"]) for i in range(8)]
+    pool = [seed, only_mention, *filler]
+    ranked = blended_top(seed, [only_mention], _idf(*pool), people_idf=mentioned_idf(pool))
+    assert [b.episode.video_hash for b in ranked] == ["a"]
+    assert "общие упоминания: Надежда Савченко" in ranked[0].explain()
+
+
+def test_an_episode_mentioning_nobody_is_unmeasured_not_mismatched():
+    """The same rule the speaker and theme axes use: the axis is absent, so
+    the others renormalise exactly as they did before it existed."""
+    seed = _ep("s", speakers=["Ирина Хакамада"], subject=["интуиция"])
+    cand = _ep("a", speakers=["Ирина Хакамада"], subject=["интуиция"])
+    blended = blend_pair(seed, cand, _idf(seed, cand))
+    assert "mentioned" not in blended.axes
+    assert blended.score == pytest.approx(1.0)

@@ -1248,6 +1248,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         shortlist_pool,
         idf,
         _cached_audiences(_stat_key(MAP_PATH), _stat_key(METRICS_PATH)),
+        people_idf=people_idf,
     )
     if shortlist:
         st.subheader(_t("top5", lang))
