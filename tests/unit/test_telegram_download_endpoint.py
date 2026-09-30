@@ -8,6 +8,7 @@ error mapping, and that nothing is left on disk after the response.
 
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -30,6 +31,16 @@ def _manager(tmp_path: Path, enabled: bool = True) -> SimpleNamespace:
         tmp_root=str(tmp_path / "tmp"),
     )
     return SimpleNamespace(cfg=cfg)
+
+
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    """Resolve every host name to a public address, so no test needs real DNS."""
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
 
 @pytest.fixture
@@ -105,6 +116,24 @@ def test_a_private_address_is_refused_before_any_download(client, tmp_path):
     ):
         r = client.post("/telegram/download", json={"url": "http://127.0.0.1/x"})
     assert r.status_code == 400
+    assert fake.calls == []
+
+
+def test_a_name_that_resolves_to_a_private_address_is_refused(client, tmp_path, monkeypatch):
+    """The validator resolves the host name, so a rebound t.me is refused too."""
+
+    def private_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port or 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", private_getaddrinfo)
+    fake = _fake_download()
+    with (
+        patch("rainrag.api.video_session_manager", _manager(tmp_path)),
+        patch("rainrag.telegram_media.download_telegram_video", fake),
+    ):
+        r = client.post("/telegram/download", json={"url": "https://t.me/somechannel/123"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "URL targets a non-public address"
     assert fake.calls == []
 
 

@@ -11,6 +11,7 @@ import os
 import queue
 import re
 import shutil
+import socket
 import string
 import subprocess
 import tempfile
@@ -2008,7 +2009,7 @@ async def download_telegram_file(
         manager = _require_video_manager()
         cfg = manager.cfg
         url = (body.url or "").strip()
-        _validate_video_url(url)
+        await asyncio.to_thread(_validate_video_url, url)
         ref = _telegram_ref_if_enabled(url, cfg)
         if ref is None:
             if not getattr(cfg, "telegram_enabled", False):
@@ -2083,11 +2084,42 @@ async def _download_telegram_to(ref: Any, cfg: Any, dest: Path, max_bytes: int) 
     return downloaded
 
 
+def _is_public_address(raw: str) -> bool:
+    """Return True when ``raw`` is a global unicast address.
+
+    An IPv6 zone id (``fe80::1%eth0``) is dropped first. An IPv4-mapped IPv6
+    address (``::ffff:10.0.0.1``) is judged by the IPv4 address it carries.
+    """
+    addr = ipaddress.ip_address(raw.split("%", 1)[0])
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return addr.is_global
+
+
 def _validate_video_url(url: str) -> None:
-    """Reject URLs that could enable SSRF or expose credentials in error messages."""
+    """Reject URLs that could enable SSRF or expose credentials in error messages.
+
+    The check refuses a scheme other than http(s), embedded credentials, and a
+    host that is a non-public IP literal. For a host name, it resolves the name
+    with ``socket.getaddrinfo`` and refuses the URL when any answer is not a
+    global address. A name that does not resolve is also refused. All failures
+    raise ``HTTPException(400)``.
+
+    The resolution blocks. The async endpoints call this function through
+    ``asyncio.to_thread``, so a slow DNS server does not stall the event loop.
+
+    Limit: this check narrows SSRF but does not close it. yt-dlp resolves the
+    name again at fetch time and follows redirects on its own. A DNS server
+    that changes its answer between the two lookups (DNS rebinding), or a
+    public page that redirects to an internal address, still reaches the
+    internal network. Only a network control closes that gap: an egress
+    firewall on the fetch process that drops traffic to loopback, private,
+    link-local and metadata ranges.
+    """
     try:
         parsed = urlsplit(url)
-    except Exception as exc:
+        port = parsed.port
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid URL") from exc
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(status_code=400, detail="Only http and https URLs are supported")
@@ -2096,12 +2128,31 @@ def _validate_video_url(url: str) -> None:
             status_code=400, detail="URLs with embedded credentials are not supported"
         )
     hostname = parsed.hostname or ""
+    if not hostname:
+        raise HTTPException(status_code=400, detail="URL has no host")
     try:
-        addr = ipaddress.ip_address(hostname)
-        if not addr.is_global:
-            raise HTTPException(status_code=400, detail="URL targets a non-public address")
+        is_literal = True
+        public = _is_public_address(hostname)
     except ValueError:
-        pass  # hostname is a domain name — allow it
+        is_literal = False  # hostname is a domain name; resolve it below
+    if is_literal:
+        if not public:
+            raise HTTPException(status_code=400, detail="URL targets a non-public address")
+        return
+    try:
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError) as exc:
+        raise HTTPException(status_code=400, detail="URL host name does not resolve") from exc
+    addresses = {str(info[4][0]) for info in infos}
+    if not addresses:
+        raise HTTPException(status_code=400, detail="URL host name does not resolve")
+    for raw in addresses:
+        try:
+            public = _is_public_address(raw)
+        except ValueError:
+            public = False
+        if not public:
+            raise HTTPException(status_code=400, detail="URL targets a non-public address")
 
 
 class _VideoUrlRequest(BaseModel):
@@ -2123,7 +2174,7 @@ async def create_video_session_from_url(
         url = body.url.strip()
         if not url:
             raise HTTPException(status_code=400, detail="URL is required")
-        _validate_video_url(url)
+        await asyncio.to_thread(_validate_video_url, url)
 
         max_bytes = manager.cfg.max_upload_mb * 1024 * 1024
         tmp_root = Path(manager.cfg.tmp_root)
