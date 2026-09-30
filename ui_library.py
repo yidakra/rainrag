@@ -57,8 +57,10 @@ from rainrag.library_similar import (
     Scored,
     dedupe_latest,
     find_similar,
+    mentioned_idf,
     normalise_person,
     normalise_tag,
+    split_people_from_subjects,
     subject_idf,
 )
 from rainrag.media_links import archive_media_url
@@ -271,7 +273,10 @@ def load_tagged_episodes(
         if record.get("error"):
             continue
         episodes.append(Episode.from_record(record, programmes))
-    return dedupe_latest(episodes)
+    # Person names leave the theme axis here, once, for every reader of the
+    # pool: the tagger files the people an episode discusses among its
+    # subjects, and a rare name then scored as a strong topical match.
+    return split_people_from_subjects(dedupe_latest(episodes))
 
 
 _YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "youtube-nocookie.com"}
@@ -1177,6 +1182,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     # own over the same pool on every interaction, which costs 1.3s and lets
     # the columns and the shortlist disagree about what a theme is worth.
     idf = _cached_idf(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH))
+    people_idf = _cached_people_idf(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH))
     results = find_similar(
         seed,
         episodes,
@@ -1184,6 +1190,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         genres=genres or None,
         limit=len(episodes),
         idf=idf,
+        people_idf=people_idf,
     )
     same, themed = split_by_speaker(results)
     same = same[:SIMILAR_POOL_LIMIT]
@@ -1241,6 +1248,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         shortlist_pool,
         idf,
         _cached_audiences(_stat_key(MAP_PATH), _stat_key(METRICS_PATH)),
+        people_idf=people_idf,
     )
     if shortlist:
         st.subheader(_t("top5", lang))
@@ -1571,6 +1579,12 @@ def _cached_idf(tags_key: tuple[int, int], programs_key: tuple[int, int]) -> dic
     match is worth.
     """
     return subject_idf(_cached_episodes(tags_key, programs_key))
+
+
+@st.cache_data(show_spinner=False)
+def _cached_people_idf(tags_key: tuple[int, int], programs_key: tuple[int, int]) -> dict:
+    """The same weighting for the mentioned axis, cached for the same reason."""
+    return mentioned_idf(_cached_episodes(tags_key, programs_key))
 
 
 @st.cache_data(show_spinner=False)

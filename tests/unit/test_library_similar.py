@@ -82,7 +82,7 @@ class TestScoring:
     def test_reasons_are_reported_for_the_editor(self):
         seed = ep("seed", subject=["политика"], speakers=["Ирина Хакамада"])
         cand = ep("a", subject=["политика"], speakers=["Ирина Хакамада"])
-        score, speakers, subjects = score_pair(seed, cand, subject_idf([seed, cand]))
+        score, speakers, subjects, _ = score_pair(seed, cand, subject_idf([seed, cand]))
         assert speakers == ["Ирина Хакамада"]
         assert subjects == ["политика"]
         assert score > 0
@@ -182,7 +182,7 @@ class TestSurnameMatchingRegression:
         """The end-to-end effect: the bonus was silently never awarded."""
         seed = ep("seed", subject=["политика"], speakers=["Екатерина Шульман"])
         cand = ep("a", subject=["политика"], speakers=["Шульман"])
-        _score, speakers, _subjects = score_pair(seed, cand, subject_idf([seed, cand]))
+        _score, speakers, _subjects, _ = score_pair(seed, cand, subject_idf([seed, cand]))
         assert speakers == ["Шульман"]
 
 
@@ -678,3 +678,127 @@ class TestHeadlineSpeakers:
         )
         ranked = find_similar(with_bukharin, [shevchuk])
         assert ranked[0].shared_speakers == ["Андрей Бухарин"]
+
+
+class TestMentionedAxis:
+    """Varya's rule (2026-09-29): «упомянутые персоналии — это отдельная
+    категория, mentioned. По ним можно сравнивать, но только внутри этой
+    категории»."""
+
+    def _ep(self, h, **kw):
+        from rainrag.library_similar import Episode
+
+        return Episode(video_hash=h, **kw)
+
+    def test_a_guest_in_one_episode_does_not_match_a_mention_in_another(self):
+        """The case she reported: Шевчук as a guest and Шевчук as a mention
+        are not a recommendation."""
+        from rainrag.library_similar import find_similar
+
+        seed = self._ep("s", speakers=["Юрий Шевчук"], subject=["музыка"])
+        about = self._ep("c", mentioned=["Юрий Шевчук"], subject=["политика"])
+        assert find_similar(seed, [about]) == []
+
+    def test_two_episodes_discussing_the_same_person_do_match(self):
+        """Comparing within the category is allowed, and says so in words."""
+        from rainrag.library_similar import find_similar
+
+        seed = self._ep("s", mentioned=["Надежда Савченко"])
+        other = self._ep("c", mentioned=["Надежда Савченко"])
+        (result,) = find_similar(seed, [other])
+        assert "общие упоминания: Надежда Савченко" in result.explain()
+        assert "общие темы" not in result.explain()
+
+    def test_a_speaker_of_the_episode_is_not_also_one_of_its_mentions(self):
+        """Otherwise the seed's own guest lands on the mentioned axis and
+        matches everything that merely talks about them."""
+        from rainrag.library_similar import Episode
+
+        e = Episode.from_record(
+            {
+                "video_hash": "h",
+                "guest": ["Юрий Шевчук"],
+                "mentioned_cms": ["Юрий Шевчук", "Илья Лагутенко"],
+            }
+        )
+        assert e.mentioned == ["Илья Лагутенко"]
+
+    def test_a_person_named_as_a_subject_moves_to_the_mentioned_axis(self):
+        """A rare name is a very distinctive tag, so an episode about
+        Надежда Савченко scored a strong *theme* match against anything that
+        mentions her, shown to the editor as «общие темы»."""
+        from rainrag.library_similar import split_people_from_subjects
+
+        pool = [
+            self._ep("a", subject=["Надежда Савченко", "политика"]),
+            self._ep("b", mentioned=["Надежда Савченко"]),
+        ]
+        moved = split_people_from_subjects(pool)
+        assert moved[0].subject == ["политика"]
+        assert moved[0].mentioned == ["Надежда Савченко"]
+
+    def test_an_ordinary_tag_is_never_mistaken_for_a_person(self):
+        """The tagger has written «власть» and «медиа» into people fields, so
+        appearing there is not enough: the name shape is required too."""
+        from rainrag.library_similar import split_people_from_subjects
+
+        pool = [
+            self._ep("a", subject=["власть", "женщины-лидеры"]),
+            self._ep("b", mentioned=["власть"]),
+        ]
+        moved = split_people_from_subjects(pool)
+        assert moved[0].subject == ["власть", "женщины-лидеры"]
+        assert moved[0].mentioned == []
+
+    def test_a_name_nothing_in_the_corpus_calls_a_person_stays_a_subject(self):
+        """The vocabulary is evidence, not a guess: «Северный Поток» is name
+        shaped and is not a person."""
+        from rainrag.library_similar import split_people_from_subjects
+
+        moved = split_people_from_subjects([self._ep("a", subject=["Северный Поток"])])
+        assert moved[0].subject == ["Северный Поток"]
+
+    def test_a_widely_discussed_person_separates_less_than_a_rare_one(self):
+        """Weighted by rarity like subjects are, or «Владимир Путин», on 949
+        episodes, would outrank every real match."""
+        from rainrag.library_similar import mentioned_idf, score_pair, subject_idf
+
+        common = [self._ep(str(i), mentioned=["Владимир Путин"]) for i in range(20)]
+        seed = self._ep("s", mentioned=["Владимир Путин", "Надежда Савченко"])
+        rare = self._ep("r", mentioned=["Надежда Савченко"])
+        pool = [seed, rare, *common]
+        idf, people = subject_idf(pool), mentioned_idf(pool)
+        by_rare = score_pair(seed, rare, idf, people)[0]
+        by_common = score_pair(seed, common[0], idf, people)[0]
+        assert by_rare > by_common
+
+    def test_a_subject_naming_the_episodes_own_guest_does_not_become_a_mention(self):
+        """A record can list one person as both a guest and a subject, and
+        adding them back here would undo `from_record`'s exclusion, putting
+        the seed's own guest on the mentioned axis (CodeRabbit on #96)."""
+        from rainrag.library_similar import Episode, split_people_from_subjects
+
+        pool = [
+            Episode.from_record(
+                {"video_hash": "a", "guest": ["Юрий Шевчук"], "subject": ["Юрий Шевчук", "музыка"]}
+            ),
+            Episode.from_record({"video_hash": "b", "mentioned_extra": ["Юрий Шевчук"]}),
+        ]
+        moved = split_people_from_subjects(pool)
+        assert moved[0].subject == ["музыка"], "the name leaves the theme axis either way"
+        assert moved[0].mentioned == [], "but he speaks here, so he is not a mention"
+
+    def test_two_spellings_of_one_person_do_not_halve_the_credit(self):
+        """`shared_people` counts an identity once in the numerator; summing
+        spellings in the denominator counted it twice (CodeRabbit on #96)."""
+        from rainrag.library_similar import mentioned_idf, score_pair, subject_idf
+
+        filler = [self._ep(f"f{i}", mentioned=["Кто-то Другой"]) for i in range(9)]
+        one_spelling = self._ep("s1", mentioned=["Ирина Хакамада"])
+        two_spellings = self._ep("s2", mentioned=["Ирина Хакамада", "Хакамада"])
+        cand = self._ep("c", mentioned=["Ирина Хакамада"])
+        pool = [one_spelling, two_spellings, cand, *filler]
+        idf, people = subject_idf(pool), mentioned_idf(pool)
+        assert score_pair(two_spellings, cand, idf, people)[0] == pytest.approx(
+            score_pair(one_spelling, cand, idf, people)[0]
+        )

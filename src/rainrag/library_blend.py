@@ -43,6 +43,11 @@ from rainrag.library_similar import (
 WEIGHTS = {
     "speaker": 40.0,
     "theme": 30.0,
+    # A third of a speaker, as in the ranker: being discussed is weaker
+    # evidence than being in the room. Only rows where both sides mention
+    # someone carry this axis at all, so everything else renormalises exactly
+    # as before.
+    "mentioned": 10.0,
     "audience": 20.0,
     "depth": 5.0,
     "cpm": 5.0,
@@ -53,8 +58,18 @@ AXIS_LABELS = {
     "en": {"audience": "audience", "depth": "watch depth", "cpm": "CPM"},
 }
 _LEAD = {
-    "ru": {"speaker": "тот же спикер: ", "theme": "общие темы: ", "none": "нет пересечений"},
-    "en": {"speaker": "same speaker: ", "theme": "shared subjects: ", "none": "no overlap"},
+    "ru": {
+        "speaker": "тот же спикер: ",
+        "theme": "общие темы: ",
+        "mentioned": "общие упоминания: ",
+        "none": "нет пересечений",
+    },
+    "en": {
+        "speaker": "same speaker: ",
+        "theme": "shared subjects: ",
+        "mentioned": "shared mentions: ",
+        "none": "no overlap",
+    },
 }
 
 
@@ -81,6 +96,7 @@ class Blended:
     axes: dict[str, float] = field(default_factory=dict)
     shared_speakers: list[str] = field(default_factory=list)
     shared_subjects: list[str] = field(default_factory=list)
+    shared_mentioned: list[str] = field(default_factory=list)
 
     def explain(self, lang: str = "ru") -> str:
         """Name only the axes that actually contributed.
@@ -96,6 +112,8 @@ class Blended:
             parts.append(lead["speaker"] + ", ".join(self.shared_speakers))
         if self.axes.get("theme") and self.shared_subjects:
             parts.append(lead["theme"] + ", ".join(self.shared_subjects[:5]))
+        if self.axes.get("mentioned") and self.shared_mentioned:
+            parts.append(lead["mentioned"] + ", ".join(self.shared_mentioned[:5]))
         for axis in ("audience", "depth", "cpm"):
             if self.axes.get(axis):
                 parts.append(f"{labels[axis]}: {self.axes[axis]:.0%}")
@@ -212,6 +230,33 @@ def _ratio(left: float | None, right: float | None) -> float | None:
     return min(left, right) / max(left, right)
 
 
+def mentioned_axis(
+    seed: Episode, candidate: Episode, people_idf: dict[str, float]
+) -> tuple[float | None, list[str]]:
+    """Share of the seed's distinctive mention weight present in the candidate.
+
+    The same normalisation the theme axis uses, and for the same reason: the
+    shortlist and the columns must not disagree about what a match is worth.
+    Without this axis a candidate that overlaps the seed only on a mentioned
+    person scored zero here and was dropped, while `find_similar` ranked it
+    and explained it (CodeRabbit on #96).
+
+    None when either side mentions nobody: unmeasured, not a mismatch.
+    """
+    seed_ids = person_identities(seed.mentioned)
+    if not seed_ids or not candidate.mentioned:
+        return None, []
+    names, matched = shared_people(seed.mentioned, candidate.mentioned)
+    seed_weight = sum(people_idf.get(surname, 0.0) for surname, _given in seed_ids)
+    if not seed_weight:
+        # Everyone this seed names is discussed everywhere, so the axis can
+        # separate nothing. Zero, not None: the data is there, it just does
+        # not distinguish.
+        return 0.0, names
+    matched_weight = sum(people_idf.get(surname, 0.0) for surname, _given in matched)
+    return matched_weight / seed_weight, names
+
+
 def blend_pair(
     seed: Episode,
     candidate: Episode,
@@ -219,14 +264,17 @@ def blend_pair(
     seed_audience: Audience | None = None,
     candidate_audience: Audience | None = None,
     weights: dict[str, float] | None = None,
+    people_idf: dict[str, float] | None = None,
 ) -> Blended:
     """Score one pair over every axis that both episodes can answer."""
     weights = weights or WEIGHTS
     speaker, speaker_names = speaker_axis(seed, candidate)
     theme, theme_names = theme_axis(seed, candidate, idf)
+    mentioned, mentioned_names = mentioned_axis(seed, candidate, people_idf or {})
     scores: dict[str, float | None] = {
         "speaker": speaker,
         "theme": theme,
+        "mentioned": mentioned,
         "audience": audience_axis(seed_audience, candidate_audience),
         "depth": _ratio(
             seed_audience.average_view_duration if seed_audience else None,
@@ -257,6 +305,7 @@ def blend_pair(
         axes=present,
         shared_speakers=speaker_names,
         shared_subjects=theme_names,
+        shared_mentioned=mentioned_names,
     )
 
 
@@ -267,6 +316,7 @@ def blended_top(
     audiences: dict[str, Audience] | None = None,
     limit: int = 5,
     weights: dict[str, float] | None = None,
+    people_idf: dict[str, float] | None = None,
 ) -> list[Blended]:
     """The shortlist: best candidates across all axes, strongest first.
 
@@ -284,6 +334,7 @@ def blended_top(
             seed_audience,
             audiences.get(candidate.video_hash),
             weights,
+            people_idf,
         )
         for candidate in candidates
     ]

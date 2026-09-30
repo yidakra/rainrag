@@ -26,7 +26,7 @@ import math
 import re
 from collections import Counter
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from rainrag.library_programs import Programme, programme_for, resolve_speakers
@@ -36,6 +36,21 @@ from rainrag.library_programs import Programme, programme_for, resolve_speakers
 # expected results are simply "the same person again" -- but it must not become
 # the only signal, or the two theme-matched interviews could never surface.
 SPEAKER_WEIGHT = 3.0
+
+# A person the episode talks *about* is a third signal, and a separate one.
+# Varya's rule: "упомянутые персоналии -- это отдельная категория, mentioned.
+# По ним можно сравнивать, но только внутри этой категории" -- a guest in one
+# episode must not match a mentioned person in another (2026-09-29). The
+# weight sits below the speaker's because being discussed is weaker evidence
+# than being in the room, and the overlap is rarity-weighted like subjects
+# are, so «Владимир Путин» separates almost nothing and a rare name a lot.
+MENTIONED_WEIGHT = 1.0
+
+# Two or more capitalised tokens: the shape of a person's name as the CMS and
+# the tagger write it. Used to tell a name apart from an ordinary tag, because
+# both live in the same lists -- the tagger has written «власть» and «медиа»
+# into people fields, and a bare surname cannot be told from a common noun.
+NAME_SHAPED = re.compile(r"^[А-ЯЁA-Z][^\s]*(?:\s+[А-ЯЁA-Z][^\s]*)+$")
 
 
 def normalise_tag(tag: str) -> str:
@@ -222,6 +237,9 @@ class Episode:
     genre: list[str] = field(default_factory=list)
     subject: list[str] = field(default_factory=list)
     speakers: list[str] = field(default_factory=list)
+    # People the episode talks about rather than to. Its own axis, never
+    # matched against `speakers`: see `MENTIONED_WEIGHT`.
+    mentioned: list[str] = field(default_factory=list)
     url: str | None = None
     presenter_demoted: bool = False
     # Genre as Varya's Programs tab defines it for this episode's programme,
@@ -258,10 +276,41 @@ class Episode:
             genre=list(record.get("genre") or []),
             subject=list(record.get("subject") or []),
             speakers=speakers,
+            mentioned=_without_speakers(
+                _dedupe(
+                    [*(record.get("mentioned_cms") or []), *(record.get("mentioned_extra") or [])]
+                ),
+                speakers,
+            ),
             url=record.get("url"),
             presenter_demoted=resolution.presenter_demoted,
             programme_genres=list(programme.genres) if programme else [],
         )
+
+
+def _without_speakers(names: Iterable[str], speakers: Iterable[str]) -> list[str]:
+    """Drop anyone who speaks in this episode from its list of mentions.
+
+    Within one episode a person is a speaker or a mention, never both: 950
+    rows across 751 episodes credit a guest in the CMS person tags as well.
+    Leaving them in would put the seed's own guest on the mentioned axis, and
+    the seed would then match every episode that merely talks about them --
+    the recommendation Varya ruled out (2026-09-29).
+    """
+    speakers = list(speakers)
+    return [n for n in names if not any(people_match(n, s) for s in speakers)]
+
+
+def _dedupe(names: Iterable[str]) -> list[str]:
+    """Keep the first spelling of each name, in the order it was written."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        key = normalise_tag(name)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(str(name).strip())
+    return out
 
 
 def episode_identity(episode: Episode) -> str:
@@ -365,6 +414,7 @@ class Scored:
     score: float
     shared_speakers: list[str]
     shared_subjects: list[str]
+    shared_mentioned: list[str] = field(default_factory=list)
 
     def explain(self) -> str:
         bits = []
@@ -372,7 +422,93 @@ class Scored:
             bits.append("тот же спикер: " + ", ".join(self.shared_speakers))
         if self.shared_subjects:
             bits.append("общие темы: " + ", ".join(self.shared_subjects[:6]))
+        # Named apart from the themes on purpose. An editor reading «общие
+        # темы: Сергей Шойгу» reasonably concludes the two episodes are about
+        # the same thing; what they share is a person one of them talks about.
+        if self.shared_mentioned:
+            bits.append("общие упоминания: " + ", ".join(self.shared_mentioned[:6]))
         return "; ".join(bits) or "нет пересечений"
+
+
+def person_vocabulary(episodes: Iterable[Episode]) -> set[str]:
+    """Every name-shaped string the corpus records as a person, normalised.
+
+    Built from the corpus rather than guessed, because the only reliable
+    evidence that «Надежда Савченко» is a person and «женщины-лидеры» is not
+    is that some episode credits her as a speaker or a mention. The name shape
+    is required on top: the tagger has written «власть», «медиа» and «кино»
+    into people fields, and without the shape test those would be pulled out
+    of the theme axis, which is exactly where they belong.
+    """
+    names: set[str] = set()
+    for episode in episodes:
+        for name in (*episode.speakers, *episode.mentioned):
+            text = str(name).strip()
+            if NAME_SHAPED.match(text) and normalise_tag(text):
+                names.add(normalise_tag(text))
+    return names
+
+
+def split_people_from_subjects(episodes: Iterable[Episode]) -> list[Episode]:
+    """Move person names out of the theme axis into `mentioned`.
+
+    The tagger puts the people an episode discusses among its subjects, and a
+    rare name is a very distinctive tag, so an episode about Надежда Савченко
+    scored a strong *theme* match against every episode that merely mentions
+    her -- presented to the editor as «общие темы», which reads as a topical
+    match when it is a person match. Varya's ruling is that these are the
+    `mentioned` category and belong on its own axis (2026-09-29).
+
+    12 981 of 498 377 subject tags across 3 048 of 18 116 episodes, and not
+    one of them was already in its own episode's mentioned list, so nothing
+    is lost and nothing is duplicated by the move.
+    """
+    episodes = list(episodes)
+    vocabulary = person_vocabulary(episodes)
+    moved: list[Episode] = []
+    for episode in episodes:
+        people = [
+            t
+            for t in episode.subject
+            if NAME_SHAPED.match(str(t).strip()) and normalise_tag(t) in vocabulary
+        ]
+        if not people:
+            moved.append(episode)
+            continue
+        keys = {normalise_tag(t) for t in people}
+        moved.append(
+            replace(
+                episode,
+                subject=[t for t in episode.subject if normalise_tag(t) not in keys],
+                # Speakers filtered again, not just in `from_record`: a record
+                # can list one person as both a guest and a subject, and
+                # adding them here would put the episode's own guest back on
+                # the mentioned axis after `from_record` removed them
+                # (CodeRabbit on #96).
+                mentioned=_without_speakers(
+                    _dedupe([*episode.mentioned, *people]), episode.speakers
+                ),
+            )
+        )
+    return moved
+
+
+def mentioned_idf(episodes: Iterable[Episode]) -> dict[str, float]:
+    """Inverse document frequency over mentioned people, keyed by surname.
+
+    The surname is `normalise_person`, which groups spellings rather than
+    identifying a person: two different Быковы share the key. That is the
+    right trade here, because this only sets how much a shared mention is
+    worth, while whether the two are the same person is still decided by
+    `shared_people`.
+    """
+    episodes = list(episodes)
+    counts: Counter[str] = Counter()
+    for ep in episodes:
+        for key in {normalise_person(name) for name in ep.mentioned if normalise_person(name)}:
+            counts[key] += 1
+    total = max(len(episodes), 1)
+    return {key: math.log(total / count) for key, count in counts.items()}
 
 
 def subject_idf(episodes: Iterable[Episode]) -> dict[str, float]:
@@ -393,12 +529,19 @@ def subject_idf(episodes: Iterable[Episode]) -> dict[str, float]:
 
 
 def score_pair(
-    seed: Episode, candidate: Episode, idf: dict[str, float]
-) -> tuple[float, list[str], list[str]]:
+    seed: Episode,
+    candidate: Episode,
+    idf: dict[str, float],
+    people_idf: dict[str, float] | None = None,
+) -> tuple[float, list[str], list[str], list[str]]:
     """Score one candidate against the seed, returning the reasons too.
 
     The reasons matter as much as the number: an editor deciding whether to
     spend an hour watching a tape wants to know *why* it was suggested.
+
+    Three axes, and they never cross. A person the seed talks *to* is not
+    matched against a person the candidate talks *about*: Шевчук as a guest
+    and Шевчук as a mention are not a recommendation (Varya, 2026-09-29).
     """
     shared_speakers, shared_speaker_keys = shared_people(seed_speakers(seed), candidate.speakers)
 
@@ -412,7 +555,29 @@ def score_pair(
     seed_weight = sum(idf.get(t, 0.0) for t in seed_subjects) or 1.0
     subject_score = sum(idf.get(t, 0.0) for t in shared_keys) / seed_weight
 
-    score = subject_score + SPEAKER_WEIGHT * len(shared_speaker_keys)
+    # Mentions, weighted by rarity exactly as subjects are and normalised by
+    # the seed's own weight, so the number reads as "how much of whom this
+    # episode is about is also discussed there".
+    shared_mentioned, shared_mentioned_keys = shared_people(seed.mentioned, candidate.mentioned)
+    people_idf = people_idf or {}
+    # Per identity, not per spelling. A seed crediting both «Ирина Хакамада»
+    # and «Хакамада» names one person, and `shared_people` counts it once in
+    # the numerator; summing spellings here counted it twice and halved the
+    # credit a candidate could earn (CodeRabbit on #96).
+    seed_people_weight = (
+        sum(people_idf.get(surname, 0.0) for surname, _given in person_identities(seed.mentioned))
+        or 1.0
+    )
+    mentioned_score = (
+        sum(people_idf.get(surname, 0.0) for surname, _given in shared_mentioned_keys)
+        / seed_people_weight
+    )
+
+    score = (
+        subject_score
+        + SPEAKER_WEIGHT * len(shared_speaker_keys)
+        + MENTIONED_WEIGHT * mentioned_score
+    )
 
     # Show the rarest shared subjects first: those are the ones that explain
     # the match, and the ones Varya cites in her own rationale.
@@ -420,7 +585,7 @@ def score_pair(
         (t for t in candidate.subject if normalise_tag(t) in shared_keys),
         key=lambda t: -idf.get(normalise_tag(t), 0.0),
     )
-    return score, shared_speakers, shared_subjects
+    return score, shared_speakers, shared_subjects, shared_mentioned
 
 
 def filter_genres(episode: Episode) -> set[str]:
@@ -450,6 +615,7 @@ def find_similar(
     genres: Iterable[str] | None = None,
     limit: int = 10,
     idf: dict[str, float] | None = None,
+    people_idf: dict[str, float] | None = None,
 ) -> list[Scored]:
     """Rank candidates against a seed, applying the editor's hard filters.
 
@@ -463,6 +629,8 @@ def find_similar(
     pool = [c for c in dedupe_latest(candidates) if episode_identity(c) != seed_id]
     if idf is None:
         idf = subject_idf([seed, *pool])
+    if people_idf is None:
+        people_idf = mentioned_idf([seed, *pool])
 
     wanted_genres = {normalise_tag(g) for g in genres} if genres else None
     results: list[Scored] = []
@@ -474,14 +642,14 @@ def find_similar(
         wrong_genre = bool(wanted_genres) and not (filter_genres(candidate) & wanted_genres)
         if too_short or wrong_genre:
             continue
-        score, speakers, subjects = score_pair(seed, candidate, idf)
+        score, speakers, subjects, mentions = score_pair(seed, candidate, idf, people_idf)
         # Drop only what has nothing in common. Scoring zero is not the same
         # thing: a candidate sharing just one archive-wide tag like «политика»
         # has an IDF-weighted score of exactly 0, and silently discarding it
         # would hide real -- if weak -- overlap from the editor.
-        if not speakers and not subjects:
+        if not speakers and not subjects and not mentions:
             continue
-        results.append(Scored(candidate, score, speakers, subjects))
+        results.append(Scored(candidate, score, speakers, subjects, mentions))
 
     results.sort(key=lambda r: (-r.score, r.episode.date or ""))
     return results[:limit]
