@@ -143,15 +143,27 @@ class SpeakerResolution:
 
 
 def resolve_speakers(
-    record: dict[str, Any], programmes: dict[str, Programme] | None = None
+    record: dict[str, Any],
+    programmes: dict[str, Programme] | None = None,
+    presenter_overrides: dict[str, list[str]] | None = None,
 ) -> SpeakerResolution:
     """Apply the editorial speaker rule to one tagging-run row.
 
     Without a programme table the old behaviour is kept verbatim, presenter
     then guest, so an out-of-date checkout degrades to the previous ranking
     instead of silently dropping every presenter.
+
+    `presenter_overrides` fills in the presenters the CMS never had, by
+    content_id. It only supplies what is missing: where the CMS knows a
+    presenter, the CMS wins, because the override table is a patch for the
+    lecture programmes rather than a second source of truth. The names go in
+    through the presenter path, so the genre demotion rule still applies to
+    them and a programme where the host interviews rather than speaks does
+    not suddenly gain a speaker.
     """
     presenters = [str(name) for name in (record.get("presenter_cms") or []) if name]
+    if not presenters and presenter_overrides:
+        presenters = list(presenter_overrides.get(str(record.get("content_id") or ""), []))
     guests = [str(name) for name in (record.get("guest") or []) if name]
     if not programmes:
         return SpeakerResolution(speakers=presenters + guests)
