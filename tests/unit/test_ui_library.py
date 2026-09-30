@@ -1128,8 +1128,8 @@ class _FakePage(_FakeSt):
     def subheader(self, text):
         self.calls.append(("subheader", text))
 
-    def video(self, url):
-        self.calls.append(("video", url))
+    def video(self, url, start_time=0):
+        self.calls.append(("video", url, start_time))
 
     def info(self, text):
         self.calls.append(("info", text))
@@ -1183,7 +1183,7 @@ def test_an_episode_with_nothing_in_the_archive_says_so(monkeypatch, tmp_path):
 def test_the_page_plays_the_video_and_offers_the_transcript_beside_it(monkeypatch, tmp_path):
     fake = _page(monkeypatch, tmp_path, {"video": "aa/bb/h1.mp4", "vtt": "aa/bb/h1.ru.vtt"})
 
-    assert ("video", "https://a/aa/bb/h1.mp4?auth=t") in fake.calls
+    assert ("video", "https://a/aa/bb/h1.mp4?auth=t", 0) in fake.calls
     assert any(c[0] == "markdown" and "h1.ru.vtt" in c[1] for c in fake.calls)
 
 
@@ -1387,3 +1387,59 @@ def test_the_performance_tables_hand_streamlit_numbers_not_formatted_text():
     assert 'NumberColumn(format="%,.2f")' in body
     assert ".style.format" not in body, "a styled frame sorts by its display text"
     assert "def _fmt" not in body, "nothing is turned into a string before it is sorted"
+
+
+def test_a_timecode_link_carries_a_bounded_whole_number_of_seconds():
+    """The value reaches a media player, so a hand-edited link asking for a
+    negative or absurd offset opens the episode at the beginning instead."""
+    import ui_library
+
+    assert ui_library.requested_start({"t": "125"}) == 125
+    assert ui_library.requested_start({"t": ["7", "9"]}) == 7
+    for bad in ("-5", "abc", "", None, "1e9", "999999999"):
+        assert ui_library.requested_start({"t": bad}) == 0, bad
+    assert ui_library.requested_start({}) == 0
+
+
+def test_notes_are_folded_away_and_link_into_the_episode(monkeypatch):
+    """Varya's ask: a guest can spend four minutes on Ukraine in the middle
+    of an hour and finding out means reading the whole transcript."""
+    import ui_library
+
+    class _Expander(_FakeSt):
+        def expander(self, label):
+            self.calls.append(("expander", label))
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    fake = _Expander()
+    monkeypatch.setattr(ui_library, "st", fake)
+    notes = {
+        HASH: [
+            {"topic": "Украина", "start": 125.0, "end": 417.0, "quote": "фрагмент", "hits": 3},
+            {"topic": "Украина", "start": 1144.0, "end": 1441.0, "quote": "", "hits": 2},
+        ]
+    }
+    ui_library.render_notes(_ep(HASH), notes, "ru")
+
+    assert ("expander", "Заметки (2)") in fake.calls
+    line = [c for c in fake.calls if c[0] == "markdown"][0][1]
+    assert "**Украина**" in line
+    assert "[2:05-6:57]" in line and f"?video={HASH}&t=125" in line
+    assert "[19:04-24:01]" in line and "t=1144" in line
+
+
+def test_an_episode_with_nothing_flagged_shows_no_notes(monkeypatch):
+    """Most of them, and the card is already dense."""
+    import ui_library
+
+    fake = _FakeSt()
+    monkeypatch.setattr(ui_library, "st", fake)
+    ui_library.render_notes(_ep(HASH), {}, "ru")
+    ui_library.render_notes(_ep(HASH), None, "ru")
+    assert fake.calls == []

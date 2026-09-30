@@ -44,6 +44,7 @@ from typing import Any
 import streamlit as st
 
 from rainrag.library_blend import Audience, Blended, blended_top
+from rainrag.library_notes import format_timecode
 from rainrag.library_performance import (
     METRIC_COLUMNS,
     aggregate,
@@ -79,9 +80,16 @@ UNTITLED_TITLES_PATH = REPO_ROOT / "data" / "untitled_titles.json"
 # Archive media for those same episodes (scripts/library_untitled_media.py). They have
 # no CMS page to link to, so the card links into the archive instead of nowhere.
 UNTITLED_MEDIA_PATH = REPO_ROOT / "data" / "untitled_media.json"
+# Flagged passages per episode (scripts/library_notes_build.py), from the
+# editorial topic list in data/library_note_topics.csv.
+NOTES_PATH = REPO_ROOT / "data" / "library_notes.json"
 
-# Query parameter for a permanent link to one episode.
+# Query parameter for a permanent link to one episode, and where to start it.
 EPISODE_PARAM = "video"
+START_PARAM = "t"
+# A day. Longer than any episode in the archive, and a bound is what keeps a
+# hand-edited link from asking the player to seek past the end.
+MAX_START_SECONDS = 86_400
 # ``\Z``, not ``$``: in Python ``$`` also matches just before a final
 # newline, so a forty-hex value with one appended would validate. The only
 # caller strips first, but the next one may not (Tenki on #94).
@@ -130,6 +138,8 @@ _T = {
         "untagged_mark": "(не размечен)",
         "no_cms_mark": "без карточки в CMS",
         "archive_link_mark": "ссылка в архив",
+        "notes_header": "Заметки",
+        "notes_topic": "упоминания",
         "episode_page_unknown": "Выпуск не найден. Ссылка могла устареть, или этот выпуск "
         "не входит в размеченный пул.",
         "episode_page_no_media": "Файл этого выпуска не найден в архиве.",
@@ -206,6 +216,8 @@ _T = {
         "untagged_mark": "(untagged)",
         "no_cms_mark": "no CMS record",
         "archive_link_mark": "archive link",
+        "notes_header": "Notes",
+        "notes_topic": "mentions",
         "episode_page_unknown": "Episode not found. The link may be stale, or this episode "
         "is not in the tagged pool.",
         "episode_page_no_media": "No media file for this episode in the archive.",
@@ -810,6 +822,13 @@ def load_untitled_media(path: Path = UNTITLED_MEDIA_PATH) -> dict[str, dict[str,
 
 
 @st.cache_data(show_spinner=False)
+def _cached_notes(stat_key: tuple[int, int]) -> dict[str, list[dict]]:
+    """Flagged passages for the whole pool, re-read when the scan reruns."""
+    del stat_key
+    return load_notes()
+
+
+@st.cache_data(show_spinner=False)
 def _cached_untitled_media(stat_key: tuple[int, int]) -> dict[str, dict[str, str]]:
     del stat_key
     # Keyed in lower case, once, here. A hash keeps whatever case the archive
@@ -1021,6 +1040,7 @@ def _render_suggestion(
     marks: dict[tuple[str, str], str] | None = None,
     synthetic: dict[str, str] | None = None,
     media: dict[str, dict[str, str]] | None = None,
+    notes: dict[str, list[dict]] | None = None,
 ) -> None:
     """One suggested episode with its reason and the two judgment buttons.
 
@@ -1068,6 +1088,7 @@ def _render_suggestion(
         )
         st.markdown(meta)
     st.caption(explanation)
+    render_notes(e, notes, lang)
     if seed_id and e.content_id:
         # One thumbs widget under the caption, not two buttons beside the
         # title. The buttons lived in a 12:1:1 column split inside a column
@@ -1121,6 +1142,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         UNTITLED_TITLES_PATH.stat().st_mtime if UNTITLED_TITLES_PATH.exists() else 0.0
     )
     media = _cached_untitled_media(_stat_key(UNTITLED_MEDIA_PATH))
+    notes = _cached_notes(_stat_key(NOTES_PATH))
     matches = search_episodes(episodes, needle, synthetic=synthetic)
     tagged_hashes = {e.video_hash for e in episodes}
     if needle and not youtube_id_from_query(needle):
@@ -1267,6 +1289,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
                 marks=marks,
                 synthetic=synthetic,
                 media=media,
+                notes=notes,
             )
         st.divider()
 
@@ -1291,6 +1314,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
                 marks=marks,
                 synthetic=synthetic,
                 media=media,
+                notes=notes,
             )
     with theme_col:
         st.subheader(_t("same_theme", lang))
@@ -1306,6 +1330,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
                 marks=marks,
                 synthetic=synthetic,
                 media=media,
+                notes=notes,
             )
 
 
@@ -1614,6 +1639,62 @@ def _cached_episodes(tags_key: tuple[int, int], programs_key: tuple[int, int]) -
     return load_tagged_episodes()
 
 
+def load_notes(path: Path = NOTES_PATH) -> dict[str, list[dict]]:
+    """Flagged passages per episode, or empty while the scan has not run."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def requested_start(params: Mapping[str, object]) -> int:
+    """Where a `?t=` link asks the player to start, in whole seconds.
+
+    Zero for anything that is not a bounded non-negative integer: the value
+    reaches a media player, and a link carrying a negative or absurd offset
+    should open the episode at the beginning rather than fail.
+    """
+    raw = params.get(START_PARAM)
+    if isinstance(raw, list | tuple):
+        raw = raw[0] if raw else None
+    try:
+        seconds = int(str(raw or "").strip())
+    except ValueError:
+        return 0
+    return seconds if 0 <= seconds <= MAX_START_SECONDS else 0
+
+
+def render_notes(episode: Episode, notes: dict[str, list[dict]] | None, lang: str) -> None:
+    """What an editor would otherwise only learn by watching the tape.
+
+    Varya's ask (86cbhemwp): a guest can spend four minutes on Ukraine in the
+    middle of an hour, and finding that out currently means reading the whole
+    transcript. Folded away, because most episodes have nothing flagged and a
+    card is already dense.
+    """
+    spans = (notes or {}).get(episode.video_hash) or []
+    if not spans:
+        return
+    by_topic: dict[str, list[dict]] = defaultdict(list)
+    for span in spans:
+        by_topic[str(span.get("topic") or "")].append(span)
+    with st.expander(f"{_t('notes_header', lang)} ({len(spans)})"):
+        for topic, found in by_topic.items():
+            marks = ", ".join(
+                f"[{format_timecode(float(s.get('start') or 0))}"
+                f"-{format_timecode(float(s.get('end') or 0))}]"
+                f"(?{EPISODE_PARAM}={episode.video_hash}&{START_PARAM}={int(float(s.get('start') or 0))})"
+                for s in found
+            )
+            st.markdown(f"**{topic}**: {marks}")
+            quote = str(found[0].get("quote") or "")
+            if quote:
+                st.caption(quote)
+
+
 def requested_episode(params: Mapping[str, object]) -> str | None:
     """The episode hash a `?video=` link asks for, lowercased, or None.
 
@@ -1646,7 +1727,7 @@ def _absolute_permalink(video_hash: str) -> str | None:
     return urlunsplit((parts.scheme, parts.netloc, parts.path or "/", query, ""))
 
 
-def render_episode_page(video_hash: str, lang: str) -> None:
+def render_episode_page(video_hash: str, lang: str, start_seconds: int = 0) -> None:
     """One episode, opened by permanent link.
 
     Exists because the uncarded episodes have no page anywhere. A media URL
@@ -1697,7 +1778,10 @@ def render_episode_page(video_hash: str, lang: str) -> None:
         st.info(_t("episode_page_no_media", lang))
         return
     if video_url:
-        st.video(video_url)
+        # Where a «Заметки» timecode link asks to start. The player takes
+        # seconds, and the link is the only way an editor gets to the passage
+        # without scrubbing an hour of tape.
+        st.video(video_url, start_time=start_seconds)
     # Not st.video(subtitles=...): that parameter takes VTT *content*, and
     # handing it a URL raises "neither matches valid VTT nor SRT format". This
     # module reaches neither the archive nor the API, so the transcript is
