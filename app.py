@@ -2792,11 +2792,11 @@ def main():
     # A permanent link to one episode, for the archive material that has no
     # page on the site to link to. Handled before the mode selector because it
     # is a destination, not a mode: the editor arrives here from a saved link.
-    from ui_library import render_episode_page, requested_episode
+    from ui_library import render_episode_page, requested_episode, requested_start
 
     episode_hash = requested_episode(st.query_params)
     if episode_hash:
-        render_episode_page(episode_hash, lang)
+        render_episode_page(episode_hash, lang, requested_start(st.query_params))
         return
 
     # Search-mode selector: content RAG / name search / single-video upload
