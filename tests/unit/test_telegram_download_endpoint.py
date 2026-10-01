@@ -8,6 +8,7 @@ error mapping, and that nothing is left on disk after the response.
 
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,6 +21,7 @@ from rainrag.telegram_media import TelegramNotDownloadableError
 
 
 def _manager(tmp_path: Path, enabled: bool = True) -> SimpleNamespace:
+    """Build a stand-in video manager whose config the endpoint reads."""
     cfg = SimpleNamespace(
         telegram_enabled=enabled,
         telegram_api_id_env="TG_TEST_API_ID",
@@ -32,8 +34,20 @@ def _manager(tmp_path: Path, enabled: bool = True) -> SimpleNamespace:
     return SimpleNamespace(cfg=cfg)
 
 
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    """Resolve every host name to a public address, so no test needs real DNS."""
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        """Answer every lookup with one public IPv4 address."""
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+
 @pytest.fixture
 def client(monkeypatch):
+    """A test client with fake Telegram credentials and no API token."""
     monkeypatch.setenv("TG_TEST_API_ID", "12345")
     monkeypatch.setenv("TG_TEST_API_HASH", "not-a-real-hash")
     monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
@@ -45,6 +59,7 @@ def _fake_download(payload: bytes = b"fake mp4 bytes"):
     """A stand-in for download_telegram_video that writes a file where told."""
 
     async def fake(ref, dest_dir, **kwargs):
+        """Write a small file into the given directory and record the call."""
         out = Path(dest_dir) / "telegram_video.mp4"
         out.write_bytes(payload)
         fake.calls.append({"ref": ref, "dest": Path(dest_dir), **kwargs})
@@ -108,10 +123,30 @@ def test_a_private_address_is_refused_before_any_download(client, tmp_path):
     assert fake.calls == []
 
 
+def test_a_name_that_resolves_to_a_private_address_is_refused(client, tmp_path, monkeypatch):
+    """The validator resolves the host name, so a rebound t.me is refused too."""
+
+    def private_getaddrinfo(host, port, *args, **kwargs):
+        """Answer every lookup with a private address, as a rebound name would."""
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port or 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", private_getaddrinfo)
+    fake = _fake_download()
+    with (
+        patch("rainrag.api.video_session_manager", _manager(tmp_path)),
+        patch("rainrag.telegram_media.download_telegram_video", fake),
+    ):
+        r = client.post("/telegram/download", json={"url": "https://t.me/somechannel/123"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "URL targets a non-public address"
+    assert fake.calls == []
+
+
 def test_a_post_without_video_is_a_422_with_the_reason(client, tmp_path):
     """TelegramNotDownloadableError keeps its message, as in the session import."""
 
     async def no_video(ref, dest_dir, **kwargs):
+        """Fail the way download_telegram_video does for a post without a video."""
         raise TelegramNotDownloadableError("That Telegram post has no video.")
 
     with (

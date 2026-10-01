@@ -11,6 +11,7 @@ import os
 import queue
 import re
 import shutil
+import socket
 import string
 import subprocess
 import tempfile
@@ -2008,7 +2009,7 @@ async def download_telegram_file(
         manager = _require_video_manager()
         cfg = manager.cfg
         url = (body.url or "").strip()
-        _validate_video_url(url)
+        await asyncio.to_thread(_validate_video_url, url)
         ref = _telegram_ref_if_enabled(url, cfg)
         if ref is None:
             if not getattr(cfg, "telegram_enabled", False):
@@ -2083,11 +2084,105 @@ async def _download_telegram_to(ref: Any, cfg: Any, dest: Path, max_bytes: int) 
     return downloaded
 
 
+_URL_INTERNAL_HOSTS_ENV = "RAINRAG_URL_INTERNAL_HOSTS"
+_URL_INTERNAL_HOSTS_DEFAULT = "tvrain.tv"
+# Answers an allowlisted name may still have: RFC 1918 and IPv6 ULA only.
+# Loopback, link-local (and so the cloud metadata address) stay refused.
+_TOLERATED_INTERNAL_NETWORKS = tuple(
+    ipaddress.ip_network(net)
+    for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
+)
+
+
+def _parse_address(raw: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Parse ``raw`` as an IP address; raise ValueError when it is not one.
+
+    An IPv6 zone id (``fe80::1%eth0``) is dropped first. An IPv4-mapped IPv6
+    address (``::ffff:10.0.0.1``) becomes the IPv4 address it carries.
+    """
+    addr = ipaddress.ip_address(raw.split("%", 1)[0])
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    return addr
+
+
+def _is_public_address(raw: str) -> bool:
+    """Return True when ``raw`` is a global unicast address."""
+    return _parse_address(raw).is_global
+
+
+def _is_tolerated_internal_address(raw: str) -> bool:
+    """Return True when ``raw`` is an RFC 1918 or ULA address."""
+    addr = _parse_address(raw)
+    return any(addr in net for net in _TOLERATED_INTERNAL_NETWORKS)
+
+
+def _url_internal_hosts() -> tuple[str, ...]:
+    """Return the host names that may resolve to internal addresses.
+
+    Read from RAINRAG_URL_INTERNAL_HOSTS at call time (comma-separated). An
+    unset variable gives the default, "tvrain.tv"; an empty one gives none.
+    An IP literal in the list is ignored: the allowlist is for names only.
+    """
+    raw = os.getenv(_URL_INTERNAL_HOSTS_ENV)
+    if raw is None:
+        raw = _URL_INTERNAL_HOSTS_DEFAULT
+    hosts = []
+    for item in raw.split(","):
+        host = item.strip().strip(".").lower()
+        if not host:
+            continue
+        try:
+            _parse_address(host.strip("[]"))
+        except ValueError:
+            hosts.append(host)
+    return tuple(hosts)
+
+
+def _is_internal_host_allowed(hostname: str) -> bool:
+    """Return True when ``hostname`` is an allowlisted name or a subdomain of one."""
+    host = hostname.rstrip(".").lower()
+    return any(host == name or host.endswith("." + name) for name in _url_internal_hosts())
+
+
 def _validate_video_url(url: str) -> None:
-    """Reject URLs that could enable SSRF or expose credentials in error messages."""
+    """Reject URLs that could enable SSRF or expose credentials in error messages.
+
+    The check refuses a scheme other than http(s), embedded credentials, an
+    empty host, a bad port, and a host that is a non-public IP literal. For a
+    host name, it resolves the name with ``socket.getaddrinfo`` and refuses
+    the URL when any answer is not a global address. A name that does not
+    resolve is also refused. All failures raise ``HTTPException(400)``.
+
+    Split DNS: some names resolve to internal addresses on purpose (from the
+    TV Rain server, tvrain.tv resolves to 172.16.x). RAINRAG_URL_INTERNAL_HOSTS
+    lists such names, comma-separated, default "tvrain.tv". An entry matches
+    the host exactly or as a parent domain: "tvrain.tv" allows "tvrain.tv"
+    and "www.tvrain.tv", not "eviltvrain.tv". For an allowlisted name, an
+    RFC 1918 or ULA answer is accepted. A loopback, link-local or metadata
+    answer (127.0.0.0/8, ::1, 169.254.0.0/16, fe80::/10) is still refused,
+    and so is any other non-global answer. IP literals in the list are
+    ignored, and IP literal hosts never use the allowlist. An internal answer
+    is accepted only on the scheme's default port (no port, 80 for http, 443
+    for https). Any other port is refused, so a URL such as
+    "http://rag.tvrain.tv:6333/" cannot reach Qdrant or Redis on an
+    allowlisted internal server. A public answer keeps any port.
+
+    The resolution blocks. The async endpoints call this function through
+    ``asyncio.to_thread``, so a slow DNS server does not stall the event loop.
+
+    Limit: this check narrows SSRF but does not close it. yt-dlp resolves the
+    name again at fetch time and follows redirects on its own. A DNS server
+    that changes its answer between the two lookups (DNS rebinding), or a
+    public page that redirects to an internal address, still reaches the
+    internal network. Only a network control closes that gap: an egress
+    firewall on the fetch process that drops traffic to loopback, private,
+    link-local and metadata ranges.
+    """
     try:
         parsed = urlsplit(url)
-    except Exception as exc:
+        port = parsed.port
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid URL") from exc
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(status_code=400, detail="Only http and https URLs are supported")
@@ -2096,12 +2191,37 @@ def _validate_video_url(url: str) -> None:
             status_code=400, detail="URLs with embedded credentials are not supported"
         )
     hostname = parsed.hostname or ""
+    if not hostname:
+        raise HTTPException(status_code=400, detail="URL has no host")
     try:
-        addr = ipaddress.ip_address(hostname)
-        if not addr.is_global:
-            raise HTTPException(status_code=400, detail="URL targets a non-public address")
+        is_literal = True
+        public = _is_public_address(hostname)
     except ValueError:
-        pass  # hostname is a domain name — allow it
+        is_literal = False  # hostname is a domain name; resolve it below
+    if is_literal:
+        if not public:
+            raise HTTPException(status_code=400, detail="URL targets a non-public address")
+        return
+    try:
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError) as exc:
+        raise HTTPException(status_code=400, detail="URL host name does not resolve") from exc
+    addresses = {str(info[4][0]) for info in infos}
+    if not addresses:
+        raise HTTPException(status_code=400, detail="URL host name does not resolve")
+    # An internal answer is accepted only on the scheme's default port: the
+    # allowlisted server may run other services (Qdrant, Redis) on other ports.
+    default_port = port is None or port == {"http": 80, "https": 443}[parsed.scheme]
+    internal_ok = default_port and _is_internal_host_allowed(hostname)
+    for raw in addresses:
+        try:
+            allowed = _is_public_address(raw) or (
+                internal_ok and _is_tolerated_internal_address(raw)
+            )
+        except ValueError:
+            allowed = False
+        if not allowed:
+            raise HTTPException(status_code=400, detail="URL targets a non-public address")
 
 
 class _VideoUrlRequest(BaseModel):
@@ -2123,7 +2243,7 @@ async def create_video_session_from_url(
         url = body.url.strip()
         if not url:
             raise HTTPException(status_code=400, detail="URL is required")
-        _validate_video_url(url)
+        await asyncio.to_thread(_validate_video_url, url)
 
         max_bytes = manager.cfg.max_upload_mb * 1024 * 1024
         tmp_root = Path(manager.cfg.tmp_root)
