@@ -1387,3 +1387,18 @@ def test_the_performance_tables_hand_streamlit_numbers_not_formatted_text():
     assert 'NumberColumn(format="%,.2f")' in body
     assert ".style.format" not in body, "a styled frame sorts by its display text"
     assert "def _fmt" not in body, "nothing is turned into a string before it is sorted"
+
+
+def test_the_performance_genre_grouping_matches_what_the_filter_matches(tmp_path):
+    """The programme's reviewed genre where there is one, the model's labels
+    otherwise: grouping by anything else makes the table and the filter
+    disagree about what a genre is."""
+    from ui_library import genres_by_content
+
+    reviewed = _ep("h1", content_id="1", genre=["интервью"], programme_genres=["Лекция"])
+    modelled = _ep("h2", content_id="2", genre=["Новости"])
+    untracked = _ep("h3", content_id=None, genre=["что-то"])
+    assert genres_by_content([reviewed, modelled, untracked]) == {
+        "1": ["Лекция"],
+        "2": ["Новости"],
+    }
