@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import csv
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,19 @@ MERGE_GAP_SECONDS = 45.0
 # A passage shorter than this is a mention in passing rather than something an
 # editor needs to plan around.
 MIN_SPAN_SECONDS = 5.0
+
+# How much an episode has to dwell on a topic before it is worth a note, as
+# totals across the whole episode. Measured on the archive: with no bar at
+# all, 54% of 13 808 episodes were flagged and the median passage was 27
+# seconds, which is wallpaper rather than a signal. At two minutes and three
+# mentions it is a quarter of the pool, and every flag means time actually
+# spent on the subject, which is what Varya asked to see.
+#
+# Applied when the notes are read rather than when they are built, so this
+# is an editorial dial that costs nothing to turn: rescanning the archive's
+# transcripts takes well over an hour, re-reading one JSON does not.
+MIN_TOPIC_SECONDS = 120.0
+MIN_TOPIC_HITS = 3
 
 _TIMESTAMP = re.compile(
     r"(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})\s*-->\s*(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})"
@@ -168,6 +182,27 @@ def find_spans(
     kept = [s for s in spans if s.end - s.start >= min_span or s.hits > 1]
     kept.sort(key=lambda s: (s.start, s.topic))
     return kept
+
+
+def qualifying_spans(
+    spans: list[dict],
+    min_seconds: float = MIN_TOPIC_SECONDS,
+    min_hits: int = MIN_TOPIC_HITS,
+) -> list[dict]:
+    """Keep only the topics this episode genuinely dwells on.
+
+    Totals per topic across the whole episode, not per passage: four minutes
+    on Ukraine spread over three passages is what an editor needs to plan
+    around, and each passage on its own may be short.
+    """
+    seconds: dict[str, float] = defaultdict(float)
+    hits: dict[str, int] = defaultdict(int)
+    for span in spans:
+        topic = str(span.get("topic") or "")
+        seconds[topic] += float(span.get("end") or 0) - float(span.get("start") or 0)
+        hits[topic] += int(span.get("hits") or 1)
+    kept = {t for t in seconds if seconds[t] >= min_seconds and hits[t] >= min_hits}
+    return [s for s in spans if str(s.get("topic") or "") in kept]
 
 
 def format_timecode(seconds: float) -> str:

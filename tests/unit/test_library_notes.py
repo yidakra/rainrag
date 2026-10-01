@@ -107,3 +107,43 @@ def test_timecodes_read_the_way_an_editor_writes_them():
     assert format_timecode(0) == "0:00"
     assert format_timecode(125) == "2:05"
     assert format_timecode(3723) == "1:02:03"
+
+
+def _span(topic, start, end, hits):
+    return {"topic": topic, "start": start, "end": end, "hits": hits, "quote": ""}
+
+
+def test_a_topic_the_episode_only_brushes_past_earns_no_note():
+    """With no bar, 54% of 13 808 episodes were flagged and the median
+    passage was 27 seconds: wallpaper rather than a signal."""
+    from rainrag.library_notes import qualifying_spans
+
+    assert qualifying_spans([_span("Крым", 10, 40, 2)]) == []
+
+
+def test_a_topic_the_episode_dwells_on_is_kept_whole():
+    """Totals across the episode, not per passage: four minutes spread over
+    three passages is what an editor plans around, and each may be short."""
+    from rainrag.library_notes import qualifying_spans
+
+    spans = [
+        _span("Украина", 0, 50, 1),
+        _span("Украина", 300, 350, 1),
+        _span("Украина", 600, 640, 1),
+    ]
+    assert qualifying_spans(spans) == spans
+
+
+def test_each_topic_is_judged_on_its_own():
+    from rainrag.library_notes import qualifying_spans
+
+    spans = [_span("Украина", 0, 200, 5), _span("Крым", 400, 410, 1)]
+    assert [s["topic"] for s in qualifying_spans(spans)] == ["Украина"]
+
+
+def test_the_bar_is_a_dial_the_caller_can_turn():
+    """It is an editorial judgement, so it is an argument rather than a law."""
+    from rainrag.library_notes import qualifying_spans
+
+    spans = [_span("Крым", 10, 40, 2)]
+    assert qualifying_spans(spans, min_seconds=10, min_hits=1) == spans

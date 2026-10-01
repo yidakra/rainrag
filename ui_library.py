@@ -44,7 +44,7 @@ from typing import Any
 import streamlit as st
 
 from rainrag.library_blend import Audience, Blended, blended_top
-from rainrag.library_notes import format_timecode
+from rainrag.library_notes import format_timecode, qualifying_spans
 from rainrag.library_performance import (
     METRIC_COLUMNS,
     aggregate,
@@ -1647,7 +1647,16 @@ def load_notes(path: Path = NOTES_PATH) -> dict[str, list[dict]]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    # The editorial bar is applied here, not in the scan: see
+    # `MIN_TOPIC_SECONDS`. The file keeps everything the transcripts said, so
+    # retuning the bar is a reread rather than a rescan.
+    return {
+        video_hash: kept
+        for video_hash, spans in data.items()
+        if isinstance(spans, list) and (kept := qualifying_spans(spans))
+    }
 
 
 def requested_start(params: Mapping[str, object]) -> int:
