@@ -741,7 +741,7 @@ def test_audience_profiles_carry_age_and_gender_when_the_snapshot_has_them(tmp_p
         "b,2026-09-14,50,300,,,\n",
         encoding="utf-8",
     )
-    profiles = audience_by_hash(map_path, metrics)
+    profiles = audience_by_hash(map_path, metrics, tmp_path / "none.csv", tmp_path / "none.jsonl")
     assert profiles["h1"].age_gender == {
         "age25-34": 70.0,
         "age35-44": 30.0,
@@ -771,7 +771,7 @@ def test_demographics_without_metrics_still_give_an_audience_profile(tmp_path):
         "a,2026-09-14,,,,age25-34:100.0,male:100.0\n",
         encoding="utf-8",
     )
-    profiles = audience_by_hash(map_path, metrics)
+    profiles = audience_by_hash(map_path, metrics, tmp_path / "none.csv", tmp_path / "none.jsonl")
     assert profiles["h1"].age_gender == {"age25-34": 100.0, "male": 100.0}
     assert profiles["h1"].average_view_duration is None
 
@@ -1387,3 +1387,78 @@ def test_the_performance_tables_hand_streamlit_numbers_not_formatted_text():
     assert 'NumberColumn(format="%,.2f")' in body
     assert ".style.format" not in body, "a styled frame sorts by its display text"
     assert "def _fmt" not in body, "nothing is turned into a string before it is sorted"
+
+
+def _analytics_fixture(tmp_path):
+    """One upload mapped to h_wrong, one metrics row, one tagged episode."""
+    import json
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(
+        json.dumps([{"youtube_id": "yt1", "content_id": "111", "archive_video_hash": "h_wrong"}]),
+        encoding="utf-8",
+    )
+    metrics = tmp_path / "m.csv"
+    metrics.write_text(
+        "youtube_id,snapshot_date,views,averageViewDuration,playbackBasedCpm,"
+        "viewerPercentage: ageGroup,viewerPercentage: gender\n"
+        "yt1,2026-09-14,100,600,6.0,,\n",
+        encoding="utf-8",
+    )
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(
+        json.dumps({"content_id": "222", "video_hash": "h_right"}) + "\n", encoding="utf-8"
+    )
+    return map_path, metrics, tags
+
+
+def test_an_upload_the_editor_rejected_credits_nobody(tmp_path):
+    """16 uploads Varya had rejected still carried an archive hash in the map,
+    so their views, retention and CPM were credited to episodes she had said
+    they are not."""
+    from ui_library import audience_by_hash
+
+    map_path, metrics, tags = _analytics_fixture(tmp_path)
+    decisions = tmp_path / "d.csv"
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\nyt1,111,no_match,2026-09-30T00:00:00\n",
+        encoding="utf-8",
+    )
+    assert audience_by_hash(map_path, metrics, decisions, tags) == {}
+
+
+def test_a_corrected_match_moves_the_analytics_with_it(tmp_path):
+    """uBcXggiN60o is Petranovskaya's lecture and the map credits it to
+    Gippenreiter's episode; confirming the right one must move the numbers."""
+    from ui_library import audience_by_hash
+
+    map_path, metrics, tags = _analytics_fixture(tmp_path)
+    decisions = tmp_path / "d.csv"
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\nyt1,222,match,2026-09-30T00:00:00\n",
+        encoding="utf-8",
+    )
+    profiles = audience_by_hash(map_path, metrics, decisions, tags)
+
+    assert "h_wrong" not in profiles, "the episode the editor ruled out keeps nothing"
+    assert profiles["h_right"].average_view_duration == 600.0
+
+
+def test_the_last_verdict_wins_and_an_undecided_upload_is_untouched(tmp_path):
+    """The file is append-only, so a correction is a later row, not an edit."""
+    from ui_library import audience_by_hash
+
+    map_path, metrics, tags = _analytics_fixture(tmp_path)
+    decisions = tmp_path / "d.csv"
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\n"
+        "yt1,111,no_match,2026-09-30T00:00:00\n"
+        "yt1,222,match,2026-09-30T01:00:00\n"
+        "other,999,no_match,2026-09-30T02:00:00\n",
+        encoding="utf-8",
+    )
+    assert set(audience_by_hash(map_path, metrics, decisions, tags)) == {"h_right"}
+
+    empty = tmp_path / "empty.csv"
+    empty.write_text("youtube_id,content_id,verdict,decided_at\n", encoding="utf-8")
+    assert set(audience_by_hash(map_path, metrics, empty, tags)) == {"h_wrong"}
