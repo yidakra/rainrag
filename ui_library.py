@@ -51,6 +51,7 @@ from rainrag.library_performance import (
     load_audience,
     load_metrics,
 )
+from rainrag.library_presenters import load_presenters
 from rainrag.library_programs import load_programmes
 from rainrag.library_similar import (
     Episode,
@@ -79,6 +80,8 @@ UNTITLED_TITLES_PATH = REPO_ROOT / "data" / "untitled_titles.json"
 # Archive media for those same episodes (scripts/library_untitled_media.py). They have
 # no CMS page to link to, so the card links into the archive instead of nowhere.
 UNTITLED_MEDIA_PATH = REPO_ROOT / "data" / "untitled_media.json"
+# Presenters the CMS never had, filled in by hand (scripts/library_presenters_sync.py).
+PRESENTERS_PATH = REPO_ROOT / "data" / "library_presenters.csv"
 
 # Query parameter for a permanent link to one episode.
 EPISODE_PARAM = "video"
@@ -254,7 +257,9 @@ def _t(key: str, lang: str, **kw: object) -> str:
 
 
 def load_tagged_episodes(
-    path: Path = TAGS_PATH, programs_path: Path = PROGRAMS_PATH
+    path: Path = TAGS_PATH,
+    programs_path: Path = PROGRAMS_PATH,
+    presenters_path: Path = PRESENTERS_PATH,
 ) -> list[Episode]:
     """The tagged pool, deduped, failures dropped — same rules as the eval.
 
@@ -262,6 +267,10 @@ def load_tagged_episodes(
     it is absent the ranking falls back to presenter plus guest, as before.
     """
     programmes = load_programmes(programs_path)
+    # The presenters Varya filled in for the lecture programmes, where the CMS
+    # has none: 49 episodes that otherwise carry no speaker at all, and so sit
+    # out the heaviest axis in the ranking entirely (86cbhq9q8).
+    overrides = load_presenters(presenters_path)
     episodes: list[Episode] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -272,7 +281,7 @@ def load_tagged_episodes(
             continue  # a row mid-write during a tagging run
         if record.get("error"):
             continue
-        episodes.append(Episode.from_record(record, programmes))
+        episodes.append(Episode.from_record(record, programmes, overrides))
     # Person names leave the theme axis here, once, for every reader of the
     # pool: the tagger files the people an episode discusses among its
     # subjects, and a rare name then scored as a strong topical match.
@@ -1173,7 +1182,9 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     with genre_col:
         genres = st.multiselect(
             _t("genres", lang),
-            _cached_genre_options(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH)),
+            _cached_genre_options(
+                _stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH), _stat_key(PRESENTERS_PATH)
+            ),
             default=[],
             key="library_genres",
         )
@@ -1181,8 +1192,10 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     # One IDF map for all three lists. find_similar would otherwise build its
     # own over the same pool on every interaction, which costs 1.3s and lets
     # the columns and the shortlist disagree about what a theme is worth.
-    idf = _cached_idf(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH))
-    people_idf = _cached_people_idf(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH))
+    idf = _cached_idf(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH), _stat_key(PRESENTERS_PATH))
+    people_idf = _cached_people_idf(
+        _stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH), _stat_key(PRESENTERS_PATH)
+    )
     results = find_similar(
         seed,
         episodes,
@@ -1570,7 +1583,9 @@ def _cached_audiences(map_key: tuple[int, int], metrics_key: tuple[int, int]) ->
 
 
 @st.cache_data(show_spinner=False)
-def _cached_idf(tags_key: tuple[int, int], programs_key: tuple[int, int]) -> dict:
+def _cached_idf(
+    tags_key: tuple[int, int], programs_key: tuple[int, int], presenters_key: tuple[int, int]
+) -> dict:
     """IDF over the whole tagged pool.
 
     Computed once per data change rather than per interaction: it walks every
@@ -1578,17 +1593,21 @@ def _cached_idf(tags_key: tuple[int, int], programs_key: tuple[int, int]) -> dic
     the two columns use or the three lists would disagree about what a theme
     match is worth.
     """
-    return subject_idf(_cached_episodes(tags_key, programs_key))
+    return subject_idf(_cached_episodes(tags_key, programs_key, presenters_key))
 
 
 @st.cache_data(show_spinner=False)
-def _cached_people_idf(tags_key: tuple[int, int], programs_key: tuple[int, int]) -> dict:
+def _cached_people_idf(
+    tags_key: tuple[int, int], programs_key: tuple[int, int], presenters_key: tuple[int, int]
+) -> dict:
     """The same weighting for the mentioned axis, cached for the same reason."""
-    return mentioned_idf(_cached_episodes(tags_key, programs_key))
+    return mentioned_idf(_cached_episodes(tags_key, programs_key, presenters_key))
 
 
 @st.cache_data(show_spinner=False)
-def _cached_genre_options(tags_key: tuple[int, int], programs_key: tuple[int, int]) -> list[str]:
+def _cached_genre_options(
+    tags_key: tuple[int, int], programs_key: tuple[int, int], presenters_key: tuple[int, int]
+) -> list[str]:
     """Genres worth offering in the filter, from the pool itself.
 
     Not the nine the tagger was prompted with: the filter matches on Varya's
@@ -1601,16 +1620,18 @@ def _cached_genre_options(tags_key: tuple[int, int], programs_key: tuple[int, in
     Derived from the same expression the filter uses, so every option matches
     at least one episode and no matchable genre is missing.
     """
-    return genre_options(_cached_episodes(tags_key, programs_key))
+    return genre_options(_cached_episodes(tags_key, programs_key, presenters_key))
 
 
 @st.cache_data(show_spinner=False)
-def _cached_episodes(tags_key: tuple[int, int], programs_key: tuple[int, int]) -> list[Episode]:
+def _cached_episodes(
+    tags_key: tuple[int, int], programs_key: tuple[int, int], presenters_key: tuple[int, int]
+) -> list[Episode]:
     """Cache keyed on the tag file's mtime, so a finished tagging run shows up
     on the next interaction without a service restart. The programme table is
     in the key too: editing a genre in the sheet changes who counts as a
     speaker, and that must not need a restart either."""
-    del tags_key, programs_key
+    del tags_key, programs_key, presenters_key
     return load_tagged_episodes()
 
 
@@ -1668,7 +1689,9 @@ def render_episode_page(video_hash: str, lang: str) -> None:
         st.warning(_t("no_tags", lang, path=TAGS_PATH.name))
         return
 
-    episodes = _cached_episodes(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH))
+    episodes = _cached_episodes(
+        _stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH), _stat_key(PRESENTERS_PATH)
+    )
     episode = next((e for e in episodes if e.video_hash.lower() == video_hash), None)
     if episode is None:
         st.warning(_t("episode_page_unknown", lang))
@@ -1714,7 +1737,9 @@ def render_library_mode(lang: str) -> None:
     if not TAGS_PATH.exists():
         st.warning(_t("no_tags", lang, path=TAGS_PATH.name))
         return
-    episodes = _cached_episodes(_stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH))
+    episodes = _cached_episodes(
+        _stat_key(TAGS_PATH), _stat_key(PROGRAMS_PATH), _stat_key(PRESENTERS_PATH)
+    )
     similar_tab, perf_tab, youtube_tab = st.tabs(
         [_t("tab_similar", lang), _t("tab_perf", lang), _t("tab_youtube", lang)]
     )
