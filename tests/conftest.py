@@ -99,6 +99,25 @@ This is not a valid VTT file.
 """
 
 
+@pytest.fixture(autouse=True)
+def _keep_the_working_directory_out_of_it(tmp_path, monkeypatch):
+    """No test writes into the checkout it is run from.
+
+    `RAINRAG_QUERY_LOG_PATH` defaults to the relative "data/query_log.jsonl",
+    so a suite run in the deployment appended to the live query log. Harmless
+    in itself, but it is the same trap that truncated the live incremental
+    manifest, and the cheapest place to close the whole class is here.
+    """
+    log = str(tmp_path / "query_log.jsonl")
+    monkeypatch.setenv("RAINRAG_QUERY_LOG_PATH", log)
+    # The module reads the variable once, at import, so the environment alone
+    # does not redirect a module that is already loaded. Both spellings: part
+    # of the suite imports `rainrag.api` and part `src.rainrag.api`, which are
+    # two module objects with two copies of the constant.
+    for module in ("rainrag.api", "src.rainrag.api"):
+        monkeypatch.setattr(f"{module}.QUERY_LOG_PATH", log, raising=False)
+
+
 @pytest.fixture
 def test_config(temp_dir: Path) -> Config:
     """Create a test configuration."""
@@ -117,6 +136,15 @@ def test_config(temp_dir: Path) -> Config:
                 "archive_root": str(archive_dir),
                 "docs_output": str(data_dir / "docs.jsonl"),
                 "embeddings_cache": str(embeddings_dir),
+            },
+            # Every path the fixture leaves alone keeps its config default,
+            # and the default manifest path is relative: "./data/manifest.json".
+            # `Ingester.ingest()` saves the manifest, so a test that ingests
+            # anything wrote an empty manifest into the *working directory* --
+            # which, run from the deployment checkout, is the live one. That
+            # cost a 2.5 hour rebuild on 2026-10-01.
+            "incremental": {
+                "manifest_path": str(data_dir / "manifest.json"),
             },
             "embedding": {
                 "provider": "local",  # Use local model for tests
