@@ -366,20 +366,20 @@ def youtube_by_content_id(
     was right about 40% of the time when it was audited.
     """
     decided = decision_targets(decisions_path)
-    out: dict[str, str] = {}
+    # The editor's verdicts are read first and stand on their own, not
+    # filtered through the map. A regeneration that drops an upload from the
+    # map must not take a confirmed link down with it, and an earlier map row
+    # for the same episode must not win on `setdefault` over a verdict the
+    # editor recorded later (CodeRabbit on #99).
+    out: dict[str, str] = {target: youtube_id for youtube_id, target in decided.items() if target}
+    rejected = {youtube_id for youtube_id, target in decided.items() if target is None}
     for row in load_map_rows(map_path):
         youtube_id = str(row.get("youtube_id") or "")
-        if not youtube_id:
-            continue
-        if youtube_id in decided:
-            target = decided[youtube_id]
-            if target:
-                out.setdefault(target, youtube_id)
+        content_id = str(row.get("content_id") or "")
+        if not youtube_id or not content_id or youtube_id in decided or youtube_id in rejected:
             continue
         if row.get("confidence") in {"editor", "exact", "strong"}:
-            content_id = str(row.get("content_id") or "")
-            if content_id:
-                out.setdefault(content_id, youtube_id)
+            out.setdefault(content_id, youtube_id)
     return out
 
 

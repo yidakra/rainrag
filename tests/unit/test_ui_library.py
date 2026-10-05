@@ -1570,3 +1570,40 @@ def test_the_editor_overrides_the_map_in_both_directions(tmp_path):
         encoding="utf-8",
     )
     assert youtube_by_content_id(map_path, decisions) == {"333": "yt2"}
+
+
+def test_a_confirmed_upload_survives_the_map_dropping_it(tmp_path):
+    """The verdicts are editor truth; a map regeneration must not take a
+    confirmed link down with it (CodeRabbit on #99)."""
+    import json
+
+    from ui_library import youtube_by_content_id
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(json.dumps([]), encoding="utf-8")
+    decisions = tmp_path / "d.csv"
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\nyt9,777,match,2026-09-30T00:00:00\n",
+        encoding="utf-8",
+    )
+    assert youtube_by_content_id(map_path, decisions) == {"777": "yt9"}
+
+
+def test_a_verdict_beats_a_map_row_for_the_same_episode(tmp_path):
+    """Built map-first, `setdefault` kept whichever row came first in the
+    file, so a guess could outrank a confirmation."""
+    import json
+
+    from ui_library import youtube_by_content_id
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(
+        json.dumps([{"youtube_id": "guess", "content_id": "777", "confidence": "strong"}]),
+        encoding="utf-8",
+    )
+    decisions = tmp_path / "d.csv"
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\nconfirmed,777,match,2026-09-30T00:00:00\n",
+        encoding="utf-8",
+    )
+    assert youtube_by_content_id(map_path, decisions) == {"777": "confirmed"}
