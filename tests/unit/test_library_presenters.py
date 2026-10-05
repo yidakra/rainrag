@@ -80,3 +80,44 @@ def test_without_a_table_nothing_changes():
     record = {"content_id": "344036", "guest": ["Гость"]}
     assert resolve_speakers(record, {}, None).speakers == ["Гость"]
     assert resolve_speakers(record, {}, {}).speakers == ["Гость"]
+
+
+def test_coverage_counts_only_the_episodes_that_really_gain_a_speaker(tmp_path):
+    """Counting rows without CMS people overstated it twice: the tag file is
+    append-only, so an older row still counted after a newer one gained a
+    presenter, and an override on a programme whose genre demotes presenters
+    was counted though the episode ends up with no speaker (CodeRabbit)."""
+    import json
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    from library_presenters_sync import coverage
+
+    table = _table(tmp_path, "1,Лектор\n2,Ведущий\n3,Кто-то\n")
+    programs = tmp_path / "programs.csv"
+    programs.write_text("title,genre\nТок-шоу,ток-шоу\nЛекции,лекция\n", encoding="utf-8")
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(
+        "\n".join(
+            json.dumps(r, ensure_ascii=False)
+            for r in (
+                # Gains a speaker: no CMS people, a programme that keeps them.
+                {"video_hash": "a", "content_id": "1", "program": "Лекции"},
+                # An older row with nothing, then a newer one with a presenter:
+                # the pool keeps the newer, so this gains nothing.
+                {"video_hash": "b", "content_id": "2", "program": "Лекции"},
+                {
+                    "video_hash": "b",
+                    "content_id": "2",
+                    "program": "Лекции",
+                    "presenter_cms": ["Из CMS"],
+                },
+                # The genre demotes presenters, so the override buys nothing.
+                {"video_hash": "c", "content_id": "3", "program": "Ток-шоу"},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert coverage(table, tags, programs) == (3, 3, 1)

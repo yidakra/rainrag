@@ -35,6 +35,9 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 DEFAULT_TABLE = REPO_ROOT / "data" / "library_presenters.csv"
 DEFAULT_TAGS = REPO_ROOT / "data" / "library_tags.jsonl"
+# The programme table decides whether a presenter counts as a speaker, so the
+# coverage figure is wrong without it.
+DEFAULT_PROGRAMS = REPO_ROOT / "data" / "library_programs.csv"
 
 COLUMNS = ("content_id", "presenter")
 
@@ -82,34 +85,49 @@ def write_table(rows: list[dict[str, str]], path: Path) -> None:
     tmp.replace(path)
 
 
-def coverage(table: Path, tags: Path) -> tuple[int, int, int]:
-    """(overrides, of those in the pool, of those with no speaker without it).
+def coverage(table: Path, tags: Path, programs: Path | None = None) -> tuple[int, int, int]:
+    """(overrides, of those in the pool, of those that actually gain a speaker).
 
-    The third number is the one that matters: it is how many episodes gain a
-    speaker they did not have, which is what the table exists for.
+    The third number is the one that matters, and it is measured the way the
+    Library measures it rather than guessed from the rows. Counting any row
+    without CMS people overstated it twice: the tag file is append-only, so
+    an older row still counted after a newer one gained a presenter, and an
+    override on a programme whose genre demotes presenters was counted even
+    though `resolve_speakers` leaves that episode with no speaker at all
+    (CodeRabbit on #98). Resolving both ways over the deduplicated pool
+    cannot drift from what the app does.
     """
     from rainrag.library_presenters import load_presenters
+    from rainrag.library_programs import load_programmes
+    from rainrag.library_similar import Episode, dedupe_latest
 
     overrides = load_presenters(table)
-    # Distinct episodes, not rows: the tag file is append-only, so a re-tagged
-    # episode has more than one row and counting rows overstates the reach.
-    in_pool: set[str] = set()
-    rescued: set[str] = set()
-    if tags.exists():
-        for line in tags.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            content_id = str(record.get("content_id") or "")
-            if content_id not in overrides:
-                continue
-            in_pool.add(content_id)
-            if not (record.get("presenter_cms") or []) and not (record.get("guest") or []):
-                rescued.add(content_id)
-    return len(overrides), len(in_pool), len(rescued)
+    if not tags.exists():
+        return len(overrides), 0, 0
+    programmes = load_programmes(programs) if programs else {}
+
+    records = []
+    for line in tags.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not record.get("error"):
+            records.append(record)
+
+    def pool(applied: dict[str, list[str]] | None) -> dict[str, Episode]:
+        episodes = [Episode.from_record(r, programmes, applied) for r in records]
+        return {e.video_hash: e for e in dedupe_latest(episodes)}
+
+    without = pool(None)
+    with_table = pool(overrides)
+    in_pool = {h for h, e in with_table.items() if str(e.content_id or "") in overrides}
+    gained = {
+        h for h in in_pool if with_table[h].speakers and not without.get(h, with_table[h]).speakers
+    }
+    return len(overrides), len(in_pool), len(gained)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("export", nargs="?", help="xlsx or csv export of the sheet")
     parser.add_argument("--table", default=str(DEFAULT_TABLE))
     parser.add_argument("--tags", default=str(DEFAULT_TAGS))
+    parser.add_argument("--programs", default=str(DEFAULT_PROGRAMS))
     parser.add_argument("--check", action="store_true", help="report coverage only")
     args = parser.parse_args(argv)
 
@@ -131,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     elif not args.check:
         parser.error("give an export to sync, or --check to report coverage")
 
-    total, in_pool, rescued = coverage(table, Path(args.tags))
+    total, in_pool, rescued = coverage(table, Path(args.tags), Path(args.programs))
     print(f"overrides: {total} | in the tagged pool: {in_pool} | gaining a speaker: {rescued}")
     return 0
 
