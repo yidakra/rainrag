@@ -1462,3 +1462,39 @@ def test_the_last_verdict_wins_and_an_undecided_upload_is_untouched(tmp_path):
     empty = tmp_path / "empty.csv"
     empty.write_text("youtube_id,content_id,verdict,decided_at\n", encoding="utf-8")
     assert set(audience_by_hash(map_path, metrics, empty, tags)) == {"h_wrong"}
+
+
+def test_confirming_the_map_keeps_the_cut_the_map_named(tmp_path):
+    """327 content_ids are several archive cuts with different hashes, and
+    the content_id lookup keeps only the last of them. Confirming what the
+    map already said must not move the numbers to another cut (CodeRabbit)."""
+    import json
+
+    from ui_library import audience_by_hash
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(
+        json.dumps([{"youtube_id": "yt1", "content_id": "111", "archive_video_hash": "cut_a"}]),
+        encoding="utf-8",
+    )
+    metrics = tmp_path / "m.csv"
+    metrics.write_text(
+        "youtube_id,snapshot_date,views,averageViewDuration,playbackBasedCpm,"
+        "viewerPercentage: ageGroup,viewerPercentage: gender\nyt1,2026-09-14,100,600,6.0,,\n",
+        encoding="utf-8",
+    )
+    # Two cuts of one broadcast; the tag lookup remembers only the second.
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(
+        json.dumps({"content_id": "111", "video_hash": "cut_a"})
+        + "\n"
+        + json.dumps({"content_id": "111", "video_hash": "cut_b"})
+        + "\n",
+        encoding="utf-8",
+    )
+    decisions = tmp_path / "d.csv"
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\nyt1,111,match,2026-09-30T00:00:00\n",
+        encoding="utf-8",
+    )
+    assert set(audience_by_hash(map_path, metrics, decisions, tags)) == {"cut_a"}

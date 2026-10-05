@@ -388,9 +388,15 @@ def audience_by_hash(
             target = decided[youtube_id]
             if target is None:
                 continue  # the editor said this upload is not that episode
-            video_hash = by_content.get(target) or (
-                video_hash if str(row.get("content_id") or "") == target else None
-            )
+            # The map's own hash wins when the editor merely confirmed what
+            # the map already said. 327 content_ids exist as several archive
+            # cuts with different hashes, and `hash_by_content_id` keeps only
+            # the last of them, so looking the hash up by content_id would
+            # move the analytics to a different cut of the same broadcast
+            # (CodeRabbit on #97). The lookup is for the case it is needed:
+            # the editor pointed the upload somewhere else.
+            if str(row.get("content_id") or "") != target or not video_hash:
+                video_hash = by_content.get(target)
         measured = metrics.get(youtube_id) or {}
         shape = audience.get(youtube_id) or None
         if not video_hash or not (measured or shape):
