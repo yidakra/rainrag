@@ -83,6 +83,9 @@ UNTITLED_MEDIA_PATH = REPO_ROOT / "data" / "untitled_media.json"
 # Flagged passages per episode (scripts/library_notes_build.py), from the
 # editorial topic list in data/library_note_topics.csv.
 NOTES_PATH = REPO_ROOT / "data" / "library_notes.json"
+# The scan records what it was looking for under this key; see
+# scripts/library_notes_build.py.
+NOTES_FINGERPRINT_KEY = "__topics__"
 
 # Query parameter for a permanent link to one episode, and where to start it.
 EPISODE_PARAM = "video"
@@ -1088,7 +1091,7 @@ def _render_suggestion(
         )
         st.markdown(meta)
     st.caption(explanation)
-    render_notes(e, notes, lang)
+    render_notes(e, notes, lang, media, key_prefix=f"{column}{rank}")
     if seed_id and e.content_id:
         # One thumbs widget under the caption, not two buttons beside the
         # title. The buttons lived in a 12:1:1 column split inside a column
@@ -1655,7 +1658,11 @@ def load_notes(path: Path = NOTES_PATH) -> dict[str, list[dict]]:
     return {
         video_hash: kept
         for video_hash, spans in data.items()
-        if isinstance(spans, list) and (kept := qualifying_spans(spans))
+        # The builder stores its topic-list fingerprint under a reserved key
+        # so a changed list invalidates the scan; it is not an episode.
+        if video_hash != NOTES_FINGERPRINT_KEY
+        and isinstance(spans, list)
+        and (kept := qualifying_spans(spans))
     }
 
 
@@ -1676,29 +1683,63 @@ def requested_start(params: Mapping[str, object]) -> int:
     return seconds if 0 <= seconds <= MAX_START_SECONDS else 0
 
 
-def render_notes(episode: Episode, notes: dict[str, list[dict]] | None, lang: str) -> None:
+def _open_episode_at(video_hash: str, seconds: int) -> None:
+    """Open the episode page at a timecode, in this session."""
+    st.query_params[EPISODE_PARAM] = video_hash.lower()
+    st.query_params[START_PARAM] = str(max(0, int(seconds)))
+
+
+def render_notes(
+    episode: Episode,
+    notes: dict[str, list[dict]] | None,
+    lang: str,
+    media: dict[str, dict[str, str]] | None = None,
+    key_prefix: str = "",
+) -> None:
     """What an editor would otherwise only learn by watching the tape.
 
     Varya's ask (86cbhemwp): a guest can spend four minutes on Ukraine in the
     middle of an hour, and finding that out currently means reading the whole
     transcript. Folded away, because most episodes have nothing flagged and a
     card is already dense.
+
+    A timecode is a button rather than a link for the same reason the title
+    is: Streamlit renders markdown links with target="_blank", and the new
+    tab is a new session that asks for the password again (CodeRabbit on
+    #101). It is only offered where the episode page can actually play the
+    episode, which today means the archive map covers it; everywhere else
+    the timecode is text, because a control that lands on "no media file" is
+    worse than none.
     """
     spans = (notes or {}).get(episode.video_hash) or []
     if not spans:
         return
+    playable = episode.video_hash.lower() in (media or {})
     by_topic: dict[str, list[dict]] = defaultdict(list)
     for span in spans:
         by_topic[str(span.get("topic") or "")].append(span)
     with st.expander(f"{_t('notes_header', lang)} ({len(spans)})"):
         for topic, found in by_topic.items():
-            marks = ", ".join(
-                f"[{format_timecode(float(s.get('start') or 0))}"
-                f"-{format_timecode(float(s.get('end') or 0))}]"
-                f"(?{EPISODE_PARAM}={episode.video_hash}&{START_PARAM}={int(float(s.get('start') or 0))})"
-                for s in found
-            )
-            st.markdown(f"**{topic}**: {marks}")
+            st.markdown(f"**{topic}**")
+            if not playable:
+                st.markdown(
+                    " · ".join(
+                        f"{format_timecode(float(s.get('start') or 0))}"
+                        f"-{format_timecode(float(s.get('end') or 0))}"
+                        for s in found
+                    )
+                )
+            else:
+                for index, span in enumerate(found):
+                    start = int(float(span.get("start") or 0))
+                    st.button(
+                        f":blue[{format_timecode(start)}"
+                        f"-{format_timecode(float(span.get('end') or 0))}]",
+                        key=f"note_{key_prefix}_{episode.video_hash}_{topic}_{index}",
+                        type="tertiary",
+                        on_click=_open_episode_at,
+                        args=(episode.video_hash, start),
+                    )
             quote = str(found[0].get("quote") or "")
             if quote:
                 st.caption(quote)

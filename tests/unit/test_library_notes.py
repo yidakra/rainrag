@@ -75,20 +75,29 @@ def test_passages_far_apart_stay_apart():
     assert format_timecode(spans[1].start) == "1:02:03"
 
 
-def test_a_single_passing_mention_is_dropped_but_a_repeated_one_is_kept():
-    """A word said once in two seconds is not something to plan around."""
+def test_every_passage_is_kept_for_the_episode_to_be_judged_on():
+    """A two-second mention counts towards the episode's totals even though
+    it is nothing on its own. Dropping it here cost a topic with one long
+    passage and two brief ones its place over the bar (CodeRabbit on #101),
+    so the bar lives in `qualifying_spans` and this keeps everything."""
     brief = "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nКрым.\n"
-    assert find_spans(parse_vtt(brief), [Topic("Крым", ("Крым",))]) == []
+    assert len(find_spans(parse_vtt(brief), [Topic("Крым", ("Крым",))])) == 1
     twice = brief + "\n2\n00:00:10.000 --> 00:00:11.000\nКрым снова.\n"
     assert len(find_spans(parse_vtt(twice), [Topic("Крым", ("Крым",))])) == 1
 
 
 def test_a_topic_does_not_match_a_longer_unrelated_word():
-    """«Крым» must not be found inside «Крымск», which is a different place."""
-    text = (
-        "WEBVTT\n\n1\n00:00:01.000 --> 00:00:20.000\nГород Крымскулинский, дважды Крымскулинский.\n"
-    )
-    assert find_spans(parse_vtt(text), [Topic("Крым", ("Крым",))]) == []
+    """The exact counterexamples, not a safely long synthetic one. The first
+    rule allowed any three more word characters, so «Крымск» and «Украинец»
+    both matched, and the test used «Крымскулинский», long enough to fall
+    outside the three and pass (Copilot on #101)."""
+    crimea = Topic("Крым", ("Крым",))
+    ukraine = Topic("Украина", ("Украин",))
+    assert not crimea.matches("Крымск")
+    assert not ukraine.matches("Украинец")
+    # Still the same subject, inflected, and the adjective too.
+    assert crimea.matches("в Крыму") and crimea.matches("крымский мост")
+    assert ukraine.matches("на Украине") and ukraine.matches("украинский кризис")
 
 
 def test_the_topic_list_is_editorial_and_may_be_absent(tmp_path):

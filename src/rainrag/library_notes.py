@@ -44,6 +44,40 @@ MIN_SPAN_SECONDS = 5.0
 MIN_TOPIC_SECONDS = 120.0
 MIN_TOPIC_HITS = 3
 
+# What may follow a topic's spelling and still be the same word. Cases and
+# the adjective forms, because «украинский кризис» is about Ukraine. Not
+# «ец», «цы» or «ск», which start «украинец» and «Крымск»: different words,
+# and flagging them is how a note stops being trustworthy.
+RUSSIAN_ENDINGS = (
+    "",
+    "а",
+    "е",
+    "и",
+    "ы",
+    "у",
+    "ю",
+    "ой",
+    "ою",
+    "ом",
+    "ем",
+    "ах",
+    "ям",
+    "ам",
+    "ами",
+    "ями",
+    "ov",
+    "ский",
+    "ская",
+    "ское",
+    "ские",
+    "ского",
+    "ской",
+    "ском",
+    "ским",
+    "ских",
+)
+
+
 _TIMESTAMP = re.compile(
     r"(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})\s*-->\s*(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})"
 )
@@ -88,12 +122,16 @@ class Topic:
 
     def matches(self, text: str) -> bool:
         if self._regex is None:
-            # Word-initial rather than whole-word: Russian inflects, so
-            # «Украина» has to catch «Украине» and «Украину» while «Украинец»
-            # is a different word an editor did not ask about. Matching a bare
-            # substring would find «Крым» inside «Крымск» too.
+            # The spelling plus a declension ending, and nothing else.
+            # "any three more word characters" was the first attempt and it
+            # was wrong in both directions: it matched «Крымск» and
+            # «Украинец», which are other words, and the test that was
+            # supposed to catch that used «Крымскулинский», long enough to
+            # fall outside the three and pass (CodeRabbit and Copilot on
+            # #101). An explicit list is also something an editor can read.
             joined = "|".join(re.escape(p) for p in (self.patterns or (self.name,)))
-            object.__setattr__(self, "_regex", re.compile(rf"\b(?:{joined})\w{{0,3}}\b", re.I))
+            endings = "|".join(re.escape(e) for e in RUSSIAN_ENDINGS)
+            object.__setattr__(self, "_regex", re.compile(rf"\b(?:{joined})(?:{endings})\b", re.I))
         assert self._regex is not None
         return bool(self._regex.search(text))
 
@@ -179,9 +217,15 @@ def find_spans(
             current = Span(topic=topic.name, start=cue.start, end=cue.end, quote=cue.text[:300])
         if current is not None:
             spans.append(current)
-    kept = [s for s in spans if s.end - s.start >= min_span or s.hits > 1]
-    kept.sort(key=lambda s: (s.start, s.topic))
-    return kept
+    # Everything found is kept. Dropping a two-second mention here lost it
+    # from the episode's totals, so a topic with one 118-second passage and
+    # two brief ones -- 122 seconds over three mentions, comfortably over the
+    # bar -- was stored as 118 seconds and one hit and then rejected by
+    # `qualifying_spans` (CodeRabbit on #101). The bar belongs in one place,
+    # and that place is the read.
+    del min_span
+    spans.sort(key=lambda s: (s.start, s.topic))
+    return spans
 
 
 def qualifying_spans(

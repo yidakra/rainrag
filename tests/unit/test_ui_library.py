@@ -1425,13 +1425,52 @@ def test_notes_are_folded_away_and_link_into_the_episode(monkeypatch):
             {"topic": "Украина", "start": 1144.0, "end": 1441.0, "quote": "", "hits": 2},
         ]
     }
-    ui_library.render_notes(_ep(HASH), notes, "ru")
+    ui_library.render_notes(_ep(HASH), notes, "ru", media={HASH: {"video": "a/b.mp4"}})
 
     assert ("expander", "Заметки (2)") in fake.calls
-    line = [c for c in fake.calls if c[0] == "markdown"][0][1]
-    assert "**Украина**" in line
-    assert "[2:05-6:57]" in line and f"?video={HASH}&t=125" in line
-    assert "[19:04-24:01]" in line and "t=1144" in line
+    assert [c for c in fake.calls if c[0] == "markdown"][0][1] == "**Украина**"
+    # Buttons, not links: a markdown link opens a new tab, which is a new
+    # session that asks for the password again (CodeRabbit on #101).
+    buttons = [c for c in fake.calls if c[0] == "button"]
+    assert [b[1] for b in buttons] == [":blue[2:05-6:57]", ":blue[19:04-24:01]"]
+    assert [b[2]["args"] for b in buttons] == [(HASH, 125), (HASH, 1144)]
+    assert all(b[2]["type"] == "tertiary" for b in buttons)
+
+
+def test_a_timecode_is_text_when_the_page_could_not_play_it(monkeypatch):
+    """Notes cover the whole pool but the episode page serves media only for
+    what the archive map covers, so a control there lands on "no media file"
+    (Copilot on #101)."""
+    import ui_library
+
+    class _Expander(_FakeSt):
+        def expander(self, label):
+            self.calls.append(("expander", label))
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    fake = _Expander()
+    monkeypatch.setattr(ui_library, "st", fake)
+    notes = {HASH: [{"topic": "Крым", "start": 60.0, "end": 200.0, "quote": "", "hits": 4}]}
+    ui_library.render_notes(_ep(HASH), notes, "ru", media={})
+
+    assert not [c for c in fake.calls if c[0] == "button"], "nothing to click through to"
+    assert any(c[0] == "markdown" and "1:00-3:20" in c[1] for c in fake.calls)
+
+
+def test_the_timecode_button_sets_both_parameters(monkeypatch):
+    import ui_library
+
+    fake = _FakeSt()
+    fake.query_params = {}
+    monkeypatch.setattr(ui_library, "st", fake)
+    ui_library._open_episode_at("AbC", 125)
+    assert fake.query_params == {ui_library.EPISODE_PARAM: "abc", ui_library.START_PARAM: "125"}
 
 
 def test_an_episode_with_nothing_flagged_shows_no_notes(monkeypatch):
