@@ -11,6 +11,10 @@ jobs:
     name: Run Tests
     runs-on: ubuntu-latest
     strategy:
+      # One version failing must not cancel the others. Without this a single
+      # flaky job takes the whole matrix with it and the surviving versions
+      # report CANCELLED, which reads as "everything is broken".
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
 
@@ -40,6 +44,11 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         if: matrix.python-version == '3.11'
+        # `fail_ci_if_error` is not enough: the action can die in its own
+        # process before that flag is read, which is what an SSL handshake
+        # failure against Codecov does. eval-tests.yml already guards this
+        # way; this workflow never caught up.
+        continue-on-error: true
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
