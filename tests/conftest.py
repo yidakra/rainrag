@@ -114,8 +114,12 @@ def _keep_the_working_directory_out_of_it(tmp_path, monkeypatch):
     # does not redirect a module that is already loaded. Both spellings: part
     # of the suite imports `rainrag.api` and part `src.rainrag.api`, which are
     # two module objects with two copies of the constant.
+    # raising=True on purpose: if the constant is renamed, this fails the
+    # suite instead of quietly patching a dead attribute while the writer
+    # goes on using its new, unpatched path -- which is how the live file
+    # got written to in the first place.
     for module in ("rainrag.api", "src.rainrag.api"):
-        monkeypatch.setattr(f"{module}.QUERY_LOG_PATH", log, raising=False)
+        monkeypatch.setattr(f"{module}.QUERY_LOG_PATH", log)
 
 
 @pytest.fixture
