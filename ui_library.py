@@ -333,11 +333,18 @@ def decision_targets(path: Path = DECISIONS_PATH) -> dict[str, str | None]:
     return targets
 
 
-def hash_by_content_id(path: Path = TAGS_PATH) -> dict[str, str]:
-    """content_id -> video_hash, for re-pointing a corrected match."""
-    out: dict[str, str] = {}
+def hashes_by_content_id(path: Path = TAGS_PATH) -> dict[str, set[str]]:
+    """content_id -> every archive cut filed under it.
+
+    A set, not one hash. 327 content_ids exist as several cuts of the same
+    broadcast with different hashes, and keeping only the last silently
+    picked one of them (CodeRabbit on #97 and #99). The caller decides what
+    to do when the answer is ambiguous; it must not be decided here by
+    whichever row happened to come last in the file.
+    """
+    out: dict[str, set[str]] = defaultdict(set)
     if not path.exists():
-        return out
+        return {}
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -348,8 +355,20 @@ def hash_by_content_id(path: Path = TAGS_PATH) -> dict[str, str]:
         content_id = str(record.get("content_id") or "")
         video_hash = record.get("video_hash")
         if content_id and video_hash:
-            out[content_id] = str(video_hash)
-    return out
+            out[content_id].add(str(video_hash))
+    return dict(out)
+
+
+def sole_hash_for(content_id: str, by_content: dict[str, set[str]]) -> str | None:
+    """The episode's hash when the content_id names exactly one cut.
+
+    None when it names several: a verdict records a content_id and not a
+    cut, so there is nothing in it that says which of them the upload is.
+    Crediting an arbitrary one would put real analytics on the wrong tape,
+    and no attribution is the honest answer until the verdict can say.
+    """
+    cuts = by_content.get(content_id) or set()
+    return next(iter(cuts)) if len(cuts) == 1 else None
 
 
 def audience_by_hash(
@@ -379,9 +398,20 @@ def audience_by_hash(
     metrics = load_metrics(metrics_path)
     audience = load_audience(metrics_path)
     decided = decision_targets(decisions_path)
-    by_content = hash_by_content_id(tags_path)
+    by_content = hashes_by_content_id(tags_path)
     profiles: dict[str, Audience] = {}
-    for row in load_map_rows(map_path):
+    rows = load_map_rows(map_path)
+    seen = {str(row.get("youtube_id") or "") for row in rows}
+    # Confirmed uploads the map no longer carries. A regeneration dropping a
+    # row must not take its analytics with it, when the verdict and the
+    # episode are both still here and the link is still shown (CodeRabbit on
+    # #99).
+    orphans = [
+        {"youtube_id": yt, "content_id": target, "archive_video_hash": None}
+        for yt, target in decided.items()
+        if target and yt not in seen
+    ]
+    for row in [*rows, *orphans]:
         youtube_id = row.get("youtube_id") or ""
         video_hash = row.get("archive_video_hash")
         if youtube_id in decided:
@@ -389,14 +419,11 @@ def audience_by_hash(
             if target is None:
                 continue  # the editor said this upload is not that episode
             # The map's own hash wins when the editor merely confirmed what
-            # the map already said. 327 content_ids exist as several archive
-            # cuts with different hashes, and `hash_by_content_id` keeps only
-            # the last of them, so looking the hash up by content_id would
-            # move the analytics to a different cut of the same broadcast
-            # (CodeRabbit on #97). The lookup is for the case it is needed:
-            # the editor pointed the upload somewhere else.
+            # the map already said, because the verdict names a content_id
+            # and the map names the cut. Otherwise the cut has to be
+            # unambiguous, or nothing is credited at all.
             if str(row.get("content_id") or "") != target or not video_hash:
-                video_hash = by_content.get(target)
+                video_hash = sole_hash_for(target, by_content)
         measured = metrics.get(youtube_id) or {}
         shape = audience.get(youtube_id) or None
         if not video_hash or not (measured or shape):
