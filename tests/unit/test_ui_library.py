@@ -1500,6 +1500,77 @@ def test_confirming_the_map_keeps_the_cut_the_map_named(tmp_path):
     assert set(audience_by_hash(map_path, metrics, decisions, tags)) == {"cut_a"}
 
 
+def test_an_ambiguous_target_credits_no_cut_at_all(tmp_path):
+    """A verdict records a content_id, not a cut. When the content_id names
+    several, there is nothing in the verdict that says which, and crediting
+    an arbitrary one puts real analytics on the wrong tape (CodeRabbit)."""
+    import json
+
+    from ui_library import audience_by_hash
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(
+        json.dumps([{"youtube_id": "yt1", "content_id": "111", "archive_video_hash": "cut_a"}]),
+        encoding="utf-8",
+    )
+    metrics = tmp_path / "m.csv"
+    metrics.write_text(
+        "youtube_id,snapshot_date,views,averageViewDuration,playbackBasedCpm,"
+        "viewerPercentage: ageGroup,viewerPercentage: gender\nyt1,2026-09-14,100,600,6.0,,\n",
+        encoding="utf-8",
+    )
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(
+        json.dumps({"content_id": "222", "video_hash": "cut_x"})
+        + "\n"
+        + json.dumps({"content_id": "222", "video_hash": "cut_y"})
+        + "\n",
+        encoding="utf-8",
+    )
+    decisions = tmp_path / "d.csv"
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\nyt1,222,match,2026-09-30T00:00:00\n",
+        encoding="utf-8",
+    )
+    assert audience_by_hash(map_path, metrics, decisions, tags) == {}
+
+
+def test_a_confirmed_upload_the_map_dropped_keeps_its_analytics(tmp_path):
+    """The verdict and the episode are both still here and the link is still
+    shown, so the numbers must not vanish with the map row (CodeRabbit)."""
+    import json
+
+    from ui_library import audience_by_hash
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(json.dumps([]), encoding="utf-8")
+    metrics = tmp_path / "m.csv"
+    metrics.write_text(
+        "youtube_id,snapshot_date,views,averageViewDuration,playbackBasedCpm,"
+        "viewerPercentage: ageGroup,viewerPercentage: gender\nyt9,2026-09-14,100,600,6.0,,\n",
+        encoding="utf-8",
+    )
+    tags = tmp_path / "tags.jsonl"
+    tags.write_text(
+        json.dumps({"content_id": "777", "video_hash": "only_cut"}) + "\n", encoding="utf-8"
+    )
+    decisions = tmp_path / "d.csv"
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\nyt9,777,match,2026-09-30T00:00:00\n",
+        encoding="utf-8",
+    )
+    profiles = audience_by_hash(map_path, metrics, decisions, tags)
+    assert profiles["only_cut"].average_view_duration == 600.0
+
+
+def test_the_sole_cut_helper_refuses_to_guess():
+    from ui_library import sole_hash_for
+
+    assert sole_hash_for("1", {"1": {"a"}}) == "a"
+    assert sole_hash_for("1", {"1": {"a", "b"}}) is None
+    assert sole_hash_for("missing", {"1": {"a"}}) is None
+
+
 def test_a_published_episode_is_marked_and_linked_on_the_card(monkeypatch):
     """Already published is the first thing an editor planning uploads needs,
     and it was only visible by opening the YouTube tab (86cbhrwnu)."""
