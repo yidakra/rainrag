@@ -1544,3 +1544,28 @@ def test_a_transcript_only_episode_gets_text_not_buttons(monkeypatch):
 
     assert not [c for c in fake.calls if c[0] == "button"]
     assert any(c[0] == "markdown" and "1:00-5:00" in c[1] for c in fake.calls)
+
+
+def test_an_infinite_span_bound_is_refused():
+    """`float("Infinity")` parses, compares fine and passes the bar, then
+    raises OverflowError inside `format_timecode` when the note is drawn
+    (CodeRabbit on #101)."""
+    from ui_library import well_formed_span
+
+    assert not well_formed_span({"start": 0, "end": "Infinity"})
+    assert not well_formed_span({"start": "-inf", "end": 10})
+    assert not well_formed_span({"start": 0, "end": "nan"})
+    assert well_formed_span({"start": 0, "end": 10})
+
+
+def test_a_limited_forced_scan_will_not_replace_the_whole_file(tmp_path, capsys):
+    """`--force --limit 50` started from empty and wrote fifty episodes over
+    a complete file, so every other episode lost its notes in the UI."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    import library_notes_build
+
+    code = library_notes_build.main(["--force", "--limit", "50"])
+    assert code == 1
+    assert "refusing" in capsys.readouterr().out

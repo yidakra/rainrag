@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
 import re
 import threading
@@ -1706,6 +1707,12 @@ def well_formed_span(span: object) -> bool:
         end = float(span.get("end"))  # type: ignore[arg-type]
         int(span.get("hits") or 1)
     except (TypeError, ValueError):
+        return False
+    # Finite, not merely ordered. `float("Infinity")` parses and compares
+    # fine, passes the bar on an infinite duration, and then raises
+    # OverflowError inside `format_timecode` when the note is drawn: one
+    # hand-edited record would stop the tab rendering (CodeRabbit on #101).
+    if not (math.isfinite(start) and math.isfinite(end)):
         return False
     return end >= start >= 0
 

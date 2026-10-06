@@ -93,6 +93,17 @@ def main(argv: list[str] | None = None) -> int:
 
     from rainrag.library_notes import load_topics
 
+    # A limited rescan must not become the whole file. `--force --limit 50`
+    # started from an empty `done` and then replaced a complete
+    # library_notes.json with fifty episodes, so every other episode lost
+    # its notes in the UI until a full scan finished (CodeRabbit on #101).
+    if args.force and args.limit and Path(args.out) == DEFAULT_OUT:
+        print(
+            "refusing: --force with --limit would replace the complete notes file "
+            "with a partial one. Pass --out to write the sample somewhere else."
+        )
+        return 1
+
     topics_path = Path(args.topics)
     if not topics_path.exists() and SEED_TOPICS.exists():
         topics_path.parent.mkdir(parents=True, exist_ok=True)
