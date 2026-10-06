@@ -1489,7 +1489,16 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
         VIDEOS_CACHE_PATH.stat().st_mtime if VIDEOS_CACHE_PATH.exists() else 0.0
     )
     tags_by_content = {
-        e.content_id: {"presenter_cms": e.speakers, "guest": [], "program": e.program}
+        # `subject` matters as much as the rest: without it every upload got
+        # an empty subject list and the «По темам» table rendered no rows at
+        # all, while a direct call to `aggregate` looked fine (CodeRabbit on
+        # #100).
+        e.content_id: {
+            "presenter_cms": e.speakers,
+            "guest": [],
+            "program": e.program,
+            "subject": e.subject,
+        }
         for e in episodes
         if e.content_id
     }

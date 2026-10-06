@@ -200,3 +200,18 @@ def test_an_upload_with_no_subjects_lands_in_no_group():
     from rainrag.library_performance import aggregate
 
     assert aggregate([_up("a", 10)], "subject") == []
+
+
+def test_one_upload_counts_once_per_folded_group():
+    """«История» and «история» are one group, and an upload carrying both
+    appended itself twice: the metric double-counted and two distinct
+    uploads could clear a three-upload floor (CodeRabbit on #100)."""
+    from rainrag.library_performance import aggregate
+
+    rows = aggregate([_up("a", 100, subjects=["История", "история"])], "subject")
+    assert len(rows) == 1
+    assert rows[0]["uploads"] == 1
+    assert rows[0]["total"] == 100
+
+    pair = [_up("a", 10, subjects=["История", "история"]), _up("b", 10, subjects=["История"])]
+    assert aggregate(pair, "subject", min_uploads=3) == [], "two uploads must not pass a floor of 3"

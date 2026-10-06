@@ -1402,3 +1402,15 @@ def test_the_performance_genre_grouping_matches_what_the_filter_matches(tmp_path
         "1": ["Лекция"],
         "2": ["Новости"],
     }
+
+
+def test_the_performance_tab_hands_subjects_to_the_upload_mapping():
+    """Without `subject` in that mapping every upload has an empty subject
+    list and the «По темам» table renders nothing, while a direct call to
+    `aggregate` still looks right (CodeRabbit on #100)."""
+    import inspect
+
+    import ui_library
+
+    body = inspect.getsource(ui_library.render_performance_tab)
+    assert '"subject": e.subject' in body

@@ -256,10 +256,16 @@ def aggregate(
             # Folded for grouping, and the first spelling seen is displayed,
             # so «Женщины-лидеры» and «женщины-лидеры» are one row and read
             # as the editors write them.
+            # Folded keys deduplicated per upload: an episode tagged both
+            # «История» and «история» appended itself twice to one group,
+            # double-counting its metric and letting two distinct uploads
+            # clear the three-upload floor (CodeRabbit on #100).
+            seen_here: set[str] = set()
             for value in getattr(u, _MULTI[key]):
                 k = str(value).strip().casefold()
-                if not k:
+                if not k or k in seen_here:
                     continue
+                seen_here.add(k)
                 groups[k].append(u)
                 spellings[k].append(str(value).strip())
         else:
