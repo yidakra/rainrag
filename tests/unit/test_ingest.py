@@ -1242,3 +1242,18 @@ class TestStaleCacheWarningIsLocalModeOnly:
     ):
         warnings = self._build(test_config, tmp_path, source, monkeypatch)
         assert not any("predate the library taxonomy" in w for w in warnings)
+
+
+def test_the_suite_never_writes_into_the_working_directory(test_config):
+    """Guard for a trap that cost a 2.5 hour rebuild on 2026-10-01.
+
+    `incremental.manifest_path` defaults to the *relative* "./data/manifest.json".
+    A fixture that does not override it sends every `Ingester.ingest()` to
+    `<cwd>/data/manifest.json`, and the working directory of a test run in
+    the deployment checkout is the deployment: the live manifest, truncated
+    to `{}` by a passing test suite.
+    """
+    from pathlib import Path
+
+    manifest = Path(test_config.incremental.manifest_path)
+    assert manifest.is_absolute(), f"{manifest} is relative and resolves against the cwd"

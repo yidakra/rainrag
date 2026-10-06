@@ -1482,3 +1482,65 @@ def test_an_episode_with_nothing_flagged_shows_no_notes(monkeypatch):
     ui_library.render_notes(_ep(HASH), {}, "ru")
     ui_library.render_notes(_ep(HASH), None, "ru")
     assert fake.calls == []
+
+
+def test_one_malformed_note_does_not_take_down_the_tab(tmp_path, monkeypatch):
+    """The notes file is machine-written but read on every run: a torn record
+    must cost that note, not the Похожие выпуски tab (CodeRabbit on #101)."""
+    import json
+
+    import ui_library
+
+    good = {"topic": "Украина", "start": 0, "end": 300, "hits": 5, "quote": ""}
+    path = tmp_path / "notes.json"
+    path.write_text(
+        json.dumps(
+            {
+                "__topics__": "abc123",
+                "ok": [good],
+                "torn": ["not a dict", {"topic": "Крым", "start": "x", "end": None}],
+                "mixed": [good, {"topic": "Крым", "start": None, "end": 5}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ui_library, "NOTES_PATH", path)
+    loaded = ui_library.load_notes(path)
+
+    assert set(loaded) == {"ok", "mixed"}, "the unusable episode drops, the rest survive"
+    assert len(loaded["mixed"]) == 1
+
+
+def test_a_span_is_checked_before_it_is_measured():
+    from ui_library import well_formed_span
+
+    assert well_formed_span({"start": 1, "end": 2, "hits": 1})
+    assert not well_formed_span("not a dict")
+    assert not well_formed_span({"start": "x", "end": 2})
+    assert not well_formed_span({"start": None, "end": 2})
+    assert not well_formed_span({"start": 9, "end": 2}), "end before start"
+
+
+def test_a_transcript_only_episode_gets_text_not_buttons(monkeypatch):
+    """The episode page has no player to seek when the archive holds only a
+    transcript, so a timecode button would land nowhere."""
+    import ui_library
+
+    class _Expander(_FakeSt):
+        def expander(self, label):
+            self.calls.append(("expander", label))
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    fake = _Expander()
+    monkeypatch.setattr(ui_library, "st", fake)
+    notes = {HASH: [{"topic": "Крым", "start": 60.0, "end": 300.0, "quote": "", "hits": 5}]}
+    ui_library.render_notes(_ep(HASH), notes, "ru", media={HASH: {"vtt": "a/b.ru.vtt"}})
+
+    assert not [c for c in fake.calls if c[0] == "button"]
+    assert any(c[0] == "markdown" and "1:00-5:00" in c[1] for c in fake.calls)
