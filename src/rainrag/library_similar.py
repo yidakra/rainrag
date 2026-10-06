@@ -250,7 +250,10 @@ class Episode:
 
     @classmethod
     def from_record(
-        cls, record: dict[str, Any], programmes: dict[str, Programme] | None = None
+        cls,
+        record: dict[str, Any],
+        programmes: dict[str, Programme] | None = None,
+        presenter_overrides: dict[str, list[str]] | None = None,
     ) -> Episode:
         """Build from a tagging-run JSONL row.
 
@@ -263,7 +266,7 @@ class Episode:
         `library_programs.resolve_speakers`. Passing nothing keeps the old
         behaviour, so existing callers rank exactly as before.
         """
-        resolution = resolve_speakers(record, programmes)
+        resolution = resolve_speakers(record, programmes, presenter_overrides)
         speakers = resolution.speakers
         programme = programme_for(record.get("program"), programmes or {})
         return cls(

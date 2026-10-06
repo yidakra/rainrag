@@ -213,6 +213,10 @@ __marimo__/
 
 # RainRAG specific
 data/
+# ...and a symlink of that name. A worktree pointed at the deployment's
+# data by a symlink got it committed, so a fresh checkout resolved
+# `data/...` to an absolute path on one machine (CodeRabbit on #97).
+/data
 embeddings/
 logs/
 mlruns/
