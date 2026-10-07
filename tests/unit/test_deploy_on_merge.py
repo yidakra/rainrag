@@ -430,3 +430,34 @@ def test_git_errors_carry_the_subcommand_and_stderr(tmp_path):
         dom.Git(tmp_path / "r").run("rev-parse", "definitely-not-a-ref")
     assert info.value.step == "rev-parse"
     assert info.value.detail
+
+
+def test_an_editor_writing_a_verdict_does_not_block_deploys(tmp_path):
+    """Four files under data/ are tracked so hand-made editorial work
+    survives a rebuild, and the app writes one of them itself. Recording a
+    match verdict in the review tab left the tree dirty and silently stopped
+    every deploy. An editor using the app must not be able to halt it."""
+    repo = tmp_path / "repo"
+    (repo / "data").mkdir(parents=True)
+
+    def run(*a):
+        subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)
+
+    run("init", "-q")
+    run("config", "user.email", "t@example.test")
+    run("config", "user.name", "t")
+    (repo / "code.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "data" / "youtube_map_decisions.csv").write_text("a,b\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-q", "-m", "init")
+
+    git = dom.Git(repo)
+    assert not git.dirty()
+
+    # An editor records a verdict: tracked data changes, code does not.
+    (repo / "data" / "youtube_map_decisions.csv").write_text("a,b\nc,d\n", encoding="utf-8")
+    assert not git.dirty(), "editorial data must not count as a dirty tree"
+
+    # A half-finished code edit still does.
+    (repo / "code.py").write_text("x = 2\n", encoding="utf-8")
+    assert git.dirty()

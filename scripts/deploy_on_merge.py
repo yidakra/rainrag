@@ -135,7 +135,19 @@ class Git:
         return self.run("rev-parse", "--abbrev-ref", "HEAD")
 
     def dirty(self) -> bool:
-        return bool(self.run("status", "--porcelain", "--untracked-files=no"))
+        """Uncommitted *code*. Editorial data under data/ does not count.
+
+        The guard exists so a deploy never lands on top of somebody's
+        half-finished edit. Four files under data/ became tracked so that
+        hand-made editorial work survives a rebuild, and the app writes one
+        of them itself: recording a match verdict in the review tab left the
+        tree dirty and silently stopped every deploy until someone noticed
+        and committed it. An editor using the app must not be able to halt
+        deployment.
+        """
+        return bool(
+            self.run("status", "--porcelain", "--untracked-files=no", "--", ".", ":(exclude)data")
+        )
 
     def fetch(self, remote: str, branch: str) -> None:
         self.run("fetch", "--quiet", remote, branch)
