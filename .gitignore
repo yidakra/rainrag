@@ -212,11 +212,19 @@ marimo/_lsp/
 __marimo__/
 
 # RainRAG specific
-data/
-# ...and a symlink of that name. A worktree pointed at the deployment's
-# data by a symlink got it committed, so a fresh checkout resolved
-# `data/...` to an absolute path on one machine (CodeRabbit on #97).
-/data
+# Generated data stays out: docs.jsonl is 9 GB, the tag file 41 MB,
+# and every one of them can be rebuilt by rerunning a script.
+data/*
+# These four are the exception: they are editorial, hand-made, and a
+# script cannot regenerate them. Varya's presenters for the lectures
+# the CMS has none for, the match verdicts recorded in the review tab,
+# the topic list the notes scan looks for, and her Programs tab, which
+# is the authority on genre for the whole filter. Together 34 KB that
+# only existed on one machine until now.
+!data/library_presenters.csv
+!data/youtube_map_decisions.csv
+!data/library_note_topics.csv
+!data/library_programs.csv
 embeddings/
 logs/
 mlruns/
