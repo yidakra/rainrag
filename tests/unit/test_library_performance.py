@@ -126,3 +126,92 @@ def test_aggregate_merges_speaker_spellings_across_uploads():
     assert rows == [
         {"speaker": "Ирина Хакамада", "uploads": 2, "total": 40.0, "median": 20.0, "best": 30.0}
     ]
+
+
+def _up(yt, views, speakers=(), subjects=(), genres=(), program=None):
+    from rainrag.library_performance import Upload
+
+    return Upload(
+        youtube_id=yt,
+        youtube_title=yt,
+        published_at=None,
+        view_count=views,
+        duration_seconds=None,
+        content_id=yt,
+        archive_title=None,
+        archive_url=None,
+        archive_date=None,
+        program=program,
+        speakers=list(speakers),
+        subjects=list(subjects),
+        genres=list(genres),
+    )
+
+
+def test_an_upload_counts_in_every_subject_it_carries():
+    """A subject is multi-valued like a speaker, not single like a programme."""
+    from rainrag.library_performance import aggregate
+
+    rows = aggregate(
+        [_up("a", 100, subjects=["интуиция", "лидерство"]), _up("b", 50, subjects=["интуиция"])],
+        "subject",
+    )
+    by_name = {r["subject"]: r for r in rows}
+    assert by_name["интуиция"]["uploads"] == 2
+    assert by_name["интуиция"]["total"] == 150
+    assert by_name["лидерство"]["uploads"] == 1
+
+
+def test_spellings_of_one_subject_are_one_row():
+    from rainrag.library_performance import aggregate
+
+    rows = aggregate(
+        [_up("a", 10, subjects=["Женщины-лидеры"]), _up("b", 20, subjects=["женщины-лидеры"])],
+        "subject",
+    )
+    assert len(rows) == 1
+    assert rows[0]["uploads"] == 2
+    # The first spelling seen, so the table reads as the editors write it.
+    assert rows[0]["subject"] == "Женщины-лидеры"
+
+
+def test_groups_below_the_floor_are_dropped():
+    """Most subjects appear once across a couple of hundred uploads, and a
+    table sorted by total would be single videos wearing a theme as a label."""
+    from rainrag.library_performance import aggregate
+
+    uploads = [
+        _up("a", 10, subjects=["часто"]),
+        _up("b", 20, subjects=["часто"]),
+        _up("c", 99, subjects=["редко"]),
+    ]
+    names = [r["subject"] for r in aggregate(uploads, "subject", min_uploads=2)]
+    assert names == ["часто"], "the single 99-view upload must not top the table"
+
+
+def test_genres_group_the_same_way():
+    from rainrag.library_performance import aggregate
+
+    rows = aggregate([_up("a", 10, genres=["лекция"]), _up("b", 20, genres=["лекция"])], "genre")
+    assert rows[0]["genre"] == "лекция" and rows[0]["uploads"] == 2
+
+
+def test_an_upload_with_no_subjects_lands_in_no_group():
+    from rainrag.library_performance import aggregate
+
+    assert aggregate([_up("a", 10)], "subject") == []
+
+
+def test_one_upload_counts_once_per_folded_group():
+    """«История» and «история» are one group, and an upload carrying both
+    appended itself twice: the metric double-counted and two distinct
+    uploads could clear a three-upload floor (CodeRabbit on #100)."""
+    from rainrag.library_performance import aggregate
+
+    rows = aggregate([_up("a", 100, subjects=["История", "история"])], "subject")
+    assert len(rows) == 1
+    assert rows[0]["uploads"] == 1
+    assert rows[0]["total"] == 100
+
+    pair = [_up("a", 10, subjects=["История", "история"]), _up("b", 10, subjects=["История"])]
+    assert aggregate(pair, "subject", min_uploads=3) == [], "two uploads must not pass a floor of 3"
