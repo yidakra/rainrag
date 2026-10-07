@@ -1,0 +1,21 @@
+[Unit]
+Description=RainRAG commit the editorial data an editor changed in the app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/rainrag
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/home/ubuntu/rainrag/.env
+# Four hand-made files under data/ are tracked so they survive a rebuild.
+# The app appends to one of them every time an editor records a match
+# verdict, and nothing otherwise carries that to the repository.
+ExecStart=/home/ubuntu/rainrag/.venv/bin/python /home/ubuntu/rainrag/scripts/commit_editorial_data.py
+TimeoutStartSec=5m
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
