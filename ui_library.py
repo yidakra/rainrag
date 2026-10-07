@@ -322,15 +322,82 @@ def youtube_id_from_query(text: str) -> str | None:
     return None
 
 
+def decision_targets(path: Path = DECISIONS_PATH) -> dict[str, str | None]:
+    """youtube_id -> the content_id the editor confirmed, or None for a refusal.
+
+    The file is append-only and the last verdict for an upload wins, the same
+    rule `load_decisions` and `resolve_youtube_id` already apply.
+    """
+    targets: dict[str, str | None] = {}
+    for row in _locked_read_rows(path):
+        yt_id = row.get("youtube_id")
+        if not yt_id:
+            continue
+        verdict = row.get("verdict")
+        content_id = (row.get("content_id") or "").strip()
+        if verdict == "no_match":
+            targets[yt_id] = None
+        elif verdict == "match" and content_id:
+            targets[yt_id] = content_id
+    return targets
+
+
+def hashes_by_content_id(path: Path = TAGS_PATH) -> dict[str, set[str]]:
+    """content_id -> every archive cut filed under it.
+
+    A set, not one hash. 327 content_ids exist as several cuts of the same
+    broadcast with different hashes, and keeping only the last silently
+    picked one of them (CodeRabbit on #97 and #99). The caller decides what
+    to do when the answer is ambiguous; it must not be decided here by
+    whichever row happened to come last in the file.
+    """
+    out: dict[str, set[str]] = defaultdict(set)
+    if not path.exists():
+        return {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        content_id = str(record.get("content_id") or "")
+        video_hash = record.get("video_hash")
+        if content_id and video_hash:
+            out[content_id].add(str(video_hash))
+    return dict(out)
+
+
+def sole_hash_for(content_id: str, by_content: dict[str, set[str]]) -> str | None:
+    """The episode's hash when the content_id names exactly one cut.
+
+    None when it names several: a verdict records a content_id and not a
+    cut, so there is nothing in it that says which of them the upload is.
+    Crediting an arbitrary one would put real analytics on the wrong tape,
+    and no attribution is the honest answer until the verdict can say.
+    """
+    cuts = by_content.get(content_id) or set()
+    return next(iter(cuts)) if len(cuts) == 1 else None
+
+
 def audience_by_hash(
-    map_path: Path = MAP_PATH, metrics_path: Path = METRICS_PATH
+    map_path: Path = MAP_PATH,
+    metrics_path: Path = METRICS_PATH,
+    decisions_path: Path = DECISIONS_PATH,
+    tags_path: Path = TAGS_PATH,
 ) -> dict[str, Audience]:
-    """Analytics per archive episode, via the upload map.
+    """Analytics per archive episode, via the upload map and the editor.
 
     Only uploads confirmed against the archive carry a hash, so this covers
     the couple of hundred published episodes and nothing else. That is the
     normal state and the blend is built for it: an episode with no entry here
     simply does not compete on the analytics axes.
+
+    The editor's verdicts override the map here as they already do for links.
+    They did not, and the map is machine output: 16 uploads Varya had rejected
+    outright still carried an archive hash, so their views, retention and CPM
+    were credited to episodes she had said they are not. A confirmed match
+    pointing somewhere else than the map is re-pointed for the same reason.
 
     Age and gender come from the same snapshot file, pulled one video per
     request because that is all the demographics report allows. YouTube
@@ -339,10 +406,33 @@ def audience_by_hash(
     """
     metrics = load_metrics(metrics_path)
     audience = load_audience(metrics_path)
+    decided = decision_targets(decisions_path)
+    by_content = hashes_by_content_id(tags_path)
     profiles: dict[str, Audience] = {}
-    for row in load_map_rows(map_path):
-        video_hash = row.get("archive_video_hash")
+    rows = load_map_rows(map_path)
+    seen = {str(row.get("youtube_id") or "") for row in rows}
+    # Confirmed uploads the map no longer carries. A regeneration dropping a
+    # row must not take its analytics with it, when the verdict and the
+    # episode are both still here and the link is still shown (CodeRabbit on
+    # #99).
+    orphans = [
+        {"youtube_id": yt, "content_id": target, "archive_video_hash": None}
+        for yt, target in decided.items()
+        if target and yt not in seen
+    ]
+    for row in [*rows, *orphans]:
         youtube_id = row.get("youtube_id") or ""
+        video_hash = row.get("archive_video_hash")
+        if youtube_id in decided:
+            target = decided[youtube_id]
+            if target is None:
+                continue  # the editor said this upload is not that episode
+            # The map's own hash wins when the editor merely confirmed what
+            # the map already said, because the verdict names a content_id
+            # and the map names the cut. Otherwise the cut has to be
+            # unambiguous, or nothing is credited at all.
+            if str(row.get("content_id") or "") != target or not video_hash:
+                video_hash = sole_hash_for(target, by_content)
         measured = metrics.get(youtube_id) or {}
         shape = audience.get(youtube_id) or None
         if not video_hash or not (measured or shape):
@@ -1260,7 +1350,12 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         seed,
         shortlist_pool,
         idf,
-        _cached_audiences(_stat_key(MAP_PATH), _stat_key(METRICS_PATH)),
+        _cached_audiences(
+            _stat_key(MAP_PATH),
+            _stat_key(METRICS_PATH),
+            _stat_key(DECISIONS_PATH),
+            _stat_key(TAGS_PATH),
+        ),
         people_idf=people_idf,
     )
     if shortlist:
@@ -1576,9 +1671,19 @@ def _stat_key(path: Path) -> tuple[int, int]:
 
 
 @st.cache_data(show_spinner=False)
-def _cached_audiences(map_key: tuple[int, int], metrics_key: tuple[int, int]) -> dict:
-    """Analytics per episode; re-read when either source file changes."""
-    del map_key, metrics_key
+def _cached_audiences(
+    map_key: tuple[int, int],
+    metrics_key: tuple[int, int],
+    decisions_key: tuple[int, int],
+    tags_key: tuple[int, int],
+) -> dict:
+    """Analytics per episode; re-read when any source file changes.
+
+    The decisions file is one of them: an editor correcting a match in the
+    review tab must see the analytics follow it on the next rerun, not after
+    the next map regeneration.
+    """
+    del map_key, metrics_key, decisions_key, tags_key
     return audience_by_hash()
 
 
