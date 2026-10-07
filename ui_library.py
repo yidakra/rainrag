@@ -138,6 +138,7 @@ _T = {
         "untagged_mark": "(не размечен)",
         "no_cms_mark": "без карточки в CMS",
         "archive_link_mark": "ссылка в архив",
+        "youtube_mark": "уже на YouTube",
         "episode_page_unknown": "Выпуск не найден. Ссылка могла устареть, или этот выпуск "
         "не входит в размеченный пул.",
         "episode_page_no_media": "Файл этого выпуска не найден в архиве.",
@@ -219,6 +220,7 @@ _T = {
         "untagged_mark": "(untagged)",
         "no_cms_mark": "no CMS record",
         "archive_link_mark": "archive link",
+        "youtube_mark": "already on YouTube",
         "episode_page_unknown": "Episode not found. The link may be stale, or this episode "
         "is not in the tagged pool.",
         "episode_page_no_media": "No media file for this episode in the archive.",
@@ -388,6 +390,35 @@ def sole_hash_for(content_id: str, by_content: dict[str, set[str]]) -> str | Non
     """
     cuts = by_content.get(content_id) or set()
     return next(iter(cuts)) if len(cuts) == 1 else None
+
+
+def youtube_by_content_id(
+    map_path: Path = MAP_PATH, decisions_path: Path = DECISIONS_PATH
+) -> dict[str, str]:
+    """content_id -> the upload published for it, editor verdicts first.
+
+    The same precedence `resolve_youtube_id` applies in the review tab, read
+    once for the whole pool rather than per card: a rejected upload is not
+    published for anything, and a confirmed one wins over the map's guess.
+    Only the confident tiers of the map are trusted, because the review band
+    was right about 40% of the time when it was audited.
+    """
+    decided = decision_targets(decisions_path)
+    # The editor's verdicts are read first and stand on their own, not
+    # filtered through the map. A regeneration that drops an upload from the
+    # map must not take a confirmed link down with it, and an earlier map row
+    # for the same episode must not win on `setdefault` over a verdict the
+    # editor recorded later (CodeRabbit on #99).
+    out: dict[str, str] = {target: youtube_id for youtube_id, target in decided.items() if target}
+    rejected = {youtube_id for youtube_id, target in decided.items() if target is None}
+    for row in load_map_rows(map_path):
+        youtube_id = str(row.get("youtube_id") or "")
+        content_id = str(row.get("content_id") or "")
+        if not youtube_id or not content_id or youtube_id in decided or youtube_id in rejected:
+            continue
+        if row.get("confidence") in {"editor", "exact", "strong"}:
+            out.setdefault(content_id, youtube_id)
+    return out
 
 
 def audience_by_hash(
@@ -919,6 +950,15 @@ def load_untitled_media(path: Path = UNTITLED_MEDIA_PATH) -> dict[str, dict[str,
 
 
 @st.cache_data(show_spinner=False)
+def _cached_youtube_by_content(
+    map_key: tuple[int, int], decisions_key: tuple[int, int]
+) -> dict[str, str]:
+    """Published uploads per episode; re-read when the map or a verdict moves."""
+    del map_key, decisions_key
+    return youtube_by_content_id()
+
+
+@st.cache_data(show_spinner=False)
 def _cached_untitled_media(stat_key: tuple[int, int]) -> dict[str, dict[str, str]]:
     del stat_key
     # Keyed in lower case, once, here. A hash keeps whatever case the archive
@@ -1130,6 +1170,7 @@ def _render_suggestion(
     marks: dict[tuple[str, str], str] | None = None,
     synthetic: dict[str, str] | None = None,
     media: dict[str, dict[str, str]] | None = None,
+    youtube: dict[str, str] | None = None,
 ) -> None:
     """One suggested episode with its reason and the two judgment buttons.
 
@@ -1143,6 +1184,12 @@ def _render_suggestion(
     meta_bits = [e.program, e.date, _fmt_minutes(e.duration_seconds, lang)]
     if stand_in:
         meta_bits.append(_t("no_cms_mark", lang))
+    # Already published is the first thing an editor planning new uploads
+    # needs to know about a candidate, and it was only visible by opening the
+    # YouTube tab and searching for the title (Varya, 86cbhrwnu).
+    published = (youtube or {}).get(str(e.content_id or ""))
+    if published:
+        meta_bits.append(f"[▶ {_t('youtube_mark', lang)}](https://youtu.be/{published})")
     if kind is not None:
         # Say where the link goes. It is the archive, not a CMS card, so the
         # editor knows there is no page on the site behind it -- and if the
@@ -1230,6 +1277,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         UNTITLED_TITLES_PATH.stat().st_mtime if UNTITLED_TITLES_PATH.exists() else 0.0
     )
     media = _cached_untitled_media(_stat_key(UNTITLED_MEDIA_PATH))
+    youtube = _cached_youtube_by_content(_stat_key(MAP_PATH), _stat_key(DECISIONS_PATH))
     matches = search_episodes(episodes, needle, synthetic=synthetic)
     tagged_hashes = {e.video_hash for e in episodes}
     if needle and not youtube_id_from_query(needle):
@@ -1385,6 +1433,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
                 marks=marks,
                 synthetic=synthetic,
                 media=media,
+                youtube=youtube,
             )
         st.divider()
 
@@ -1409,6 +1458,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
                 marks=marks,
                 synthetic=synthetic,
                 media=media,
+                youtube=youtube,
             )
     with theme_col:
         st.subheader(_t("same_theme", lang))
@@ -1424,6 +1474,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
                 marks=marks,
                 synthetic=synthetic,
                 media=media,
+                youtube=youtube,
             )
 
 

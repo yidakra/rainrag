@@ -1571,6 +1571,115 @@ def test_the_sole_cut_helper_refuses_to_guess():
     assert sole_hash_for("missing", {"1": {"a"}}) is None
 
 
+def test_a_published_episode_is_marked_and_linked_on_the_card(monkeypatch):
+    """Already published is the first thing an editor planning uploads needs,
+    and it was only visible by opening the YouTube tab (86cbhrwnu)."""
+    import ui_library
+
+    fake = _FakeSt()
+    monkeypatch.setattr(ui_library, "st", fake)
+    ui_library._render_suggestion(
+        1,
+        _episode("h1", content_id="484740"),
+        "почему",
+        "ru",
+        column="theme",
+        youtube={"484740": "abc123"},
+    )
+
+    line = [c for c in fake.calls if c[0] == "markdown"][0][1]
+    assert "https://youtu.be/abc123" in line
+    assert "уже на YouTube" in line
+
+
+def test_an_unpublished_episode_says_nothing_about_youtube(monkeypatch):
+    import ui_library
+
+    fake = _FakeSt()
+    monkeypatch.setattr(ui_library, "st", fake)
+    ui_library._render_suggestion(
+        1, _episode("h1", content_id="484740"), "почему", "ru", column="theme", youtube={}
+    )
+
+    assert "youtu.be" not in [c for c in fake.calls if c[0] == "markdown"][0][1]
+
+
+def _map_and_decisions(tmp_path, confidence="strong"):
+    import json
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(
+        json.dumps(
+            [
+                {"youtube_id": "yt1", "content_id": "111", "confidence": confidence},
+                {"youtube_id": "yt2", "content_id": "222", "confidence": "review"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return map_path, tmp_path / "d.csv"
+
+
+def test_only_the_confident_tiers_of_the_map_count_as_published(tmp_path):
+    """The review band was right about 40% of the time when it was audited,
+    so a card must not claim an episode is already up on that evidence."""
+    from ui_library import youtube_by_content_id
+
+    map_path, decisions = _map_and_decisions(tmp_path)
+    decisions.write_text("youtube_id,content_id,verdict,decided_at\n", encoding="utf-8")
+    assert youtube_by_content_id(map_path, decisions) == {"111": "yt1"}
+
+
+def test_the_editor_overrides_the_map_in_both_directions(tmp_path):
+    from ui_library import youtube_by_content_id
+
+    map_path, decisions = _map_and_decisions(tmp_path)
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\n"
+        "yt1,111,no_match,2026-09-30T00:00:00\n"
+        "yt2,333,match,2026-09-30T00:00:00\n",
+        encoding="utf-8",
+    )
+    assert youtube_by_content_id(map_path, decisions) == {"333": "yt2"}
+
+
+def test_a_confirmed_upload_survives_the_map_dropping_it(tmp_path):
+    """The verdicts are editor truth; a map regeneration must not take a
+    confirmed link down with it (CodeRabbit on #99)."""
+    import json
+
+    from ui_library import youtube_by_content_id
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(json.dumps([]), encoding="utf-8")
+    decisions = tmp_path / "d.csv"
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\nyt9,777,match,2026-09-30T00:00:00\n",
+        encoding="utf-8",
+    )
+    assert youtube_by_content_id(map_path, decisions) == {"777": "yt9"}
+
+
+def test_a_verdict_beats_a_map_row_for_the_same_episode(tmp_path):
+    """Built map-first, `setdefault` kept whichever row came first in the
+    file, so a guess could outrank a confirmation."""
+    import json
+
+    from ui_library import youtube_by_content_id
+
+    map_path = tmp_path / "map.json"
+    map_path.write_text(
+        json.dumps([{"youtube_id": "guess", "content_id": "777", "confidence": "strong"}]),
+        encoding="utf-8",
+    )
+    decisions = tmp_path / "d.csv"
+    decisions.write_text(
+        "youtube_id,content_id,verdict,decided_at\nconfirmed,777,match,2026-09-30T00:00:00\n",
+        encoding="utf-8",
+    )
+    assert youtube_by_content_id(map_path, decisions) == {"777": "confirmed"}
+
+
 def test_the_performance_genre_grouping_matches_what_the_filter_matches(tmp_path):
     """The programme's reviewed genre where there is one, the model's labels
     otherwise: grouping by anything else makes the table and the filter
