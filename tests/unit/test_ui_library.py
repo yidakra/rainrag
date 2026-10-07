@@ -1128,8 +1128,8 @@ class _FakePage(_FakeSt):
     def subheader(self, text):
         self.calls.append(("subheader", text))
 
-    def video(self, url):
-        self.calls.append(("video", url))
+    def video(self, url, start_time=0):
+        self.calls.append(("video", url, start_time))
 
     def info(self, text):
         self.calls.append(("info", text))
@@ -1183,7 +1183,7 @@ def test_an_episode_with_nothing_in_the_archive_says_so(monkeypatch, tmp_path):
 def test_the_page_plays_the_video_and_offers_the_transcript_beside_it(monkeypatch, tmp_path):
     fake = _page(monkeypatch, tmp_path, {"video": "aa/bb/h1.mp4", "vtt": "aa/bb/h1.ru.vtt"})
 
-    assert ("video", "https://a/aa/bb/h1.mp4?auth=t") in fake.calls
+    assert ("video", "https://a/aa/bb/h1.mp4?auth=t", 0) in fake.calls
     assert any(c[0] == "markdown" and "h1.ru.vtt" in c[1] for c in fake.calls)
 
 
@@ -1705,3 +1705,185 @@ def test_the_performance_tab_hands_subjects_to_the_upload_mapping():
 
     body = inspect.getsource(ui_library.render_performance_tab)
     assert '"subject": e.subject' in body
+
+
+def test_a_timecode_link_carries_a_bounded_whole_number_of_seconds():
+    """The value reaches a media player, so a hand-edited link asking for a
+    negative or absurd offset opens the episode at the beginning instead."""
+    import ui_library
+
+    assert ui_library.requested_start({"t": "125"}) == 125
+    assert ui_library.requested_start({"t": ["7", "9"]}) == 7
+    for bad in ("-5", "abc", "", None, "1e9", "999999999"):
+        assert ui_library.requested_start({"t": bad}) == 0, bad
+    assert ui_library.requested_start({}) == 0
+
+
+def test_notes_are_folded_away_and_link_into_the_episode(monkeypatch):
+    """Varya's ask: a guest can spend four minutes on Ukraine in the middle
+    of an hour and finding out means reading the whole transcript."""
+    import ui_library
+
+    class _Expander(_FakeSt):
+        def expander(self, label):
+            self.calls.append(("expander", label))
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    fake = _Expander()
+    monkeypatch.setattr(ui_library, "st", fake)
+    notes = {
+        HASH: [
+            {"topic": "Украина", "start": 125.0, "end": 417.0, "quote": "фрагмент", "hits": 3},
+            {"topic": "Украина", "start": 1144.0, "end": 1441.0, "quote": "", "hits": 2},
+        ]
+    }
+    ui_library.render_notes(_ep(HASH), notes, "ru", media={HASH: {"video": "a/b.mp4"}})
+
+    assert ("expander", "Заметки (2)") in fake.calls
+    assert [c for c in fake.calls if c[0] == "markdown"][0][1] == "**Украина**"
+    # Buttons, not links: a markdown link opens a new tab, which is a new
+    # session that asks for the password again (CodeRabbit on #101).
+    buttons = [c for c in fake.calls if c[0] == "button"]
+    assert [b[1] for b in buttons] == [":blue[2:05-6:57]", ":blue[19:04-24:01]"]
+    assert [b[2]["args"] for b in buttons] == [(HASH, 125), (HASH, 1144)]
+    assert all(b[2]["type"] == "tertiary" for b in buttons)
+
+
+def test_a_timecode_is_text_when_the_page_could_not_play_it(monkeypatch):
+    """Notes cover the whole pool but the episode page serves media only for
+    what the archive map covers, so a control there lands on "no media file"
+    (Copilot on #101)."""
+    import ui_library
+
+    class _Expander(_FakeSt):
+        def expander(self, label):
+            self.calls.append(("expander", label))
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    fake = _Expander()
+    monkeypatch.setattr(ui_library, "st", fake)
+    notes = {HASH: [{"topic": "Крым", "start": 60.0, "end": 200.0, "quote": "", "hits": 4}]}
+    ui_library.render_notes(_ep(HASH), notes, "ru", media={})
+
+    assert not [c for c in fake.calls if c[0] == "button"], "nothing to click through to"
+    assert any(c[0] == "markdown" and "1:00-3:20" in c[1] for c in fake.calls)
+
+
+def test_the_timecode_button_sets_both_parameters(monkeypatch):
+    import ui_library
+
+    fake = _FakeSt()
+    fake.query_params = {}
+    monkeypatch.setattr(ui_library, "st", fake)
+    ui_library._open_episode_at("AbC", 125)
+    assert fake.query_params == {ui_library.EPISODE_PARAM: "abc", ui_library.START_PARAM: "125"}
+
+
+def test_an_episode_with_nothing_flagged_shows_no_notes(monkeypatch):
+    """Most of them, and the card is already dense."""
+    import ui_library
+
+    fake = _FakeSt()
+    monkeypatch.setattr(ui_library, "st", fake)
+    ui_library.render_notes(_ep(HASH), {}, "ru")
+    ui_library.render_notes(_ep(HASH), None, "ru")
+    assert fake.calls == []
+
+
+def test_one_malformed_note_does_not_take_down_the_tab(tmp_path, monkeypatch):
+    """The notes file is machine-written but read on every run: a torn record
+    must cost that note, not the Похожие выпуски tab (CodeRabbit on #101)."""
+    import json
+
+    import ui_library
+
+    good = {"topic": "Украина", "start": 0, "end": 300, "hits": 5, "quote": ""}
+    path = tmp_path / "notes.json"
+    path.write_text(
+        json.dumps(
+            {
+                "__topics__": "abc123",
+                "ok": [good],
+                "torn": ["not a dict", {"topic": "Крым", "start": "x", "end": None}],
+                "mixed": [good, {"topic": "Крым", "start": None, "end": 5}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ui_library, "NOTES_PATH", path)
+    loaded = ui_library.load_notes(path)
+
+    assert set(loaded) == {"ok", "mixed"}, "the unusable episode drops, the rest survive"
+    assert len(loaded["mixed"]) == 1
+
+
+def test_a_span_is_checked_before_it_is_measured():
+    from ui_library import well_formed_span
+
+    assert well_formed_span({"start": 1, "end": 2, "hits": 1})
+    assert not well_formed_span("not a dict")
+    assert not well_formed_span({"start": "x", "end": 2})
+    assert not well_formed_span({"start": None, "end": 2})
+    assert not well_formed_span({"start": 9, "end": 2}), "end before start"
+
+
+def test_a_transcript_only_episode_gets_text_not_buttons(monkeypatch):
+    """The episode page has no player to seek when the archive holds only a
+    transcript, so a timecode button would land nowhere."""
+    import ui_library
+
+    class _Expander(_FakeSt):
+        def expander(self, label):
+            self.calls.append(("expander", label))
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    fake = _Expander()
+    monkeypatch.setattr(ui_library, "st", fake)
+    notes = {HASH: [{"topic": "Крым", "start": 60.0, "end": 300.0, "quote": "", "hits": 5}]}
+    ui_library.render_notes(_ep(HASH), notes, "ru", media={HASH: {"vtt": "a/b.ru.vtt"}})
+
+    assert not [c for c in fake.calls if c[0] == "button"]
+    assert any(c[0] == "markdown" and "1:00-5:00" in c[1] for c in fake.calls)
+
+
+def test_an_infinite_span_bound_is_refused():
+    """`float("Infinity")` parses, compares fine and passes the bar, then
+    raises OverflowError inside `format_timecode` when the note is drawn
+    (CodeRabbit on #101)."""
+    from ui_library import well_formed_span
+
+    assert not well_formed_span({"start": 0, "end": "Infinity"})
+    assert not well_formed_span({"start": "-inf", "end": 10})
+    assert not well_formed_span({"start": 0, "end": "nan"})
+    assert well_formed_span({"start": 0, "end": 10})
+
+
+def test_a_limited_forced_scan_will_not_replace_the_whole_file(tmp_path, capsys):
+    """`--force --limit 50` started from empty and wrote fifty episodes over
+    a complete file, so every other episode lost its notes in the UI."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    import library_notes_build
+
+    code = library_notes_build.main(["--force", "--limit", "50"])
+    assert code == 1
+    assert "refusing" in capsys.readouterr().out
