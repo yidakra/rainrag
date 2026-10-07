@@ -65,6 +65,11 @@ class Upload:
     archive_date: str | None
     program: str | None = None
     speakers: list[str] = field(default_factory=list)
+    # What the episode is about, and the genre the editors assigned its
+    # programme where they have. Both are multi-valued, so an upload counts
+    # once in every group it belongs to, the way a speaker already does.
+    subjects: list[str] = field(default_factory=list)
+    genres: list[str] = field(default_factory=list)
     tagged: bool = False
     metrics: dict[str, float] = field(default_factory=dict)
 
@@ -164,6 +169,7 @@ def build_uploads(
     videos_by_hash: dict[str, Any],
     tags_by_content: dict[str, dict[str, Any]],
     metrics: dict[str, dict[str, float]] | None = None,
+    genres_by_content: dict[str, list[str]] | None = None,
 ) -> list[Upload]:
     """Join the three sources into one row per *linked* upload.
 
@@ -203,6 +209,12 @@ def build_uploads(
                 program=(getattr(video, "program", None) if video is not None else None)
                 or (tag.get("program") if tag else None),
                 speakers=[display_name(v) for v in by_key.values()],
+                subjects=list((tag or {}).get("subject") or []),
+                # The programme's reviewed genre where there is one, as
+                # `filter_genres` decides it. The model's per-episode labels
+                # are a different, noisier thing and the caller resolves
+                # which applies before handing the map in.
+                genres=list((genres_by_content or {}).get(cid) or []),
                 tagged=tag is not None,
                 metrics=metrics.get(m["youtube_id"], {}),
             )
@@ -210,12 +222,24 @@ def build_uploads(
     return out
 
 
-def aggregate(uploads: list[Upload], key: str, metric: str = "views") -> list[dict[str, Any]]:
-    """Group uploads by "speaker" or "program"; sum and median of a metric.
+# Multi-valued groupings: one upload belongs to every speaker, subject and
+# genre it carries, and to exactly one programme.
+_MULTI = {"speaker": "speakers", "subject": "subjects", "genre": "genres"}
+
+
+def aggregate(
+    uploads: list[Upload], key: str, metric: str = "views", min_uploads: int = 1
+) -> list[dict[str, Any]]:
+    """Group uploads by speaker, subject, genre or programme; sum and median.
 
     Median is reported alongside the total because one viral upload should
     not make a speaker look reliably strong: Varya's success criterion is
     *reliably* hitting 15-20k views, which is a median question.
+
+    `min_uploads` drops groups too small to read anything into. With a couple
+    of hundred published uploads most subjects appear once or twice, and a
+    table sorted by total would otherwise be a list of single videos wearing
+    a theme as a label.
     """
     # Group speakers by folded name, not display string: one upload may only
     # know the tagger's lowercase spelling while another has the CMS one, and
@@ -228,14 +252,35 @@ def aggregate(uploads: list[Upload], key: str, metric: str = "views") -> list[di
                 k = normalise_person(s)
                 groups[k].append(u)
                 spellings[k].append(s)
+        elif key in _MULTI:
+            # Folded for grouping, and the first spelling seen is displayed,
+            # so «Женщины-лидеры» and «женщины-лидеры» are one row and read
+            # as the editors write them.
+            # Folded keys deduplicated per upload: an episode tagged both
+            # «История» and «история» appended itself twice to one group,
+            # double-counting its metric and letting two distinct uploads
+            # clear the three-upload floor (CodeRabbit on #100).
+            seen_here: set[str] = set()
+            for value in getattr(u, _MULTI[key]):
+                k = str(value).strip().casefold()
+                if not k or k in seen_here:
+                    continue
+                seen_here.add(k)
+                groups[k].append(u)
+                spellings[k].append(str(value).strip())
         else:
             groups[u.program or "(без программы)"].append(u)
     rows: list[dict[str, Any]] = []
     for gkey, ups in groups.items():
-        name = display_name(spellings[gkey]) if key == "speaker" else gkey
+        if key == "speaker":
+            name = display_name(spellings[gkey])
+        elif key in _MULTI:
+            name = spellings[gkey][0]
+        else:
+            name = gkey
         vals = [_metric(u, metric) for u in ups]
         vals = [v for v in vals if v is not None]
-        if not vals:
+        if len(vals) < max(1, min_uploads):
             continue
         # "uploads" is the sample the stats describe, not the whole group:
         # CPM may exist for 3 of a speaker's 10 uploads, and a median over 3

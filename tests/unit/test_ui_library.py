@@ -1678,3 +1678,30 @@ def test_a_verdict_beats_a_map_row_for_the_same_episode(tmp_path):
         encoding="utf-8",
     )
     assert youtube_by_content_id(map_path, decisions) == {"777": "confirmed"}
+
+
+def test_the_performance_genre_grouping_matches_what_the_filter_matches(tmp_path):
+    """The programme's reviewed genre where there is one, the model's labels
+    otherwise: grouping by anything else makes the table and the filter
+    disagree about what a genre is."""
+    from ui_library import genres_by_content
+
+    reviewed = _ep("h1", content_id="1", genre=["интервью"], programme_genres=["Лекция"])
+    modelled = _ep("h2", content_id="2", genre=["Новости"])
+    untracked = _ep("h3", content_id=None, genre=["что-то"])
+    assert genres_by_content([reviewed, modelled, untracked]) == {
+        "1": ["Лекция"],
+        "2": ["Новости"],
+    }
+
+
+def test_the_performance_tab_hands_subjects_to_the_upload_mapping():
+    """Without `subject` in that mapping every upload has an empty subject
+    list and the «По темам» table renders nothing, while a direct call to
+    `aggregate` still looks right (CodeRabbit on #100)."""
+    import inspect
+
+    import ui_library
+
+    body = inspect.getsource(ui_library.render_performance_tab)
+    assert '"subject": e.subject' in body

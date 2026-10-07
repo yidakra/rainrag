@@ -103,6 +103,11 @@ _T = {
         "perf_metric": "Метрика",
         "perf_by_speaker": "По спикерам",
         "perf_by_program": "По программам",
+        "perf_by_theme": "По темам",
+        "perf_by_genre": "По жанрам",
+        "perf_small_note": "Темы и жанры: только то, что выходило не меньше {n} раз, иначе это список одиночных роликов.",
+        "col_subject": "тема",
+        "col_genre": "жанр",
         "perf_uploads": "Все ролики",
         "col_speaker": "спикер",
         "col_program": "программа",
@@ -181,6 +186,11 @@ _T = {
         "perf_metric": "Metric",
         "perf_by_speaker": "By speaker",
         "perf_by_program": "By programme",
+        "perf_by_theme": "By subject",
+        "perf_by_genre": "By genre",
+        "perf_small_note": "Subjects and genres: only what ran at least {n} times, otherwise this is a list of single videos.",
+        "col_subject": "subject",
+        "col_genre": "genre",
         "perf_uploads": "All uploads",
         "col_speaker": "speaker",
         "col_program": "programme",
@@ -1594,6 +1604,28 @@ def _cached_videos_by_hash(mtime: float) -> dict[str, Any]:
     return _videos_by_hash()
 
 
+# Below this many uploads a group says nothing: the pool of published videos
+# is a couple of hundred and most subjects appear once or twice.
+PERF_MIN_UPLOADS = 3
+
+
+def genres_by_content(episodes: Iterable[Episode]) -> dict[str, list[str]]:
+    """content_id -> the genres the episode is filtered on.
+
+    `filter_genres` decides which source applies, the programme's reviewed
+    genre or the model's labels, and the performance table must group by the
+    same thing the filter matches on or the two disagree about what a genre
+    is. The pool's own spelling is kept for display.
+    """
+    out: dict[str, list[str]] = {}
+    for episode in episodes:
+        if not episode.content_id:
+            continue
+        source = episode.programme_genres or episode.genre
+        out[str(episode.content_id)] = [str(g).strip() for g in source if str(g).strip()]
+    return out
+
+
 def render_performance_tab(episodes: list[Episode], lang: str) -> None:
     map_rows = load_map_rows()
     if not map_rows:
@@ -1603,12 +1635,21 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
         VIDEOS_CACHE_PATH.stat().st_mtime if VIDEOS_CACHE_PATH.exists() else 0.0
     )
     tags_by_content = {
-        e.content_id: {"presenter_cms": e.speakers, "guest": [], "program": e.program}
+        # `subject` matters as much as the rest: without it every upload got
+        # an empty subject list and the «По темам» table rendered no rows at
+        # all, while a direct call to `aggregate` looked fine (CodeRabbit on
+        # #100).
+        e.content_id: {
+            "presenter_cms": e.speakers,
+            "guest": [],
+            "program": e.program,
+            "subject": e.subject,
+        }
         for e in episodes
         if e.content_id
     }
     metrics = load_metrics(METRICS_PATH)
-    uploads = build_uploads(map_rows, videos, tags_by_content, metrics)
+    uploads = build_uploads(map_rows, videos, tags_by_content, metrics, genres_by_content(episodes))
 
     available = ["views"] + [
         c for c in METRIC_COLUMNS if c != "views" and any(c in u.metrics for u in uploads)
@@ -1669,6 +1710,19 @@ def render_performance_tab(episodes: list[Episode], lang: str) -> None:
     with pr_col:
         st.subheader(_t("perf_by_program", lang))
         _table(aggregate(uploads, "program", metric), "program")
+
+    # Themes and genres, the two axes an editor picks along that neither of
+    # the tables above answers (86cbhnh5k). A floor on the group size because
+    # with a couple of hundred published uploads most subjects appear once,
+    # and sorted by total the table would be single videos wearing a label.
+    st.caption(_t("perf_small_note", lang, n=PERF_MIN_UPLOADS))
+    th_col, gn_col = st.columns(2)
+    with th_col:
+        st.subheader(_t("perf_by_theme", lang))
+        _table(aggregate(uploads, "subject", metric, PERF_MIN_UPLOADS), "subject")
+    with gn_col:
+        st.subheader(_t("perf_by_genre", lang))
+        _table(aggregate(uploads, "genre", metric, PERF_MIN_UPLOADS), "genre")
 
     st.subheader(_t("perf_uploads", lang))
     # Uploads without the metric sort last and render blank, not as zero.
