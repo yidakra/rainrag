@@ -110,10 +110,10 @@ def load_cases(path: Path) -> list[JudgedCase]:
             for d in alternative.documents
             if d["doc_id"] in case.relevant and d.get("video_id")
         )
-        for key in keys:
-            if key in label_groups and label_groups[key] != case.group:
+        for label_key in keys:
+            if label_key in label_groups and label_groups[label_key] != case.group:
                 raise ValueError("Shared relevant documents/videos must remain in one group")
-            label_groups[key] = case.group
+            label_groups[label_key] = case.group
     return cases
 
 

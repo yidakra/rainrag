@@ -178,7 +178,7 @@ class RidgeSelector:
             raise ValueError("Invalid selector coefficients")
         if (arrays[1] <= 0).any():
             raise ValueError("Selector scales must be positive")
-        return cls(*arrays, signature)
+        return cls(arrays[0], arrays[1], arrays[2], signature)
 
 
 def fit_ridge(
