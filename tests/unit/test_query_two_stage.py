@@ -12,9 +12,11 @@ Covers:
 
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from rainrag.config import (
+    AdaptiveRetrievalConfig,
     Config,
     EmbeddingConfig,
     HybridSearchConfig,
@@ -29,6 +31,7 @@ from rainrag.config import (
     VideoConfig,
 )
 from rainrag.query import RAGQueryEngine
+from rainrag.selection import FEATURE_NAMES, RidgeSelector, configuration_signature
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +167,193 @@ def _setup(engine, qdrant_client):
     engine.bm25_corpus = []
     engine.bm25_tokenized_corpus = []
     return engine
+
+
+class TestAdaptivePipeline:
+    """Research-aligned selection integrates through the shared preparation seam."""
+
+    def _engine(self, config, client):
+        """Build an engine with no real provider calls and two distinct rankings."""
+        with (
+            patch("rainrag.query.OpenAI", return_value=MagicMock()),
+            patch("rainrag.query.cohere.ClientV2", return_value=MagicMock()),
+        ):
+            engine = _setup(RAGQueryEngine(config), client)
+        engine.embed_query = MagicMock(return_value=[0.1] * 1536)
+        engine._rewrite_query_for_retrieval = MagicMock(return_value=["question", "rewrite"])
+        engine.generate_answer = MagicMock(return_value="answer")
+        engine.retrieve_documents = MagicMock(
+            side_effect=[
+                [
+                    {
+                        "doc_id": "original-doc",
+                        "text": "original source evidence",
+                        "score": 0.1,
+                        "score_type": "dense",
+                        "rank": 1,
+                        "path": "original.vtt",
+                    }
+                ],
+                [
+                    {
+                        "doc_id": "rewrite-doc",
+                        "text": "rewritten other evidence",
+                        "score": 0.9,
+                        "score_type": "dense",
+                        "rank": 1,
+                        "path": "rewrite.vtt",
+                    }
+                ],
+            ]
+        )
+        return engine
+
+    def _model(self, config, tmp_path):
+        """Persist a deliberately simple fixture selector, not production weights."""
+        config.openai.top_k = 2
+        coefficients = np.zeros(len(FEATURE_NAMES))
+        coefficients[0] = 1.0
+        path = tmp_path / "selector.json"
+        RidgeSelector(
+            np.zeros(len(FEATURE_NAMES)),
+            np.ones(len(FEATURE_NAMES)),
+            coefficients,
+            configuration_signature(config),
+        ).save(path)
+        config.adaptive_retrieval.model_path = str(path)
+
+    def test_disabled_path_keeps_existing_merge(self, two_stage_config, mock_qdrant_client):
+        engine = self._engine(two_stage_config, mock_qdrant_client)
+        result = engine.query("question", top_k=2)
+        assert result["retrieval_selection"] is None
+        assert [d["doc_id"] for d in result["retrieval_documents"]] == [
+            "rewrite-doc",
+            "original-doc",
+        ]
+
+    def test_capture_does_not_change_merge_or_copy_transcripts(
+        self, two_stage_config, mock_qdrant_client
+    ):
+        two_stage_config.adaptive_retrieval = AdaptiveRetrievalConfig(
+            capture_candidates=True, corpus_revision="fixture-v1"
+        )
+        engine = self._engine(two_stage_config, mock_qdrant_client)
+        result = engine.query("question", top_k=2)
+        trace = result["retrieval_selection"]
+        assert trace["mode"] == "capture"
+        assert trace["applied_id"] == "merge:coverage"
+        assert {a["id"] for a in trace["alternatives"]} == {
+            "original",
+            "rewrite_1",
+            "merge:coverage",
+            "merge:diverse_rrf",
+        }
+        assert "text" not in trace["alternatives"][0]["documents"][0]
+        assert len(result["retrieval_documents"]) == 2
+        assert engine.retrieve_documents.call_count == 2
+
+    @pytest.mark.parametrize("mode,expected_count", [("shadow", 2), ("select", 1)])
+    def test_model_shadow_and_selection(
+        self, two_stage_config, mock_qdrant_client, tmp_path, mode, expected_count
+    ):
+        two_stage_config.adaptive_retrieval = AdaptiveRetrievalConfig(
+            enabled=True, mode=mode, corpus_revision="fixture-v1"
+        )
+        self._model(two_stage_config, tmp_path)
+        engine = self._engine(two_stage_config, mock_qdrant_client)
+        result = engine.query("question", top_k=2)
+        assert result["retrieval_selection"]["recommended_id"] == "rewrite_1"
+        assert len(result["retrieval_documents"]) == expected_count
+        assert engine.generate_answer.call_count == 1
+
+    def test_changed_candidate_depth_falls_back(
+        self, two_stage_config, mock_qdrant_client, tmp_path
+    ):
+        two_stage_config.adaptive_retrieval = AdaptiveRetrievalConfig(
+            enabled=True, mode="select", corpus_revision="fixture-v1"
+        )
+        self._model(two_stage_config, tmp_path)
+        engine = self._engine(two_stage_config, mock_qdrant_client)
+        result = engine.query("question", top_k=1)
+        assert result["retrieval_selection"]["applied_id"] == "original"
+        assert result["retrieval_selection"]["fallback_reason"] == "configuration_mismatch"
+
+    def test_invalid_runtime_features_fall_back(
+        self, two_stage_config, mock_qdrant_client, tmp_path
+    ):
+        two_stage_config.adaptive_retrieval = AdaptiveRetrievalConfig(
+            enabled=True, mode="select", corpus_revision="fixture-v1"
+        )
+        self._model(two_stage_config, tmp_path)
+        engine = self._engine(two_stage_config, mock_qdrant_client)
+        with patch(
+            "rainrag.selection.RidgeSelector.predict", side_effect=ValueError("invalid features")
+        ):
+            result = engine.query("question", top_k=2)
+        assert result["retrieval_selection"]["applied_id"] == "original"
+        assert result["retrieval_selection"]["fallback_reason"] == "invalid_features"
+
+    def test_date_constraints_apply_to_every_alternative(
+        self, two_stage_config, mock_qdrant_client
+    ):
+        two_stage_config.adaptive_retrieval.capture_candidates = True
+        engine = self._engine(two_stage_config, mock_qdrant_client)
+        engine.query("question", top_k=2, date_from="2026-01-01", date_to="2026-02-01")
+        for call in engine.retrieve_documents.call_args_list:
+            assert call.kwargs["date_from"] == "2026-01-01"
+            assert call.kwargs["date_to"] == "2026-02-01"
+
+    def test_archive_override_bypasses_selection(self, two_stage_config, mock_qdrant_client):
+        two_stage_config.adaptive_retrieval.capture_candidates = True
+        engine = self._engine(two_stage_config, mock_qdrant_client)
+        result = engine.query("question", top_k=2, collection_name="separate-collection")
+        assert result["retrieval_selection"] is None
+
+    def test_attempted_rerank_count_survives_score_filtering(
+        self, two_stage_config, mock_qdrant_client
+    ):
+        two_stage_config.reranker.enabled = True
+        two_stage_config.reranker.min_retrieval_score = 0.9
+        engine = self._engine(two_stage_config, mock_qdrant_client)
+        engine.cohere_client = MagicMock()
+        engine.rerank_documents = MagicMock(return_value=[{"doc_id": "d", "score": 0.1}])
+        result = engine.query("question", top_k=2)
+        assert result["retrieved_documents"] == []
+        assert result["cost.reranker_calls_count"] == 1
+
+    def test_selection_requires_model_and_corpus_revision(self, base_config):
+        base_config.adaptive_retrieval = AdaptiveRetrievalConfig(enabled=True, mode="select")
+        with pytest.raises(ValueError, match="model_path"):
+            RAGQueryEngine(base_config)
+        base_config.adaptive_retrieval.model_path = "unused.json"
+        with pytest.raises(ValueError, match="corpus_revision"):
+            RAGQueryEngine(base_config)
+
+    def test_single_video_and_override_bypass_capture(self, two_stage_config, mock_qdrant_client):
+        two_stage_config.adaptive_retrieval = AdaptiveRetrievalConfig(
+            enabled=True, capture_candidates=True
+        )
+        engine = self._engine(two_stage_config, mock_qdrant_client)
+        result = engine._prepare_query(
+            "question", top_k=2, single_video=True, collection_name="session"
+        )
+        assert result["retrieval_selection"] is None
+        engine._rewrite_query_for_retrieval.assert_not_called()
+        engine.retrieve_documents.assert_called_once()
+
+    def test_retrieval_order_survives_prompt_reordering(self, two_stage_config, mock_qdrant_client):
+        two_stage_config.two_stage.prompt_doc_order = "reversed"
+        engine = self._engine(two_stage_config, mock_qdrant_client)
+        result = engine.query("question", top_k=2)
+        assert [d["doc_id"] for d in result["retrieved_documents"]] == [
+            "original-doc",
+            "rewrite-doc",
+        ]
+        assert [d["doc_id"] for d in result["retrieval_documents"]] == [
+            "rewrite-doc",
+            "original-doc",
+        ]
+        assert [d["rank"] for d in result["retrieval_documents"]] == [1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +676,8 @@ class TestTwoStagePipeline:
             "question",
             "answer",
             "retrieved_documents",
+            "retrieval_documents",
+            "retrieval_selection",
             "num_documents",
             "query_variants",
             "variant_retrieved_ids",

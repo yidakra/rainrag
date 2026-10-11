@@ -690,6 +690,17 @@ class WebMetadataConfig(BaseModel):
     )
 
 
+class AdaptiveRetrievalConfig(BaseModel):
+    """Opt-in formulation selection; shadow mode leaves the existing merge unchanged."""
+
+    enabled: bool = False
+    mode: Literal["shadow", "select"] = "shadow"
+    model_path: str | None = None
+    corpus_revision: str = ""
+    min_predicted_gain: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
+    capture_candidates: bool = False
+
+
 class Config(BaseModel):
     """Main configuration model."""
 
@@ -706,6 +717,7 @@ class Config(BaseModel):
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     hybrid_search: HybridSearchConfig = Field(default_factory=HybridSearchConfig)
     two_stage: TwoStageConfig = Field(default_factory=TwoStageConfig)
+    adaptive_retrieval: AdaptiveRetrievalConfig = Field(default_factory=AdaptiveRetrievalConfig)
     processing: ProcessingConfig
     logging: LoggingConfig
     video: VideoConfig = Field(default_factory=VideoConfig)

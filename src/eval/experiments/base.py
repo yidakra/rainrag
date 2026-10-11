@@ -187,7 +187,10 @@ class BaseExperiment(ABC):
                 elapsed_ms = (time.perf_counter() - t_start) * 1000
 
                 retrieved_ids = [
-                    d.get("doc_id", "") for d in response.get("retrieved_documents", [])
+                    d.get("doc_id", "")
+                    for d in response.get(
+                        "retrieval_documents", response.get("retrieved_documents", [])
+                    )
                 ]
                 relevant_ids = record.get("relevant_doc_ids", [])
                 relevant_set = set(relevant_ids)
@@ -234,6 +237,7 @@ class BaseExperiment(ABC):
                         "relevant_ids": relevant_ids,
                         "query_variants": response.get("query_variants", [record["query"]]),
                         "variant_retrieved_ids": variant_retrieved_ids,
+                        "retrieval_selection": response.get("retrieval_selection"),
                         "contexts": contexts,
                         "elapsed_ms": elapsed_ms,
                         "answer_length": answer_length(answer),
