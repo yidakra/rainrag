@@ -28,6 +28,13 @@ except ImportError:
 
 from rainrag.config import Config
 from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS
+from rainrag.selection import (
+    RetrievalAlternative,
+    RidgeSelector,
+    alternative_snapshot,
+    configuration_signature,
+    select_alternative,
+)
 
 
 # Each provider reports token counts under a different attribute, and every one
@@ -165,6 +172,16 @@ class RAGQueryEngine:
         """
         super().__init__()
         self.config = config
+        adaptive = config.adaptive_retrieval
+        self.selector: RidgeSelector | None = None
+        if adaptive.enabled and adaptive.mode == "select" and not adaptive.model_path:
+            raise ValueError("Adaptive selection requires an archive-trained model_path")
+        if adaptive.enabled and adaptive.mode == "select" and not adaptive.corpus_revision.strip():
+            raise ValueError("Adaptive selection requires an explicit corpus_revision")
+        if adaptive.enabled and adaptive.model_path:
+            self.selector = RidgeSelector.load(
+                Path(adaptive.model_path), configuration_signature(config)
+            )
         self.embedding_model: Any = None
         self.qdrant_client: QdrantClient | None = None
 
@@ -613,6 +630,7 @@ class RAGQueryEngine:
             doc = self.bm25_corpus[idx].copy()
             doc["rank"] = rank
             doc["score"] = float(scores[idx])
+            doc["score_type"] = "bm25"
             results.append(doc)
             rank += 1
             if len(results) >= top_k:
@@ -639,6 +657,8 @@ class RAGQueryEngine:
         # Build score map: doc_id -> RRF score
         rrf_scores: dict[str, float] = {}
         doc_map: dict[str, dict[str, Any]] = {}
+        vector_raw = {r["doc_id"]: r["score"] for r in vector_results}
+        bm25_raw = {r["doc_id"]: r["score"] for r in bm25_results}
 
         # Add vector search scores
         for result in vector_results:
@@ -665,6 +685,9 @@ class RAGQueryEngine:
             doc = doc_map[doc_id].copy()
             doc["rank"] = rank
             doc["score"] = rrf_scores[doc_id]  # Replace with RRF score
+            doc["score_type"] = "rrf"
+            doc["vector_score"] = vector_raw.get(doc_id)
+            doc["bm25_score"] = bm25_raw.get(doc_id)
             doc["fusion_method"] = "rrf"
             results.append(doc)
 
@@ -706,6 +729,8 @@ class RAGQueryEngine:
 
         vector_scores = normalize_scores(vector_results)
         bm25_scores = normalize_scores(bm25_results)
+        vector_raw = {r["doc_id"]: r["score"] for r in vector_results}
+        bm25_raw = {r["doc_id"]: r["score"] for r in bm25_results}
 
         # Build doc map
         doc_map: dict[str, dict[str, Any]] = {}
@@ -734,6 +759,9 @@ class RAGQueryEngine:
             doc = doc_map[doc_id].copy()
             doc["rank"] = rank
             doc["score"] = combined_scores[doc_id]
+            doc["score_type"] = "weighted"
+            doc["vector_score"] = vector_raw.get(doc_id)
+            doc["bm25_score"] = bm25_raw.get(doc_id)
             doc["fusion_method"] = "weighted"
             results.append(doc)
 
@@ -849,6 +877,7 @@ class RAGQueryEngine:
             doc = best_doc[doc_id].copy()
             doc["rank"] = rank
             doc["score"] = rrf_scores[doc_id]
+            doc["score_type"] = "diverse_rrf"
             doc["fusion_method"] = "diverse_rrf"
             results.append(doc)
 
@@ -1081,7 +1110,8 @@ class RAGQueryEngine:
 
         Broadcast transcripts use informal spoken language; user queries tend to be
         formal or terse.  This method uses the already-initialised LLM to generate
-        paraphrases that close that register gap, improving both vector and BM25 recall.
+        paraphrases intended to close that register gap. Effects on vector and BM25
+        retrieval require archive-specific evaluation.
 
         Args:
             query: Original user query
@@ -1354,6 +1384,7 @@ class RAGQueryEngine:
                 doc = {
                     "rank": idx + 1,
                     "score": hit.score,
+                    "score_type": "dense",
                     "text": hit_payload.get("text", ""),
                     "path": hit_payload.get("path", ""),
                     "language": hit_payload.get("language", ""),
@@ -1611,7 +1642,9 @@ class RAGQueryEngine:
                 doc["rank"] = idx + 1
                 doc["rerank_score"] = result.relevance_score
                 doc["original_score"] = doc["score"]
+                doc["original_score_type"] = doc.get("score_type", "unknown")
                 doc["score"] = result.relevance_score  # Use rerank score as primary
+                doc["score_type"] = "cohere"
                 reranked.append(doc)
 
             logger.info(f"Reranking complete. Returning top {len(reranked)} documents")
@@ -2087,11 +2120,11 @@ Question: {query}"""
 
         # Per-variant retrieval result ID lists for downstream intent-coverage eval.
         variant_retrieved_ids: list[list[str]] = []
+        all_variant_docs: list[list[dict[str, Any]]] = []
 
         if two_stage_enabled and len(query_variants) > 1:
             # Retrieve for each variant.  The primary_vector (possibly HyDE-blended)
             # is reused for the original query via index-based check.
-            all_variant_docs: list[list[dict[str, Any]]] = []
             for i, variant in enumerate(query_variants):
                 if i == 0:
                     variant_vector = primary_vector
@@ -2123,6 +2156,7 @@ Question: {query}"""
                 documents = self._merge_variants_coverage(all_variant_docs, retrieval_k)
 
             # Re-number ranks after merge
+            documents = [dict(d) for d in documents]
             for idx, doc in enumerate(documents):
                 doc["rank"] = idx + 1
             logger.info(
@@ -2139,6 +2173,72 @@ Question: {query}"""
                 collection_name=collection_name,
             )
             variant_retrieved_ids = [[d["doc_id"] for d in documents]]
+            all_variant_docs = [documents]
+
+        # Observe the independent rankings before the merge/rerank stages erase
+        # their score distributions. Uploaded-video collections stay untouched.
+        adaptive = self.config.adaptive_retrieval
+        selection_trace: dict[str, Any] | None = None
+        observe = (adaptive.enabled or adaptive.capture_candidates) and not single_video
+        if observe and (
+            collection_name is None or collection_name == self.config.qdrant.collection_name
+        ):
+            alternatives = [
+                RetrievalAlternative(
+                    "original" if i == 0 else f"rewrite_{i}", query_variants[i], docs
+                )
+                for i, docs in enumerate(all_variant_docs)
+            ]
+            if len(alternatives) > 1:
+                for name, merged in (
+                    ("coverage", self._merge_variants_coverage(all_variant_docs, retrieval_k)),
+                    (
+                        "diverse_rrf",
+                        self._merge_variants_diverse_rrf(
+                            all_variant_docs, retrieval_k, self.config.two_stage.merge_rrf_k
+                        ),
+                    ),
+                ):
+                    ranked = [dict(doc, rank=i + 1) for i, doc in enumerate(merged)]
+                    alternatives.append(RetrievalAlternative(f"merge:{name}", question, ranked))
+            selection_trace = {
+                "stage": "first_stage_before_merge",
+                "configuration_signature": configuration_signature(self.config, retrieval_k),
+                "candidate_depth": retrieval_k,
+                "corpus_revision": adaptive.corpus_revision,
+                "mode": adaptive.mode if adaptive.enabled else "capture",
+                "applied_id": f"merge:{self.config.two_stage.merge_strategy}"
+                if len(alternatives) > 1
+                else "original",
+            }
+            if adaptive.capture_candidates:
+                selection_trace["alternatives"] = alternative_snapshot(alternatives)
+            if adaptive.enabled and self.selector is not None:
+                try:
+                    if self.selector.signature != selection_trace["configuration_signature"]:
+                        raise ValueError("Retrieval configuration or candidate depth changed")
+                    chosen, prediction = select_alternative(
+                        alternatives, self.selector, adaptive.min_predicted_gain
+                    )
+                    selection_trace["recommended_id"] = prediction.pop("selected_id")
+                    selection_trace.update(prediction)
+                    if adaptive.mode == "select":
+                        documents = [dict(d) for d in chosen.documents]
+                        selection_trace["applied_id"] = chosen.id
+                except ValueError:
+                    logger.warning(
+                        "Adaptive selection unavailable; retaining the configured fallback"
+                    )
+                    selection_trace["fallback_reason"] = (
+                        "configuration_mismatch"
+                        if self.selector.signature != selection_trace["configuration_signature"]
+                        else "invalid_features"
+                    )
+                    if adaptive.mode == "select":
+                        documents = [dict(d) for d in alternatives[0].documents]
+                        selection_trace["applied_id"] = "original"
+            for i, doc in enumerate(documents):
+                doc["rank"] = i + 1
 
         # Step 4: Apply time-decay boosting if temporal context detected
         if temporal_context and temporal_context["has_temporal"]:
@@ -2153,7 +2253,9 @@ Question: {query}"""
         documents = self._suppress_near_duplicates(documents)
 
         # Step 5: Rerank if enabled
+        reranker_calls = 0
         if self.config.reranker.enabled and documents:
+            reranker_calls = int(self.cohere_client is not None)
             documents = self.rerank_documents(question, documents, top_n=top_k)
 
         # Step 5b: Drop documents below the minimum score threshold
@@ -2170,6 +2272,7 @@ Question: {query}"""
                 )
 
         # Step 5c: Re-order documents for prompt assembly
+        retrieval_documents = [dict(d, rank=i + 1) for i, d in enumerate(documents)]
         doc_order = self.config.two_stage.prompt_doc_order
         documents = self._order_documents_for_prompt(documents, doc_order)
 
@@ -2194,12 +2297,15 @@ Question: {query}"""
             "question": question,
             "messages": messages,
             "documents": documents,
+            "retrieval_documents": retrieval_documents,
+            "retrieval_selection": selection_trace,
             "query_variants": query_variants,
             "variant_retrieved_ids": variant_retrieved_ids,
             "embed_calls": embed_calls,
             "metadata_fallback_hits": metadata_fallback_hits,
             "two_stage_enabled": two_stage_enabled,
             "token_usage": token_usage,
+            "reranker_calls": reranker_calls,
         }
 
     def _assemble_result(self, prep: dict[str, Any], answer: str) -> dict[str, Any]:
@@ -2217,12 +2323,14 @@ Question: {query}"""
         llm_hyde_calls = 1 if two_stage_enabled and self.config.two_stage.hyde_enabled else 0
         llm_calls = 1 + llm_query_rewrite_calls + llm_hyde_calls
 
-        reranker_calls = 1 if self.config.reranker.enabled and bool(documents) else 0
+        reranker_calls = prep.get("reranker_calls", 0)
 
         return {
             "question": prep["question"],
             "answer": answer,
             "retrieved_documents": documents,
+            "retrieval_documents": prep.get("retrieval_documents", documents),
+            "retrieval_selection": prep.get("retrieval_selection"),
             "num_documents": len(documents),
             "query_variants": prep["query_variants"],
             "variant_retrieved_ids": prep["variant_retrieved_ids"],

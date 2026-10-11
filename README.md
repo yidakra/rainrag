@@ -23,7 +23,7 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 - **Hybrid Search**: Combines vector similarity with BM25 keyword matching using Reciprocal Rank Fusion
 - **Temporal Context**: Automatic detection of "recent" queries with time-decay boosting for relevant results
 - **Web Metadata**: Enrich transcripts with titles, accurate dates, descriptions, and URLs from web sources
-- **Reranking**: Cohere Rerank API integration for 10-15% accuracy improvement
+- **Reranking**: Optional Cohere reranking; archive-specific gains require evaluation
 - **Related Chunks**: Discover similar content and explore related video segments
 - **Chunk Overlap**: 30-second overlaps between chunks to prevent information loss at boundaries
 
@@ -97,6 +97,14 @@ RainRAG is a modular, open-source backend system for building a semantic search 
 ```
 
 ## Quick Start
+
+### Experimental adaptive retrieval
+
+RainRAG can capture independent original/rewrite rankings, shadow an archive-trained
+selector, and explicitly select an alternative before the shared reranker. The default
+pipeline is unchanged. [Adaptive retrieval](docs/ADAPTIVE_RETRIEVAL.md) describes offline
+grouped evaluation, model validation, privacy and activation safeguards. This is an
+experimental application of retrieval-selection research, not a demonstrated archive gain.
 
 *Note: backup and restore instructions have been moved later in this document under the **Troubleshooting** section.*
 

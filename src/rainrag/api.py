@@ -172,6 +172,9 @@ def append_query_log(result: dict[str, Any], **fields: Any) -> None:
                 "path": d.get("path"),
                 "rank": d.get("rank"),
                 "score": d.get("score"),
+                "score_type": d.get("score_type"),
+                "original_score": d.get("original_score"),
+                "original_score_type": d.get("original_score_type"),
                 "rerank_score": d.get("rerank_score"),
                 "date": d.get("web_date") or d.get("date"),
                 "web_title": d.get("web_title"),
@@ -185,6 +188,10 @@ def append_query_log(result: dict[str, Any], **fields: Any) -> None:
             "question": result.get("question"),
             "answer": result.get("answer"),
             "docs": docs,
+            "retrieval_selection": result.get("retrieval_selection"),
+            "retrieval_doc_ids": [
+                d.get("doc_id") for d in (result.get("retrieval_documents") or [])
+            ],
             "tokens_in": result.get("cost.llm_tokens_in"),
             "tokens_out": result.get("cost.llm_tokens_out"),
             **fields,
