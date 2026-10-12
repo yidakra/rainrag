@@ -170,8 +170,12 @@ _T = {
         "speakers_hidden": "Все результаты скрыты фильтром по спикерам.",
         "same_speaker": "Тот же спикер",
         "same_theme": "Похожие темы",
-        "top5": "Топ-5",
-        "top5_note": "Смешанный топ по спикеру, темам и данным ютуба. Оси, по которым данных нет, в расчёт не идут.",
+        "top10": "Топ-10",
+        "top10_note": "Смешанный топ по спикеру, темам и данным ютуба. Оси, по которым данных нет, "
+        "в расчёт не идут.",
+        "shortlist_range": "Показаны находки с {a} по {b} из {n}.",
+        "more_finds": "Другие находки",
+        "reseed": "Похожие на этот",
         "nothing_similar": "Пересечений не нашлось.",
         "no_speaker": "У этого выпуска не указан спикер, поэтому подобрать «того же спикера» "
         "не получится. В карточке нет ни ведущего из CMS, ни гостя из расшифровки.",
@@ -263,8 +267,12 @@ _T = {
         "speakers_hidden": "Every result is hidden by the speaker filter.",
         "same_speaker": "Same speaker",
         "same_theme": "Similar subjects",
-        "top5": "Top 5",
-        "top5_note": "A blended ranking over speaker, subjects and YouTube data. Axes with no data are left out of the calculation.",
+        "top10": "Top 10",
+        "top10_note": "A blended ranking over speaker, subjects and YouTube data. Axes with no "
+        "data are left out of the calculation.",
+        "shortlist_range": "Showing finds {a} to {b} of {n}.",
+        "more_finds": "Other finds",
+        "reseed": "Find similar to this",
         "nothing_similar": "No overlap found.",
         "no_speaker": "This episode has no speaker recorded, so there is nothing to match on. "
         "Neither a CMS presenter nor a guest from the transcript is set.",
@@ -621,6 +629,10 @@ def search_episodes(
     needle = needle.strip().lower().replace("ё", "е")
     if not needle:
         return []
+    if _HASH_RE.match(needle):
+        # A hash is how a result re-seeds itself (see _reseed): one exact
+        # episode, so the pick list that follows holds only that one.
+        return [e for e in episodes if (e.video_hash or "").lower() == needle]
     synthetic = synthetic or {}
     hits = [
         e
@@ -1302,6 +1314,51 @@ def _render_suggestion(
                 "known": known,
             },
         )
+    # Carry on from here: the result becomes the seed. Without it a search
+    # exhausted itself after one hop (Varya, 124kk1zbex9).
+    st.button(
+        _t("reseed", lang),
+        key=f"reseed_{column}_{seed_id}_{rank}_{e.video_hash}",
+        type="tertiary",
+        on_click=_reseed,
+        args=(e.video_hash,),
+    )
+
+
+def _reseed(video_hash: str) -> None:
+    """Make a result the seed, in place.
+
+    The search box is given the hash, which search_episodes matches exactly,
+    so the pick list holds that one episode and the tab reruns around it.
+    The episode page, if open, is closed: the search box lives on the tab.
+    """
+    st.session_state["library_seed_search"] = video_hash
+    for param in (EPISODE_PARAM, START_PARAM):
+        if param in st.query_params:
+            del st.query_params[param]
+
+
+SHORTLIST_SIZE = 10
+
+
+def shortlist_page(
+    ranked: list[Any], page: int, size: int = SHORTLIST_SIZE
+) -> tuple[list[Any], int]:
+    """One page of the shortlist and the rank its first row carries.
+
+    Ten rows, numbered on from the previous page, so the editor can see these
+    are the next ones down and not a reshuffle of the best. Past the last
+    page it wraps to the first: «другие находки» is a loop, not a dead end.
+    """
+    if not ranked:
+        return [], 1
+    pages = max(1, -(-len(ranked) // size))
+    page %= pages
+    return ranked[page * size : (page + 1) * size], page * size + 1
+
+
+def _advance_shortlist(key: str) -> None:
+    st.session_state[key] = int(st.session_state.get(key, 0)) + 1
 
 
 def _render_scored(rank: int, r: Scored, lang: str, **kw: Any) -> None:
@@ -1458,16 +1515,24 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
             _stat_key(DECISIONS_PATH),
             _stat_key(TAGS_PATH),
         ),
+        # Everything usable, not the best five: the editor pages through it.
+        # Five was the whole answer and she wanted to see what came after
+        # it, less relevant or not (Varya, 124kk1zbexb).
+        limit=len(shortlist_pool),
         people_idf=people_idf,
     )
-    if shortlist:
-        st.subheader(_t("top5", lang))
-        st.caption(_t("top5_note", lang))
-        for i, b in enumerate(shortlist, 1):
+    page_key = f"top_page_{seed.video_hash}"
+    rows, first = shortlist_page(shortlist, int(st.session_state.get(page_key, 0)))
+    if rows:
+        st.subheader(_t("top10", lang))
+        st.caption(_t("top10_note", lang))
+        for i, b in enumerate(rows, first):
             # The same renderer the columns use, so the shortlist carries the
             # judgment buttons too. It is the list an editor reads first and it
             # was the only one collecting no ground truth, which is what the
-            # weights have to be retuned against.
+            # weights have to be retuned against. The column stays "top5" in
+            # the feedback file: it is the same list, and the history under
+            # that name is what the weights are tuned against.
             _render_blended(
                 i,
                 b,
@@ -1479,6 +1544,16 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
                 media=media,
                 notes=notes,
                 youtube=youtube,
+            )
+        if len(shortlist) > len(rows):
+            st.caption(
+                _t("shortlist_range", lang, a=first, b=first + len(rows) - 1, n=len(shortlist))
+            )
+            st.button(
+                _t("more_finds", lang),
+                key=f"more_{seed.video_hash}",
+                on_click=_advance_shortlist,
+                args=(page_key,),
             )
         st.divider()
 

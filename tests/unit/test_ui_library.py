@@ -869,7 +869,8 @@ def test_thumbs_come_after_the_caption_and_every_widget_shows_the_stored_verdict
             1, e, "почему", "ru", seed_id="s1", column=column, marks=marks
         )
 
-    kinds = [c[0] for c in fake.calls]
+    # The re-seed control closes every card and is not what this is about.
+    kinds = [c[0] for c in fake.calls if c[0] != "button"]
     assert kinds == ["markdown", "caption", "feedback"] * 2
     feedbacks = [c for c in fake.calls if c[0] == "feedback"]
     for _, kind, key, state_at_paint, kwargs in feedbacks:
@@ -1221,7 +1222,9 @@ def test_an_uncarded_episode_opens_in_place_rather_than_in_a_new_tab(monkeypatch
         2, e, "почему", "ru", column="theme", media={HASH: {"video": "a/b.mp4"}}
     )
 
-    buttons = [c for c in fake.calls if c[0] == "button"]
+    buttons = [
+        c for c in fake.calls if c[0] == "button" and c[2]["on_click"] is ui_library._open_episode
+    ]
     assert len(buttons) == 1, "the title itself is the control"
     assert buttons[0][2]["type"] == "tertiary"
     assert buttons[0][2]["on_click"] is ui_library._open_episode
@@ -1253,7 +1256,10 @@ def test_a_cms_carded_episode_keeps_its_ordinary_link(monkeypatch):
     monkeypatch.setattr(ui_library, "st", fake)
     ui_library._render_suggestion(1, _episode("h1"), "почему", "ru", column="theme")
 
-    assert not [c for c in fake.calls if c[0] == "button"]
+    # No button stands in for the title; the only one is the re-seed control.
+    assert not [
+        c for c in fake.calls if c[0] == "button" and c[2]["on_click"] is not ui_library._reseed
+    ]
     assert any(c[0] == "markdown" and "](https://example.test/e)" in c[1] for c in fake.calls)
 
 
@@ -1981,3 +1987,54 @@ def test_the_archive_index_is_optional_and_may_be_torn(tmp_path):
     # One malformed row must not take the rest, or the tab, down with it.
     p.write_text('{"1": {"title": "x"}, "2": "bad", "3": null}', encoding="utf-8")
     assert load_archive_index(p) == {"1": {"title": "x"}}
+
+
+def test_a_hash_in_the_seed_search_is_that_one_episode_and_nothing_else():
+    """How a result re-seeds itself: the button puts the hash in the search
+    box, and a hash must mean one exact episode, never a substring hit."""
+    from ui_library import search_episodes
+
+    a = _ep("a" * 40)
+    b = _ep("b" * 40)
+    a.title, b.title = "Про Крым", "Крым, продолжение"
+    assert search_episodes([a, b], "A" * 40) == [a]
+    assert search_episodes([a, b], " " + "b" * 40 + " ") == [b]
+    assert search_episodes([a, b], "c" * 40) == []
+    # Still a title search for everything that is not a hash.
+    assert search_episodes([a, b], "крым") == [a, b] or search_episodes([a, b], "крым") == [b, a]
+
+
+def test_the_shortlist_pages_in_tens_numbered_on_and_wraps_around():
+    """Five was the whole answer and the editor wanted what came after it,
+    less relevant or not (Varya, 124kk1zbexb). Ranks continue across pages
+    so the next page reads as the next ones down, and past the end it
+    starts over rather than stopping."""
+    from ui_library import shortlist_page
+
+    ranked = list(range(23))
+    assert shortlist_page(ranked, 0) == (list(range(0, 10)), 1)
+    assert shortlist_page(ranked, 1) == (list(range(10, 20)), 11)
+    assert shortlist_page(ranked, 2) == (list(range(20, 23)), 21)
+    assert shortlist_page(ranked, 3) == (list(range(0, 10)), 1)
+    assert shortlist_page([], 4) == ([], 1)
+    assert shortlist_page([1, 2, 3], 0) == ([1, 2, 3], 1)
+
+
+def test_a_result_becomes_the_seed_in_place_and_closes_an_open_episode_page(monkeypatch):
+    """«Найди мне похожие» on a result (Varya, 124kk1zbex9): the hash goes
+    into the seed search, which matches it exactly, and an episode page that
+    happens to be open is closed because the search box lives on the tab."""
+    import ui_library
+
+    fake = _FakeSt()
+    fake.query_params = {ui_library.EPISODE_PARAM: "h1", ui_library.START_PARAM: "120"}
+    monkeypatch.setattr(ui_library, "st", fake)
+
+    ui_library._render_suggestion(2, _episode("h2"), "why", "ru", seed_id="s1", column="theme")
+    reseed = [c for c in fake.calls if c[0] == "button" and c[2]["on_click"] is ui_library._reseed]
+    assert len(reseed) == 1 and reseed[0][2]["args"] == ("h2",)
+    assert reseed[0][2]["type"] == "tertiary", "a link-coloured control under the card, not a box"
+
+    ui_library._reseed("h2")
+    assert fake.session_state["library_seed_search"] == "h2"
+    assert fake.query_params == {}
