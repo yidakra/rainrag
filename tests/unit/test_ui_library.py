@@ -1963,3 +1963,6 @@ def test_the_archive_index_is_optional_and_may_be_torn(tmp_path):
     assert load_archive_index(p) == {}
     p.write_text('{"1": {"title": "x"}}', encoding="utf-8")
     assert load_archive_index(p) == {"1": {"title": "x"}}
+    # One malformed row must not take the rest, or the tab, down with it.
+    p.write_text('{"1": {"title": "x"}, "2": "bad", "3": null}', encoding="utf-8")
+    assert load_archive_index(p) == {"1": {"title": "x"}}

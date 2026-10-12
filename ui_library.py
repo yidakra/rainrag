@@ -1561,7 +1561,12 @@ def load_archive_index(path: Path = ARCHIVE_INDEX_PATH) -> dict[str, dict]:
         rows = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return rows if isinstance(rows, dict) else {}
+    if not isinstance(rows, dict):
+        return {}
+    # Row by row as well: a value that is not an object would be looked up
+    # with .get() the moment its id was typed, and take the tab down with
+    # it (CodeRabbit on #113).
+    return {cid: row for cid, row in rows.items() if isinstance(row, dict)}
 
 
 @st.cache_data(show_spinner=False)
