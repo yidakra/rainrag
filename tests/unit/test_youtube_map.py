@@ -96,20 +96,28 @@ def test_each_output_is_synced_to_disk_before_and_after_the_rename(tmp_path, mon
 
     import youtube_map
 
-    synced: list[str] = []
+    synced: list[tuple[int, int]] = []
     real_fsync = os.fsync
 
     def spy(fd):
-        synced.append(str(Path(f"/proc/self/fd/{fd}").readlink()))
+        # Device and inode, not /proc/self/fd: that path is Linux-only
+        # (CodeRabbit on #113). A rename keeps the inode, so the scratch
+        # file synced before it is the output file afterwards.
+        st = os.fstat(fd)
+        synced.append((st.st_dev, st.st_ino))
         real_fsync(fd)
+
+    def identity(path: Path) -> tuple[int, int]:
+        st = path.stat()
+        return (st.st_dev, st.st_ino)
 
     monkeypatch.setattr(youtube_map.os, "fsync", spy)
     out, csv_out, idx = _paths(tmp_path)
     write_outputs([_row("a")], {}, out, csv_out, idx)
 
-    # For each of the three outputs: the scratch file, then its directory.
+    # For each of the three outputs: the file, then its directory.
     assert sorted(synced) == sorted(
-        [str(p.with_name(p.name + ".tmp")) for p in (out, csv_out, idx)] + [str(tmp_path)] * 3
+        [identity(p) for p in (out, csv_out, idx)] + [identity(tmp_path)] * 3
     )
 
 
