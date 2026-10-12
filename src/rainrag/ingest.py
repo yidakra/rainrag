@@ -2359,20 +2359,6 @@ class Ingester:
             logger.info("No manifest found, falling back to full ingestion")
             return self._ingest_full()
 
-        # Load previous docs into a lookup by doc_id
-        previous_docs: dict[str, Document] = {}
-        if output_path.exists():
-            try:
-                with open(output_path, encoding="utf-8") as f:
-                    for line in f:
-                        if line.strip():
-                            doc = Document(**json.loads(line))
-                            previous_docs[doc.id] = doc
-                logger.info(f"Loaded {len(previous_docs)} previous documents")
-            except Exception as e:
-                logger.warning(f"Failed to load previous docs, doing full ingestion: {e}")
-                return self._ingest_full()
-
         logger.info(f"Starting incremental ingestion from {root_path}")
 
         # Scan current files
@@ -2409,40 +2395,33 @@ class Ingester:
             if key in manifest.entries:
                 modified_old_doc_ids.update(manifest.entries[key].doc_ids)
 
-        # Write output: unchanged docs + newly processed docs in a temp file for atomic replace
-        doc_count = 0
-        file_count = 0
         files_to_process = new_files + modified_files
-
+        skip_ids = deleted_doc_ids | modified_old_doc_ids
         temp_output_path = output_path.with_name(output_path.name + ".tmp")
 
+        # The previous corpus is copied through line by line and never
+        # parsed into objects. It used to be loaded whole, 2.6 million
+        # Document models from a 9.5 GB file, only to be written straight
+        # back out: 29 GB resident on a 32 GB box. The kernel killed every
+        # hourly run from 2026-10-09, each after seven hours, and nothing new
+        # reached the index between 2026-08-29 and this change.
         with open(temp_output_path, "w", encoding="utf-8") as out_file:
-            # Write unchanged documents (skip deleted and modified-old)
-            skip_ids = deleted_doc_ids | modified_old_doc_ids
-            for doc_id, doc in previous_docs.items():
-                if doc_id not in skip_ids:
-                    out_file.write(doc.model_dump_json() + "\n")
-                    doc_count += 1
+            try:
+                unchanged_count = (
+                    self._copy_unchanged(output_path, out_file, skip_ids)
+                    if output_path.exists()
+                    else 0
+                )
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                logger.warning(f"Failed to carry over previous docs, doing full ingestion: {exc}")
+                unchanged_count = None
+        if unchanged_count is None:
+            temp_output_path.unlink(missing_ok=True)
+            return self._ingest_full()
+        logger.info(f"Kept {unchanged_count} unchanged documents")
 
-            unchanged_count = doc_count
-            logger.info(f"Kept {unchanged_count} unchanged documents")
-
-            # Process new and modified files
-            for file_path in tqdm(files_to_process, desc="Processing changed files"):
-                docs = self.process_file(file_path)
-
-                if docs:
-                    file_count += 1
-                    doc_ids = []
-                    for doc in docs:
-                        out_file.write(doc.model_dump_json() + "\n")
-                        doc_count += 1
-                        doc_ids.append(doc.id)
-                    manifest.update_entry(file_path, doc_ids)
-
-            # Ensure disk durability before job completion
-            out_file.flush()
-            os.fsync(out_file.fileno())
+        with open(temp_output_path, "a", encoding="utf-8") as out_file:
+            changed_count = self._process_changed(files_to_process, out_file, manifest)
 
         # Atomically replace the previous docs file with the new content
         temp_output_path.replace(output_path)
@@ -2453,9 +2432,10 @@ class Ingester:
         # Save updated manifest
         manifest.save()
 
+        doc_count = unchanged_count + changed_count
         logger.info(
             f"Incremental ingestion complete! {unchanged_count} unchanged + "
-            + f"{doc_count - unchanged_count} new/modified documents = {doc_count} total"
+            + f"{changed_count} new/modified documents = {doc_count} total"
         )
         if deleted_doc_ids:
             logger.info(
@@ -2463,6 +2443,42 @@ class Ingester:
             )
 
         return doc_count
+
+    @staticmethod
+    def _copy_unchanged(previous: Path, out_file: Any, skip_ids: set[str]) -> int:
+        """Stream the previous corpus into `out_file`, minus `skip_ids`; returns the count kept.
+
+        Each line is parsed only far enough to read its id and is written
+        back exactly as it was. A line that is not a document raises, and
+        the caller falls back to a full run, as it always did.
+        """
+        kept = 0
+        with open(previous, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                if json.loads(line)["id"] in skip_ids:
+                    continue
+                out_file.write(line if line.endswith("\n") else line + "\n")
+                kept += 1
+        return kept
+
+    def _process_changed(self, files: list[Path], out_file: Any, manifest: FileManifest) -> int:
+        """Parse the new and modified files into `out_file`, recording each in the manifest."""
+        written = 0
+        for file_path in tqdm(files, desc="Processing changed files"):
+            docs = self.process_file(file_path)
+            if docs:
+                doc_ids = []
+                for doc in docs:
+                    out_file.write(doc.model_dump_json() + "\n")
+                    written += 1
+                    doc_ids.append(doc.id)
+                manifest.update_entry(file_path, doc_ids)
+        # Ensure disk durability before job completion
+        out_file.flush()
+        os.fsync(out_file.fileno())
+        return written
 
 
 def run_ingestion(config_path: str = "config.yaml", incremental: bool = False) -> int:

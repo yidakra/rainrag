@@ -1257,3 +1257,70 @@ def test_the_suite_never_writes_into_the_working_directory(test_config):
 
     manifest = Path(test_config.incremental.manifest_path)
     assert manifest.is_absolute(), f"{manifest} is relative and resolves against the cwd"
+
+
+def test_an_incremental_run_copies_the_previous_corpus_through_without_loading_it(
+    test_config: Config, sample_vtt_en: str, sample_vtt_ru: str, monkeypatch
+):
+    """The hourly update died of memory, every run, for six weeks.
+
+    `_ingest_incremental` loaded the whole previous corpus as Document
+    objects, 2.6 million of them from a 9.5 GB file, only to write the
+    unchanged ones straight back out. That is 29 GB resident on a 32 GB box;
+    the kernel killed each run after seven hours and the timer started the
+    next, so no new transcript reached the index between 2026-08-29 and the
+    fix. The unchanged lines must be streamed through, byte for byte, with
+    no object built for any of them.
+    """
+    import rainrag.ingest as ingest_module
+
+    test_config.incremental.enabled = True
+    archive = Path(test_config.paths.archive_root)
+    keep = archive / "a" / "keep.vtt"
+    change = archive / "b" / "change.vtt"
+    gone = archive / "c" / "gone.vtt"
+    for path, body in ((keep, sample_vtt_en), (change, sample_vtt_ru), (gone, sample_vtt_en)):
+        path.parent.mkdir(parents=True)
+        path.write_text(body, encoding="utf-8")
+
+    assert Ingester(test_config).ingest(incremental=False) > 0
+    docs_path = Path(test_config.paths.docs_output)
+    before = {json.loads(line)["id"]: line for line in docs_path.read_text("utf-8").splitlines()}
+    manifest = json.loads(Path(test_config.incremental.manifest_path).read_text("utf-8"))
+    kept_ids = set(manifest[str(keep.absolute())]["doc_ids"])
+    gone_ids = set(manifest[str(gone.absolute())]["doc_ids"])
+    assert kept_ids and gone_ids
+
+    # One file changes (size, so no hash check is needed), one disappears,
+    # one is new. The kept one is not touched at all.
+    change.write_text(
+        sample_vtt_ru + "\n00:00:20.000 --> 00:00:25.000\nСовсем новая реплика.\n",
+        encoding="utf-8",
+    )
+    gone.unlink()
+    new = archive / "d" / "new.vtt"
+    new.parent.mkdir(parents=True)
+    new.write_text(sample_vtt_en, encoding="utf-8")
+
+    built: list[str] = []
+
+    class Spy(ingest_module.Document):
+        def __init__(self, **data):
+            built.append(data.get("id", ""))
+            super().__init__(**data)
+
+    monkeypatch.setattr(ingest_module, "Document", Spy)
+
+    total = Ingester(test_config).ingest(incremental=True)
+
+    after = {json.loads(line)["id"]: line for line in docs_path.read_text("utf-8").splitlines()}
+    assert total == len(after)
+    # Unchanged documents come through verbatim, deleted ones are gone, the
+    # changed file's documents now carry its new text, the new file is in.
+    assert all(after[doc_id] == before[doc_id] for doc_id in kept_ids)
+    assert gone_ids.isdisjoint(after)
+    assert any("Совсем новая реплика" in line for line in after.values())
+    assert any(str(new.absolute()) in line for line in after.values())
+    # And this is the point: nothing was constructed for the kept documents.
+    assert kept_ids.isdisjoint(built), "the previous corpus was loaded as objects again"
+    assert built, "the changed and new files were not processed"
