@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import os
 import sys
@@ -28,6 +29,80 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+
+class ShrunkMapError(RuntimeError):
+    """The new map has fewer uploads than the one on disk."""
+
+
+def _replace(path: Path, text: str) -> None:
+    """Write beside the target and rename into place; a reader never sees half a file."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def write_outputs(
+    payload: list[dict[str, Any]],
+    by_content_id: dict[str, dict[str, Any]],
+    out: Path,
+    csv_out: Path,
+    index_out: Path,
+    *,
+    allow_shrink: bool = False,
+) -> None:
+    """Write the map, its CSV, and the archive index, each atomically.
+
+    The Library reads the map while this runs and shows nothing for a torn
+    file, so each output is written beside itself and renamed into place.
+
+    And it refuses to shrink. This runs unattended every morning now, and a
+    channel listing that came back short, after a quota error or a page
+    that never answered, would replace a complete map with a partial one;
+    the review tab would quietly lose uploads and the metrics pull would
+    stop asking about them. A channel that really lost a video is the
+    operator's call, with --allow-shrink.
+    """
+    if out.exists() and not allow_shrink:
+        try:
+            before = len(json.loads(out.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            before = 0
+        if len(payload) < before:
+            raise ShrunkMapError(f"{len(payload)} uploads now, {before} in {out.name}")
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _replace(out, json.dumps(payload, ensure_ascii=False, indent=2))
+    _replace(index_out, json.dumps(by_content_id, ensure_ascii=False))
+
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(
+        [
+            "youtube_id",
+            "youtube_title",
+            "content_id",
+            "archive_title",
+            "score",
+            "confidence",
+            "published_at",
+            "view_count",
+        ]
+    )
+    for r in sorted(payload, key=lambda r: (r["confidence"] != "review", -r["score"])):
+        w.writerow(
+            [
+                r["youtube_id"],
+                r["youtube_title"],
+                r["content_id"] or "",
+                r["archive_title"] or "",
+                r["score"],
+                r["confidence"],
+                r["published_at"] or "",
+                r["view_count"] or "",
+            ]
+        )
+    _replace(csv_out, buf.getvalue())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -55,6 +130,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default=str(REPO_ROOT / "data" / "youtube_map.json"))
     parser.add_argument("--csv-out", default=str(REPO_ROOT / "data" / "youtube_map.csv"))
     parser.add_argument("--review", action="store_true", help="print the uncertain matches")
+    parser.add_argument(
+        "--index-out",
+        default=str(REPO_ROOT / "data" / "archive_by_content_id.json"),
+        help="content_id -> title/date/url/hash for the whole archive; the review tab's manual link",
+    )
+    parser.add_argument(
+        "--allow-shrink",
+        action="store_true",
+        help="write a map with fewer uploads than the one on disk (the channel lost videos)",
+    )
     args = parser.parse_args(argv)
 
     # Validated before anything else is read: a silent fallback here would
@@ -189,36 +274,36 @@ def main(argv: list[str] | None = None) -> int:
         }
         for m in matches
     ]
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    with open(args.csv_out, "w", encoding="utf-8", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(
-            [
-                "youtube_id",
-                "youtube_title",
-                "content_id",
-                "archive_title",
-                "score",
-                "confidence",
-                "published_at",
-                "view_count",
-            ]
+    # One row per archive episode, so a content id typed into the review tab
+    # can be shown as a title before it is linked. The videos cache is keyed
+    # by hash and the tagged pool covers a tenth of the archive; nothing else
+    # answers "which episode is 412707?" without reading 105k files.
+    by_content_id = {
+        cid: {
+            "title": name,
+            "date": archive_info.get(cid, {}).get("archive_date"),
+            "url": archive_info.get(cid, {}).get("archive_url"),
+            "video_hash": archive_info.get(cid, {}).get("archive_video_hash"),
+            "duration_seconds": durations.get(cid),
+        }
+        for cid, name in archive
+    }
+    try:
+        write_outputs(
+            payload,
+            by_content_id,
+            Path(args.out),
+            Path(args.csv_out),
+            Path(args.index_out),
+            allow_shrink=args.allow_shrink,
         )
-        for r in sorted(payload, key=lambda r: (r["confidence"] != "review", -r["score"])):
-            w.writerow(
-                [
-                    r["youtube_id"],
-                    r["youtube_title"],
-                    r["content_id"] or "",
-                    r["archive_title"] or "",
-                    r["score"],
-                    r["confidence"],
-                    r["published_at"] or "",
-                    r["view_count"] or "",
-                ]
-            )
+    except ShrunkMapError as exc:
+        print(
+            f"REFUSING to write {args.out}: {exc}\n"
+            "  the previous map is kept; pass --allow-shrink if the channel really lost videos",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.review:
         print("\nNeeds a human (top 15):")
@@ -226,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [{r['score']:.2f}] YT: {r['youtube_title'][:56]}")
             print(f"         ?= {(r['archive_title'] or '')[:56]}")
 
-    print(f"\n  JSON: {args.out}\n  CSV:  {args.csv_out}")
+    print(f"\n  JSON: {args.out}\n  CSV:  {args.csv_out}\n  index: {args.index_out}")
     return 0
 
 
