@@ -36,10 +36,24 @@ class ShrunkMapError(RuntimeError):
 
 
 def _replace(path: Path, text: str) -> None:
-    """Write beside the target and rename into place; a reader never sees half a file."""
+    """Write beside the target and rename into place; a reader never sees half a file.
+
+    Synced before and after the rename. Without it a power loss could leave
+    the renamed file empty, and an empty map counts as zero entries, which
+    would let the next run's shorter listing straight past the shrink
+    guard (CodeRabbit on #113).
+    """
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
     tmp.replace(path)
+    fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def write_outputs(

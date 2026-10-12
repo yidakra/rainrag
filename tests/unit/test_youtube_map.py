@@ -88,6 +88,31 @@ def test_the_map_is_replaced_only_after_the_other_outputs_succeed(tmp_path):
     assert len(json.loads(out.read_text("utf-8"))) == 1, "the previous map must survive"
 
 
+def test_each_output_is_synced_to_disk_before_and_after_the_rename(tmp_path, monkeypatch):
+    """A power loss after the rename could otherwise leave an empty file,
+    and an empty map counts as zero entries, which would let the next
+    run's shorter listing past the shrink guard (CodeRabbit on #113)."""
+    import os
+
+    import youtube_map
+
+    synced: list[str] = []
+    real_fsync = os.fsync
+
+    def spy(fd):
+        synced.append(str(Path(f"/proc/self/fd/{fd}").readlink()))
+        real_fsync(fd)
+
+    monkeypatch.setattr(youtube_map.os, "fsync", spy)
+    out, csv_out, idx = _paths(tmp_path)
+    write_outputs([_row("a")], {}, out, csv_out, idx)
+
+    # For each of the three outputs: the scratch file, then its directory.
+    assert sorted(synced) == sorted(
+        [str(p.with_name(p.name + ".tmp")) for p in (out, csv_out, idx)] + [str(tmp_path)] * 3
+    )
+
+
 def test_a_torn_previous_map_does_not_block_the_rebuild(tmp_path):
     out, csv_out, idx = _paths(tmp_path)
     out.write_text('[{"youtube_id": "a"', encoding="utf-8")
