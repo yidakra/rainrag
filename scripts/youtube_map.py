@@ -62,17 +62,27 @@ def write_outputs(
     the review tab would quietly lose uploads and the metrics pull would
     stop asking about them. A channel that really lost a video is the
     operator's call, with --allow-shrink.
+
+    The same rule covers the archive index: a metadata directory read while
+    half synced would otherwise shrink it, and every typed content id for
+    the missing half would read as "not in the archive" until the next run
+    (CodeRabbit on #113).
+
+    The map is written last. It is the output the unit's contract is about,
+    "a failed rebuild keeps the previous map", and a failure writing the CSV
+    or the index after it had already been replaced would have broken that
+    while the unit went on to the snapshot (CodeRabbit on #113).
     """
-    if out.exists() and not allow_shrink:
-        try:
-            before = len(json.loads(out.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            before = 0
-        if len(payload) < before:
-            raise ShrunkMapError(f"{len(payload)} uploads now, {before} in {out.name}")
+    if not allow_shrink:
+        for path, now, what in (
+            (out, len(payload), "uploads"),
+            (index_out, len(by_content_id), "archive episodes"),
+        ):
+            before = _count_on_disk(path)
+            if now < before:
+                raise ShrunkMapError(f"{now} {what} now, {before} in {path.name}")
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    _replace(out, json.dumps(payload, ensure_ascii=False, indent=2))
     _replace(index_out, json.dumps(by_content_id, ensure_ascii=False))
 
     buf = io.StringIO()
@@ -103,6 +113,18 @@ def write_outputs(
             ]
         )
     _replace(csv_out, buf.getvalue())
+    _replace(out, json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _count_on_disk(path: Path) -> int:
+    """How many entries the file holds now; zero when absent or torn, so a
+    torn file never blocks the rebuild that repairs it."""
+    if not path.exists():
+        return 0
+    try:
+        return len(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError):
+        return 0
 
 
 def main(argv: list[str] | None = None) -> int:

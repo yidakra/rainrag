@@ -1650,8 +1650,10 @@ def render_youtube_tab(episodes: list[Episode], lang: str) -> None:
     st.caption(_t("review_stats", lang, ok=ok, no=no, left=len(queue)))
     # When the channel was last listed: the answer to "why is the upload
     # from this morning not here yet".
-    built = datetime.fromtimestamp(MAP_PATH.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-    st.caption(_t("map_built", lang, when=built))
+    # In UTC, named: the timer fires at 05:20 UTC and the Streamlit process
+    # is not promised the same zone (CodeRabbit on #113).
+    built = datetime.fromtimestamp(MAP_PATH.stat().st_mtime, tz=timezone.utc)
+    st.caption(_t("map_built", lang, when=built.strftime("%Y-%m-%d %H:%M UTC")))
 
     if queue:
         _render_queue_item(queue[0], lang, by_content, index)

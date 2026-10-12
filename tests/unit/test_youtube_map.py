@@ -60,6 +60,34 @@ def test_a_map_that_came_back_short_is_refused_unless_told(tmp_path):
     assert len(json.loads(out.read_text("utf-8"))) == 1
 
 
+def test_the_archive_index_is_guarded_the_same_way(tmp_path):
+    """A metadata directory read half synced would shrink the index, and
+    every typed content id for the missing half would read as "not in the
+    archive" until the next run (CodeRabbit on #113)."""
+    out, csv_out, idx = _paths(tmp_path)
+    write_outputs([_row("a")], {"1": {"title": "x"}, "2": {"title": "y"}}, out, csv_out, idx)
+
+    with pytest.raises(ShrunkMapError):
+        write_outputs([_row("a")], {"1": {"title": "x"}}, out, csv_out, idx)
+    assert len(json.loads(idx.read_text("utf-8"))) == 2
+    write_outputs([_row("a")], {"1": {"title": "x"}}, out, csv_out, idx, allow_shrink=True)
+    assert len(json.loads(idx.read_text("utf-8"))) == 1
+
+
+def test_the_map_is_replaced_only_after_the_other_outputs_succeed(tmp_path):
+    """ "A failed rebuild keeps the previous map" is the unit's contract, and
+    the map used to be replaced first, so a CSV or index write failing after
+    it left a new map behind a failed run (CodeRabbit on #113)."""
+    out, csv_out, idx = _paths(tmp_path)
+    write_outputs([_row("a")], {}, out, csv_out, idx)
+
+    csv_out.unlink()
+    csv_out.mkdir()  # the CSV write now fails: a directory stands in its way
+    with pytest.raises(OSError):
+        write_outputs([_row("a"), _row("b")], {}, out, csv_out, idx)
+    assert len(json.loads(out.read_text("utf-8"))) == 1, "the previous map must survive"
+
+
 def test_a_torn_previous_map_does_not_block_the_rebuild(tmp_path):
     out, csv_out, idx = _paths(tmp_path)
     out.write_text('[{"youtube_id": "a"', encoding="utf-8")
