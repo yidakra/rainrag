@@ -1324,3 +1324,24 @@ def test_an_incremental_run_copies_the_previous_corpus_through_without_loading_i
     # And this is the point: nothing was constructed for the kept documents.
     assert kept_ids.isdisjoint(built), "the previous corpus was loaded as objects again"
     assert built, "the changed and new files were not processed"
+
+
+def test_an_incremental_run_that_finds_nothing_leaves_the_corpus_untouched(
+    test_config: Config, sample_vtt_en: str
+):
+    """Most runs find nothing. Copying 9.5 GB through to produce an identical
+    file was most of what a run cost after the walk; with the timer firing
+    every six hours that is what kept the box busy next to the app."""
+    test_config.incremental.enabled = True
+    archive = Path(test_config.paths.archive_root)
+    (archive / "a").mkdir(parents=True)
+    (archive / "a" / "keep.vtt").write_text(sample_vtt_en, encoding="utf-8")
+
+    first = Ingester(test_config).ingest(incremental=False)
+    docs_path = Path(test_config.paths.docs_output)
+    before = docs_path.stat()
+
+    assert Ingester(test_config).ingest(incremental=True) == first
+    after = docs_path.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    assert not docs_path.with_name(docs_path.name + ".tmp").exists()
