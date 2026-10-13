@@ -1679,7 +1679,7 @@ def render_youtube_tab(episodes: list[Episode], lang: str) -> None:
         key="unlinked_pick",
     )
     st.markdown(
-        f"[{pick.get('youtube_title', pick['youtube_id'])}](https://youtu.be/{pick['youtube_id']})"
+        f"[{pick.get('youtube_title') or pick['youtube_id']}](https://youtu.be/{pick['youtube_id']})"
     )
     render_manual_link(pick["youtube_id"], lang, by_content, index, key="list")
 
@@ -1692,7 +1692,10 @@ def _render_queue_item(
     yt_col, arc_col = st.columns(2)
     with yt_col:
         st.subheader(_t("yt_side", lang))
-        st.markdown(f"[{item.get('youtube_title', yt_id)}](https://youtu.be/{yt_id})")
+        # `or`, not a .get default: the key is present with None for an
+        # upload the listing gave no title, and the link read "None"
+        # (CodeRabbit on #113).
+        st.markdown(f"[{item.get('youtube_title') or yt_id}](https://youtu.be/{yt_id})")
         views = item.get("view_count")
         st.caption(
             " · ".join(
