@@ -128,18 +128,17 @@ def test_a_torn_previous_map_does_not_block_the_rebuild(tmp_path):
     assert len(json.loads(out.read_text("utf-8"))) == 1
 
 
-def test_the_archive_index_is_keyed_the_way_the_tab_normalizes_typed_ids():
-    """The tab turns 0412707 into 412707 before the lookup; an index keyed
-    on the CMS's raw spelling would never match it (CodeRabbit on #113)."""
-    info = {
-        "0412707": {"archive_date": "2020-01-01", "archive_url": "u", "archive_video_hash": "h"}
-    }
-    index = archive_index([("0412707", "Лекция"), ("abc", "x")], info, {"0412707": 60.0})
-    assert set(index) == {"412707", "abc"}
-    assert index["412707"] == {
-        "title": "Лекция",
-        "date": "2020-01-01",
-        "url": "u",
-        "video_hash": "h",
-        "duration_seconds": 60.0,
+def test_the_archive_index_is_keyed_by_content_id_as_stored():
+    """Ids are compared as stored everywhere else, so the index keeps the
+    CMS's spelling rather than a normalized one (CodeRabbit on #113)."""
+    info = {"412707": {"archive_date": "2020-01-01", "archive_url": "u", "archive_video_hash": "h"}}
+    index = archive_index([("412707", "Лекция")], info, {"412707": 60.0})
+    assert index == {
+        "412707": {
+            "title": "Лекция",
+            "date": "2020-01-01",
+            "url": "u",
+            "video_hash": "h",
+            "duration_seconds": 60.0,
+        }
     }

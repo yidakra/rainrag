@@ -1581,14 +1581,18 @@ def normalize_content_id(text: str) -> str | None:
 
     NFKC first, so fullwidth digits typed through an IME become the ASCII
     ids the pool and the index are keyed by; `isdigit()` alone accepted
-    them and then silently missed the lookup (CodeRabbit on #113). Leading
-    zeros go too: 0412707 is episode 412707. The same value is shown and
-    stored, so the preview and the recorded verdict cannot disagree.
+    them and then silently missed the lookup (CodeRabbit on #113). The
+    same value is shown and stored, so the preview and the recorded verdict
+    cannot disagree.
+
+    Leading zeros are kept. Stripping them here made the tab disagree with
+    everything else that compares content ids as stored: first the index,
+    then the tagged pool (CodeRabbit on #113, twice). CMS ids have none.
     """
     cid = unicodedata.normalize("NFKC", text).strip()
     if not (cid.isascii() and cid.isdigit()):
         return None
-    return str(int(cid))
+    return cid
 
 
 def archive_episode(

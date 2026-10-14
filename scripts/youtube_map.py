@@ -141,15 +141,6 @@ def _count_on_disk(path: Path) -> int:
         return 0
 
 
-def canonical_content_id(cid: str) -> str:
-    """The form the review tab normalizes typed ids to: no leading zeros.
-
-    The tab turns 0412707 into 412707 before looking it up, so an index
-    keyed on the CMS's raw spelling would miss it (CodeRabbit on #113).
-    """
-    return str(int(cid)) if cid.isascii() and cid.isdigit() else cid
-
-
 def archive_index(
     archive: list[tuple[str, str]],
     archive_info: dict[str, dict[str, Any]],
@@ -157,7 +148,7 @@ def archive_index(
 ) -> dict[str, dict[str, Any]]:
     """content_id -> title, date, url, hash, runtime for every archive episode."""
     return {
-        canonical_content_id(cid): {
+        cid: {
             "title": name,
             "date": archive_info.get(cid, {}).get("archive_date"),
             "url": archive_info.get(cid, {}).get("archive_url"),
