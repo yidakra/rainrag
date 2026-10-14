@@ -1364,3 +1364,48 @@ def test_the_idle_shortcut_needs_a_corpus_file_not_just_a_path(
     docs_path.mkdir()
     with pytest.raises(OSError):
         Ingester(test_config).ingest(incremental=True)
+
+
+def test_an_incremental_run_classifies_and_parses_on_a_thread_pool(
+    test_config: Config, sample_vtt_en: str, monkeypatch
+):
+    """A stat on the archive share is a 91 ms round trip, and classifying
+    289,368 files one after another took seven hours, longer than the timer
+    between runs. Changed files were parsed one at a time too, at 3.6/s.
+
+    Each spy waits on a two-party barrier: a serial loop never brings a
+    second caller and times the barrier out, so this fails on the old code
+    rather than merely running slower.
+    """
+    import threading
+
+    from rainrag.ingest import FileManifest
+
+    test_config.incremental.enabled = True
+    test_config.processing.ingest_workers = 4
+    archive = Path(test_config.paths.archive_root)
+    for name in ("a", "b", "c"):
+        (archive / name).mkdir(parents=True)
+        (archive / name / "x.vtt").write_text(sample_vtt_en, encoding="utf-8")
+    Ingester(test_config).ingest(incremental=False)
+    for name in ("d", "e"):
+        (archive / name).mkdir(parents=True)
+        (archive / name / "x.vtt").write_text(sample_vtt_en, encoding="utf-8")
+
+    def gated(original):
+        barrier = threading.Barrier(2, timeout=10)
+        first_two = iter(range(2))
+
+        def call(*args, **kwargs):
+            if next(first_two, None) is not None:
+                barrier.wait()
+            return original(*args, **kwargs)
+
+        return call
+
+    monkeypatch.setattr(FileManifest, "classify_file", gated(FileManifest.classify_file))
+    monkeypatch.setattr(Ingester, "process_file", gated(Ingester.process_file))
+
+    total = Ingester(test_config).ingest(incremental=True)
+    lines = Path(test_config.paths.docs_output).read_text("utf-8").splitlines()
+    assert total == len(lines) == 5

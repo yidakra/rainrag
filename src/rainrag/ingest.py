@@ -2370,8 +2370,16 @@ class Ingester:
         modified_files: list[Path] = []
         unchanged_files: list[Path] = []
 
-        for file_path in vtt_files:
-            state = manifest.classify_file(file_path)
+        # On a thread pool, like the walk. Classifying is a stat per file,
+        # and a stat on the archive share is a network round trip, measured
+        # at 91 ms: 289,368 of them one after another were seven hours of
+        # every run, longer than the six-hour timer that starts the next.
+        # The calls only read the manifest, so they parallelise cleanly, and
+        # map keeps the input order.
+        workers = max(1, int(getattr(self.config.processing, "ingest_workers", 1) or 1))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="classify") as pool:
+            states = list(pool.map(manifest.classify_file, vtt_files))
+        for file_path, state in zip(vtt_files, states, strict=True):
             if state == "new":
                 new_files.append(file_path)
             elif state == "modified":
@@ -2476,8 +2484,10 @@ class Ingester:
     def _process_changed(self, files: list[Path], out_file: Any, manifest: FileManifest) -> int:
         """Parse the new and modified files into `out_file`, recording each in the manifest."""
         written = 0
-        for file_path in tqdm(files, desc="Processing changed files"):
-            docs = self.process_file(file_path)
+        # Through the same order-preserving pool the full run parses with.
+        # One at a time was 3.6 files/s on the share; the catch-up after the
+        # updater stood still for six weeks is 9,738 files.
+        for file_path, docs in self._parsed_documents(files):
             if docs:
                 doc_ids = []
                 for doc in docs:
