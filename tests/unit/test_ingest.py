@@ -1345,3 +1345,22 @@ def test_an_incremental_run_that_finds_nothing_leaves_the_corpus_untouched(
     after = docs_path.stat()
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
     assert not docs_path.with_name(docs_path.name + ".tmp").exists()
+
+
+def test_the_idle_shortcut_needs_a_corpus_file_not_just_a_path(
+    test_config: Config, sample_vtt_en: str
+):
+    """A directory at docs_output passed `exists()` and took the shortcut,
+    reporting a count with no corpus behind it (CodeRabbit on #115). It
+    must surface as the error the full path raises instead."""
+    test_config.incremental.enabled = True
+    archive = Path(test_config.paths.archive_root)
+    (archive / "a").mkdir(parents=True)
+    (archive / "a" / "keep.vtt").write_text(sample_vtt_en, encoding="utf-8")
+    Ingester(test_config).ingest(incremental=False)
+
+    docs_path = Path(test_config.paths.docs_output)
+    docs_path.unlink()
+    docs_path.mkdir()
+    with pytest.raises(OSError):
+        Ingester(test_config).ingest(incremental=True)

@@ -2396,7 +2396,10 @@ class Ingester:
                 modified_old_doc_ids.update(manifest.entries[key].doc_ids)
 
         files_to_process = new_files + modified_files
-        if not files_to_process and not deleted_keys and output_path.exists():
+        # is_file, not exists: a directory at docs_output would otherwise
+        # take the shortcut and report a count with no corpus behind it,
+        # where the full path surfaces it as an error (CodeRabbit on #115).
+        if not files_to_process and not deleted_keys and output_path.is_file():
             # Nothing changed: the corpus on disk already says so. Copying
             # 9.5 GB through to produce an identical file is most of what a
             # run costs after the walk, and most runs find nothing.
