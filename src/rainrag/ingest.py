@@ -2396,6 +2396,16 @@ class Ingester:
                 modified_old_doc_ids.update(manifest.entries[key].doc_ids)
 
         files_to_process = new_files + modified_files
+        # is_file, not exists: a directory at docs_output would otherwise
+        # take the shortcut and report a count with no corpus behind it,
+        # where the full path surfaces it as an error (CodeRabbit on #115).
+        if not files_to_process and not deleted_keys and output_path.is_file():
+            # Nothing changed: the corpus on disk already says so. Copying
+            # 9.5 GB through to produce an identical file is most of what a
+            # run costs after the walk, and most runs find nothing.
+            logger.info("Incremental scan found no changes; the corpus is left as it is")
+            return sum(len(entry.doc_ids) for entry in manifest.entries.values())
+
         skip_ids = deleted_doc_ids | modified_old_doc_ids
         temp_output_path = output_path.with_name(output_path.name + ".tmp")
 
