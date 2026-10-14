@@ -1887,3 +1887,97 @@ def test_a_limited_forced_scan_will_not_replace_the_whole_file(tmp_path, capsys)
     code = library_notes_build.main(["--force", "--limit", "50"])
     assert code == 1
     assert "refusing" in capsys.readouterr().out
+
+
+def test_unlinked_uploads_are_exactly_what_resolves_to_nothing():
+    """The queue hides a rejected upload and one with no candidate alike, and
+    with the queue empty the tab looked finished while they sat unlinked
+    (Varya, 2026-10-12). This list is the same rule as resolve_youtube_id,
+    inverted, newest first."""
+    from ui_library import unlinked_uploads
+
+    matches = [
+        {
+            "youtube_id": "e",
+            "confidence": "editor",
+            "content_id": "1",
+            "published_at": "2026-01-01",
+        },
+        {
+            "youtube_id": "s",
+            "confidence": "strong",
+            "content_id": "2",
+            "published_at": "2026-02-01",
+        },
+        {
+            "youtube_id": "r",
+            "confidence": "review",
+            "content_id": "3",
+            "published_at": "2026-03-01",
+        },
+        {"youtube_id": "n", "confidence": "none", "content_id": None, "published_at": "2026-04-01"},
+        {
+            "youtube_id": "x",
+            "confidence": "strong",
+            "content_id": "4",
+            "published_at": "2026-05-01",
+        },
+        {"youtube_id": "m", "confidence": "none", "content_id": None, "published_at": "2026-06-01"},
+    ]
+    decisions = {"x": "no_match", "m": "match", "r": "skip"}
+    # editor and strong are links; a strong one the editor rejected is not;
+    # a none the editor linked by hand is; skip leaves review where it was.
+    assert [m["youtube_id"] for m in unlinked_uploads(matches, decisions)] == ["x", "n", "r"]
+
+
+def test_a_typed_content_id_is_looked_up_in_the_pool_then_the_archive_index():
+    from types import SimpleNamespace
+
+    from ui_library import archive_episode
+
+    pool = {"1": SimpleNamespace(title="Из пула", date="2021-01-01", url="p")}
+    index = {
+        "1": {"title": "Из индекса"},
+        "2": {"title": "Только в индексе", "date": "2019-05-05", "url": "i"},
+    }
+    assert archive_episode(" 1 ", pool, index)["title"] == "Из пула"
+    assert archive_episode("2", pool, index) == {
+        "title": "Только в индексе",
+        "date": "2019-05-05",
+        "url": "i",
+    }
+    assert archive_episode("3", pool, index) is None
+    # Not a content id at all: never "found", so the link button stays off.
+    assert archive_episode("abc", pool, index) is None
+    assert archive_episode("", pool, index) is None
+    # Fullwidth digits from an IME are the same episode; a digit NFKC leaves
+    # alone (Arabic-Indic) is not an id (CodeRabbit on #113). Ids compare as
+    # stored, so a leading zero is a different id, as everywhere else.
+    assert archive_episode("\uff12", pool, index)["title"] == "Только в индексе"
+    assert archive_episode("02", pool, index) is None
+    assert archive_episode("\u0662", pool, index) is None
+
+
+def test_a_typed_content_id_is_stored_in_the_form_it_was_previewed():
+    from ui_library import normalize_content_id
+
+    assert normalize_content_id(" \uff14\uff11\uff12\uff17\uff10\uff17 ") == "412707"
+    assert normalize_content_id("0412707") == "0412707"
+    assert normalize_content_id("41 2707") is None
+    assert normalize_content_id("") is None
+
+
+def test_the_archive_index_is_optional_and_may_be_torn(tmp_path):
+    from ui_library import load_archive_index
+
+    p = tmp_path / "idx.json"
+    assert load_archive_index(p) == {}
+    p.write_text('{"1": {"title": "x"', encoding="utf-8")  # mid-rewrite
+    assert load_archive_index(p) == {}
+    p.write_text("[1, 2]", encoding="utf-8")  # the wrong shape entirely
+    assert load_archive_index(p) == {}
+    p.write_text('{"1": {"title": "x"}}', encoding="utf-8")
+    assert load_archive_index(p) == {"1": {"title": "x"}}
+    # One malformed row must not take the rest, or the tab, down with it.
+    p.write_text('{"1": {"title": "x"}, "2": "bad", "3": null}', encoding="utf-8")
+    assert load_archive_index(p) == {"1": {"title": "x"}}
