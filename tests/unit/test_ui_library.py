@@ -1950,6 +1950,20 @@ def test_a_typed_content_id_is_looked_up_in_the_pool_then_the_archive_index():
     # Not a content id at all: never "found", so the link button stays off.
     assert archive_episode("abc", pool, index) is None
     assert archive_episode("", pool, index) is None
+    # Fullwidth digits from an IME and a leading zero are the same episode;
+    # a digit NFKC leaves alone (Arabic-Indic) is not an id (CodeRabbit on #113).
+    assert archive_episode("\uff12", pool, index)["title"] == "Только в индексе"
+    assert archive_episode("02", pool, index)["title"] == "Только в индексе"
+    assert archive_episode("\u0662", pool, index) is None
+
+
+def test_a_typed_content_id_is_stored_in_the_form_it_was_previewed():
+    from ui_library import normalize_content_id
+
+    assert normalize_content_id(" \uff14\uff11\uff12\uff17\uff10\uff17 ") == "412707"
+    assert normalize_content_id("0412707") == "412707"
+    assert normalize_content_id("41 2707") is None
+    assert normalize_content_id("") is None
 
 
 def test_the_archive_index_is_optional_and_may_be_torn(tmp_path):

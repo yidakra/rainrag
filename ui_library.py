@@ -28,6 +28,7 @@ import math
 import os
 import re
 import threading
+import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -1575,6 +1576,21 @@ def _cached_archive_index(mtime: float) -> dict[str, dict]:
     return load_archive_index()
 
 
+def normalize_content_id(text: str) -> str | None:
+    """The canonical form of a typed content id, or None if it is not one.
+
+    NFKC first, so fullwidth digits typed through an IME become the ASCII
+    ids the pool and the index are keyed by; `isdigit()` alone accepted
+    them and then silently missed the lookup (CodeRabbit on #113). Leading
+    zeros go too: 0412707 is episode 412707. The same value is shown and
+    stored, so the preview and the recorded verdict cannot disagree.
+    """
+    cid = unicodedata.normalize("NFKC", text).strip()
+    if not (cid.isascii() and cid.isdigit()):
+        return None
+    return str(int(cid))
+
+
 def archive_episode(
     content_id: str, by_content: dict[str, Any], index: dict[str, dict]
 ) -> dict[str, Any] | None:
@@ -1582,8 +1598,8 @@ def archive_episode(
 
     The tagged pool first: its metadata is fresher than the index's.
     """
-    cid = content_id.strip()
-    if not cid.isdigit():
+    cid = normalize_content_id(content_id)
+    if cid is None:
         return None
     episode = by_content.get(cid)
     if episode is not None:
@@ -1622,15 +1638,16 @@ def render_manual_link(
 ) -> None:
     """A content id typed by hand, shown as a title before it is committed."""
     typed = st.text_input(_t("manual_cid", lang), key=f"{key}_cid_{yt_id}").strip()
-    found = archive_episode(typed, by_content, index) if typed else None
+    cid = normalize_content_id(typed) if typed else None
+    found = archive_episode(cid, by_content, index) if cid else None
     if typed:
         if found:
             when = f" · {found['date']}" if found.get("date") else ""
-            st.caption(_t("manual_preview", lang, title=found["title"] or typed) + when)
+            st.caption(_t("manual_preview", lang, title=found["title"] or cid) + when)
         else:
             st.caption(_t("manual_unknown", lang))
     if st.button(_t("btn_link", lang), key=f"{key}_link_{yt_id}", disabled=found is None):
-        append_decision(yt_id, typed, "match")
+        append_decision(yt_id, cid, "match")
         st.rerun()
 
 
