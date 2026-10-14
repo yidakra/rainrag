@@ -12,7 +12,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from youtube_map import ShrunkMapError, write_outputs  # noqa: E402
+from youtube_map import ShrunkMapError, archive_index, write_outputs  # noqa: E402
 
 
 def _row(youtube_id: str, content_id: str | None = "1", confidence: str = "review") -> dict:
@@ -126,3 +126,20 @@ def test_a_torn_previous_map_does_not_block_the_rebuild(tmp_path):
     out.write_text('[{"youtube_id": "a"', encoding="utf-8")
     write_outputs([_row("a")], {}, out, csv_out, idx)
     assert len(json.loads(out.read_text("utf-8"))) == 1
+
+
+def test_the_archive_index_is_keyed_the_way_the_tab_normalizes_typed_ids():
+    """The tab turns 0412707 into 412707 before the lookup; an index keyed
+    on the CMS's raw spelling would never match it (CodeRabbit on #113)."""
+    info = {
+        "0412707": {"archive_date": "2020-01-01", "archive_url": "u", "archive_video_hash": "h"}
+    }
+    index = archive_index([("0412707", "Лекция"), ("abc", "x")], info, {"0412707": 60.0})
+    assert set(index) == {"412707", "abc"}
+    assert index["412707"] == {
+        "title": "Лекция",
+        "date": "2020-01-01",
+        "url": "u",
+        "video_hash": "h",
+        "duration_seconds": 60.0,
+    }

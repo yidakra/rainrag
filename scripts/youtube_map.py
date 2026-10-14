@@ -141,6 +141,33 @@ def _count_on_disk(path: Path) -> int:
         return 0
 
 
+def canonical_content_id(cid: str) -> str:
+    """The form the review tab normalizes typed ids to: no leading zeros.
+
+    The tab turns 0412707 into 412707 before looking it up, so an index
+    keyed on the CMS's raw spelling would miss it (CodeRabbit on #113).
+    """
+    return str(int(cid)) if cid.isascii() and cid.isdigit() else cid
+
+
+def archive_index(
+    archive: list[tuple[str, str]],
+    archive_info: dict[str, dict[str, Any]],
+    durations: dict[str, float],
+) -> dict[str, dict[str, Any]]:
+    """content_id -> title, date, url, hash, runtime for every archive episode."""
+    return {
+        canonical_content_id(cid): {
+            "title": name,
+            "date": archive_info.get(cid, {}).get("archive_date"),
+            "url": archive_info.get(cid, {}).get("archive_url"),
+            "video_hash": archive_info.get(cid, {}).get("archive_video_hash"),
+            "duration_seconds": durations.get(cid),
+        }
+        for cid, name in archive
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -314,16 +341,7 @@ def main(argv: list[str] | None = None) -> int:
     # can be shown as a title before it is linked. The videos cache is keyed
     # by hash and the tagged pool covers a tenth of the archive; nothing else
     # answers "which episode is 412707?" without reading 105k files.
-    by_content_id = {
-        cid: {
-            "title": name,
-            "date": archive_info.get(cid, {}).get("archive_date"),
-            "url": archive_info.get(cid, {}).get("archive_url"),
-            "video_hash": archive_info.get(cid, {}).get("archive_video_hash"),
-            "duration_seconds": durations.get(cid),
-        }
-        for cid, name in archive
-    }
+    by_content_id = archive_index(archive, archive_info, durations)
     try:
         write_outputs(
             payload,
