@@ -666,6 +666,11 @@ def split_by_speaker(results: list[Scored]) -> tuple[list[Scored], list[Scored]]
 # checkboxes stays a list an editor can read.
 SIMILAR_DISPLAY_LIMIT = 10
 SIMILAR_POOL_LIMIT = 50
+# The shortlist pages through its candidates ten at a time, so it draws on a
+# deeper pool than the columns. Not the whole result list: for a prolific
+# speaker that is most of the archive, and every candidate is blend-scored on
+# each render. 200 a group is up to 40 pages of «Другие находки».
+SHORTLIST_POOL_LIMIT = 200
 
 
 def speaker_options(results: Iterable[Scored]) -> list[str]:
@@ -782,6 +787,36 @@ def visible_results(
         keys.discard("")
         rows = [r for r in rows if _passes_speaker_filter(r, keys)]
     return rows[:limit]
+
+
+def shortlist_candidates(
+    same: list[Scored],
+    themed: list[Scored],
+    selected: Iterable[str] | None,
+    *,
+    limit: int = SHORTLIST_POOL_LIMIT,
+) -> list[Episode]:
+    """What the shortlist blends and pages through.
+
+    Each group filtered and cut on its own, not the concatenation cut to
+    one limit: with many same-speaker rows the theme group would never reach
+    the shortlist at all, and the whole point is that it draws on both.
+    """
+    return [
+        r.episode for rows in (same, themed) for r in visible_results(rows, selected, limit=limit)
+    ]
+
+
+def wants_untagged_search(needle: str) -> bool:
+    """Whether the seed search should also look among untagged videos.
+
+    Not for a YouTube link, which resolves through the map, and not for a
+    hash: that is a result re-seeding itself, an exact match by design, and
+    an untagged video whose title happened to contain the hex would join the
+    pick list beside it (CodeRabbit on #114).
+    """
+    text = (needle or "").strip()
+    return bool(text) and not youtube_id_from_query(text) and not _HASH_RE.match(text)
 
 
 def _append_csv_row(path: Path, header: list[str], row: list[object]) -> None:
@@ -1381,7 +1416,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     youtube = _cached_youtube_by_content(_stat_key(MAP_PATH), _stat_key(DECISIONS_PATH))
     matches = search_episodes(episodes, needle, synthetic=synthetic)
     tagged_hashes = {e.video_hash for e in episodes}
-    if needle and not youtube_id_from_query(needle):
+    if wants_untagged_search(needle):
         videos = _cached_videos_by_hash(
             VIDEOS_CACHE_PATH.stat().st_mtime if VIDEOS_CACHE_PATH.exists() else 0.0
         )
@@ -1454,16 +1489,19 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
         idf=idf,
         people_idf=people_idf,
     )
+    # Kept whole: the columns backfill from as deep as they need, and the
+    # shortlist pages beyond 50. Cutting both groups to 50 here stopped
+    # «Другие находки» while usable candidates remained (CodeRabbit on #114).
     same, themed = split_by_speaker(results)
-    same = same[:SIMILAR_POOL_LIMIT]
-    themed = themed[:SIMILAR_POOL_LIMIT]
 
     # The offered speakers are the ones this seed's own results have, not the
     # archive's; they come from the whole pool rather than the visible ten, so
     # unticking a name cannot make it vanish from the list that would let the
     # editor tick it back on. The column was reserved above so the control
     # sits next to «Жанры» even though its options need the results.
-    options = speaker_options(same + themed)
+    # Chips from the top of each group, as before: offering every speaker in
+    # the whole result list buried the results under the chips.
+    options = speaker_options(same[:SIMILAR_POOL_LIMIT] + themed[:SIMILAR_POOL_LIMIT])
     selected: list[str] | None = None
     if options:
         # Nothing is chosen by default and an empty choice means no filter.
@@ -1500,11 +1538,7 @@ def render_similar_tab(episodes: list[Episode], lang: str) -> None:
     # Each column's pool separately, not the concatenation cut to one limit:
     # with 50 same-speaker rows the theme pool would never reach the shortlist
     # at all, and the whole point is that it draws on both.
-    shortlist_pool = [
-        r.episode
-        for rows in (same, themed)
-        for r in visible_results(rows, selected, limit=SIMILAR_POOL_LIMIT)
-    ]
+    shortlist_pool = shortlist_candidates(same, themed, selected)
     shortlist = blended_top(
         seed,
         shortlist_pool,

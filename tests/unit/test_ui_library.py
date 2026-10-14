@@ -2038,3 +2038,30 @@ def test_a_result_becomes_the_seed_in_place_and_closes_an_open_episode_page(monk
     ui_library._reseed("h2")
     assert fake.session_state["library_seed_search"] == "h2"
     assert fake.query_params == {}
+
+
+def test_the_shortlist_draws_deeper_than_the_columns_from_each_group():
+    """Both groups were cut to 50 before the shortlist was built, so its
+    pages stopped while usable candidates remained (CodeRabbit on #114)."""
+    from rainrag.library_similar import Scored
+    from ui_library import SIMILAR_POOL_LIMIT, shortlist_candidates
+
+    same = [Scored(_ep(f"s{i}"), 3.0, ["X"], []) for i in range(120)]
+    themed = [Scored(_ep(f"t{i}"), 0.5, [], ["тема"]) for i in range(80)]
+    pool = shortlist_candidates(same, themed, None)
+    assert len(pool) == 200 > 2 * SIMILAR_POOL_LIMIT
+    # Both groups are represented, the theme one included.
+    assert sum(e.video_hash.startswith("t") for e in pool) == 80
+    assert len(shortlist_candidates(same, themed, None, limit=10)) == 20
+
+
+def test_a_hash_never_reaches_the_untagged_title_search():
+    from ui_library import wants_untagged_search
+
+    assert wants_untagged_search("Быков")
+    assert not wants_untagged_search("a" * 40)
+    assert not wants_untagged_search(" " + "B" * 40 + " ")
+    assert not wants_untagged_search("https://youtu.be/abcDEF123-_")
+    assert not wants_untagged_search("")
+    # 39 hex digits is not a hash: an ordinary search.
+    assert wants_untagged_search("a" * 39)
