@@ -63,6 +63,20 @@ def _build_payload(doc: Document) -> dict:
     }
 
 
+class CollectionIsAliasError(RuntimeError):
+    """Raised when a recreate targets a name that is a collection alias."""
+
+    def __init__(self, alias_name: str, collection_name: str):
+        self.alias_name = alias_name
+        self.collection_name = collection_name
+        super().__init__(
+            f"Cannot recreate '{alias_name}': it is an alias for collection "
+            + f"'{collection_name}'. Deleting it in place would drop the live index. "
+            + "Run `rainrag index --recreate` instead; it rebuilds into a new "
+            + "collection and swaps the alias (blue-green)."
+        )
+
+
 class QdrantIndexer:
     """Indexer for Qdrant vector database."""
 
@@ -130,6 +144,21 @@ class QdrantIndexer:
         collections = client.get_collections()
         collection_exists = any(col.name == collection_name for col in collections.collections)
 
+        if not collection_exists:
+            # The blue-green rebuild (index_with_alias_swap) leaves the configured
+            # name as an alias to a staging collection. Qdrant accepts reads and
+            # writes through an alias, but refuses to create a collection under
+            # an alias name, so an alias counts as an existing collection here.
+            alias_target = self._alias_target(collection_name)
+            if alias_target is not None:
+                if recreate or self.config.qdrant.recreate_collection:
+                    raise CollectionIsAliasError(collection_name, alias_target)
+                logger.info(
+                    f"Collection {collection_name} is an alias for {alias_target}; "
+                    + "writes go through the alias"
+                )
+                return
+
         if collection_exists:
             if recreate or self.config.qdrant.recreate_collection:
                 logger.warning(f"Deleting existing collection: {collection_name}")
@@ -179,23 +208,41 @@ class QdrantIndexer:
         self._create_collection_with_name(collection_name)
 
     def drop_collection(self, collection_name: str) -> None:
-        """Delete a named collection if it exists (ephemeral-collection teardown)."""
+        """Delete a named collection if it exists (ephemeral-collection teardown).
+
+        Only a real collection is dropped. A name that is an alias is left
+        alone, because deleting through an alias would delete its target.
+        """
         client = self._get_client()
-        if self._collection_exists(collection_name):
+        if collection_name in self.list_collections():
             logger.info(f"Dropping collection: {collection_name}")
             client.delete_collection(collection_name)
 
     def list_collections(self) -> list[str]:
-        """Return the names of all collections on the server."""
+        """Return the names of all collections on the server.
+
+        Aliases are not included; use _collection_exists() to ask whether a
+        name can be read and written.
+        """
         client = self._get_client()
         return [col.name for col in client.get_collections().collections]
 
+    def _alias_target(self, alias_name: str) -> str | None:
+        """Return the collection that alias_name points to, or None if it is not an alias."""
+        client = self._get_client()
+        for alias in client.get_aliases().aliases:
+            if alias.alias_name == alias_name:
+                return alias.collection_name
+        return None
+
     def _collection_exists(self, collection_name: str | None = None) -> bool:
-        """Check whether a collection exists."""
+        """Check whether a collection exists, either by its own name or as an alias."""
         client = self._get_client()
         target_name = collection_name or self.config.qdrant.collection_name
         collections = client.get_collections()
-        return any(col.name == target_name for col in collections.collections)
+        if any(col.name == target_name for col in collections.collections):
+            return True
+        return self._alias_target(target_name) is not None
 
     def _has_legacy_point_ids(self, sample_limit: int = 256) -> bool:
         """Detect legacy point IDs (integer IDs or non-UUID strings).
@@ -527,6 +574,9 @@ class QdrantIndexer:
 
         # Determine old collection name (what the alias currently points to)
         old_collection_name: str | None = None
+        # Other aliases on the old collection keep it alive: deleting it would
+        # leave each of them pointing at nothing.
+        other_aliases_on_old: list[str] = []
         try:
             aliases_response = client.get_aliases()
             aliases = aliases_response.aliases if aliases_response else []
@@ -534,6 +584,12 @@ class QdrantIndexer:
                 if alias.alias_name == alias_name:
                     old_collection_name = alias.collection_name
                     break
+            if old_collection_name:
+                other_aliases_on_old = [
+                    a.alias_name
+                    for a in aliases
+                    if a.collection_name == old_collection_name and a.alias_name != alias_name
+                ]
         except Exception as e:
             logger.warning(f"Failed to resolve existing alias mapping for {alias_name}: {e}")
 
@@ -555,7 +611,12 @@ class QdrantIndexer:
         client.update_collection_aliases(change_aliases_operations=alias_ops)
 
         # Delete old collection if it exists and is different from staging
-        if old_collection_name and old_collection_name != staging_name:
+        if old_collection_name and other_aliases_on_old:
+            logger.info(
+                f"Keeping old collection {old_collection_name}: "
+                f"still referenced by alias(es) {', '.join(sorted(other_aliases_on_old))}"
+            )
+        elif old_collection_name and old_collection_name != staging_name:
             try:
                 logger.info(f"Deleting old collection: {old_collection_name}")
                 client.delete_collection(old_collection_name)
@@ -651,10 +712,31 @@ class QdrantIndexer:
         )
 
         # Choose indexing strategy
+        collection_name = self.config.qdrant.collection_name
+        alias_target = (
+            None if self.config.incremental.alias_swap else self._alias_target(collection_name)
+        )
         if self.config.incremental.alias_swap:
             num_indexed = self.index_with_alias_swap(embeddings, documents)
+        elif alias_target is not None and (recreate or self.config.qdrant.recreate_collection):
+            # The configured name is an alias left by a blue-green rebuild.
+            # Deleting it in place would drop the live collection behind it, so
+            # a recreate builds a fresh staging collection and swaps the alias.
+            logger.warning(
+                f"Collection {collection_name} is an alias for {alias_target}; "
+                + "recreating through the blue-green rebuild"
+            )
+            num_indexed = self.index_with_alias_swap(embeddings, documents)
+        elif alias_target is not None and self._has_legacy_point_ids():
+            logger.warning(
+                f"Detected legacy non-UUID point IDs behind alias {collection_name} "
+                + f"(-> {alias_target}). Rebuilding through the blue-green rebuild."
+            )
+            num_indexed = self.index_with_alias_swap(embeddings, documents)
         else:
-            # Create/update the main collection for non-alias flows.
+            # Create/update the main collection for non-alias flows. When the
+            # configured name is an alias, this is a no-op and writes go
+            # through the alias to its target collection.
             self.create_collection(recreate=recreate)
 
             # Migration guard: prior versions used integer / non-UUID point IDs.
