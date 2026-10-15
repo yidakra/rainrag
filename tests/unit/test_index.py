@@ -435,6 +435,8 @@ class TestQdrantIndexer:
 
         indexer = QdrantIndexer(test_config)
         indexer.connect = MagicMock()
+        # The configured name is a plain collection, not an alias.
+        indexer._alias_target = MagicMock(return_value=None)
         indexer.create_collection = MagicMock()
         indexer._has_legacy_point_ids = MagicMock(return_value=True)
         indexer.index_documents = MagicMock(return_value=2)
