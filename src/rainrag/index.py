@@ -574,6 +574,9 @@ class QdrantIndexer:
 
         # Determine old collection name (what the alias currently points to)
         old_collection_name: str | None = None
+        # Other aliases on the old collection keep it alive: deleting it would
+        # leave each of them pointing at nothing.
+        other_aliases_on_old: list[str] = []
         try:
             aliases_response = client.get_aliases()
             aliases = aliases_response.aliases if aliases_response else []
@@ -581,6 +584,12 @@ class QdrantIndexer:
                 if alias.alias_name == alias_name:
                     old_collection_name = alias.collection_name
                     break
+            if old_collection_name:
+                other_aliases_on_old = [
+                    a.alias_name
+                    for a in aliases
+                    if a.collection_name == old_collection_name and a.alias_name != alias_name
+                ]
         except Exception as e:
             logger.warning(f"Failed to resolve existing alias mapping for {alias_name}: {e}")
 
@@ -602,7 +611,12 @@ class QdrantIndexer:
         client.update_collection_aliases(change_aliases_operations=alias_ops)
 
         # Delete old collection if it exists and is different from staging
-        if old_collection_name and old_collection_name != staging_name:
+        if old_collection_name and other_aliases_on_old:
+            logger.info(
+                f"Keeping old collection {old_collection_name}: "
+                f"still referenced by alias(es) {', '.join(sorted(other_aliases_on_old))}"
+            )
+        elif old_collection_name and old_collection_name != staging_name:
             try:
                 logger.info(f"Deleting old collection: {old_collection_name}")
                 client.delete_collection(old_collection_name)

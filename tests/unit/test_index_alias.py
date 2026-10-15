@@ -157,3 +157,37 @@ def test_recreate_on_an_alias_rebuilds_blue_green(
     assert [(a.alias_name, a.collection_name) for a in aliases] == [(alias, new_target)]
     assert spy.count(new_target).count == 2
     assert indexer.list_collections() == [new_target]
+
+
+@patch("rainrag.index.run_embedding")
+def test_recreate_keeps_an_old_target_that_another_alias_still_uses(
+    mock_run_embedding: MagicMock,
+    aliased_indexer: tuple[QdrantIndexer, MagicMock],
+    test_config: Config,
+) -> None:
+    indexer, spy = aliased_indexer
+    alias = test_config.qdrant.collection_name
+    # A second alias, for example a reader pinned to the current build.
+    spy.update_collection_aliases(
+        change_aliases_operations=[
+            models.CreateAliasOperation(
+                create_alias=models.CreateAlias(alias_name="pinned_reader", collection_name=STAGING)
+            )
+        ]
+    )
+    documents = _documents(2)
+    embeddings = np.random.rand(2, test_config.qdrant.vector_size).astype(np.float32)
+    mock_run_embedding.return_value = (embeddings, documents)
+    indexer.connect = MagicMock()
+
+    assert indexer.index(recreate=True) == 2
+
+    deleted = [
+        c.args[0] if c.args else c.kwargs.get("collection_name")
+        for c in spy.delete_collection.call_args_list
+    ]
+    assert STAGING not in deleted
+    mapping = {a.alias_name: a.collection_name for a in spy.get_aliases().aliases}
+    assert mapping["pinned_reader"] == STAGING
+    assert mapping[alias].startswith(f"{alias}_staging_") and mapping[alias] != STAGING
+    assert STAGING in indexer.list_collections()
