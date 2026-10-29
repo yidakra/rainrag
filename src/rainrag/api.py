@@ -2780,6 +2780,21 @@ async def search_by_url(
 
 _VIDEO_HASH = re.compile(r"^[0-9a-fA-F]{40}$")
 _LIBRARY_IDS: dict[int, str] | None = None
+_LIBRARY_IDS_BUILT_AT: float = 0.0
+_LIBRARY_IDS_TTL_SECONDS = (
+    300.0  # the incremental updater adds records; a miss waits at most this long
+)
+
+
+def _as_int(value: object) -> int | None:
+    """An int from an int or an ASCII-digit string; anything else is None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        return int(value)
+    return None
 
 
 class SimilarVideo(BaseModel):
@@ -2823,10 +2838,16 @@ def _metadata_loader() -> WebMetadataLoader:
 
 
 def _library_ids(loader: WebMetadataLoader) -> dict[int, str]:
-    """Numeric library id -> video hash, built once per process from the cache."""
-    global _LIBRARY_IDS
-    if _LIBRARY_IDS is None:
+    """Numeric library id -> video hash from the cache, rebuilt after the TTL.
+
+    An empty result is not kept: a missing or empty cache directory at the
+    first call must not turn every later id lookup into a 404.
+    """
+    global _LIBRARY_IDS, _LIBRARY_IDS_BUILT_AT
+    now = time.monotonic()
+    if not _LIBRARY_IDS or now - _LIBRARY_IDS_BUILT_AT > _LIBRARY_IDS_TTL_SECONDS:
         _LIBRARY_IDS = loader.library_id_index()
+        _LIBRARY_IDS_BUILT_AT = now
         logger.info(f"Library id index: {len(_LIBRARY_IDS)} videos")
     return _LIBRARY_IDS
 
@@ -2836,15 +2857,16 @@ def _resolve_video_ref(ref: str, loader: WebMetadataLoader) -> str:
     ref = ref.strip()
     if _VIDEO_HASH.match(ref):
         return ref.lower()
-    if ref.isdigit():
-        video_hash = _library_ids(loader).get(int(ref))
-        if not video_hash:
+    library_id = _as_int(ref)
+    if library_id is not None:
+        video_hash = _library_ids(loader).get(library_id) or ""
+        if not _VIDEO_HASH.match(video_hash):
             raise HTTPException(status_code=404, detail=f"No video with library id {ref}")
-        return video_hash
+        return video_hash.lower()
     if ref.startswith(("http://", "https://")):
         article = loader.search_by_url(ref)
-        video_hash = (article or {}).get("video_hash", "").strip()
-        if not video_hash:
+        video_hash = str((article or {}).get("video_hash") or "").strip()
+        if not _VIDEO_HASH.match(video_hash):
             raise HTTPException(status_code=404, detail="No video for that URL")
         return video_hash.lower()
     raise HTTPException(
@@ -2879,10 +2901,7 @@ async def similar_videos(
         results.append(
             SimilarVideo(
                 video_hash=entry["video_hash"],
-                library_id=int(library_id)
-                if isinstance(library_id, int)
-                or (isinstance(library_id, str) and library_id.isdigit())
-                else None,
+                library_id=_as_int(library_id),
                 url=record.get("url") or entry.get("url"),
                 title=record.get("name") or entry.get("title"),
                 program=(teleshow.get("name") if isinstance(teleshow, dict) else None)
@@ -2898,7 +2917,8 @@ async def similar_videos(
     )
 
 
-@app.api_route("/transcript/{video_id}", methods=["GET", "HEAD"])
+# {video_id:path}: a tvrain.tv URL is a valid reference and carries slashes.
+@app.api_route("/transcript/{video_id:path}", methods=["GET", "HEAD"])
 async def video_transcript(
     video_id: str,
     language: str = Query(default="ru", pattern="^(ru|en)$"),

@@ -175,6 +175,37 @@ def test_find_similar_videos_groups_hits_by_video_and_sums_scores(tmp_path):
     assert fake.query_filters[0].must_not[0].match.value == fake.seed_video_id
 
 
+def test_seed_video_id_comes_from_the_index_when_the_corpus_is_in_memory(tmp_path):
+    """The archive root at query time differs from the one at ingest; the index wins."""
+    engine, fake = _engine(tmp_path)
+    ingest_time_path = f"/mnt/other-root/aa/{HASH_A}.ru.vtt"
+    engine.bm25_corpus = [
+        {"path": "/x/" + HASH_B + ".ru.vtt", "doc_id": "other"},  # type: ignore[attr-defined]
+        {"path": ingest_time_path, "doc_id": "seed-doc"},
+    ]
+    real_query_points = fake.query_points
+
+    def query_points(collection_name, query=None, query_filter=None, limit=10, with_payload=True):
+        if query is None:
+            assert query_filter.must[0].match.value == "seed-doc"
+            return _Points([SimpleNamespace(score=1.0, payload={"video_id": "payload-id-123"})])
+        return real_query_points(collection_name, query, query_filter, limit, with_payload)
+
+    fake.query_points = query_points  # type: ignore[method-assign]
+    engine.find_similar_videos(HASH_A)
+    assert fake.scroll_filters[0].must[0].match.value == "payload-id-123"
+    assert fake.query_filters[-1].must_not[0].match.value == "payload-id-123"
+
+
+def test_seed_video_id_uses_the_corpus_video_id_when_present(tmp_path):
+    engine, fake = _engine(tmp_path)
+    engine.bm25_corpus = [
+        {"path": f"/any/{HASH_A}.en.vtt", "doc_id": "d", "video_id": "from-corpus"}
+    ]  # type: ignore[attr-defined]
+    engine.find_similar_videos(HASH_A)
+    assert fake.scroll_filters[0].must[0].match.value == "from-corpus"
+
+
 def test_find_similar_videos_limit_and_language(tmp_path):
     engine, fake = _engine(tmp_path)
     ranked = engine.find_similar_videos(HASH_A, limit=1, language="en")
@@ -253,7 +284,8 @@ def test_similar_videos_endpoint_enriches_from_the_metadata_cache(client, tmp_pa
         engine.find_similar_videos.assert_called_once_with(HASH_A, 5, None)
 
 
-def test_similar_videos_endpoint_rejects_a_bad_reference(client, tmp_path):
+def test_similar_videos_endpoint_rejects_a_bad_reference(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(api_module, "_LIBRARY_IDS", None)
     with patch("src.rainrag.api.query_engine"), patch("src.rainrag.api.config", _config(tmp_path)):
         assert client.get("/similar-videos", params={"video_id": "nope"}).status_code == 400
         assert client.get("/similar-videos", params={"video_id": "42"}).status_code == 404
@@ -272,3 +304,44 @@ def test_transcript_endpoint_serves_vtt_and_srt(client, tmp_path):
         assert r.text.startswith("1\n00:00:00,000 --> 00:00:03,500\n")
         assert client.get(f"/transcript/{HASH_A}", params={"language": "en"}).status_code == 404
         assert client.get("/transcript/zzz").status_code == 400
+
+
+def test_transcript_endpoint_accepts_a_tvrain_url_as_reference(client, tmp_path, monkeypatch):
+    cache = tmp_path / "web_metadata"
+    _write_record(cache, HASH_A, 7, "https://tvrain.tv/teleshow/x/a-7/")
+    track_dir = tmp_path / "archive" / WebMetadataLoader.hash_to_archive_dir(HASH_A)
+    track_dir.mkdir(parents=True)
+    (track_dir / f"{HASH_A}.ru.vtt").write_text(VTT, encoding="utf-8")
+    monkeypatch.setattr(api_module, "_LIBRARY_IDS", None)
+    with patch("src.rainrag.api.config", _config(tmp_path)):
+        r = client.get("/transcript/https://tvrain.tv/teleshow/x/a-7/")
+        assert r.status_code == 200, r.text
+        assert "Рада вас видеть." in r.text
+        r = client.get("/transcript/7")
+        assert r.status_code == 200
+
+
+def test_resolve_video_ref_rejects_bad_cached_hashes_and_odd_digits(tmp_path, monkeypatch):
+    cache = tmp_path / "web_metadata"
+    cache.mkdir()
+    (cache / f"{HASH_A}.json").write_text(
+        json.dumps({"id": 5, "video_hash": None, "url": "https://tvrain.tv/n"}), encoding="utf-8"
+    )
+    (cache / f"{HASH_B}.json").write_text(
+        json.dumps({"id": 6, "video_hash": "short", "url": "https://tvrain.tv/s"}), encoding="utf-8"
+    )
+    loader = WebMetadataLoader(cache, source="local")
+    monkeypatch.setattr(api_module, "_LIBRARY_IDS", None)
+    for ref in ("https://tvrain.tv/n", "https://tvrain.tv/s", "6", "\u00b2"):
+        with pytest.raises(Exception) as err:
+            _resolve_video_ref(ref, loader)
+        assert err.value.status_code in (400, 404), ref
+
+
+def test_library_id_index_is_not_cached_when_empty(tmp_path, monkeypatch):
+    cache = tmp_path / "web_metadata"
+    loader = WebMetadataLoader(cache, source="local")
+    monkeypatch.setattr(api_module, "_LIBRARY_IDS", None)
+    assert api_module._library_ids(loader) == {}
+    _write_record(cache, HASH_A, 9, "https://tvrain.tv/a")
+    assert api_module._library_ids(loader) == {9: HASH_A}

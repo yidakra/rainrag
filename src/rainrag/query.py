@@ -967,6 +967,49 @@ class RAGQueryEngine:
 
         return boosted_docs
 
+    def _seed_video_id(self, video_hash: str, language: str | None) -> str:
+        """The ``video_id`` payload value of a video, by its archive hash.
+
+        Preferred source: the documents kept in memory for BM25 (every indexed
+        chunk's path and doc_id). The chunk whose path names this hash is
+        fetched and its payload read, so the answer does not depend on how the
+        archive root was spelled at ingest time. Without that corpus (hybrid
+        search off), the id is recomputed the way ingest computes it, from the
+        configured archive root; that matches only while the root is unchanged.
+        The id is shared by every language track of the video.
+        """
+        from rainrag.ingest import VTTParser, WebMetadataLoader
+
+        corpus = getattr(self, "bm25_corpus", None) or []
+        for doc in corpus:
+            path = doc.get("path") or ""
+            if not path or VTTParser.extract_video_hash(path).lower() != video_hash.lower():
+                continue
+            if doc.get("video_id"):
+                return str(doc["video_id"])
+            doc_id = doc.get("doc_id")
+            if not doc_id or self.qdrant_client is None:
+                continue
+            points = self.qdrant_client.query_points(
+                collection_name=self.config.qdrant.collection_name,
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id))
+                    ]
+                ),
+                limit=1,
+                with_payload=True,
+            ).points
+            payload = (points[0].payload or {}) if points else {}
+            if payload.get("video_id"):
+                return str(payload["video_id"])
+        seed_file = (
+            Path(self.config.paths.archive_root)
+            / WebMetadataLoader.hash_to_archive_dir(video_hash)
+            / f"{video_hash}.{language or 'ru'}.vtt"
+        )
+        return VTTParser.generate_video_id(seed_file)
+
     def find_similar_videos(
         self,
         video_hash: str,
@@ -988,15 +1031,9 @@ class RAGQueryEngine:
         """
         if self.qdrant_client is None:
             raise RuntimeError("Qdrant client not initialized. Call initialize() first.")
-        from rainrag.ingest import VTTParser, WebMetadataLoader
+        from rainrag.ingest import VTTParser
 
-        archive_root = Path(self.config.paths.archive_root)
-        seed_file = (
-            archive_root
-            / WebMetadataLoader.hash_to_archive_dir(video_hash)
-            / f"{video_hash}.{language or 'ru'}.vtt"
-        )
-        seed_video_id = VTTParser.generate_video_id(seed_file)
+        seed_video_id = self._seed_video_id(video_hash, language)
         must: list[Any] = [
             models.FieldCondition(key="video_id", match=models.MatchValue(value=seed_video_id))
         ]
