@@ -87,6 +87,19 @@ def test_resolve_video_ref_accepts_hash_id_and_url(tmp_path, monkeypatch):
     assert bad.value.status_code == 400
 
 
+def test_library_id_index_survives_a_truncated_file_and_a_non_string_hash(tmp_path):
+    cache = tmp_path / "web_metadata"
+    _write_record(cache, HASH_A, 1, "u1")
+    # a record caught mid-write, cut inside a multibyte character
+    (cache / f"{HASH_B}.json").write_bytes(
+        json.dumps({"id": 2, "name": "Дождь"}, ensure_ascii=False).encode("utf-8")[:-3]
+    )
+    (cache / f"{HASH_C}.json").write_text(
+        json.dumps({"id": 3, "video_hash": 12345}), encoding="utf-8"
+    )
+    assert WebMetadataLoader(cache, source="local").library_id_index() == {1: HASH_A, 3: "12345"}
+
+
 def test_library_id_index_skips_records_without_an_id(tmp_path):
     cache = tmp_path / "web_metadata"
     _write_record(cache, HASH_A, 1, "u1")

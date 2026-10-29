@@ -1329,7 +1329,9 @@ class WebMetadataLoader:
             try:
                 with open(metadata_file, encoding="utf-8") as f:
                     data = json.load(f)
-            except (json.JSONDecodeError, OSError):
+            except (ValueError, OSError):
+                # ValueError covers a JSON error and a UnicodeDecodeError from a
+                # file caught mid-write (the cache writers are not atomic).
                 continue
             if isinstance(data, dict):
                 yield metadata_file.stem, data
@@ -1347,7 +1349,7 @@ class WebMetadataLoader:
                 library_id = int(raw)
             except (TypeError, ValueError):
                 continue
-            index[library_id] = (data.get("video_hash") or video_hash).strip()
+            index[library_id] = str(data.get("video_hash") or video_hash).strip()
         return index
 
     def search_by_name(self, query: str) -> list[dict[str, Any]]:
