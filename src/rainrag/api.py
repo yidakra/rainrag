@@ -2792,7 +2792,8 @@ def _as_int(value: object) -> int | None:
         return None
     if isinstance(value, int):
         return value
-    if isinstance(value, str) and value.isascii() and value.isdigit():
+    # 18 digits cover any library id; longer strings would make int() raise.
+    if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 18:
         return int(value)
     return None
 

@@ -1075,7 +1075,9 @@ class RAGQueryEngine:
                 payload = hit.payload or {}
                 path = payload.get("path") or ""
                 other = VTTParser.extract_video_hash(path) if path else payload.get("video_id")
-                if not other:
+                # The payload filter excludes the seed by video_id; the hash in the
+                # path catches a seed chunk indexed under another id (root spelling).
+                if not other or str(other).lower() == video_hash.lower():
                     continue
                 entry = agg.setdefault(
                     other,

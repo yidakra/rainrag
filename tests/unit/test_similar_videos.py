@@ -206,6 +206,29 @@ def test_seed_video_id_uses_the_corpus_video_id_when_present(tmp_path):
     assert fake.scroll_filters[0].must[0].match.value == "from-corpus"
 
 
+def test_find_similar_videos_drops_seed_chunks_indexed_under_another_id(tmp_path):
+    engine, fake = _engine(tmp_path)
+    real_query_points = fake.query_points
+
+    def query_points(collection_name, query=None, query_filter=None, limit=10, with_payload=True):
+        points = real_query_points(collection_name, query, query_filter, limit, with_payload)
+        points.points.append(fake._hit(HASH_A, 0.99))  # the seed under a stray video_id
+        return points
+
+    fake.query_points = query_points  # type: ignore[method-assign]
+    ranked = engine.find_similar_videos(HASH_A)
+    assert HASH_A not in [r["video_hash"] for r in ranked]
+
+
+def test_as_int_bounds_the_digit_string():
+    from src.rainrag.api import _as_int
+
+    assert _as_int("357040") == 357040 and _as_int(7) == 7
+    assert _as_int("9" * 18) == int("9" * 18)
+    assert _as_int("9" * 19) is None and _as_int("1" * 5000) is None
+    assert _as_int(True) is None and _as_int("\u00b2") is None and _as_int("12a") is None
+
+
 def test_find_similar_videos_limit_and_language(tmp_path):
     engine, fake = _engine(tmp_path)
     ranked = engine.find_similar_videos(HASH_A, limit=1, language="en")
