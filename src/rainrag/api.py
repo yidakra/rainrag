@@ -333,8 +333,9 @@ from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
-from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS
+from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS, WebMetadataLoader
 from rainrag.query import RAGQueryEngine
+from rainrag.subtitles import vtt_to_srt
 from rainrag.video_session import VideoSessionManager
 
 
@@ -2769,6 +2770,165 @@ async def search_by_url(
 
     logger.info(f"URL lookup for {url!r}: found {video_hash}")
     return VideoUrlLookupResponse(result=result, url=url)
+
+
+# ---------------------------------------------------------------------------
+# Video-level lookups for the site (related articles, transcripts on request).
+# A video is addressed by its 40-hex archive hash, its numeric library id, or
+# its tvrain.tv URL. The answers are other videos, or one subtitle track.
+# ---------------------------------------------------------------------------
+
+_VIDEO_HASH = re.compile(r"^[0-9a-fA-F]{40}$")
+_LIBRARY_IDS: dict[int, str] | None = None
+
+
+class SimilarVideo(BaseModel):
+    """One video ranked against a seed video."""
+
+    video_hash: str
+    library_id: int | None = None
+    url: str | None = None
+    title: str | None = None
+    program: str | None = None
+    date: str | None = None
+    score: float = Field(..., description="Sum of chunk similarities between the two videos")
+    best: float = Field(..., description="The single best chunk similarity")
+    matching_chunks: int
+
+
+class SimilarVideosResponse(BaseModel):
+    video_hash: str
+    video_id: str = Field(..., description="The reference as the caller gave it")
+    results: list[SimilarVideo]
+    num_results: int
+
+
+def _metadata_loader() -> WebMetadataLoader:
+    """The web-metadata cache, with the API behind it when a token is configured."""
+    assert config is not None
+    api_client = None
+    if config.web_metadata.source in {"api", "hybrid"}:
+        from rainrag.web_metadata_api import WebMetadataAPIClient
+
+        try:
+            api_client = WebMetadataAPIClient.from_env(
+                base_url=config.web_metadata.api_url,
+                token_env=config.web_metadata.api_token_env,
+            )
+        except ValueError:
+            logger.warning("Web metadata API token missing; using the local cache only")
+    return WebMetadataLoader(
+        Path(config.web_metadata.path), source=config.web_metadata.source, api_client=api_client
+    )
+
+
+def _library_ids(loader: WebMetadataLoader) -> dict[int, str]:
+    """Numeric library id -> video hash, built once per process from the cache."""
+    global _LIBRARY_IDS
+    if _LIBRARY_IDS is None:
+        _LIBRARY_IDS = loader.library_id_index()
+        logger.info(f"Library id index: {len(_LIBRARY_IDS)} videos")
+    return _LIBRARY_IDS
+
+
+def _resolve_video_ref(ref: str, loader: WebMetadataLoader) -> str:
+    """Turn a hash, a numeric library id or a tvrain.tv URL into the video hash."""
+    ref = ref.strip()
+    if _VIDEO_HASH.match(ref):
+        return ref.lower()
+    if ref.isdigit():
+        video_hash = _library_ids(loader).get(int(ref))
+        if not video_hash:
+            raise HTTPException(status_code=404, detail=f"No video with library id {ref}")
+        return video_hash
+    if ref.startswith(("http://", "https://")):
+        article = loader.search_by_url(ref)
+        video_hash = (article or {}).get("video_hash", "").strip()
+        if not video_hash:
+            raise HTTPException(status_code=404, detail="No video for that URL")
+        return video_hash.lower()
+    raise HTTPException(
+        status_code=400,
+        detail="video_id must be a 40-hex archive hash, a numeric library id, or a tvrain.tv URL",
+    )
+
+
+@app.get("/similar-videos", response_model=SimilarVideosResponse)
+async def similar_videos(
+    video_id: str = Query(
+        ..., min_length=1, description="Archive hash, numeric library id, or tvrain.tv URL"
+    ),
+    limit: int = Query(default=10, ge=1, le=50),
+    language: str | None = Query(
+        default=None, pattern="^(ru|en)$", description="Seed chunks of this language only"
+    ),
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """Other videos ranked by shared content, for a related-videos block."""
+    verify_auth_token(authorization=authorization)
+    if query_engine is None or config is None:
+        raise HTTPException(status_code=503, detail="Query engine not initialized")
+    loader = _metadata_loader()
+    video_hash = await asyncio.to_thread(_resolve_video_ref, video_id, loader)
+    ranked = await asyncio.to_thread(query_engine.find_similar_videos, video_hash, limit, language)
+    results: list[SimilarVideo] = []
+    for entry in ranked:
+        record = await asyncio.to_thread(loader.load_metadata, entry["video_hash"]) or {}
+        teleshow = record.get("teleshow")
+        library_id = record.get("id")
+        results.append(
+            SimilarVideo(
+                video_hash=entry["video_hash"],
+                library_id=int(library_id)
+                if isinstance(library_id, int)
+                or (isinstance(library_id, str) and library_id.isdigit())
+                else None,
+                url=record.get("url") or entry.get("url"),
+                title=record.get("name") or entry.get("title"),
+                program=(teleshow.get("name") if isinstance(teleshow, dict) else None)
+                or entry.get("program"),
+                date=record.get("date_active_start") or entry.get("date"),
+                score=entry["score"],
+                best=entry["best"],
+                matching_chunks=entry["matching_chunks"],
+            )
+        )
+    return SimilarVideosResponse(
+        video_hash=video_hash, video_id=video_id, results=results, num_results=len(results)
+    )
+
+
+@app.api_route("/transcript/{video_id}", methods=["GET", "HEAD"])
+async def video_transcript(
+    video_id: str,
+    language: str = Query(default="ru", pattern="^(ru|en)$"),
+    format: str = Query(default="vtt", pattern="^(vtt|srt)$"),
+    authorization: Annotated[str | None, Header()] = None,
+    auth: Annotated[str | None, Query()] = None,
+):
+    """One subtitle track of a video, as the archive holds it (VTT) or as SRT."""
+    verify_auth_token(authorization=authorization, access_token=auth)
+    if config is None:
+        raise HTTPException(status_code=503, detail="Server not initialized")
+    video_hash = await asyncio.to_thread(_resolve_video_ref, video_id, _metadata_loader())
+    archive_root = Path(config.paths.archive_root).resolve()
+    track = (
+        archive_root
+        / WebMetadataLoader.hash_to_archive_dir(video_hash)
+        / f"{video_hash}.{language}.vtt"
+    ).resolve()
+    if not track.is_relative_to(archive_root) or not track.is_file():
+        raise HTTPException(status_code=404, detail=f"No {language} transcript for {video_hash}")
+    text = track.read_text(encoding="utf-8", errors="replace")
+    if format == "srt":
+        body, media, name = vtt_to_srt(text), "application/x-subrip", f"{video_hash}.{language}.srt"
+    else:
+        body, media, name = text, "text/vtt", track.name
+    return Response(
+        content=body,
+        media_type=f"{media}; charset=utf-8",
+        headers={"Content-Disposition": f'inline; filename="{name}"', "Cache-Control": "no-store"},
+    )
 
 
 @app.post("/related-chunks", response_model=RelatedChunksResponse)

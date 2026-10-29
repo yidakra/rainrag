@@ -967,6 +967,114 @@ class RAGQueryEngine:
 
         return boosted_docs
 
+    def find_similar_videos(
+        self,
+        video_hash: str,
+        limit: int = 10,
+        language: str | None = None,
+        max_seed_chunks: int = 40,
+        per_chunk: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Rank other videos by how much of this video's content they share.
+
+        Every indexed chunk of the seed video (up to ``max_seed_chunks``) is
+        used as a query; the ``per_chunk`` nearest chunks from other videos are
+        grouped by video and their similarities summed. The sum rewards a video
+        that matches the seed in several places over one that matches once.
+        Chunks of the seed video itself, in any language, are excluded through
+        the shared ``video_id`` payload. Returns dicts with video_hash, score
+        (the sum), best (the single best similarity), matching_chunks, and the
+        title, url, program and date carried in the payload, best first.
+        """
+        if self.qdrant_client is None:
+            raise RuntimeError("Qdrant client not initialized. Call initialize() first.")
+        from rainrag.ingest import VTTParser, WebMetadataLoader
+
+        archive_root = Path(self.config.paths.archive_root)
+        seed_file = (
+            archive_root
+            / WebMetadataLoader.hash_to_archive_dir(video_hash)
+            / f"{video_hash}.{language or 'ru'}.vtt"
+        )
+        seed_video_id = VTTParser.generate_video_id(seed_file)
+        must: list[Any] = [
+            models.FieldCondition(key="video_id", match=models.MatchValue(value=seed_video_id))
+        ]
+        if language:
+            must.append(
+                models.FieldCondition(key="language", match=models.MatchValue(value=language))
+            )
+        seeds, _ = self.qdrant_client.scroll(
+            collection_name=self.config.qdrant.collection_name,
+            scroll_filter=models.Filter(must=must),
+            limit=max_seed_chunks,
+            with_payload=False,
+            with_vectors=True,
+        )
+        if not seeds:
+            logger.info(f"No indexed chunks for video {video_hash} (video_id {seed_video_id})")
+            return []
+        exclude_seed = models.Filter(
+            must_not=[
+                models.FieldCondition(key="video_id", match=models.MatchValue(value=seed_video_id))
+            ]
+        )
+        agg: dict[str, dict[str, Any]] = {}
+        for point in seeds:
+            vector = point.vector
+            if not isinstance(vector, list):
+                tolist = getattr(vector, "tolist", None)
+                vector = tolist() if callable(tolist) else list(vector or [])
+            if not vector:
+                continue
+            hits = self.qdrant_client.query_points(
+                collection_name=self.config.qdrant.collection_name,
+                query=vector,
+                query_filter=exclude_seed,
+                limit=per_chunk,
+                with_payload=True,
+            ).points
+            for hit in hits:
+                payload = hit.payload or {}
+                path = payload.get("path") or ""
+                other = VTTParser.extract_video_hash(path) if path else payload.get("video_id")
+                if not other:
+                    continue
+                entry = agg.setdefault(
+                    other,
+                    {
+                        "video_hash": other,
+                        "score": 0.0,
+                        "best": 0.0,
+                        "matching_chunks": 0,
+                        "title": None,
+                        "url": None,
+                        "program": None,
+                        "date": None,
+                    },
+                )
+                score = float(hit.score or 0.0)
+                entry["score"] += score
+                entry["best"] = max(entry["best"], score)
+                entry["matching_chunks"] += 1
+                for key, field in (
+                    ("title", "web_title"),
+                    ("url", "web_url"),
+                    ("program", "web_program"),
+                ):
+                    if not entry[key] and payload.get(field):
+                        entry[key] = payload[field]
+                if not entry["date"]:
+                    entry["date"] = payload.get("web_date") or payload.get("date")
+        ranked = sorted(agg.values(), key=lambda e: (e["score"], e["best"]), reverse=True)[:limit]
+        for entry in ranked:
+            entry["score"] = round(entry["score"], 4)
+            entry["best"] = round(entry["best"], 4)
+        logger.info(
+            f"Similar videos for {video_hash}: {len(agg)} candidates from {len(seeds)} seed chunks"
+        )
+        return ranked
+
     def find_related_chunks(
         self, chunk_id: str, top_k: int = 5, same_video_only: bool = False
     ) -> list[dict[str, Any]]:

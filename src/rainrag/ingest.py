@@ -1319,6 +1319,37 @@ class WebMetadataLoader:
                 hashes.append(metadata_file.stem)
         return hashes
 
+    def local_records(self) -> "Iterator[tuple[str, dict[str, Any]]]":
+        """Yield (video_hash, record) for every readable ``{hash}.json`` in the cache."""
+        if not self.metadata_path.exists():
+            return
+        for metadata_file in sorted(self.metadata_path.glob("*.json")):
+            if not metadata_file.is_file():
+                continue
+            try:
+                with open(metadata_file, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
+            if isinstance(data, dict):
+                yield metadata_file.stem, data
+
+    def library_id_index(self) -> dict[int, str]:
+        """Map the site's numeric library id (``id`` in the record) to the video hash.
+
+        The site addresses a video by this id and the archive by the hash; the
+        cached article records carry both. Built from the local cache only.
+        """
+        index: dict[int, str] = {}
+        for video_hash, data in self.local_records():
+            raw = data.get("id")
+            try:
+                library_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            index[library_id] = (data.get("video_hash") or video_hash).strip()
+        return index
+
     def search_by_name(self, query: str) -> list[dict[str, Any]]:
         """Search metadata by title (case-insensitive substring match).
 
