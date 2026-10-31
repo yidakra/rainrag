@@ -377,6 +377,15 @@ class VideoUploadConfig(BaseModel):
             "unreadable files are ignored, so the endpoint keeps working for other sites."
         ),
     )
+    apify_token_env: str = Field(
+        default="APIFY_API_TOKEN",
+        description=(
+            "Env var holding an Apify API token. When it is set and YouTube refuses a "
+            "download from this server (HTTP 403/429, bot check), the import is fetched "
+            "once through the johnvc/youtube-download-api Apify Actor instead. Unset or "
+            "empty keeps imports direct-only. Treat the token as a credential."
+        ),
+    )
     telegram_enabled: bool = Field(
         default=False,
         description=(
