@@ -1,7 +1,6 @@
 """FastAPI backend for RainRAG query interface."""
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
 import ipaddress
@@ -18,6 +17,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any
