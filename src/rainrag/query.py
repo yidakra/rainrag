@@ -1070,7 +1070,7 @@ class RAGQueryEngine:
             logger.info(f"No indexed chunks for video {video_hash}")
             return []
         exclude_seed = models.Filter(must_not=seed)
-        agg: dict[str, dict[str, Any]] = {}
+        requests: list[models.QueryRequest] = []
         for point in seeds:
             vector = point.vector
             if not isinstance(vector, list):
@@ -1078,14 +1078,21 @@ class RAGQueryEngine:
                 vector = tolist() if callable(tolist) else list(vector or [])
             if not vector:
                 continue
-            hits = self.qdrant_client.query_points(
-                collection_name=self.config.qdrant.collection_name,
-                query=vector,
-                query_filter=exclude_seed,
-                limit=per_chunk,
-                with_payload=True,
-            ).points
-            for hit in hits:
+            requests.append(
+                models.QueryRequest(
+                    query=vector, filter=exclude_seed, limit=per_chunk, with_payload=True
+                )
+            )
+        if not requests:
+            logger.info(f"No seed vectors for video {video_hash}")
+            return []
+        # One round trip for all seed chunks instead of one per chunk.
+        responses = self.qdrant_client.query_batch_points(
+            collection_name=self.config.qdrant.collection_name, requests=requests
+        )
+        agg: dict[str, dict[str, Any]] = {}
+        for response in responses:
+            for hit in response.points:
                 payload = hit.payload or {}
                 path = payload.get("path") or ""
                 other = VTTParser.extract_video_hash(path) if path else payload.get("video_id")

@@ -191,6 +191,12 @@ class _FakeQdrant:
         payload = {"path": path, "video_id": video_hash[:16], "language": lang, **web}
         return SimpleNamespace(score=score, payload=payload)
 
+    def query_batch_points(self, collection_name, requests):
+        return [
+            self.query_points(collection_name, list(r.query), r.filter, r.limit, r.with_payload)
+            for r in requests
+        ]
+
     def query_points(self, collection_name, query, query_filter, limit, with_payload):
         self.query_filters.append(query_filter)
         if query == [1.0, 0.0]:
@@ -252,7 +258,7 @@ def test_seed_paths_come_from_the_corpus_when_the_archive_root_moved(tmp_path):
     should = fake.scroll_filters[0].must[0].should
     assert [c.key for c in should] == ["video_id", "path"]
     assert should[1].match.value == ingest_time_path
-    # no per-chunk Qdrant lookup: every query went through the seed vectors
+    # no per-chunk Qdrant lookup: the only queries are the three seed vectors, in one batch
     assert len(fake.query_filters) == 3
     assert fake.query_filters[-1].must_not[1].match.value == ingest_time_path
 
