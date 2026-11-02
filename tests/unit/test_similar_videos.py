@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -16,7 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.rainrag import api as api_module  # noqa: E402
 from src.rainrag.api import _resolve_video_ref, app  # noqa: E402
-from src.rainrag.ingest import VTTParser, WebMetadataLoader  # noqa: E402
+from src.rainrag.index import _build_payload  # noqa: E402
+from src.rainrag.ingest import Document, VTTParser, WebMetadataLoader  # noqa: E402
 from src.rainrag.query import RAGQueryEngine  # noqa: E402
 from src.rainrag.subtitles import vtt_to_srt  # noqa: E402
 
@@ -47,6 +50,20 @@ def test_vtt_to_srt_renumbers_and_drops_header_blocks():
     assert srt == (
         "1\n00:00:00,000 --> 00:00:03,500\nРада вас видеть.\n\n"
         "2\n00:00:03,780 --> 00:00:05,980\nСпасибо, Катя.\nРада быть с вами.\n"
+    )
+
+
+def test_vtt_to_srt_keeps_cues_whose_identifier_starts_with_a_block_name():
+    vtt = (
+        "WEBVTT\n\nNOTE_1\n00:00:01.000 --> 00:00:02.000\nkept\n\n"
+        "STYLE-1\n00:00:03.000 --> 00:00:04.000\nalso kept\n\n"
+        "NOTE\nthis is dropped\n\nSTYLE\n::cue {}\n\n"
+        "100:00:00.000 --> 100:00:01.000\nhour 100\n"
+    )
+    assert vtt_to_srt(vtt) == (
+        "1\n00:00:01,000 --> 00:00:02,000\nkept\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\nalso kept\n\n"
+        "3\n100:00:00,000 --> 100:00:01,000\nhour 100\n"
     )
 
 
@@ -113,25 +130,54 @@ class _Points:
         self.points = points
 
 
-class _FakeQdrant:
-    """Three seed chunks; hits spread over two other videos and the seed itself."""
+def _matches(flt, payload: dict) -> bool:
+    """Qdrant filter semantics for MatchValue: every must, any should, no must_not."""
 
-    def __init__(self, seed_video_id: str, archive_root: Path):
-        self.seed_video_id = seed_video_id
+    def hit(cond) -> bool:
+        return payload.get(cond.key) == cond.match.value
+
+    return (
+        all(hit(c) for c in (flt.must or []))
+        and (not flt.should or any(hit(c) for c in flt.should))
+        and not any(hit(c) for c in (flt.must_not or []))
+    )
+
+
+def _seed_points(archive_root: Path, *, with_video_id: bool = True) -> list[SimpleNamespace]:
+    """Three chunks of HASH_A under the payload the indexer writes (``_build_payload``)."""
+    track_dir = archive_root / WebMetadataLoader.hash_to_archive_dir(HASH_A)
+    points = []
+    for i, (vector, lang) in enumerate(
+        [([1.0, 0.0], "ru"), ([0.0, 1.0], "ru"), ([0.5, 0.5], "en")]
+    ):
+        path = track_dir / f"{HASH_A}.{lang}.vtt"
+        doc = Document(
+            id=f"{HASH_A}-{i}",
+            path=str(path),
+            language=lang,
+            text="t",
+            length=1,
+            video_id=VTTParser.generate_video_id(path),
+        )
+        payload = _build_payload(doc)
+        if not with_video_id:
+            del payload["video_id"]  # an index built before video_id was stored
+        points.append(SimpleNamespace(vector=vector, payload=payload))
+    return points
+
+
+class _FakeQdrant:
+    """Seed chunks filtered the way Qdrant would; hits spread over two other videos."""
+
+    def __init__(self, archive_root: Path, points: list[SimpleNamespace]):
         self.root = archive_root
+        self.points = points
         self.scroll_filters = []
         self.query_filters = []
 
     def scroll(self, collection_name, scroll_filter, limit, with_payload, with_vectors):
         self.scroll_filters.append(scroll_filter)
-        return (
-            [
-                SimpleNamespace(vector=[1.0, 0.0]),
-                SimpleNamespace(vector=[0.0, 1.0]),
-                SimpleNamespace(vector=[0.5, 0.5]),
-            ],
-            None,
-        )
+        return [p for p in self.points if _matches(scroll_filter, p.payload)][:limit], None
 
     def _hit(self, video_hash, score, lang="ru", **web):
         path = str(
@@ -158,17 +204,15 @@ class _FakeQdrant:
         return _Points([self._hit(HASH_C, 0.5)])
 
 
-def _engine(tmp_path) -> tuple[RAGQueryEngine, _FakeQdrant]:
+def _engine(tmp_path, *, with_video_id: bool = True) -> tuple[RAGQueryEngine, _FakeQdrant]:
+    root = tmp_path / "archive"
     config = SimpleNamespace(
-        paths=SimpleNamespace(archive_root=str(tmp_path / "archive")),
-        qdrant=SimpleNamespace(collection_name="broadcast_transcripts"),
+        paths=SimpleNamespace(archive_root=str(root)),
+        qdrant=SimpleNamespace(collection_name="broadcast_transcripts", distance="Cosine"),
     )
     engine = RAGQueryEngine.__new__(RAGQueryEngine)
     engine.config = config  # type: ignore[attr-defined]
-    seed_file = (
-        tmp_path / "archive" / WebMetadataLoader.hash_to_archive_dir(HASH_A) / f"{HASH_A}.ru.vtt"
-    )
-    fake = _FakeQdrant(VTTParser.generate_video_id(seed_file), tmp_path / "archive")
+    fake = _FakeQdrant(root, _seed_points(root, with_video_id=with_video_id))
     engine.qdrant_client = fake  # type: ignore[attr-defined]
     return engine, fake
 
@@ -182,10 +226,12 @@ def test_find_similar_videos_groups_hits_by_video_and_sums_scores(tmp_path):
     assert c["score"] == pytest.approx(1.5) and c["matching_chunks"] == 3
     assert b["title"] == "B title" and b["url"] == "https://tvrain.tv/b"
     assert c["title"] == "C title"
-    # the seed video is excluded through its payload video_id, in every language
+    # the seed video is selected, then excluded, by its video_id and its file paths
     seed_filter = fake.scroll_filters[0]
-    assert seed_filter.must[0].match.value == fake.seed_video_id
-    assert fake.query_filters[0].must_not[0].match.value == fake.seed_video_id
+    seed_video_id = fake.points[0].payload["video_id"]
+    assert seed_filter.should[0].match.value == seed_video_id
+    assert {c.key for c in seed_filter.should} == {"video_id", "path"}
+    assert fake.query_filters[0].must_not[0].match.value == seed_video_id
 
 
 def test_seed_video_id_comes_from_the_index_when_the_corpus_is_in_memory(tmp_path):
@@ -196,6 +242,8 @@ def test_seed_video_id_comes_from_the_index_when_the_corpus_is_in_memory(tmp_pat
         {"path": "/x/" + HASH_B + ".ru.vtt", "doc_id": "other"},  # type: ignore[attr-defined]
         {"path": ingest_time_path, "doc_id": "seed-doc"},
     ]
+    for point in fake.points:
+        point.payload["video_id"] = "payload-id-123"
     real_query_points = fake.query_points
 
     def query_points(collection_name, query=None, query_filter=None, limit=10, with_payload=True):
@@ -206,7 +254,8 @@ def test_seed_video_id_comes_from_the_index_when_the_corpus_is_in_memory(tmp_pat
 
     fake.query_points = query_points  # type: ignore[method-assign]
     engine.find_similar_videos(HASH_A)
-    assert fake.scroll_filters[0].must[0].match.value == "payload-id-123"
+    assert fake.scroll_filters[0].should[0].match.value == "payload-id-123"
+    assert fake.scroll_filters[0].should[1].match.value == ingest_time_path
     assert fake.query_filters[-1].must_not[0].match.value == "payload-id-123"
 
 
@@ -216,7 +265,8 @@ def test_seed_video_id_uses_the_corpus_video_id_when_present(tmp_path):
         {"path": f"/any/{HASH_A}.en.vtt", "doc_id": "d", "video_id": "from-corpus"}
     ]  # type: ignore[attr-defined]
     engine.find_similar_videos(HASH_A)
-    assert fake.scroll_filters[0].must[0].match.value == "from-corpus"
+    assert fake.scroll_filters[0].should[0].match.value == "from-corpus"
+    assert fake.scroll_filters[0].should[1].match.value == f"/any/{HASH_A}.en.vtt"
 
 
 def test_find_similar_videos_drops_seed_chunks_indexed_under_another_id(tmp_path):
@@ -246,7 +296,27 @@ def test_find_similar_videos_limit_and_language(tmp_path):
     engine, fake = _engine(tmp_path)
     ranked = engine.find_similar_videos(HASH_A, limit=1, language="en")
     assert len(ranked) == 1
-    assert fake.scroll_filters[0].must[1].match.value == "en"
+    assert fake.scroll_filters[0].must[0].match.value == "en"
+
+
+def test_seed_chunks_of_an_index_without_video_id_are_found_by_path(tmp_path):
+    engine, fake = _engine(tmp_path, with_video_id=False)
+    ranked = engine.find_similar_videos(HASH_A)
+    assert [r["video_hash"] for r in ranked] == [HASH_B, HASH_C]
+    paths = {c.match.value for c in fake.scroll_filters[0].should if c.key == "path"}
+    assert paths == {p.payload["path"] for p in fake.points}
+
+
+def test_find_similar_videos_folds_euclidean_distances_to_similarities(tmp_path):
+    engine, fake = _engine(tmp_path)
+    engine.config.qdrant.distance = "Euclidean"  # type: ignore[attr-defined]
+    ranked = engine.find_similar_videos(HASH_A)
+    # the fake's scores are now distances: C (0.4, 0.6, 0.5) is nearer than B (0.9, 0.7)
+    assert [r["video_hash"] for r in ranked] == [HASH_C, HASH_B]
+    c, b = ranked
+    assert c["best"] == pytest.approx(1 / 1.4, abs=1e-4)
+    assert b["best"] == pytest.approx(1 / 1.7, abs=1e-4)
+    assert b["score"] == pytest.approx(1 / 1.9 + 1 / 1.7, abs=1e-4)
 
 
 def test_find_similar_videos_without_seed_chunks_is_empty(tmp_path):
@@ -320,6 +390,64 @@ def test_similar_videos_endpoint_enriches_from_the_metadata_cache(client, tmp_pa
         engine.find_similar_videos.assert_called_once_with(HASH_A, 5, None)
 
 
+def test_similar_videos_endpoint_fetches_missing_metadata_within_a_deadline(
+    client, tmp_path, monkeypatch
+):
+    cache = tmp_path / "web_metadata"
+    _write_record(cache, HASH_A, 1, "https://tvrain.tv/a")
+    monkeypatch.setattr(api_module, "_LIBRARY_IDS", None)
+    monkeypatch.setattr(api_module, "_ENRICH_DEADLINE_SECONDS", 0.2)
+    monkeypatch.delenv("LIBRARY_API_TOKEN", raising=False)
+    cfg = _config(tmp_path)
+    cfg.web_metadata.source = "hybrid"
+    fetched = []
+
+    def fetch_api(self, video_hash):
+        fetched.append(video_hash)
+        if video_hash == HASH_B:
+            return {"id": 2, "name": "B from the API"}
+        time.sleep(1.0)  # a stalled metadata service
+        return {"id": 3, "name": "too late"}
+
+    monkeypatch.setattr(api_module.WebMetadataLoader, "_fetch_api", fetch_api)
+    entry = {"score": 0.5, "best": 0.5, "matching_chunks": 1, "url": None, "program": None}
+    ranked = [
+        {"video_hash": HASH_B, "title": "B payload", "date": None, **entry},
+        {"video_hash": HASH_C, "title": "C payload", "date": None, **entry},
+    ]
+    with patch("src.rainrag.api.query_engine") as engine, patch("src.rainrag.api.config", cfg):
+        engine.find_similar_videos.return_value = ranked
+        started = time.monotonic()
+        r = client.get("/similar-videos", params={"video_id": "1"})
+        assert r.status_code == 200, r.text
+        assert time.monotonic() - started < 0.9
+        first, second = r.json()["results"]
+        assert first["title"] == "B from the API" and first["library_id"] == 2
+        assert second["title"] == "C payload" and second["library_id"] is None
+    assert sorted(fetched) == [HASH_B, HASH_C]
+
+
+def test_metadata_loader_fails_fast_without_a_token_in_api_mode(tmp_path, monkeypatch):
+    monkeypatch.delenv("LIBRARY_API_TOKEN", raising=False)
+    cfg = _config(tmp_path)
+    cfg.web_metadata.source = "api"
+    with patch("src.rainrag.api.config", cfg):
+        with pytest.raises(HTTPException) as err:
+            api_module._metadata_loader()
+        assert err.value.status_code == 503
+        cfg.web_metadata.source = "hybrid"
+        assert api_module._metadata_loader().api_client is None
+
+
+def test_metadata_cache_writes_leave_no_partial_file(tmp_path):
+    cache = tmp_path / "web_metadata"
+    cache.mkdir()
+    target = cache / f"{HASH_A}.json"
+    WebMetadataLoader._write_cache_record(target, {"id": 1, "name": "Дождь"})
+    assert json.loads(target.read_text(encoding="utf-8")) == {"id": 1, "name": "Дождь"}
+    assert list(cache.iterdir()) == [target]
+
+
 def test_similar_videos_endpoint_rejects_a_bad_reference(client, tmp_path, monkeypatch):
     monkeypatch.setattr(api_module, "_LIBRARY_IDS", None)
     with patch("src.rainrag.api.query_engine"), patch("src.rainrag.api.config", _config(tmp_path)):
@@ -340,6 +468,24 @@ def test_transcript_endpoint_serves_vtt_and_srt(client, tmp_path):
         assert r.text.startswith("1\n00:00:00,000 --> 00:00:03,500\n")
         assert client.get(f"/transcript/{HASH_A}", params={"language": "en"}).status_code == 404
         assert client.get("/transcript/zzz").status_code == 400
+
+
+def test_transcript_endpoint_takes_only_a_signed_token_in_the_query(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "standing-secret")
+    track_dir = tmp_path / "archive" / WebMetadataLoader.hash_to_archive_dir(HASH_A)
+    track_dir.mkdir(parents=True)
+    (track_dir / f"{HASH_A}.ru.vtt").write_text(VTT, encoding="utf-8")
+    with patch("src.rainrag.api.config", _config(tmp_path)):
+        assert client.get(f"/transcript/{HASH_A}").status_code == 401
+        # the standing secret in a URL would land in logs and Referer headers
+        assert (
+            client.get(f"/transcript/{HASH_A}", params={"auth": "standing-secret"}).status_code
+            == 401
+        )
+        signed = api_module.issue_media_token(60, secret="standing-secret")
+        assert client.get(f"/transcript/{HASH_A}", params={"auth": signed}).status_code == 200
+        headers = {"Authorization": "Bearer standing-secret"}
+        assert client.get(f"/transcript/{HASH_A}", headers=headers).status_code == 200
 
 
 def test_transcript_endpoint_accepts_a_tvrain_url_as_reference(client, tmp_path, monkeypatch):

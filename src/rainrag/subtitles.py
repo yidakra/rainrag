@@ -2,7 +2,8 @@
 
 The archive holds WebVTT (livevtt output). A client that wants SRT gets the
 same cues renumbered, with comma decimal marks and hour fields, and without
-the WebVTT header, NOTE and STYLE blocks, or cue settings.
+the WebVTT header, NOTE, STYLE and REGION blocks, or cue settings. A cue whose
+identifier merely starts with one of those words (``NOTE_1``) is kept.
 """
 
 from __future__ import annotations
@@ -10,8 +11,12 @@ from __future__ import annotations
 import re
 
 
-_TIMESTAMP = re.compile(r"(?:(\d{1,2}):)?(\d{2}):(\d{2})\.(\d{3})")
+# WebVTT puts no upper bound on the hour field.
+_TIMESTAMP = re.compile(r"(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})")
 _ARROW = re.compile(r"^(\S+)\s+-->\s+(\S+)(.*)$")
+# A header line is WEBVTT or NOTE followed by whitespace or the end of the
+# line, or exactly STYLE or REGION.
+_BLOCK_HEAD = re.compile(r"^(?:WEBVTT|NOTE)(?:\s|$)|^(?:STYLE|REGION)$")
 
 
 def _srt_time(ts: str) -> str | None:
@@ -32,7 +37,7 @@ def vtt_to_srt(text: str) -> str:
         if not lines:
             continue
         head = lines[0].strip()
-        if head.startswith(("WEBVTT", "NOTE", "STYLE", "REGION")):
+        if _BLOCK_HEAD.match(head):
             continue
         timing_index = next((i for i, ln in enumerate(lines) if "-->" in ln), None)
         if timing_index is None:

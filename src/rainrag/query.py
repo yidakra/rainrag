@@ -967,26 +967,34 @@ class RAGQueryEngine:
 
         return boosted_docs
 
-    def _seed_video_id(self, video_hash: str, language: str | None) -> str:
-        """The ``video_id`` payload value of a video, by its archive hash.
+    def _seed_conditions(self, video_hash: str, language: str | None) -> list[Any]:
+        """Payload conditions, any of which selects a chunk of this video.
 
-        Preferred source: the documents kept in memory for BM25 (every indexed
-        chunk's path and doc_id). The chunk whose path names this hash is
-        fetched and its payload read, so the answer does not depend on how the
-        archive root was spelled at ingest time. Without that corpus (hybrid
-        search off), the id is recomputed the way ingest computes it, from the
-        configured archive root; that matches only while the root is unchanged.
-        The id is shared by every language track of the video.
+        Two payload keys are tried. ``video_id`` is the id shared by every
+        language track of a video; the indexer writes it since this change,
+        and an index built earlier carries none. ``path`` is written by every
+        indexer version, so the seed's file paths are matched as well: the
+        paths the BM25 corpus holds for this hash when hybrid search is on,
+        else the paths ingest would produce under the configured archive root
+        (that matches only while the root is unchanged). The ``video_id``
+        value comes from the corpus, then from the payload of one of its
+        chunks, then from the same recomputation.
         """
         from rainrag.ingest import VTTParser, WebMetadataLoader
 
         corpus = getattr(self, "bm25_corpus", None) or []
+        video_id: str | None = None
+        paths: list[str] = []
         for doc in corpus:
             path = doc.get("path") or ""
             if not path or VTTParser.extract_video_hash(path).lower() != video_hash.lower():
                 continue
+            paths.append(path)
+            if video_id:
+                continue
             if doc.get("video_id"):
-                return str(doc["video_id"])
+                video_id = str(doc["video_id"])
+                continue
             doc_id = doc.get("doc_id")
             if not doc_id or self.qdrant_client is None:
                 continue
@@ -1002,13 +1010,36 @@ class RAGQueryEngine:
             ).points
             payload = (points[0].payload or {}) if points else {}
             if payload.get("video_id"):
-                return str(payload["video_id"])
-        seed_file = (
-            Path(self.config.paths.archive_root)
-            / WebMetadataLoader.hash_to_archive_dir(video_hash)
-            / f"{video_hash}.{language or 'ru'}.vtt"
+                video_id = str(payload["video_id"])
+        archive_dir = Path(self.config.paths.archive_root) / WebMetadataLoader.hash_to_archive_dir(
+            video_hash
         )
-        return VTTParser.generate_video_id(seed_file)
+        if not paths:
+            languages = [language] if language else ["ru", "en"]
+            paths = [str(archive_dir / f"{video_hash}.{lang}.vtt") for lang in languages]
+        if not video_id:
+            video_id = VTTParser.generate_video_id(
+                archive_dir / f"{video_hash}.{language or 'ru'}.vtt"
+            )
+        conditions: list[Any] = [
+            models.FieldCondition(key="video_id", match=models.MatchValue(value=video_id))
+        ]
+        conditions.extend(
+            models.FieldCondition(key="path", match=models.MatchValue(value=path))
+            for path in dict.fromkeys(paths)
+        )
+        return conditions
+
+    def _similarity(self, score: float) -> float:
+        """A higher-is-better similarity from a Qdrant score.
+
+        Cosine and dot-product scores already are one. A Euclidean score is a
+        distance, so it is folded to 1 / (1 + distance).
+        """
+        distance = getattr(getattr(self.config, "qdrant", None), "distance", "Cosine")
+        if distance == "Euclidean":
+            return 1.0 / (1.0 + max(score, 0.0))
+        return score
 
     def find_similar_videos(
         self,
@@ -1025,7 +1056,9 @@ class RAGQueryEngine:
         grouped by video and their similarities summed. The sum rewards a video
         that matches the seed in several places over one that matches once.
         Chunks of the seed video itself, in any language, are excluded through
-        the shared ``video_id`` payload. Returns dicts with video_hash, score
+        the payload (see ``_seed_conditions``), and every score is folded to a
+        higher-is-better similarity whatever the distance metric. Returns
+        dicts with video_hash, score
         (the sum), best (the single best similarity), matching_chunks, and the
         title, url, program and date carried in the payload, best first.
         """
@@ -1033,29 +1066,23 @@ class RAGQueryEngine:
             raise RuntimeError("Qdrant client not initialized. Call initialize() first.")
         from rainrag.ingest import VTTParser
 
-        seed_video_id = self._seed_video_id(video_hash, language)
-        must: list[Any] = [
-            models.FieldCondition(key="video_id", match=models.MatchValue(value=seed_video_id))
-        ]
+        seed = self._seed_conditions(video_hash, language)
+        must: list[Any] = []
         if language:
             must.append(
                 models.FieldCondition(key="language", match=models.MatchValue(value=language))
             )
         seeds, _ = self.qdrant_client.scroll(
             collection_name=self.config.qdrant.collection_name,
-            scroll_filter=models.Filter(must=must),
+            scroll_filter=models.Filter(should=seed, must=must or None),
             limit=max_seed_chunks,
             with_payload=False,
             with_vectors=True,
         )
         if not seeds:
-            logger.info(f"No indexed chunks for video {video_hash} (video_id {seed_video_id})")
+            logger.info(f"No indexed chunks for video {video_hash}")
             return []
-        exclude_seed = models.Filter(
-            must_not=[
-                models.FieldCondition(key="video_id", match=models.MatchValue(value=seed_video_id))
-            ]
-        )
+        exclude_seed = models.Filter(must_not=seed)
         agg: dict[str, dict[str, Any]] = {}
         for point in seeds:
             vector = point.vector
@@ -1075,8 +1102,8 @@ class RAGQueryEngine:
                 payload = hit.payload or {}
                 path = payload.get("path") or ""
                 other = VTTParser.extract_video_hash(path) if path else payload.get("video_id")
-                # The payload filter excludes the seed by video_id; the hash in the
-                # path catches a seed chunk indexed under another id (root spelling).
+                # The payload filter excludes the seed by video_id and path; the hash
+                # in the path catches a seed chunk indexed under another root spelling.
                 if not other or str(other).lower() == video_hash.lower():
                     continue
                 entry = agg.setdefault(
@@ -1092,7 +1119,7 @@ class RAGQueryEngine:
                         "date": None,
                     },
                 )
-                score = float(hit.score or 0.0)
+                score = self._similarity(float(hit.score or 0.0))
                 entry["score"] += score
                 entry["best"] = max(entry["best"], score)
                 entry["matching_chunks"] += 1

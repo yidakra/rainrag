@@ -1039,9 +1039,7 @@ class WebMetadataLoader:
             if not safe_hash:
                 continue
             try:
-                (self.metadata_path / f"{safe_hash}.json").write_text(
-                    json.dumps(article, ensure_ascii=False, indent=None), encoding="utf-8"
-                )
+                self._write_cache_record(self.metadata_path / f"{safe_hash}.json", article)
             except OSError:
                 continue
         return api_candidates
@@ -1049,6 +1047,17 @@ class WebMetadataLoader:
     # ------------------------------------------------------------------
     # Local helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_cache_record(cache_file: Path, data: dict[str, Any]) -> None:
+        """Write one cache record through a sibling temp file and an atomic rename.
+
+        ``local_records`` scans the directory while the API modes write to it;
+        a reader must see a whole record or none, never a truncated one.
+        """
+        tmp = cache_file.with_name(cache_file.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=None), encoding="utf-8")
+        tmp.replace(cache_file)
 
     def _load_local(self, video_hash: str) -> dict[str, Any] | None:
         """Read a single ``{hash}.json`` from the local directory."""
@@ -1062,6 +1071,10 @@ class WebMetadataLoader:
         except (json.JSONDecodeError, FileNotFoundError) as e:
             logger.debug(f"Could not load web metadata for {video_hash}: {e}")
             return None
+
+    def load_cached(self, video_hash: str) -> dict[str, Any] | None:
+        """The locally cached record only; never a network fetch, whatever ``source`` is."""
+        return self._load_local(video_hash)
 
     def _fetch_api(self, video_hash: str) -> dict[str, Any] | None:
         """Fetch metadata from the remote API and cache locally."""
@@ -1078,9 +1091,7 @@ class WebMetadataLoader:
         self.metadata_path.mkdir(parents=True, exist_ok=True)
         cache_file = self.metadata_path / f"{video_hash}.json"
         try:
-            cache_file.write_text(
-                json.dumps(data, ensure_ascii=False, indent=None), encoding="utf-8"
-            )
+            self._write_cache_record(cache_file, data)
         except OSError as exc:
             logger.warning(f"Failed to cache metadata for {video_hash}: {exc}")
         return data

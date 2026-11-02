@@ -1285,8 +1285,18 @@ def _media_token_is_valid(token: str, secret: str) -> bool:
     return time.time() < expires
 
 
-def verify_auth_token(authorization: str | None = None, access_token: str | None = None) -> bool:
-    """Verify authentication token if configured."""
+def verify_auth_token(
+    authorization: str | None = None,
+    access_token: str | None = None,
+    *,
+    query_secret_allowed: bool = True,
+) -> bool:
+    """Verify authentication token if configured.
+
+    With ``query_secret_allowed=False`` a query-string credential counts only
+    when it is an expiring signed media token. A URL lands in access logs,
+    browser history and Referer headers, where the standing secret must not.
+    """
     required_token = os.getenv("RAINRAG_AUTH_TOKEN")
 
     # If no token is configured, allow all requests
@@ -1299,7 +1309,7 @@ def verify_auth_token(authorization: str | None = None, access_token: str | None
     if access_token:
         if _media_token_is_valid(access_token, required_token):
             return True
-        if hmac.compare_digest(access_token, required_token):
+        if query_secret_allowed and hmac.compare_digest(access_token, required_token):
             return True
 
     # Check if authorization header is provided
@@ -2784,6 +2794,12 @@ _LIBRARY_IDS_BUILT_AT: float = 0.0
 _LIBRARY_IDS_TTL_SECONDS = (
     300.0  # the incremental updater adds records; a miss waits at most this long
 )
+_LIBRARY_IDS_LOCK = threading.Lock()
+# Enrichment of a similar-videos response from the remote metadata API: at
+# most this many lookups at a time, and this long in all before the payload
+# fields stand in for the rest.
+_ENRICH_CONCURRENCY = 4
+_ENRICH_DEADLINE_SECONDS = 5.0
 
 
 def _as_int(value: object) -> int | None:
@@ -2831,8 +2847,18 @@ def _metadata_loader() -> WebMetadataLoader:
                 base_url=config.web_metadata.api_url,
                 token_env=config.web_metadata.api_token_env,
             )
-        except ValueError:
-            logger.warning("Web metadata API token missing; using the local cache only")
+        except ValueError as exc:
+            if config.web_metadata.source == "api":
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Web metadata API is required but token is missing. "
+                        + f"Set {config.web_metadata.api_token_env}."
+                    ),
+                ) from exc
+            logger.warning(
+                "Web metadata API token missing for hybrid mode; using the local cache only"
+            )
     return WebMetadataLoader(
         Path(config.web_metadata.path), source=config.web_metadata.source, api_client=api_client
     )
@@ -2845,12 +2871,17 @@ def _library_ids(loader: WebMetadataLoader) -> dict[int, str]:
     first call must not turn every later id lookup into a 404.
     """
     global _LIBRARY_IDS, _LIBRARY_IDS_BUILT_AT
-    now = time.monotonic()
-    if not _LIBRARY_IDS or now - _LIBRARY_IDS_BUILT_AT > _LIBRARY_IDS_TTL_SECONDS:
-        _LIBRARY_IDS = loader.library_id_index()
-        _LIBRARY_IDS_BUILT_AT = now
-        logger.info(f"Library id index: {len(_LIBRARY_IDS)} videos")
-    return _LIBRARY_IDS
+    # One rebuild at a time: concurrent requests past the TTL would each scan
+    # the whole cache directory.
+    with _LIBRARY_IDS_LOCK:
+        now = time.monotonic()
+        index = _LIBRARY_IDS
+        if not index or now - _LIBRARY_IDS_BUILT_AT > _LIBRARY_IDS_TTL_SECONDS:
+            index = loader.library_id_index()
+            _LIBRARY_IDS = index
+            _LIBRARY_IDS_BUILT_AT = now
+            logger.info(f"Library id index: {len(index)} videos")
+        return index
 
 
 def _resolve_video_ref(ref: str, loader: WebMetadataLoader) -> str:
@@ -2876,6 +2907,36 @@ def _resolve_video_ref(ref: str, loader: WebMetadataLoader) -> str:
     )
 
 
+async def _enrich_records(loader: WebMetadataLoader, hashes: list[str]) -> list[dict[str, Any]]:
+    """Metadata records for the hashes, in order; a miss is an empty dict.
+
+    The local cache answers first. In ``api`` and ``hybrid`` mode the misses
+    are then fetched remotely, ``_ENRICH_CONCURRENCY`` at a time and within
+    ``_ENRICH_DEADLINE_SECONDS`` in all, so a stalled metadata service delays
+    the response by the deadline at most. The payload carries a fallback for
+    every field, so a miss costs a library id and a fresher title, nothing more.
+    """
+    records = await asyncio.to_thread(lambda: [loader.load_cached(h) or {} for h in hashes])
+    missing = [i for i, record in enumerate(records) if not record]
+    if not missing or loader.source == "local":
+        return records
+    gate = asyncio.Semaphore(_ENRICH_CONCURRENCY)
+
+    async def fetch(i: int) -> None:
+        async with gate:
+            records[i] = await asyncio.to_thread(loader.load_metadata, hashes[i]) or {}
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(fetch(i) for i in missing)), timeout=_ENRICH_DEADLINE_SECONDS
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Metadata enrichment passed {_ENRICH_DEADLINE_SECONDS:.0f}s; payload fields used"
+        )
+    return records
+
+
 @app.get("/similar-videos", response_model=SimilarVideosResponse)
 async def similar_videos(
     video_id: str = Query(
@@ -2894,9 +2955,9 @@ async def similar_videos(
     loader = _metadata_loader()
     video_hash = await asyncio.to_thread(_resolve_video_ref, video_id, loader)
     ranked = await asyncio.to_thread(query_engine.find_similar_videos, video_hash, limit, language)
+    records = await _enrich_records(loader, [entry["video_hash"] for entry in ranked])
     results: list[SimilarVideo] = []
-    for entry in ranked:
-        record = await asyncio.to_thread(loader.load_metadata, entry["video_hash"]) or {}
+    for entry, record in zip(ranked, records, strict=True):
         teleshow = record.get("teleshow")
         library_id = record.get("id")
         results.append(
@@ -2918,6 +2979,18 @@ async def similar_videos(
     )
 
 
+def _transcript_body(track: Path, archive_root: Path, fmt: str) -> str | None:
+    """The track as VTT or SRT text, or None when it is not a file under the root.
+
+    Runs in a worker thread: the archive is NFS-backed, and a slow stat or
+    read must not block the event loop.
+    """
+    if not track.is_relative_to(archive_root) or not track.is_file():
+        return None
+    text = track.read_text(encoding="utf-8", errors="replace")
+    return vtt_to_srt(text) if fmt == "srt" else text
+
+
 # {video_id:path}: a tvrain.tv URL is a valid reference and carries slashes.
 @app.api_route("/transcript/{video_id:path}", methods=["GET", "HEAD"])
 async def video_transcript(
@@ -2928,7 +3001,9 @@ async def video_transcript(
     auth: Annotated[str | None, Query()] = None,
 ):
     """One subtitle track of a video, as the archive holds it (VTT) or as SRT."""
-    verify_auth_token(authorization=authorization, access_token=auth)
+    # A <track src> cannot set headers, so the player passes a signed media
+    # token in the query; the standing secret is not accepted there.
+    verify_auth_token(authorization=authorization, access_token=auth, query_secret_allowed=False)
     if config is None:
         raise HTTPException(status_code=503, detail="Server not initialized")
     video_hash = await asyncio.to_thread(_resolve_video_ref, video_id, _metadata_loader())
@@ -2938,13 +3013,13 @@ async def video_transcript(
         / WebMetadataLoader.hash_to_archive_dir(video_hash)
         / f"{video_hash}.{language}.vtt"
     ).resolve()
-    if not track.is_relative_to(archive_root) or not track.is_file():
+    body = await asyncio.to_thread(_transcript_body, track, archive_root, format)
+    if body is None:
         raise HTTPException(status_code=404, detail=f"No {language} transcript for {video_hash}")
-    text = track.read_text(encoding="utf-8", errors="replace")
     if format == "srt":
-        body, media, name = vtt_to_srt(text), "application/x-subrip", f"{video_hash}.{language}.srt"
+        media, name = "application/x-subrip", f"{video_hash}.{language}.srt"
     else:
-        body, media, name = text, "text/vtt", track.name
+        media, name = "text/vtt", track.name
     return Response(
         content=body,
         media_type=f"{media}; charset=utf-8",
