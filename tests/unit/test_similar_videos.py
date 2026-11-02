@@ -234,29 +234,24 @@ def test_find_similar_videos_groups_hits_by_video_and_sums_scores(tmp_path):
     assert fake.query_filters[0].must_not[0].match.value == seed_video_id
 
 
-def test_seed_video_id_comes_from_the_index_when_the_corpus_is_in_memory(tmp_path):
-    """The archive root at query time differs from the one at ingest; the index wins."""
-    engine, fake = _engine(tmp_path)
+def test_seed_paths_come_from_the_corpus_when_the_archive_root_moved(tmp_path):
+    """Indexed under another root, without video_id: the corpus paths still find the seed."""
+    engine, fake = _engine(tmp_path, with_video_id=False)
     ingest_time_path = f"/mnt/other-root/aa/{HASH_A}.ru.vtt"
     engine.bm25_corpus = [
         {"path": "/x/" + HASH_B + ".ru.vtt", "doc_id": "other"},  # type: ignore[attr-defined]
         {"path": ingest_time_path, "doc_id": "seed-doc"},
     ]
     for point in fake.points:
-        point.payload["video_id"] = "payload-id-123"
-    real_query_points = fake.query_points
-
-    def query_points(collection_name, query=None, query_filter=None, limit=10, with_payload=True):
-        if query is None:
-            assert query_filter.must[0].match.value == "seed-doc"
-            return _Points([SimpleNamespace(score=1.0, payload={"video_id": "payload-id-123"})])
-        return real_query_points(collection_name, query, query_filter, limit, with_payload)
-
-    fake.query_points = query_points  # type: ignore[method-assign]
-    engine.find_similar_videos(HASH_A)
-    assert fake.scroll_filters[0].should[0].match.value == "payload-id-123"
-    assert fake.scroll_filters[0].should[1].match.value == ingest_time_path
-    assert fake.query_filters[-1].must_not[0].match.value == "payload-id-123"
+        point.payload["path"] = ingest_time_path
+    ranked = engine.find_similar_videos(HASH_A)
+    assert [r["video_hash"] for r in ranked] == [HASH_B, HASH_C]
+    should = fake.scroll_filters[0].should
+    assert [c.key for c in should] == ["video_id", "path"]
+    assert should[1].match.value == ingest_time_path
+    # no per-chunk Qdrant lookup: every query went through the seed vectors
+    assert len(fake.query_filters) == 3
+    assert fake.query_filters[-1].must_not[1].match.value == ingest_time_path
 
 
 def test_seed_video_id_uses_the_corpus_video_id_when_present(tmp_path):

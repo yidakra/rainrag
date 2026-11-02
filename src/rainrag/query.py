@@ -977,8 +977,8 @@ class RAGQueryEngine:
         paths the BM25 corpus holds for this hash when hybrid search is on,
         else the paths ingest would produce under the configured archive root
         (that matches only while the root is unchanged). The ``video_id``
-        value comes from the corpus, then from the payload of one of its
-        chunks, then from the same recomputation.
+        value comes from the corpus, which mirrors the payload, else from the
+        same recomputation.
         """
         from rainrag.ingest import VTTParser, WebMetadataLoader
 
@@ -990,27 +990,8 @@ class RAGQueryEngine:
             if not path or VTTParser.extract_video_hash(path).lower() != video_hash.lower():
                 continue
             paths.append(path)
-            if video_id:
-                continue
-            if doc.get("video_id"):
+            if not video_id and doc.get("video_id"):
                 video_id = str(doc["video_id"])
-                continue
-            doc_id = doc.get("doc_id")
-            if not doc_id or self.qdrant_client is None:
-                continue
-            points = self.qdrant_client.query_points(
-                collection_name=self.config.qdrant.collection_name,
-                query_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id))
-                    ]
-                ),
-                limit=1,
-                with_payload=True,
-            ).points
-            payload = (points[0].payload or {}) if points else {}
-            if payload.get("video_id"):
-                video_id = str(payload["video_id"])
         archive_dir = Path(self.config.paths.archive_root) / WebMetadataLoader.hash_to_archive_dir(
             video_hash
         )
