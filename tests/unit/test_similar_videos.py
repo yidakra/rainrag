@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -292,6 +293,10 @@ def test_find_similar_videos_limit_and_language(tmp_path):
     ranked = engine.find_similar_videos(HASH_A, limit=1, language="en")
     assert len(ranked) == 1
     assert fake.scroll_filters[0].must[0].match.value == "en"
+    # the exclusion still names both tracks: on an index without video_id the
+    # ru chunks of the seed must not take the nearest-neighbour slots
+    excluded = {c.match.value for c in fake.query_filters[0].must_not if c.key == "path"}
+    assert excluded == {p.payload["path"] for p in fake.points}
 
 
 def test_seed_chunks_of_an_index_without_video_id_are_found_by_path(tmp_path):
@@ -420,6 +425,8 @@ def test_similar_videos_endpoint_fetches_missing_metadata_within_a_deadline(
         assert first["title"] == "B from the API" and first["library_id"] == 2
         assert second["title"] == "C payload" and second["library_id"] is None
     assert sorted(fetched) == [HASH_B, HASH_C]
+    # the stalled fetch ran on the enrichment executor, not the default one
+    assert any(t.name.startswith("enrich") for t in threading.enumerate())
 
 
 def test_metadata_loader_fails_fast_without_a_token_in_api_mode(tmp_path, monkeypatch):
@@ -440,6 +447,10 @@ def test_metadata_cache_writes_leave_no_partial_file(tmp_path):
     target = cache / f"{HASH_A}.json"
     WebMetadataLoader._write_cache_record(target, {"id": 1, "name": "Дождь"})
     assert json.loads(target.read_text(encoding="utf-8")) == {"id": 1, "name": "Дождь"}
+    assert list(cache.iterdir()) == [target]
+    # a failed write leaves no temp file behind either
+    with pytest.raises(OSError):
+        WebMetadataLoader._write_cache_record(cache / "missing" / "x.json", {"id": 2})
     assert list(cache.iterdir()) == [target]
 
 

@@ -1,6 +1,7 @@
 """FastAPI backend for RainRAG query interface."""
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
 import ipaddress
@@ -2795,11 +2796,14 @@ _LIBRARY_IDS_TTL_SECONDS = (
     300.0  # the incremental updater adds records; a miss waits at most this long
 )
 _LIBRARY_IDS_LOCK = threading.Lock()
-# Enrichment of a similar-videos response from the remote metadata API: at
-# most this many lookups at a time, and this long in all before the payload
-# fields stand in for the rest.
+# Enrichment of a similar-videos response from the remote metadata API runs
+# on its own executor: at most this many lookups at a time across all
+# requests, so a stalled service holds these threads and never the default
+# executor that serves transcript reads and reference resolution. A request
+# waits this long in all before the payload fields stand in for the rest.
 _ENRICH_CONCURRENCY = 4
 _ENRICH_DEADLINE_SECONDS = 5.0
+_ENRICH_EXECUTOR = ThreadPoolExecutor(max_workers=_ENRICH_CONCURRENCY, thread_name_prefix="enrich")
 
 
 def _as_int(value: object) -> int | None:
@@ -2911,20 +2915,22 @@ async def _enrich_records(loader: WebMetadataLoader, hashes: list[str]) -> list[
     """Metadata records for the hashes, in order; a miss is an empty dict.
 
     The local cache answers first. In ``api`` and ``hybrid`` mode the misses
-    are then fetched remotely, ``_ENRICH_CONCURRENCY`` at a time and within
-    ``_ENRICH_DEADLINE_SECONDS`` in all, so a stalled metadata service delays
-    the response by the deadline at most. The payload carries a fallback for
-    every field, so a miss costs a library id and a fresher title, nothing more.
+    are then fetched remotely on ``_ENRICH_EXECUTOR`` (``_ENRICH_CONCURRENCY``
+    threads shared by every request) and within ``_ENRICH_DEADLINE_SECONDS``
+    in all, so a stalled metadata service delays the response by the deadline
+    at most and ties up those threads only. A fetch still queued at the
+    deadline is cancelled before it starts. The payload carries a fallback
+    for every field, so a miss costs a library id and a fresher title.
     """
     records = await asyncio.to_thread(lambda: [loader.load_cached(h) or {} for h in hashes])
     missing = [i for i, record in enumerate(records) if not record]
     if not missing or loader.source == "local":
         return records
-    gate = asyncio.Semaphore(_ENRICH_CONCURRENCY)
+    loop = asyncio.get_running_loop()
 
     async def fetch(i: int) -> None:
-        async with gate:
-            records[i] = await asyncio.to_thread(loader.load_metadata, hashes[i]) or {}
+        fetched = await loop.run_in_executor(_ENRICH_EXECUTOR, loader.load_metadata, hashes[i])
+        records[i] = fetched or {}
 
     try:
         await asyncio.wait_for(

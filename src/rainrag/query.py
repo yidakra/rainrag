@@ -975,8 +975,8 @@ class RAGQueryEngine:
         and an index built earlier carries none. ``path`` is written by every
         indexer version, so the seed's file paths are matched as well: the
         paths the BM25 corpus holds for this hash when hybrid search is on,
-        else the paths ingest would produce under the configured archive root
-        (that matches only while the root is unchanged). The ``video_id``
+        else the ru and en paths ingest would produce under the configured
+        archive root (that matches only while the root is unchanged). The ``video_id``
         value comes from the corpus, which mirrors the payload, else from the
         same recomputation.
         """
@@ -996,8 +996,11 @@ class RAGQueryEngine:
             video_hash
         )
         if not paths:
-            languages = [language] if language else ["ru", "en"]
-            paths = [str(archive_dir / f"{video_hash}.{lang}.vtt") for lang in languages]
+            # Both tracks, whatever seed language was asked for: the conditions
+            # also exclude the seed from the hits, and on an index without
+            # video_id the other track must not fill the nearest-neighbour slots.
+            # The scroll's language condition restricts the seeds on its own.
+            paths = [str(archive_dir / f"{video_hash}.{lang}.vtt") for lang in ("ru", "en")]
         if not video_id:
             video_id = VTTParser.generate_video_id(
                 archive_dir / f"{video_hash}.{language or 'ru'}.vtt"

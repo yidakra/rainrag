@@ -4,6 +4,7 @@ import hashlib
 import html
 import json
 import os
+import uuid
 import re
 import subprocess
 import threading
@@ -1053,11 +1054,17 @@ class WebMetadataLoader:
         """Write one cache record through a sibling temp file and an atomic rename.
 
         ``local_records`` scans the directory while the API modes write to it;
-        a reader must see a whole record or none, never a truncated one.
+        a reader must see a whole record or none, never a truncated one. The
+        temp name is unique per write, so two requests caching the same video
+        at once cannot truncate or rename each other's file.
         """
-        tmp = cache_file.with_name(cache_file.name + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=None), encoding="utf-8")
-        tmp.replace(cache_file)
+        tmp = cache_file.with_name(f"{cache_file.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=None), encoding="utf-8")
+            tmp.replace(cache_file)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def _load_local(self, video_hash: str) -> dict[str, Any] | None:
         """Read a single ``{hash}.json`` from the local directory."""
