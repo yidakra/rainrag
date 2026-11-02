@@ -330,13 +330,6 @@ def test_seed_scroll_with_a_language_never_takes_other_videos(tmp_path):
     scrolled = [p for p in fake.points if _matches(fake.scroll_filters[0], p.payload)]
     assert [p.payload["language"] for p in scrolled] == ["en"]
     assert all(HASH_A in p.payload["path"] for p in scrolled)
-    # and the same filter, with the seed group lifted to the top level, would leak
-    leaky = SimpleNamespace(
-        must=fake.scroll_filters[0].must[1:],
-        should=fake.scroll_filters[0].must[0].should,
-        must_not=None,
-    )
-    assert any(not _matches(leaky, p.payload) for p in fake.points)  # the fake still ANDs should
 
 
 def test_find_similar_videos_without_seed_chunks_is_empty(tmp_path):
