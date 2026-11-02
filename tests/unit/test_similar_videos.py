@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -471,6 +472,20 @@ def test_metadata_cache_writes_leave_no_partial_file(tmp_path):
     with pytest.raises(OSError):
         WebMetadataLoader._write_cache_record(cache / "missing" / "x.json", {"id": 2})
     assert list(cache.iterdir()) == [target]
+
+
+def test_local_records_sweeps_stale_temp_files_only(tmp_path):
+    cache = tmp_path / "web_metadata"
+    _write_record(cache, HASH_A, 1, "u")
+    stale = cache / f"{HASH_B}.json.deadbeef.tmp"
+    stale.write_text("{", encoding="utf-8")
+    hour_ago = time.time() - 3600
+    os.utime(stale, (hour_ago, hour_ago))
+    fresh = cache / f"{HASH_C}.json.cafe.tmp"  # a write in progress right now
+    fresh.write_text("{", encoding="utf-8")
+    loader = WebMetadataLoader(cache, source="local")
+    assert [h for h, _ in loader.local_records()] == [HASH_A]
+    assert not stale.exists() and fresh.exists()
 
 
 def test_similar_videos_endpoint_rejects_a_bad_reference(client, tmp_path, monkeypatch):

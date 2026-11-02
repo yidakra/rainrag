@@ -1337,11 +1337,32 @@ class WebMetadataLoader:
                 hashes.append(metadata_file.stem)
         return hashes
 
+    # A ``{hash}.json.{uuid}.tmp`` older than this is a leftover of a writer that
+    # died between write and rename; the directory scan removes it.
+    _STALE_TEMP_SECONDS = 600
+
     def local_records(self) -> "Iterator[tuple[str, dict[str, Any]]]":
-        """Yield (video_hash, record) for every readable ``{hash}.json`` in the cache."""
+        """Yield (video_hash, record) for every readable ``{hash}.json`` in the cache.
+
+        The same pass removes stale temp files (see ``_STALE_TEMP_SECONDS``):
+        this scan is the only regular walk of the directory, so crashed
+        writes cannot accumulate there.
+        """
         if not self.metadata_path.exists():
             return
-        for metadata_file in sorted(self.metadata_path.glob("*.json")):
+        cutoff = time.time() - self._STALE_TEMP_SECONDS
+        records: list[Path] = []
+        for entry in self.metadata_path.iterdir():
+            if entry.name.endswith(".tmp") and ".json." in entry.name:
+                try:
+                    if entry.stat().st_mtime < cutoff:
+                        entry.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            if entry.suffix == ".json":
+                records.append(entry)
+        for metadata_file in sorted(records):
             if not metadata_file.is_file():
                 continue
             try:
@@ -1349,7 +1370,7 @@ class WebMetadataLoader:
                     data = json.load(f)
             except (ValueError, OSError):
                 # ValueError covers a JSON error and a UnicodeDecodeError from a
-                # file caught mid-write (the cache writers are not atomic).
+                # file written in place by an older version, caught mid-write.
                 continue
             if isinstance(data, dict):
                 yield metadata_file.stem, data
