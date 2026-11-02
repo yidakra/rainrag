@@ -1051,14 +1051,17 @@ class RAGQueryEngine:
         from rainrag.ingest import VTTParser
 
         seed = self._seed_conditions(video_hash, language)
-        must: list[Any] = []
+        # The seed OR-group sits inside must: a top-level should turns optional
+        # as soon as the filter also has a must clause (the language), and the
+        # scroll would then return any chunk in that language.
+        must: list[Any] = [models.Filter(should=seed)]
         if language:
             must.append(
                 models.FieldCondition(key="language", match=models.MatchValue(value=language))
             )
         seeds, _ = self.qdrant_client.scroll(
             collection_name=self.config.qdrant.collection_name,
-            scroll_filter=models.Filter(should=seed, must=must or None),
+            scroll_filter=models.Filter(must=must),
             limit=max_seed_chunks,
             with_payload=False,
             with_vectors=True,

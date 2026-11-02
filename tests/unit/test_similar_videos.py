@@ -132,10 +132,12 @@ class _Points:
 
 
 def _matches(flt, payload: dict) -> bool:
-    """Qdrant filter semantics for MatchValue: every must, any should, no must_not."""
+    """Qdrant filter semantics: every must, any should, no must_not; nested filters recurse."""
 
     def hit(cond) -> bool:
-        return payload.get(cond.key) == cond.match.value
+        if hasattr(cond, "key"):
+            return payload.get(cond.key) == cond.match.value
+        return _matches(cond, payload)
 
     return (
         all(hit(c) for c in (flt.must or []))
@@ -228,7 +230,7 @@ def test_find_similar_videos_groups_hits_by_video_and_sums_scores(tmp_path):
     assert b["title"] == "B title" and b["url"] == "https://tvrain.tv/b"
     assert c["title"] == "C title"
     # the seed video is selected, then excluded, by its video_id and its file paths
-    seed_filter = fake.scroll_filters[0]
+    seed_filter = fake.scroll_filters[0].must[0]
     seed_video_id = fake.points[0].payload["video_id"]
     assert seed_filter.should[0].match.value == seed_video_id
     assert {c.key for c in seed_filter.should} == {"video_id", "path"}
@@ -247,7 +249,7 @@ def test_seed_paths_come_from_the_corpus_when_the_archive_root_moved(tmp_path):
         point.payload["path"] = ingest_time_path
     ranked = engine.find_similar_videos(HASH_A)
     assert [r["video_hash"] for r in ranked] == [HASH_B, HASH_C]
-    should = fake.scroll_filters[0].should
+    should = fake.scroll_filters[0].must[0].should
     assert [c.key for c in should] == ["video_id", "path"]
     assert should[1].match.value == ingest_time_path
     # no per-chunk Qdrant lookup: every query went through the seed vectors
@@ -261,8 +263,8 @@ def test_seed_video_id_uses_the_corpus_video_id_when_present(tmp_path):
         {"path": f"/any/{HASH_A}.en.vtt", "doc_id": "d", "video_id": "from-corpus"}
     ]  # type: ignore[attr-defined]
     engine.find_similar_videos(HASH_A)
-    assert fake.scroll_filters[0].should[0].match.value == "from-corpus"
-    assert fake.scroll_filters[0].should[1].match.value == f"/any/{HASH_A}.en.vtt"
+    assert fake.scroll_filters[0].must[0].should[0].match.value == "from-corpus"
+    assert fake.scroll_filters[0].must[0].should[1].match.value == f"/any/{HASH_A}.en.vtt"
 
 
 def test_find_similar_videos_drops_seed_chunks_indexed_under_another_id(tmp_path):
@@ -292,7 +294,7 @@ def test_find_similar_videos_limit_and_language(tmp_path):
     engine, fake = _engine(tmp_path)
     ranked = engine.find_similar_videos(HASH_A, limit=1, language="en")
     assert len(ranked) == 1
-    assert fake.scroll_filters[0].must[0].match.value == "en"
+    assert fake.scroll_filters[0].must[1].match.value == "en"
     # the exclusion still names both tracks: on an index without video_id the
     # ru chunks of the seed must not take the nearest-neighbour slots
     excluded = {c.match.value for c in fake.query_filters[0].must_not if c.key == "path"}
@@ -303,7 +305,7 @@ def test_seed_chunks_of_an_index_without_video_id_are_found_by_path(tmp_path):
     engine, fake = _engine(tmp_path, with_video_id=False)
     ranked = engine.find_similar_videos(HASH_A)
     assert [r["video_hash"] for r in ranked] == [HASH_B, HASH_C]
-    paths = {c.match.value for c in fake.scroll_filters[0].should if c.key == "path"}
+    paths = {c.match.value for c in fake.scroll_filters[0].must[0].should if c.key == "path"}
     assert paths == {p.payload["path"] for p in fake.points}
 
 
@@ -317,6 +319,24 @@ def test_find_similar_videos_folds_euclidean_distances_to_similarities(tmp_path)
     assert c["best"] == pytest.approx(1 / 1.4, abs=1e-4)
     assert b["best"] == pytest.approx(1 / 1.7, abs=1e-4)
     assert b["score"] == pytest.approx(1 / 1.9 + 1 / 1.7, abs=1e-4)
+
+
+def test_seed_scroll_with_a_language_never_takes_other_videos(tmp_path):
+    """A top-level should turns optional next to a must; the seed group must stay mandatory."""
+    engine, fake = _engine(tmp_path)
+    other = fake._hit(HASH_B, 0.0, lang="en").payload
+    fake.points.append(SimpleNamespace(vector=[0.9, 0.1], payload=other))
+    engine.find_similar_videos(HASH_A, language="en")
+    scrolled = [p for p in fake.points if _matches(fake.scroll_filters[0], p.payload)]
+    assert [p.payload["language"] for p in scrolled] == ["en"]
+    assert all(HASH_A in p.payload["path"] for p in scrolled)
+    # and the same filter, with the seed group lifted to the top level, would leak
+    leaky = SimpleNamespace(
+        must=fake.scroll_filters[0].must[1:],
+        should=fake.scroll_filters[0].must[0].should,
+        must_not=None,
+    )
+    assert any(not _matches(leaky, p.payload) for p in fake.points)  # the fake still ANDs should
 
 
 def test_find_similar_videos_without_seed_chunks_is_empty(tmp_path):
