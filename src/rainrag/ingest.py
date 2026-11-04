@@ -8,6 +8,7 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from collections.abc import Generator, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -1039,9 +1040,7 @@ class WebMetadataLoader:
             if not safe_hash:
                 continue
             try:
-                (self.metadata_path / f"{safe_hash}.json").write_text(
-                    json.dumps(article, ensure_ascii=False, indent=None), encoding="utf-8"
-                )
+                self._write_cache_record(self.metadata_path / f"{safe_hash}.json", article)
             except OSError:
                 continue
         return api_candidates
@@ -1049,6 +1048,23 @@ class WebMetadataLoader:
     # ------------------------------------------------------------------
     # Local helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_cache_record(cache_file: Path, data: dict[str, Any]) -> None:
+        """Write one cache record through a sibling temp file and an atomic rename.
+
+        ``local_records`` scans the directory while the API modes write to it;
+        a reader must see a whole record or none, never a truncated one. The
+        temp name is unique per write, so two requests caching the same video
+        at once cannot truncate or rename each other's file.
+        """
+        tmp = cache_file.with_name(f"{cache_file.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=None), encoding="utf-8")
+            tmp.replace(cache_file)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def _load_local(self, video_hash: str) -> dict[str, Any] | None:
         """Read a single ``{hash}.json`` from the local directory."""
@@ -1062,6 +1078,10 @@ class WebMetadataLoader:
         except (json.JSONDecodeError, FileNotFoundError) as e:
             logger.debug(f"Could not load web metadata for {video_hash}: {e}")
             return None
+
+    def load_cached(self, video_hash: str) -> dict[str, Any] | None:
+        """The locally cached record only; never a network fetch, whatever ``source`` is."""
+        return self._load_local(video_hash)
 
     def _fetch_api(self, video_hash: str) -> dict[str, Any] | None:
         """Fetch metadata from the remote API and cache locally."""
@@ -1078,9 +1098,7 @@ class WebMetadataLoader:
         self.metadata_path.mkdir(parents=True, exist_ok=True)
         cache_file = self.metadata_path / f"{video_hash}.json"
         try:
-            cache_file.write_text(
-                json.dumps(data, ensure_ascii=False, indent=None), encoding="utf-8"
-            )
+            self._write_cache_record(cache_file, data)
         except OSError as exc:
             logger.warning(f"Failed to cache metadata for {video_hash}: {exc}")
         return data
@@ -1318,6 +1336,60 @@ class WebMetadataLoader:
             if metadata_file.is_file():
                 hashes.append(metadata_file.stem)
         return hashes
+
+    # A ``{hash}.json.{uuid}.tmp`` older than this is a leftover of a writer that
+    # died between write and rename; the directory scan removes it.
+    _STALE_TEMP_SECONDS = 600
+
+    def local_records(self) -> "Iterator[tuple[str, dict[str, Any]]]":
+        """Yield (video_hash, record) for every readable ``{hash}.json`` in the cache.
+
+        The same pass removes stale temp files (see ``_STALE_TEMP_SECONDS``):
+        this scan is the only regular walk of the directory, so crashed
+        writes cannot accumulate there.
+        """
+        if not self.metadata_path.exists():
+            return
+        cutoff = time.time() - self._STALE_TEMP_SECONDS
+        records: list[Path] = []
+        for entry in self.metadata_path.iterdir():
+            if entry.name.endswith(".tmp") and ".json." in entry.name:
+                try:
+                    if entry.stat().st_mtime < cutoff:
+                        entry.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            if entry.suffix == ".json":
+                records.append(entry)
+        for metadata_file in sorted(records):
+            if not metadata_file.is_file():
+                continue
+            try:
+                with open(metadata_file, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (ValueError, OSError):
+                # ValueError covers a JSON error and a UnicodeDecodeError from a
+                # file written in place by an older version, caught mid-write.
+                continue
+            if isinstance(data, dict):
+                yield metadata_file.stem, data
+
+    def library_id_index(self) -> dict[int, str]:
+        """Map the site's numeric library id (``id`` in the record) to the video hash.
+
+        The site addresses a video by this id and the archive by the hash; the
+        cached article records carry both. Built from the local cache only.
+        """
+        index: dict[int, str] = {}
+        for video_hash, data in self.local_records():
+            raw = data.get("id")
+            try:
+                library_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            index[library_id] = str(data.get("video_hash") or video_hash).strip()
+        return index
 
     def search_by_name(self, query: str) -> list[dict[str, Any]]:
         """Search metadata by title (case-insensitive substring match).

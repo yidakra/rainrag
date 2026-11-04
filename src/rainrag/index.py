@@ -36,6 +36,7 @@ def _build_payload(doc: Document) -> dict:
     """Build the Qdrant payload dict for a document."""
     return {
         "doc_id": doc.id,
+        "video_id": doc.video_id,
         "path": doc.path,
         "language": doc.language,
         "text": doc.text,
