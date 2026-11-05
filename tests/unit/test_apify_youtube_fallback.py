@@ -160,8 +160,9 @@ class TestApifyDownload:
         }
         assert fake_apify.calls[1][1] == "/actor-runs/run1"
         assert fake_apify.calls[2][1] == "/datasets/ds1/items"
-        # The signed fileUrl is fetched by its own request, without the token.
-        assert fake_apify.calls[3] == ("GET", FILE_URL, {"timeout": 120})
+        # The signed fileUrl is fetched by its own request, without the token,
+        # following the redirect Apify may answer with.
+        assert fake_apify.calls[3] == ("GET", FILE_URL, {"timeout": 120, "follow_redirects": True})
 
     def test_a_skipped_video_returns_none(self, fake_apify, tmp_path):
         skipped = {"resultType": "skipped", "error": "OVER_MAX_MEGABYTES"}

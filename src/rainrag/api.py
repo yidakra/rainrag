@@ -2443,14 +2443,16 @@ def _apify_youtube_download(url: str, dest: Path, cfg: Any) -> dict | None:
         limit = cfg.max_upload_mb * 1024 * 1024 + 1
         written = 0
         target = dest / f"video.{row.get('container') or 'mp4'}"
-        with httpx.stream("GET", row["fileUrl"], timeout=120) as media, target.open("wb") as fh:
+        # The record endpoint may answer with a 302 to where the file is stored.
+        with httpx.stream("GET", row["fileUrl"], timeout=120, follow_redirects=True) as media:
             media.raise_for_status()
-            for chunk in media.iter_bytes():
-                piece = chunk[: limit - written]
-                fh.write(piece)
-                written += len(piece)
-                if written >= limit:
-                    break
+            with target.open("wb") as fh:
+                for chunk in media.iter_bytes():
+                    piece = chunk[: limit - written]
+                    fh.write(piece)
+                    written += len(piece)
+                    if written >= limit:
+                        break
     except (httpx.HTTPError, OSError, KeyError, TypeError, ValueError) as exc:
         # Log the error type and HTTP status only: httpx puts the request URL in
         # its messages, and the media URL carries a signature.
