@@ -11,6 +11,13 @@ WorkingDirectory=/home/ubuntu/rainrag
 Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=TZ=UTC
 EnvironmentFile=-/home/ubuntu/rainrag/.env
+# The channel listing is rebuilt first, so an upload published yesterday is
+# in the map before its metrics are asked for and in the review tab the same
+# morning. Nothing else ever rebuilt it: the map stood still from 2026-09-16
+# while the metrics were pulled daily (Varya, 2026-10-12). A rebuild that
+# fails keeps the previous map and must not cost the day's snapshot, hence
+# the leading dash. About ten API units: the uploads playlist, 50 a page.
+ExecStartPre=-/home/ubuntu/rainrag/.venv/bin/python3 /home/ubuntu/rainrag/scripts/youtube_map.py
 # Outcome goes to the bot channel (#rainrag-test). A consent that has expired
 # is the failure this exists to catch: the message says what to do.
 ExecStart=/home/ubuntu/rainrag/.venv/bin/python3 /home/ubuntu/rainrag/scripts/youtube_analytics_pull.py --slack-channel C0BSBNC8AN7

@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any
@@ -340,8 +341,9 @@ from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
-from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS
+from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS, WebMetadataLoader
 from rainrag.query import RAGQueryEngine
+from rainrag.subtitles import vtt_to_srt
 from rainrag.video_session import VideoSessionManager
 
 
@@ -1291,8 +1293,18 @@ def _media_token_is_valid(token: str, secret: str) -> bool:
     return time.time() < expires
 
 
-def verify_auth_token(authorization: str | None = None, access_token: str | None = None) -> bool:
-    """Verify authentication token if configured."""
+def verify_auth_token(
+    authorization: str | None = None,
+    access_token: str | None = None,
+    *,
+    query_secret_allowed: bool = True,
+) -> bool:
+    """Verify authentication token if configured.
+
+    With ``query_secret_allowed=False`` a query-string credential counts only
+    when it is an expiring signed media token. A URL lands in access logs,
+    browser history and Referer headers, where the standing secret must not.
+    """
     required_token = os.getenv("RAINRAG_AUTH_TOKEN")
 
     # If no token is configured, allow all requests
@@ -1305,7 +1317,7 @@ def verify_auth_token(authorization: str | None = None, access_token: str | None
     if access_token:
         if _media_token_is_valid(access_token, required_token):
             return True
-        if hmac.compare_digest(access_token, required_token):
+        if query_secret_allowed and hmac.compare_digest(access_token, required_token):
             return True
 
     # Check if authorization header is provided
@@ -2776,6 +2788,256 @@ async def search_by_url(
 
     logger.info(f"URL lookup for {url!r}: found {video_hash}")
     return VideoUrlLookupResponse(result=result, url=url)
+
+
+# ---------------------------------------------------------------------------
+# Video-level lookups for the site (related articles, transcripts on request).
+# A video is addressed by its 40-hex archive hash, its numeric library id, or
+# its tvrain.tv URL. The answers are other videos, or one subtitle track.
+# ---------------------------------------------------------------------------
+
+_VIDEO_HASH = re.compile(r"^[0-9a-fA-F]{40}$")
+_LIBRARY_IDS: dict[int, str] | None = None
+_LIBRARY_IDS_BUILT_AT: float = 0.0
+_LIBRARY_IDS_TTL_SECONDS = (
+    300.0  # the incremental updater adds records; a miss waits at most this long
+)
+_LIBRARY_IDS_LOCK = threading.Lock()
+# Enrichment of a similar-videos response from the remote metadata API runs
+# on its own executor: at most this many lookups at a time across all
+# requests, so a stalled service holds these threads and never the default
+# executor that serves transcript reads and reference resolution. A request
+# waits this long in all before the payload fields stand in for the rest.
+_ENRICH_CONCURRENCY = 4
+_ENRICH_DEADLINE_SECONDS = 5.0
+_ENRICH_EXECUTOR = ThreadPoolExecutor(max_workers=_ENRICH_CONCURRENCY, thread_name_prefix="enrich")
+
+
+def _as_int(value: object) -> int | None:
+    """An int from an int or an ASCII-digit string; anything else is None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    # 18 digits cover any library id; longer strings would make int() raise.
+    if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 18:
+        return int(value)
+    return None
+
+
+class SimilarVideo(BaseModel):
+    """One video ranked against a seed video."""
+
+    video_hash: str
+    library_id: int | None = None
+    url: str | None = None
+    title: str | None = None
+    program: str | None = None
+    date: str | None = None
+    score: float = Field(..., description="Sum of chunk similarities between the two videos")
+    best: float = Field(..., description="The single best chunk similarity")
+    matching_chunks: int
+
+
+class SimilarVideosResponse(BaseModel):
+    video_hash: str
+    video_id: str = Field(..., description="The reference as the caller gave it")
+    results: list[SimilarVideo]
+    num_results: int
+
+
+def _metadata_loader() -> WebMetadataLoader:
+    """The web-metadata cache, with the API behind it when a token is configured."""
+    assert config is not None
+    api_client = None
+    if config.web_metadata.source in {"api", "hybrid"}:
+        from rainrag.web_metadata_api import WebMetadataAPIClient
+
+        try:
+            api_client = WebMetadataAPIClient.from_env(
+                base_url=config.web_metadata.api_url,
+                token_env=config.web_metadata.api_token_env,
+            )
+        except ValueError as exc:
+            if config.web_metadata.source == "api":
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Web metadata API is required but token is missing. "
+                        + f"Set {config.web_metadata.api_token_env}."
+                    ),
+                ) from exc
+            logger.warning(
+                "Web metadata API token missing for hybrid mode; using the local cache only"
+            )
+    return WebMetadataLoader(
+        Path(config.web_metadata.path), source=config.web_metadata.source, api_client=api_client
+    )
+
+
+def _library_ids(loader: WebMetadataLoader) -> dict[int, str]:
+    """Numeric library id -> video hash from the cache, rebuilt after the TTL.
+
+    An empty result is not kept: a missing or empty cache directory at the
+    first call must not turn every later id lookup into a 404.
+    """
+    global _LIBRARY_IDS, _LIBRARY_IDS_BUILT_AT
+    # One rebuild at a time: concurrent requests past the TTL would each scan
+    # the whole cache directory.
+    with _LIBRARY_IDS_LOCK:
+        now = time.monotonic()
+        index = _LIBRARY_IDS
+        if not index or now - _LIBRARY_IDS_BUILT_AT > _LIBRARY_IDS_TTL_SECONDS:
+            index = loader.library_id_index()
+            _LIBRARY_IDS = index
+            _LIBRARY_IDS_BUILT_AT = now
+            logger.info(f"Library id index: {len(index)} videos")
+        return index
+
+
+def _resolve_video_ref(ref: str, loader: WebMetadataLoader) -> str:
+    """Turn a hash, a numeric library id or a tvrain.tv URL into the video hash."""
+    ref = ref.strip()
+    if _VIDEO_HASH.match(ref):
+        return ref.lower()
+    library_id = _as_int(ref)
+    if library_id is not None:
+        video_hash = _library_ids(loader).get(library_id) or ""
+        if not _VIDEO_HASH.match(video_hash):
+            raise HTTPException(status_code=404, detail=f"No video with library id {ref}")
+        return video_hash.lower()
+    if ref.startswith(("http://", "https://")):
+        article = loader.search_by_url(ref)
+        video_hash = str((article or {}).get("video_hash") or "").strip()
+        if not _VIDEO_HASH.match(video_hash):
+            raise HTTPException(status_code=404, detail="No video for that URL")
+        return video_hash.lower()
+    raise HTTPException(
+        status_code=400,
+        detail="video_id must be a 40-hex archive hash, a numeric library id, or a tvrain.tv URL",
+    )
+
+
+async def _enrich_records(loader: WebMetadataLoader, hashes: list[str]) -> list[dict[str, Any]]:
+    """Metadata records for the hashes, in order; a miss is an empty dict.
+
+    The local cache answers first. In ``api`` and ``hybrid`` mode the misses
+    are then fetched remotely on ``_ENRICH_EXECUTOR`` (``_ENRICH_CONCURRENCY``
+    threads shared by every request) and within ``_ENRICH_DEADLINE_SECONDS``
+    in all, so a stalled metadata service delays the response by the deadline
+    at most and ties up those threads only. A fetch still queued at the
+    deadline is cancelled before it starts. The payload carries a fallback
+    for every field, so a miss costs a library id and a fresher title.
+    """
+    records = await asyncio.to_thread(lambda: [loader.load_cached(h) or {} for h in hashes])
+    missing = [i for i, record in enumerate(records) if not record]
+    if not missing or loader.source == "local":
+        return records
+    loop = asyncio.get_running_loop()
+
+    async def fetch(i: int) -> None:
+        fetched = await loop.run_in_executor(_ENRICH_EXECUTOR, loader.load_metadata, hashes[i])
+        records[i] = fetched or {}
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(fetch(i) for i in missing)), timeout=_ENRICH_DEADLINE_SECONDS
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Metadata enrichment passed {_ENRICH_DEADLINE_SECONDS:.0f}s; payload fields used"
+        )
+    return records
+
+
+@app.get("/similar-videos", response_model=SimilarVideosResponse)
+async def similar_videos(
+    video_id: str = Query(
+        ..., min_length=1, description="Archive hash, numeric library id, or tvrain.tv URL"
+    ),
+    limit: int = Query(default=10, ge=1, le=50),
+    language: str | None = Query(
+        default=None, pattern="^(ru|en)$", description="Seed chunks of this language only"
+    ),
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """Other videos ranked by shared content, for a related-videos block."""
+    verify_auth_token(authorization=authorization)
+    if query_engine is None or config is None:
+        raise HTTPException(status_code=503, detail="Query engine not initialized")
+    loader = _metadata_loader()
+    video_hash = await asyncio.to_thread(_resolve_video_ref, video_id, loader)
+    ranked = await asyncio.to_thread(query_engine.find_similar_videos, video_hash, limit, language)
+    records = await _enrich_records(loader, [entry["video_hash"] for entry in ranked])
+    results: list[SimilarVideo] = []
+    for entry, record in zip(ranked, records, strict=True):
+        teleshow = record.get("teleshow")
+        library_id = record.get("id")
+        results.append(
+            SimilarVideo(
+                video_hash=entry["video_hash"],
+                library_id=_as_int(library_id),
+                url=record.get("url") or entry.get("url"),
+                title=record.get("name") or entry.get("title"),
+                program=(teleshow.get("name") if isinstance(teleshow, dict) else None)
+                or entry.get("program"),
+                date=record.get("date_active_start") or entry.get("date"),
+                score=entry["score"],
+                best=entry["best"],
+                matching_chunks=entry["matching_chunks"],
+            )
+        )
+    return SimilarVideosResponse(
+        video_hash=video_hash, video_id=video_id, results=results, num_results=len(results)
+    )
+
+
+def _transcript_body(track: Path, archive_root: Path, fmt: str) -> str | None:
+    """The track as VTT or SRT text, or None when it is not a file under the root.
+
+    Runs in a worker thread: the archive is NFS-backed, and a slow stat or
+    read must not block the event loop.
+    """
+    if not track.is_relative_to(archive_root) or not track.is_file():
+        return None
+    text = track.read_text(encoding="utf-8", errors="replace")
+    return vtt_to_srt(text) if fmt == "srt" else text
+
+
+# {video_id:path}: a tvrain.tv URL is a valid reference and carries slashes.
+@app.api_route("/transcript/{video_id:path}", methods=["GET", "HEAD"])
+async def video_transcript(
+    video_id: str,
+    language: str = Query(default="ru", pattern="^(ru|en)$"),
+    format: str = Query(default="vtt", pattern="^(vtt|srt)$"),
+    authorization: Annotated[str | None, Header()] = None,
+    auth: Annotated[str | None, Query()] = None,
+):
+    """One subtitle track of a video, as the archive holds it (VTT) or as SRT."""
+    # A <track src> cannot set headers, so the player passes a signed media
+    # token in the query; the standing secret is not accepted there.
+    verify_auth_token(authorization=authorization, access_token=auth, query_secret_allowed=False)
+    if config is None:
+        raise HTTPException(status_code=503, detail="Server not initialized")
+    video_hash = await asyncio.to_thread(_resolve_video_ref, video_id, _metadata_loader())
+    archive_root = Path(config.paths.archive_root).resolve()
+    track = (
+        archive_root
+        / WebMetadataLoader.hash_to_archive_dir(video_hash)
+        / f"{video_hash}.{language}.vtt"
+    ).resolve()
+    body = await asyncio.to_thread(_transcript_body, track, archive_root, format)
+    if body is None:
+        raise HTTPException(status_code=404, detail=f"No {language} transcript for {video_hash}")
+    if format == "srt":
+        media, name = "application/x-subrip", f"{video_hash}.{language}.srt"
+    else:
+        media, name = "text/vtt", track.name
+    return Response(
+        content=body,
+        media_type=f"{media}; charset=utf-8",
+        headers={"Content-Disposition": f'inline; filename="{name}"', "Cache-Control": "no-store"},
+    )
 
 
 @app.post("/related-chunks", response_model=RelatedChunksResponse)

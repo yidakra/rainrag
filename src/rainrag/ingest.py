@@ -8,6 +8,7 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from collections.abc import Generator, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -1039,9 +1040,7 @@ class WebMetadataLoader:
             if not safe_hash:
                 continue
             try:
-                (self.metadata_path / f"{safe_hash}.json").write_text(
-                    json.dumps(article, ensure_ascii=False, indent=None), encoding="utf-8"
-                )
+                self._write_cache_record(self.metadata_path / f"{safe_hash}.json", article)
             except OSError:
                 continue
         return api_candidates
@@ -1049,6 +1048,23 @@ class WebMetadataLoader:
     # ------------------------------------------------------------------
     # Local helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _write_cache_record(cache_file: Path, data: dict[str, Any]) -> None:
+        """Write one cache record through a sibling temp file and an atomic rename.
+
+        ``local_records`` scans the directory while the API modes write to it;
+        a reader must see a whole record or none, never a truncated one. The
+        temp name is unique per write, so two requests caching the same video
+        at once cannot truncate or rename each other's file.
+        """
+        tmp = cache_file.with_name(f"{cache_file.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=None), encoding="utf-8")
+            tmp.replace(cache_file)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def _load_local(self, video_hash: str) -> dict[str, Any] | None:
         """Read a single ``{hash}.json`` from the local directory."""
@@ -1062,6 +1078,10 @@ class WebMetadataLoader:
         except (json.JSONDecodeError, FileNotFoundError) as e:
             logger.debug(f"Could not load web metadata for {video_hash}: {e}")
             return None
+
+    def load_cached(self, video_hash: str) -> dict[str, Any] | None:
+        """The locally cached record only; never a network fetch, whatever ``source`` is."""
+        return self._load_local(video_hash)
 
     def _fetch_api(self, video_hash: str) -> dict[str, Any] | None:
         """Fetch metadata from the remote API and cache locally."""
@@ -1078,9 +1098,7 @@ class WebMetadataLoader:
         self.metadata_path.mkdir(parents=True, exist_ok=True)
         cache_file = self.metadata_path / f"{video_hash}.json"
         try:
-            cache_file.write_text(
-                json.dumps(data, ensure_ascii=False, indent=None), encoding="utf-8"
-            )
+            self._write_cache_record(cache_file, data)
         except OSError as exc:
             logger.warning(f"Failed to cache metadata for {video_hash}: {exc}")
         return data
@@ -1318,6 +1336,60 @@ class WebMetadataLoader:
             if metadata_file.is_file():
                 hashes.append(metadata_file.stem)
         return hashes
+
+    # A ``{hash}.json.{uuid}.tmp`` older than this is a leftover of a writer that
+    # died between write and rename; the directory scan removes it.
+    _STALE_TEMP_SECONDS = 600
+
+    def local_records(self) -> "Iterator[tuple[str, dict[str, Any]]]":
+        """Yield (video_hash, record) for every readable ``{hash}.json`` in the cache.
+
+        The same pass removes stale temp files (see ``_STALE_TEMP_SECONDS``):
+        this scan is the only regular walk of the directory, so crashed
+        writes cannot accumulate there.
+        """
+        if not self.metadata_path.exists():
+            return
+        cutoff = time.time() - self._STALE_TEMP_SECONDS
+        records: list[Path] = []
+        for entry in self.metadata_path.iterdir():
+            if entry.name.endswith(".tmp") and ".json." in entry.name:
+                try:
+                    if entry.stat().st_mtime < cutoff:
+                        entry.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            if entry.suffix == ".json":
+                records.append(entry)
+        for metadata_file in sorted(records):
+            if not metadata_file.is_file():
+                continue
+            try:
+                with open(metadata_file, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (ValueError, OSError):
+                # ValueError covers a JSON error and a UnicodeDecodeError from a
+                # file written in place by an older version, caught mid-write.
+                continue
+            if isinstance(data, dict):
+                yield metadata_file.stem, data
+
+    def library_id_index(self) -> dict[int, str]:
+        """Map the site's numeric library id (``id`` in the record) to the video hash.
+
+        The site addresses a video by this id and the archive by the hash; the
+        cached article records carry both. Built from the local cache only.
+        """
+        index: dict[int, str] = {}
+        for video_hash, data in self.local_records():
+            raw = data.get("id")
+            try:
+                library_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            index[library_id] = str(data.get("video_hash") or video_hash).strip()
+        return index
 
     def search_by_name(self, query: str) -> list[dict[str, Any]]:
         """Search metadata by title (case-insensitive substring match).
@@ -2359,20 +2431,6 @@ class Ingester:
             logger.info("No manifest found, falling back to full ingestion")
             return self._ingest_full()
 
-        # Load previous docs into a lookup by doc_id
-        previous_docs: dict[str, Document] = {}
-        if output_path.exists():
-            try:
-                with open(output_path, encoding="utf-8") as f:
-                    for line in f:
-                        if line.strip():
-                            doc = Document(**json.loads(line))
-                            previous_docs[doc.id] = doc
-                logger.info(f"Loaded {len(previous_docs)} previous documents")
-            except Exception as e:
-                logger.warning(f"Failed to load previous docs, doing full ingestion: {e}")
-                return self._ingest_full()
-
         logger.info(f"Starting incremental ingestion from {root_path}")
 
         # Scan current files
@@ -2384,8 +2442,16 @@ class Ingester:
         modified_files: list[Path] = []
         unchanged_files: list[Path] = []
 
-        for file_path in vtt_files:
-            state = manifest.classify_file(file_path)
+        # On a thread pool, like the walk. Classifying is a stat per file,
+        # and a stat on the archive share is a network round trip, measured
+        # at 91 ms: 289,368 of them one after another were seven hours of
+        # every run, longer than the six-hour timer that starts the next.
+        # The calls only read the manifest, so they parallelise cleanly, and
+        # map keeps the input order.
+        workers = max(1, int(getattr(self.config.processing, "ingest_workers", 1) or 1))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="classify") as pool:
+            states = list(pool.map(manifest.classify_file, vtt_files))
+        for file_path, state in zip(vtt_files, states, strict=True):
             if state == "new":
                 new_files.append(file_path)
             elif state == "modified":
@@ -2409,40 +2475,43 @@ class Ingester:
             if key in manifest.entries:
                 modified_old_doc_ids.update(manifest.entries[key].doc_ids)
 
-        # Write output: unchanged docs + newly processed docs in a temp file for atomic replace
-        doc_count = 0
-        file_count = 0
         files_to_process = new_files + modified_files
+        # is_file, not exists: a directory at docs_output would otherwise
+        # take the shortcut and report a count with no corpus behind it,
+        # where the full path surfaces it as an error (CodeRabbit on #115).
+        if not files_to_process and not deleted_keys and output_path.is_file():
+            # Nothing changed: the corpus on disk already says so. Copying
+            # 9.5 GB through to produce an identical file is most of what a
+            # run costs after the walk, and most runs find nothing.
+            logger.info("Incremental scan found no changes; the corpus is left as it is")
+            return sum(len(entry.doc_ids) for entry in manifest.entries.values())
 
+        skip_ids = deleted_doc_ids | modified_old_doc_ids
         temp_output_path = output_path.with_name(output_path.name + ".tmp")
 
+        # The previous corpus is copied through line by line and never
+        # parsed into objects. It used to be loaded whole, 2.6 million
+        # Document models from a 9.5 GB file, only to be written straight
+        # back out: 29 GB resident on a 32 GB box. The kernel killed every
+        # hourly run from 2026-10-09, each after seven hours, and nothing new
+        # reached the index between 2026-08-29 and this change.
         with open(temp_output_path, "w", encoding="utf-8") as out_file:
-            # Write unchanged documents (skip deleted and modified-old)
-            skip_ids = deleted_doc_ids | modified_old_doc_ids
-            for doc_id, doc in previous_docs.items():
-                if doc_id not in skip_ids:
-                    out_file.write(doc.model_dump_json() + "\n")
-                    doc_count += 1
+            try:
+                unchanged_count = (
+                    self._copy_unchanged(output_path, out_file, skip_ids)
+                    if output_path.exists()
+                    else 0
+                )
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                logger.warning(f"Failed to carry over previous docs, doing full ingestion: {exc}")
+                unchanged_count = None
+        if unchanged_count is None:
+            temp_output_path.unlink(missing_ok=True)
+            return self._ingest_full()
+        logger.info(f"Kept {unchanged_count} unchanged documents")
 
-            unchanged_count = doc_count
-            logger.info(f"Kept {unchanged_count} unchanged documents")
-
-            # Process new and modified files
-            for file_path in tqdm(files_to_process, desc="Processing changed files"):
-                docs = self.process_file(file_path)
-
-                if docs:
-                    file_count += 1
-                    doc_ids = []
-                    for doc in docs:
-                        out_file.write(doc.model_dump_json() + "\n")
-                        doc_count += 1
-                        doc_ids.append(doc.id)
-                    manifest.update_entry(file_path, doc_ids)
-
-            # Ensure disk durability before job completion
-            out_file.flush()
-            os.fsync(out_file.fileno())
+        with open(temp_output_path, "a", encoding="utf-8") as out_file:
+            changed_count = self._process_changed(files_to_process, out_file, manifest)
 
         # Atomically replace the previous docs file with the new content
         temp_output_path.replace(output_path)
@@ -2453,9 +2522,10 @@ class Ingester:
         # Save updated manifest
         manifest.save()
 
+        doc_count = unchanged_count + changed_count
         logger.info(
             f"Incremental ingestion complete! {unchanged_count} unchanged + "
-            + f"{doc_count - unchanged_count} new/modified documents = {doc_count} total"
+            + f"{changed_count} new/modified documents = {doc_count} total"
         )
         if deleted_doc_ids:
             logger.info(
@@ -2463,6 +2533,44 @@ class Ingester:
             )
 
         return doc_count
+
+    @staticmethod
+    def _copy_unchanged(previous: Path, out_file: Any, skip_ids: set[str]) -> int:
+        """Stream the previous corpus into `out_file`, minus `skip_ids`; returns the count kept.
+
+        Each line is parsed only far enough to read its id and is written
+        back exactly as it was. A line that is not a document raises, and
+        the caller falls back to a full run, as it always did.
+        """
+        kept = 0
+        with open(previous, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                if json.loads(line)["id"] in skip_ids:
+                    continue
+                out_file.write(line if line.endswith("\n") else line + "\n")
+                kept += 1
+        return kept
+
+    def _process_changed(self, files: list[Path], out_file: Any, manifest: FileManifest) -> int:
+        """Parse the new and modified files into `out_file`, recording each in the manifest."""
+        written = 0
+        # Through the same order-preserving pool the full run parses with.
+        # One at a time was 3.6 files/s on the share; the catch-up after the
+        # updater stood still for six weeks is 9,738 files.
+        for file_path, docs in self._parsed_documents(files):
+            if docs:
+                doc_ids = []
+                for doc in docs:
+                    out_file.write(doc.model_dump_json() + "\n")
+                    written += 1
+                    doc_ids.append(doc.id)
+                manifest.update_entry(file_path, doc_ids)
+        # Ensure disk durability before job completion
+        out_file.flush()
+        os.fsync(out_file.fileno())
+        return written
 
 
 def run_ingestion(config_path: str = "config.yaml", incremental: bool = False) -> int:

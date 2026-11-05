@@ -869,7 +869,8 @@ def test_thumbs_come_after_the_caption_and_every_widget_shows_the_stored_verdict
             1, e, "почему", "ru", seed_id="s1", column=column, marks=marks
         )
 
-    kinds = [c[0] for c in fake.calls]
+    # The re-seed control closes every card and is not what this is about.
+    kinds = [c[0] for c in fake.calls if c[0] != "button"]
     assert kinds == ["markdown", "caption", "feedback"] * 2
     feedbacks = [c for c in fake.calls if c[0] == "feedback"]
     for _, kind, key, state_at_paint, kwargs in feedbacks:
@@ -1221,7 +1222,9 @@ def test_an_uncarded_episode_opens_in_place_rather_than_in_a_new_tab(monkeypatch
         2, e, "почему", "ru", column="theme", media={HASH: {"video": "a/b.mp4"}}
     )
 
-    buttons = [c for c in fake.calls if c[0] == "button"]
+    buttons = [
+        c for c in fake.calls if c[0] == "button" and c[2]["on_click"] is ui_library._open_episode
+    ]
     assert len(buttons) == 1, "the title itself is the control"
     assert buttons[0][2]["type"] == "tertiary"
     assert buttons[0][2]["on_click"] is ui_library._open_episode
@@ -1253,7 +1256,10 @@ def test_a_cms_carded_episode_keeps_its_ordinary_link(monkeypatch):
     monkeypatch.setattr(ui_library, "st", fake)
     ui_library._render_suggestion(1, _episode("h1"), "почему", "ru", column="theme")
 
-    assert not [c for c in fake.calls if c[0] == "button"]
+    # No button stands in for the title; the only one is the re-seed control.
+    assert not [
+        c for c in fake.calls if c[0] == "button" and c[2]["on_click"] is not ui_library._reseed
+    ]
     assert any(c[0] == "markdown" and "](https://example.test/e)" in c[1] for c in fake.calls)
 
 
@@ -1887,3 +1893,175 @@ def test_a_limited_forced_scan_will_not_replace_the_whole_file(tmp_path, capsys)
     code = library_notes_build.main(["--force", "--limit", "50"])
     assert code == 1
     assert "refusing" in capsys.readouterr().out
+
+
+def test_unlinked_uploads_are_exactly_what_resolves_to_nothing():
+    """The queue hides a rejected upload and one with no candidate alike, and
+    with the queue empty the tab looked finished while they sat unlinked
+    (Varya, 2026-10-12). This list is the same rule as resolve_youtube_id,
+    inverted, newest first."""
+    from ui_library import unlinked_uploads
+
+    matches = [
+        {
+            "youtube_id": "e",
+            "confidence": "editor",
+            "content_id": "1",
+            "published_at": "2026-01-01",
+        },
+        {
+            "youtube_id": "s",
+            "confidence": "strong",
+            "content_id": "2",
+            "published_at": "2026-02-01",
+        },
+        {
+            "youtube_id": "r",
+            "confidence": "review",
+            "content_id": "3",
+            "published_at": "2026-03-01",
+        },
+        {"youtube_id": "n", "confidence": "none", "content_id": None, "published_at": "2026-04-01"},
+        {
+            "youtube_id": "x",
+            "confidence": "strong",
+            "content_id": "4",
+            "published_at": "2026-05-01",
+        },
+        {"youtube_id": "m", "confidence": "none", "content_id": None, "published_at": "2026-06-01"},
+    ]
+    decisions = {"x": "no_match", "m": "match", "r": "skip"}
+    # editor and strong are links; a strong one the editor rejected is not;
+    # a none the editor linked by hand is; skip leaves review where it was.
+    assert [m["youtube_id"] for m in unlinked_uploads(matches, decisions)] == ["x", "n", "r"]
+
+
+def test_a_typed_content_id_is_looked_up_in_the_pool_then_the_archive_index():
+    from types import SimpleNamespace
+
+    from ui_library import archive_episode
+
+    pool = {"1": SimpleNamespace(title="Из пула", date="2021-01-01", url="p")}
+    index = {
+        "1": {"title": "Из индекса"},
+        "2": {"title": "Только в индексе", "date": "2019-05-05", "url": "i"},
+    }
+    assert archive_episode(" 1 ", pool, index)["title"] == "Из пула"
+    assert archive_episode("2", pool, index) == {
+        "title": "Только в индексе",
+        "date": "2019-05-05",
+        "url": "i",
+    }
+    assert archive_episode("3", pool, index) is None
+    # Not a content id at all: never "found", so the link button stays off.
+    assert archive_episode("abc", pool, index) is None
+    assert archive_episode("", pool, index) is None
+    # Fullwidth digits from an IME are the same episode; a digit NFKC leaves
+    # alone (Arabic-Indic) is not an id (CodeRabbit on #113). Ids compare as
+    # stored, so a leading zero is a different id, as everywhere else.
+    assert archive_episode("\uff12", pool, index)["title"] == "Только в индексе"
+    assert archive_episode("02", pool, index) is None
+    assert archive_episode("\u0662", pool, index) is None
+
+
+def test_a_typed_content_id_is_stored_in_the_form_it_was_previewed():
+    from ui_library import normalize_content_id
+
+    assert normalize_content_id(" \uff14\uff11\uff12\uff17\uff10\uff17 ") == "412707"
+    assert normalize_content_id("0412707") == "0412707"
+    assert normalize_content_id("41 2707") is None
+    assert normalize_content_id("") is None
+
+
+def test_the_archive_index_is_optional_and_may_be_torn(tmp_path):
+    from ui_library import load_archive_index
+
+    p = tmp_path / "idx.json"
+    assert load_archive_index(p) == {}
+    p.write_text('{"1": {"title": "x"', encoding="utf-8")  # mid-rewrite
+    assert load_archive_index(p) == {}
+    p.write_text("[1, 2]", encoding="utf-8")  # the wrong shape entirely
+    assert load_archive_index(p) == {}
+    p.write_text('{"1": {"title": "x"}}', encoding="utf-8")
+    assert load_archive_index(p) == {"1": {"title": "x"}}
+    # One malformed row must not take the rest, or the tab, down with it.
+    p.write_text('{"1": {"title": "x"}, "2": "bad", "3": null}', encoding="utf-8")
+    assert load_archive_index(p) == {"1": {"title": "x"}}
+
+
+def test_a_hash_in_the_seed_search_is_that_one_episode_and_nothing_else():
+    """How a result re-seeds itself: the button puts the hash in the search
+    box, and a hash must mean one exact episode, never a substring hit."""
+    from ui_library import search_episodes
+
+    a = _ep("a" * 40)
+    b = _ep("b" * 40)
+    a.title, b.title = "Про Крым", "Крым, продолжение"
+    assert search_episodes([a, b], "A" * 40) == [a]
+    assert search_episodes([a, b], " " + "b" * 40 + " ") == [b]
+    assert search_episodes([a, b], "c" * 40) == []
+    # Still a title search for everything that is not a hash.
+    assert search_episodes([a, b], "крым") == [a, b] or search_episodes([a, b], "крым") == [b, a]
+
+
+def test_the_shortlist_pages_in_tens_numbered_on_and_wraps_around():
+    """Five was the whole answer and the editor wanted what came after it,
+    less relevant or not (Varya, 124kk1zbexb). Ranks continue across pages
+    so the next page reads as the next ones down, and past the end it
+    starts over rather than stopping."""
+    from ui_library import shortlist_page
+
+    ranked = list(range(23))
+    assert shortlist_page(ranked, 0) == (list(range(0, 10)), 1)
+    assert shortlist_page(ranked, 1) == (list(range(10, 20)), 11)
+    assert shortlist_page(ranked, 2) == (list(range(20, 23)), 21)
+    assert shortlist_page(ranked, 3) == (list(range(0, 10)), 1)
+    assert shortlist_page([], 4) == ([], 1)
+    assert shortlist_page([1, 2, 3], 0) == ([1, 2, 3], 1)
+
+
+def test_a_result_becomes_the_seed_in_place_and_closes_an_open_episode_page(monkeypatch):
+    """«Найди мне похожие» on a result (Varya, 124kk1zbex9): the hash goes
+    into the seed search, which matches it exactly, and an episode page that
+    happens to be open is closed because the search box lives on the tab."""
+    import ui_library
+
+    fake = _FakeSt()
+    fake.query_params = {ui_library.EPISODE_PARAM: "h1", ui_library.START_PARAM: "120"}
+    monkeypatch.setattr(ui_library, "st", fake)
+
+    ui_library._render_suggestion(2, _episode("h2"), "why", "ru", seed_id="s1", column="theme")
+    reseed = [c for c in fake.calls if c[0] == "button" and c[2]["on_click"] is ui_library._reseed]
+    assert len(reseed) == 1 and reseed[0][2]["args"] == ("h2",)
+    assert reseed[0][2]["type"] == "tertiary", "a link-coloured control under the card, not a box"
+
+    ui_library._reseed("h2")
+    assert fake.session_state["library_seed_search"] == "h2"
+    assert fake.query_params == {}
+
+
+def test_the_shortlist_draws_deeper_than_the_columns_from_each_group():
+    """Both groups were cut to 50 before the shortlist was built, so its
+    pages stopped while usable candidates remained (CodeRabbit on #114)."""
+    from rainrag.library_similar import Scored
+    from ui_library import SIMILAR_POOL_LIMIT, shortlist_candidates
+
+    same = [Scored(_ep(f"s{i}"), 3.0, ["X"], []) for i in range(120)]
+    themed = [Scored(_ep(f"t{i}"), 0.5, [], ["тема"]) for i in range(80)]
+    pool = shortlist_candidates(same, themed, None)
+    assert len(pool) == 200 > 2 * SIMILAR_POOL_LIMIT
+    # Both groups are represented, the theme one included.
+    assert sum(e.video_hash.startswith("t") for e in pool) == 80
+    assert len(shortlist_candidates(same, themed, None, limit=10)) == 20
+
+
+def test_a_hash_never_reaches_the_untagged_title_search():
+    from ui_library import wants_untagged_search
+
+    assert wants_untagged_search("Быков")
+    assert not wants_untagged_search("a" * 40)
+    assert not wants_untagged_search(" " + "B" * 40 + " ")
+    assert not wants_untagged_search("https://youtu.be/abcDEF123-_")
+    assert not wants_untagged_search("")
+    # 39 hex digits is not a hash: an ordinary search.
+    assert wants_untagged_search("a" * 39)

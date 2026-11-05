@@ -15,7 +15,7 @@ Deployment notes (systemd + nginx)
    sudo systemctl status rainrag-api
    sudo systemctl status rainrag-streamlit
 
-Hourly incremental updater
+Incremental updater (every six hours)
 1) Ensure incremental mode is enabled in `/home/ubuntu/rainrag/config.yaml`:
    incremental:
      enabled: true
@@ -31,6 +31,8 @@ Hourly incremental updater
 
 4) Logs:
    /home/ubuntu/rainrag/logs/incremental-hourly.log
+   (the name predates the six-hour schedule; it is kept so existing tails and
+   log rotation keep working)
 
 Notes:
 - The updater script uses a lockfile (`/tmp/rainrag-incremental.lock`) to prevent overlapping runs.

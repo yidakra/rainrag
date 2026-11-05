@@ -996,6 +996,174 @@ class RAGQueryEngine:
 
         return boosted_docs
 
+    def _seed_conditions(self, video_hash: str, language: str | None) -> list[Any]:
+        """Payload conditions, any of which selects a chunk of this video.
+
+        Two payload keys are tried. ``video_id`` is the id shared by every
+        language track of a video; the indexer writes it since this change,
+        and an index built earlier carries none. ``path`` is written by every
+        indexer version, so the seed's file paths are matched as well: the
+        paths the BM25 corpus holds for this hash when hybrid search is on,
+        else the ru and en paths ingest would produce under the configured
+        archive root (that matches only while the root is unchanged). The ``video_id``
+        value comes from the corpus, which mirrors the payload, else from the
+        same recomputation.
+        """
+        from rainrag.ingest import VTTParser, WebMetadataLoader
+
+        corpus = getattr(self, "bm25_corpus", None) or []
+        video_id: str | None = None
+        paths: list[str] = []
+        for doc in corpus:
+            path = doc.get("path") or ""
+            if not path or VTTParser.extract_video_hash(path).lower() != video_hash.lower():
+                continue
+            paths.append(path)
+            if not video_id and doc.get("video_id"):
+                video_id = str(doc["video_id"])
+        archive_dir = Path(self.config.paths.archive_root) / WebMetadataLoader.hash_to_archive_dir(
+            video_hash
+        )
+        if not paths:
+            # Both tracks, whatever seed language was asked for: the conditions
+            # also exclude the seed from the hits, and on an index without
+            # video_id the other track must not fill the nearest-neighbour slots.
+            # The scroll's language condition restricts the seeds on its own.
+            paths = [str(archive_dir / f"{video_hash}.{lang}.vtt") for lang in ("ru", "en")]
+        if not video_id:
+            video_id = VTTParser.generate_video_id(
+                archive_dir / f"{video_hash}.{language or 'ru'}.vtt"
+            )
+        conditions: list[Any] = [
+            models.FieldCondition(key="video_id", match=models.MatchValue(value=video_id))
+        ]
+        conditions.extend(
+            models.FieldCondition(key="path", match=models.MatchValue(value=path))
+            for path in dict.fromkeys(paths)
+        )
+        return conditions
+
+    def _similarity(self, score: float) -> float:
+        """A higher-is-better similarity from a Qdrant score.
+
+        Cosine and dot-product scores already are one. A Euclidean score is a
+        distance, so it is folded to 1 / (1 + distance).
+        """
+        distance = getattr(getattr(self.config, "qdrant", None), "distance", "Cosine")
+        if distance == "Euclidean":
+            return 1.0 / (1.0 + max(score, 0.0))
+        return score
+
+    def find_similar_videos(
+        self,
+        video_hash: str,
+        limit: int = 10,
+        language: str | None = None,
+        max_seed_chunks: int = 40,
+        per_chunk: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Rank other videos by how much of this video's content they share.
+
+        Every indexed chunk of the seed video (up to ``max_seed_chunks``) is
+        used as a query; the ``per_chunk`` nearest chunks from other videos are
+        grouped by video and their similarities summed. The sum rewards a video
+        that matches the seed in several places over one that matches once.
+        Chunks of the seed video itself, in any language, are excluded through
+        the payload (see ``_seed_conditions``), and every score is folded to a
+        higher-is-better similarity whatever the distance metric. Returns
+        dicts with video_hash, score
+        (the sum), best (the single best similarity), matching_chunks, and the
+        title, url, program and date carried in the payload, best first.
+        """
+        if self.qdrant_client is None:
+            raise RuntimeError("Qdrant client not initialized. Call initialize() first.")
+        from rainrag.ingest import VTTParser
+
+        seed = self._seed_conditions(video_hash, language)
+        # The seed OR-group sits inside must: a top-level should turns optional
+        # as soon as the filter also has a must clause (the language), and the
+        # scroll would then return any chunk in that language.
+        must: list[Any] = [models.Filter(should=seed)]
+        if language:
+            must.append(
+                models.FieldCondition(key="language", match=models.MatchValue(value=language))
+            )
+        seeds, _ = self.qdrant_client.scroll(
+            collection_name=self.config.qdrant.collection_name,
+            scroll_filter=models.Filter(must=must),
+            limit=max_seed_chunks,
+            with_payload=False,
+            with_vectors=True,
+        )
+        if not seeds:
+            logger.info(f"No indexed chunks for video {video_hash}")
+            return []
+        exclude_seed = models.Filter(must_not=seed)
+        requests: list[models.QueryRequest] = []
+        for point in seeds:
+            vector = point.vector
+            if not isinstance(vector, list):
+                tolist = getattr(vector, "tolist", None)
+                vector = tolist() if callable(tolist) else list(vector or [])
+            if not vector:
+                continue
+            requests.append(
+                models.QueryRequest(
+                    query=vector, filter=exclude_seed, limit=per_chunk, with_payload=True
+                )
+            )
+        if not requests:
+            logger.info(f"No seed vectors for video {video_hash}")
+            return []
+        # One round trip for all seed chunks instead of one per chunk.
+        responses = self.qdrant_client.query_batch_points(
+            collection_name=self.config.qdrant.collection_name, requests=requests
+        )
+        agg: dict[str, dict[str, Any]] = {}
+        for response in responses:
+            for hit in response.points:
+                payload = hit.payload or {}
+                path = payload.get("path") or ""
+                other = VTTParser.extract_video_hash(path) if path else payload.get("video_id")
+                # The payload filter excludes the seed by video_id and path; the hash
+                # in the path catches a seed chunk indexed under another root spelling.
+                if not other or str(other).lower() == video_hash.lower():
+                    continue
+                entry = agg.setdefault(
+                    other,
+                    {
+                        "video_hash": other,
+                        "score": 0.0,
+                        "best": 0.0,
+                        "matching_chunks": 0,
+                        "title": None,
+                        "url": None,
+                        "program": None,
+                        "date": None,
+                    },
+                )
+                score = self._similarity(float(hit.score or 0.0))
+                entry["score"] += score
+                entry["best"] = max(entry["best"], score)
+                entry["matching_chunks"] += 1
+                for key, field in (
+                    ("title", "web_title"),
+                    ("url", "web_url"),
+                    ("program", "web_program"),
+                ):
+                    if not entry[key] and payload.get(field):
+                        entry[key] = payload[field]
+                if not entry["date"]:
+                    entry["date"] = payload.get("web_date") or payload.get("date")
+        ranked = sorted(agg.values(), key=lambda e: (e["score"], e["best"]), reverse=True)[:limit]
+        for entry in ranked:
+            entry["score"] = round(entry["score"], 4)
+            entry["best"] = round(entry["best"], 4)
+        logger.info(
+            f"Similar videos for {video_hash}: {len(agg)} candidates from {len(seeds)} seed chunks"
+        )
+        return ranked
+
     def find_related_chunks(
         self, chunk_id: str, top_k: int = 5, same_video_only: bool = False
     ) -> list[dict[str, Any]]:

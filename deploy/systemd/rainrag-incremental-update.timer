@@ -1,9 +1,13 @@
 [Unit]
-Description=Run RainRAG incremental update hourly
+Description=Run RainRAG incremental update every six hours
 
 [Timer]
 OnBootSec=10m
-OnUnitActiveSec=1h
+# Six hours, not one. A run walks 289,000 transcript files on the network
+# share (about 40 minutes) and rewrites the corpus when anything changed,
+# so hourly meant the box was busy with it nearly all the time, next to
+# the app the editors use. New transcripts are not an hourly event.
+OnUnitActiveSec=6h
 RandomizedDelaySec=5m
 Persistent=true
 Unit=rainrag-incremental-update.service
