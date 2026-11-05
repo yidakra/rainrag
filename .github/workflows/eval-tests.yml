@@ -5,6 +5,9 @@ name: Eval Suite Tests
     branches: [main, develop]
     paths:
       - "eval/**"
+      - "src/eval/**"
+      - "src/rainrag/selection.py"
+      - "tests/unit/test_selection.py"
       - "src/rainrag_eval/**"
       - "tests/unit/test_eval_*.py"
       - "tests/unit/test_query_two_stage.py"
@@ -17,6 +20,9 @@ name: Eval Suite Tests
     branches: [main, develop]
     paths:
       - "eval/**"
+      - "src/eval/**"
+      - "src/rainrag/selection.py"
+      - "tests/unit/test_selection.py"
       - "src/rainrag_eval/**"
       - "tests/unit/test_eval_*.py"
       - "tests/unit/test_query_two_stage.py"
@@ -62,6 +68,7 @@ jobs:
         run: |
           uv run pytest -v --tb=short \
             tests/unit/test_eval_*.py \
+            tests/unit/test_selection.py \
             tests/unit/test_query_two_stage.py \
             tests/unit/test_run_eval_two_stage.py \
             tests/unit/test_two_stage_sweep.py \

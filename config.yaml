@@ -149,6 +149,15 @@ two_stage:
   # Prompt document ordering (Axis F)
   prompt_doc_order: "rank"  # rank | reversed | book_end
 
+# Outcome-informed selection, disabled until archive-specific validation
+adaptive_retrieval:
+  enabled: false
+  mode: "shadow"  # shadow observes only; select requires an archive-trained artifact
+  model_path: null
+  corpus_revision: ""  # operator-supplied immutable corpus/index revision
+  min_predicted_gain: 0.0  # utility contrast, not a relevance probability
+  capture_candidates: false  # opt-in IDs/scores/query variants in the internal pilot log
+
 # Processing configuration
 processing:
   # Number of worker threads for file processing
