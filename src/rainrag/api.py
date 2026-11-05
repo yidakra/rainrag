@@ -2426,7 +2426,10 @@ def _apify_youtube_download(url: str, dest: Path, cfg: Any) -> dict | None:
                 run = response.json()["data"]
             response = client.get(f"/datasets/{run['defaultDatasetId']}/items")
             response.raise_for_status()
-            row = next((r for r in response.json() if r.get("fileUrl")), None)
+            items = response.json()
+            # A malformed payload counts as no file, so the caller keeps its 503.
+            rows = items if isinstance(items, list) else []
+            row = next((r for r in rows if isinstance(r, dict) and r.get("fileUrl")), None)
         if row is None:
             logger.warning(
                 "Apify returned no file for url={} (run {})",
@@ -2434,15 +2437,29 @@ def _apify_youtube_download(url: str, dest: Path, cfg: Any) -> dict | None:
                 run["status"],
             )
             return None
-        # fileUrl is signed, so the download needs no token.
+        # fileUrl is signed, so the download needs no token. The Actor's
+        # maxMegabytes is an estimate, so stop one byte past max_upload_mb: the
+        # caller's size check then turns an oversized file into a 413.
+        limit = cfg.max_upload_mb * 1024 * 1024 + 1
+        written = 0
         target = dest / f"video.{row.get('container') or 'mp4'}"
         with httpx.stream("GET", row["fileUrl"], timeout=120) as media, target.open("wb") as fh:
             media.raise_for_status()
             for chunk in media.iter_bytes():
-                fh.write(chunk)
-    except (httpx.HTTPError, OSError, KeyError, ValueError) as exc:
+                piece = chunk[: limit - written]
+                fh.write(piece)
+                written += len(piece)
+                if written >= limit:
+                    break
+    except (httpx.HTTPError, OSError, KeyError, TypeError, ValueError) as exc:
+        # Log the error type and HTTP status only: httpx puts the request URL in
+        # its messages, and the media URL carries a signature.
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
         logger.warning(
-            "Apify download failed for url={}: {!r}", _redact_query_credentials(url), exc
+            "Apify download failed for url={}: {} (HTTP status {})",
+            _redact_query_credentials(url),
+            type(exc).__name__,
+            status,
         )
         return None
     logger.info("Downloaded url={} through Apify", _redact_query_credentials(url))

@@ -178,6 +178,46 @@ class TestApifyDownload:
         assert _apify_youtube_download(YOUTUBE_URL, tmp_path, _cfg()) is None
 
     @pytest.mark.parametrize(
+        "payload",
+        [{"error": "not a list"}, [None, "row", 5], [{"title": "no fileUrl"}]],
+    )
+    def test_a_malformed_dataset_returns_none(self, fake_apify, tmp_path, payload):
+        fake_apify.responses = [_run("SUCCEEDED"), _FakeResponse(payload)]
+        assert _apify_youtube_download(YOUTUBE_URL, tmp_path, _cfg()) is None
+        assert not (tmp_path / "video.mp4").exists()
+
+    def test_a_malformed_run_returns_none(self, fake_apify, tmp_path):
+        fake_apify.responses = [_FakeResponse({"data": None})]
+        assert _apify_youtube_download(YOUTUBE_URL, tmp_path, _cfg()) is None
+
+    def test_download_stops_one_byte_past_the_limit(self, fake_apify, tmp_path):
+        limit = 1024 * 1024
+        fake_apify.body = b"x" * (limit + 4096)
+        fake_apify.responses = [_run("SUCCEEDED"), _FakeResponse([FILE_ROW])]
+
+        info = _apify_youtube_download(YOUTUBE_URL, tmp_path, _cfg(max_upload_mb=1))
+
+        # One byte over is enough for the endpoint's size check to answer 413.
+        assert info == {"title": "Some title"}
+        assert (tmp_path / "video.mp4").stat().st_size == limit + 1
+
+    def test_failure_log_leaves_out_the_signed_media_url(self, fake_apify, monkeypatch, tmp_path):
+        request = httpx.Request("GET", FILE_URL)
+        error = httpx.HTTPStatusError(
+            f"403 Forbidden for url '{FILE_URL}'", request=request, response=httpx.Response(403)
+        )
+        monkeypatch.setattr(httpx, "stream", lambda *a, **k: _FakeResponse(error=error))
+        fake_apify.responses = [_run("SUCCEEDED"), _FakeResponse([FILE_ROW])]
+
+        with patch("rainrag.api.logger") as log:
+            assert _apify_youtube_download(YOUTUBE_URL, tmp_path, _cfg()) is None
+
+        logged = " ".join(str(arg) for call in log.warning.call_args_list for arg in call.args)
+        assert "signature" not in logged
+        assert "HTTPStatusError" in logged
+        assert "403" in logged
+
+    @pytest.mark.parametrize(
         ("max_height", "quality"),
         [(720, "720p"), (480, "480p"), (1000, "720p"), (100, "144p"), (0, "1080p")],
     )
