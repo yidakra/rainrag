@@ -483,14 +483,14 @@ class Embedder:
 
                     if effective_batch_size <= 1:
                         logger.error(
-                            "CUDA OOM while embedding chunk %d even at batch_size=1; cannot continue.",
+                            "CUDA OOM while embedding chunk {} even at batch_size=1; cannot continue.",
                             chunk_number,
                         )
                         raise
 
                     new_batch_size = max(1, effective_batch_size // 2)
                     logger.warning(
-                        "CUDA OOM in chunk %d at batch_size=%d. Retrying with batch_size=%d.",
+                        "CUDA OOM in chunk {} at batch_size={}. Retrying with batch_size={}.",
                         chunk_number,
                         effective_batch_size,
                         new_batch_size,
@@ -700,7 +700,7 @@ class Embedder:
             cached_embeddings = np.load(self.cache.embeddings_file, mmap_mode="r")
         except Exception:
             logger.exception(
-                "Failed to load cached embeddings from %s",
+                "Failed to load cached embeddings from {}",
                 self.cache.embeddings_file,
             )
             cached_embeddings = None

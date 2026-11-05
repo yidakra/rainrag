@@ -1673,7 +1673,7 @@ class RAGQueryEngine:
                 remaining = documents[2:]
                 ordered = [first] + remaining + [second_best]
         else:
-            logger.warning("Unknown prompt_doc_order %r; falling back to 'rank'", order)
+            logger.warning("Unknown prompt_doc_order {!r}; falling back to 'rank'", order)
             return documents
 
         # Re-number so [Document N] labels match the new positions
@@ -2331,7 +2331,7 @@ Question: {query}"""
             documents = self._apply_score_threshold(documents, min_score)
             if len(documents) < before:
                 logger.info(
-                    "Score threshold %.3f dropped %d/%d documents",
+                    "Score threshold {:.3f} dropped {}/{} documents",
                     min_score,
                     before - len(documents),
                     before,
