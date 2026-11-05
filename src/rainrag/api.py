@@ -2379,6 +2379,29 @@ _APIFY_DOWNLOAD_ACTOR = "johnvc~youtube-download-api"
 _APIFY_TERMINAL = ("SUCCEEDED", "FAILED", "TIMED-OUT", "ABORTED")
 # Qualities the Actor offers in H.264, highest first.
 _APIFY_HEIGHTS = (1080, 720, 480, 360, 240, 144)
+# How long the endpoint waits for a run before it aborts it and answers 503.
+# Apify's own run timeout (20 minutes) is the backstop.
+_APIFY_WAIT_SECONDS = 600
+
+
+def _refuse_non_public_hop(request: httpx.Request) -> None:
+    """httpx request hook: refuse a media request, or a redirect, to a non-public host.
+
+    Each hop gets the same check as a submitted URL, so neither the Actor's
+    fileUrl nor a redirect from it can reach a loopback, private, link-local
+    or metadata address.
+    """
+    try:
+        _validate_video_url(str(request.url))
+    except HTTPException as exc:
+        raise httpx.RequestError("Refused a non-public media address", request=request) from exc
+
+
+def _apify_media_client() -> httpx.Client:
+    """An httpx client for the media download that checks every hop."""
+    return httpx.Client(
+        timeout=120, follow_redirects=True, event_hooks={"request": [_refuse_non_public_hop]}
+    )
 
 
 def _apify_quality(max_height: int | None) -> str:
@@ -2420,7 +2443,17 @@ def _apify_youtube_download(url: str, dest: Path, cfg: Any) -> dict | None:
             )
             response.raise_for_status()
             run = response.json()["data"]
+            deadline = time.monotonic() + _APIFY_WAIT_SECONDS
             while run["status"] not in _APIFY_TERMINAL:
+                if time.monotonic() > deadline:
+                    # Stop the run, so a download nobody will receive is not billed.
+                    client.post(f"/actor-runs/{run['id']}/abort")
+                    logger.warning(
+                        "Apify run for url={} took over {} s; aborted",
+                        _redact_query_credentials(url),
+                        _APIFY_WAIT_SECONDS,
+                    )
+                    return None
                 response = client.get(f"/actor-runs/{run['id']}", params={"waitForFinish": 60})
                 response.raise_for_status()
                 run = response.json()["data"]
@@ -2443,16 +2476,18 @@ def _apify_youtube_download(url: str, dest: Path, cfg: Any) -> dict | None:
         limit = cfg.max_upload_mb * 1024 * 1024 + 1
         written = 0
         target = dest / f"video.{row.get('container') or 'mp4'}"
-        # The record endpoint may answer with a 302 to where the file is stored.
-        with httpx.stream("GET", row["fileUrl"], timeout=120, follow_redirects=True) as media:
-            media.raise_for_status()
-            with target.open("wb") as fh:
-                for chunk in media.iter_bytes():
-                    piece = chunk[: limit - written]
-                    fh.write(piece)
-                    written += len(piece)
-                    if written >= limit:
-                        break
+        # The record endpoint may answer with a 302 to where the file is stored;
+        # the media client follows it and checks every hop.
+        with _apify_media_client() as media_client:
+            with media_client.stream("GET", row["fileUrl"]) as media:
+                media.raise_for_status()
+                with target.open("wb") as fh:
+                    for chunk in media.iter_bytes():
+                        piece = chunk[: limit - written]
+                        fh.write(piece)
+                        written += len(piece)
+                        if written >= limit:
+                            break
     except (httpx.HTTPError, OSError, KeyError, TypeError, ValueError) as exc:
         # Log the error type and HTTP status only: httpx puts the request URL in
         # its messages, and the media URL carries a signature.

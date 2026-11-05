@@ -18,7 +18,12 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from rainrag.api import _apify_quality, _apify_youtube_download, app
+from rainrag.api import (
+    _apify_quality,
+    _apify_youtube_download,
+    _refuse_non_public_hop,
+    app,
+)
 
 
 YOUTUBE_URL = "https://youtu.be/FMbQXEoaCJc"
@@ -71,11 +76,11 @@ class _FakeApify:
         self.responses = list(responses)
         self.body = body
         self.calls: list[tuple[str, str, dict]] = []
-        self.client_kwargs: dict = {}
+        self.clients: list[dict] = []
 
     def client(self, **kwargs: object) -> _FakeApify:
         """Replace httpx.Client: record its settings and serve requests in order."""
-        self.client_kwargs = kwargs
+        self.clients.append(kwargs)
         return self
 
     def post(self, url: str, **kwargs: object) -> _FakeResponse:
@@ -148,7 +153,7 @@ class TestApifyDownload:
 
         assert info == {"title": "Some title"}
         assert (tmp_path / "video.mp4").read_bytes() == b"fake mp4"
-        assert fake_apify.client_kwargs["headers"] == {"Authorization": "Bearer test-token"}
+        assert fake_apify.clients[0]["headers"] == {"Authorization": "Bearer test-token"}
         method, path, kwargs = fake_apify.calls[0]
         assert (method, path) == ("POST", "/acts/johnvc~youtube-download-api/runs")
         assert kwargs["json"] == {
@@ -160,9 +165,13 @@ class TestApifyDownload:
         }
         assert fake_apify.calls[1][1] == "/actor-runs/run1"
         assert fake_apify.calls[2][1] == "/datasets/ds1/items"
-        # The signed fileUrl is fetched by its own request, without the token,
-        # following the redirect Apify may answer with.
-        assert fake_apify.calls[3] == ("GET", FILE_URL, {"timeout": 120, "follow_redirects": True})
+        # The signed fileUrl is fetched by its own client, without the token. It
+        # follows the redirect Apify may answer with and checks every hop.
+        assert fake_apify.calls[3] == ("GET", FILE_URL, {})
+        media_client = fake_apify.clients[1]
+        assert "headers" not in media_client
+        assert media_client["follow_redirects"] is True
+        assert media_client["event_hooks"] == {"request": [_refuse_non_public_hop]}
 
     def test_a_skipped_video_returns_none(self, fake_apify, tmp_path):
         skipped = {"resultType": "skipped", "error": "OVER_MAX_MEGABYTES"}
@@ -207,7 +216,7 @@ class TestApifyDownload:
         error = httpx.HTTPStatusError(
             f"403 Forbidden for url '{FILE_URL}'", request=request, response=httpx.Response(403)
         )
-        monkeypatch.setattr(httpx, "stream", lambda *a, **k: _FakeResponse(error=error))
+        monkeypatch.setattr(fake_apify, "stream", lambda *a, **k: _FakeResponse(error=error))
         fake_apify.responses = [_run("SUCCEEDED"), _FakeResponse([FILE_ROW])]
 
         with patch("rainrag.api.logger") as log:
@@ -217,6 +226,22 @@ class TestApifyDownload:
         assert "signature" not in logged
         assert "HTTPStatusError" in logged
         assert "403" in logged
+
+    def test_a_run_past_the_deadline_is_aborted(self, fake_apify, monkeypatch, tmp_path):
+        monkeypatch.setattr("rainrag.api._APIFY_WAIT_SECONDS", -1)
+        fake_apify.responses = [_run("RUNNING"), _FakeResponse({"data": {}})]
+
+        assert _apify_youtube_download(YOUTUBE_URL, tmp_path, _cfg()) is None
+        assert fake_apify.calls[1][:2] == ("POST", "/actor-runs/run1/abort")
+        assert len(fake_apify.calls) == 2
+
+    def test_media_hops_to_internal_addresses_are_refused(self):
+        for target in ("http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:6333/"):
+            with pytest.raises(httpx.RequestError):
+                _refuse_non_public_hop(httpx.Request("GET", target))
+
+    def test_media_hops_to_public_hosts_pass(self, public_dns):
+        _refuse_non_public_hop(httpx.Request("GET", FILE_URL))
 
     @pytest.mark.parametrize(
         ("max_height", "quality"),
