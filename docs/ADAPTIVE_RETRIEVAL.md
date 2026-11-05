@@ -156,8 +156,9 @@ depth and preprocessing. Changing the signature rejects the model at startup.
 `select` requires both a model and an explicit corpus revision. Ties and improvements
 below the configured predicted-gain threshold keep the original. Empty alternatives
 are excluded; when every ranking is empty, the original remains the fallback. Invalid
-runtime features keep the original in selection mode and the existing merge in shadow
-mode. Predicted contrasts are not calibrated confidence or an abstention guarantee.
+runtime features, or a changed configuration or candidate depth, keep the configured
+merge in both modes and record `fallback_reason`. Predicted contrasts are not
+calibrated confidence or an abstention guarantee.
 
 Rollback is `adaptive_retrieval.enabled: false`. Candidate capture is a separate flag,
 so also set `capture_candidates: false` when ending the experiment. No automatic
