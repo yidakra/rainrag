@@ -2402,9 +2402,11 @@ Question: {query}"""
                         if self.selector.signature != selection_trace["configuration_signature"]
                         else "invalid_features"
                     )
-                    if adaptive.mode == "select":
-                        documents = [dict(d) for d in alternatives[0].documents]
-                        selection_trace["applied_id"] = "original"
+                    # `documents` already holds the configured merge and
+                    # applied_id already names it, so the fallback leaves both
+                    # alone. It used to swap in the original query's unmerged
+                    # ranking, which is not what the warning says and degraded
+                    # a two-stage query to single-query retrieval (Tenki on #111).
             for i, doc in enumerate(documents):
                 doc["rank"] = i + 1
 

@@ -275,8 +275,11 @@ class TestAdaptivePipeline:
         self._model(two_stage_config, tmp_path)
         engine = self._engine(two_stage_config, mock_qdrant_client)
         result = engine.query("question", top_k=1)
-        assert result["retrieval_selection"]["applied_id"] == "original"
+        # The fallback is the configured merge, not the original query alone
+        # (Tenki on #111).
+        assert result["retrieval_selection"]["applied_id"] == "merge:coverage"
         assert result["retrieval_selection"]["fallback_reason"] == "configuration_mismatch"
+        assert [d["doc_id"] for d in result["retrieval_documents"]] == ["rewrite-doc"]
 
     def test_invalid_runtime_features_fall_back(
         self, two_stage_config, mock_qdrant_client, tmp_path
@@ -290,8 +293,13 @@ class TestAdaptivePipeline:
             "rainrag.selection.RidgeSelector.predict", side_effect=ValueError("invalid features")
         ):
             result = engine.query("question", top_k=2)
-        assert result["retrieval_selection"]["applied_id"] == "original"
+        assert result["retrieval_selection"]["applied_id"] == "merge:coverage"
         assert result["retrieval_selection"]["fallback_reason"] == "invalid_features"
+        # Exactly what the disabled path returns: the configured merge.
+        assert [d["doc_id"] for d in result["retrieval_documents"]] == [
+            "rewrite-doc",
+            "original-doc",
+        ]
 
     def test_date_constraints_apply_to_every_alternative(
         self, two_stage_config, mock_qdrant_client
