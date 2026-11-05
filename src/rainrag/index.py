@@ -386,8 +386,8 @@ class QdrantIndexer:
             required_iterations = (existing_points + scroll_batch_size - 1) // scroll_batch_size + 2
             if required_iterations > effective_max_iterations:
                 logger.warning(
-                    "Configured max_scroll_iterations=%d is too low for points_count=%d at batch_size=%d; "
-                    + "temporarily raising to %d for this run.",
+                    "Configured max_scroll_iterations={} is too low for points_count={} at batch_size={}; "
+                    + "temporarily raising to {} for this run.",
                     max_iterations,
                     existing_points,
                     scroll_batch_size,
@@ -439,7 +439,7 @@ class QdrantIndexer:
             iterations += 1
 
             logger.debug(
-                "Scroll progress: iteration %d, retrieved %d points, offset=%s",
+                "Scroll progress: iteration {}, retrieved {} points, offset={}",
                 iterations,
                 len(points),
                 repr(offset),
