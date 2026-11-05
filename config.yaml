@@ -226,6 +226,11 @@ video_upload:
   # logged-in browser. This file authenticates as that account, so treat it as a
   # credential (chmod 600). Leave empty to send no cookies.
   yt_dlp_cookies_path: ""
+  # YouTube refuses downloads from datacenter IPs. If the env var named here
+  # holds an Apify API token, a YouTube import that yt-dlp reports as blocked
+  # is fetched through the johnvc/youtube-download-api Apify Actor instead.
+  # Leave the variable empty in .env to keep imports direct-only.
+  apify_token_env: "APIFY_API_TOKEN"
   # --- Telegram (MTProto) video import ---
   # yt-dlp reaches Telegram by scraping the t.me embed page, which omits the
   # video element for most posts (~1 in 3 worked in testing). MTProto asks

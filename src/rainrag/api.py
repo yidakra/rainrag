@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
 
+import httpx
 from loguru import logger
 from prometheus_client import Counter, Gauge
 
@@ -2302,20 +2303,30 @@ async def create_video_session_from_url(
                     "yt-dlp download failed for url={}", _redact_query_credentials(url)
                 )
                 kind = _download_failure_kind(exc)
-                usage["reason"] = kind
+                # YouTube refuses this server's datacenter IP (#41). With an Apify
+                # token configured, fetch the same video through Apify instead.
+                info = None
                 if kind == "blocked":
-                    # 503, not 422: nothing is wrong with the link, and the
-                    # request is worth repeating later.
-                    raise HTTPException(
-                        status_code=503,
-                        detail="The video platform refused the download; try again later",
-                    ) from exc
-                if kind == "geo":
-                    raise HTTPException(
-                        status_code=451,
-                        detail="This video is not available in the server's region",
-                    ) from exc
-                raise HTTPException(status_code=422, detail="Video download failed") from exc
+                    info = await asyncio.to_thread(
+                        _apify_youtube_download, url, work_path, manager.cfg
+                    )
+                if info is not None:
+                    usage["via"] = "apify"
+                else:
+                    usage["reason"] = kind
+                    if kind == "blocked":
+                        # 503, not 422: nothing is wrong with the link, and the
+                        # request is worth repeating later.
+                        raise HTTPException(
+                            status_code=503,
+                            detail="The video platform refused the download; try again later",
+                        ) from exc
+                    if kind == "geo":
+                        raise HTTPException(
+                            status_code=451,
+                            detail="This video is not available in the server's region",
+                        ) from exc
+                    raise HTTPException(status_code=422, detail="Video download failed") from exc
 
             if not info:
                 # Some extractors return None instead of raising when a page holds no
@@ -2371,6 +2382,137 @@ def _yt_dlp_download(url: str, ydl_opts: dict) -> dict | None:
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=True)
+
+
+# Optional fallback for YouTube refusing this server's IP (#41): the
+# johnvc/youtube-download-api Apify Actor downloads the video on Apify's network.
+_APIFY_API = "https://api.apify.com/v2"
+_APIFY_DOWNLOAD_ACTOR = "johnvc~youtube-download-api"
+_APIFY_TERMINAL = ("SUCCEEDED", "FAILED", "TIMED-OUT", "ABORTED")
+# Qualities the Actor offers in H.264, highest first.
+_APIFY_HEIGHTS = (1080, 720, 480, 360, 240, 144)
+# How long the endpoint waits for a run before it aborts it and answers 503.
+# Apify's own run timeout (20 minutes) is the backstop.
+_APIFY_WAIT_SECONDS = 600
+
+
+def _refuse_non_public_hop(request: httpx.Request) -> None:
+    """httpx request hook: refuse a media request, or a redirect, to a non-public host.
+
+    Each hop gets the same check as a submitted URL, so neither the Actor's
+    fileUrl nor a redirect from it can reach a loopback, private, link-local
+    or metadata address.
+    """
+    try:
+        _validate_video_url(str(request.url))
+    except HTTPException as exc:
+        raise httpx.RequestError("Refused a non-public media address", request=request) from exc
+
+
+def _apify_media_client() -> httpx.Client:
+    """An httpx client for the media download that checks every hop."""
+    return httpx.Client(
+        timeout=120, follow_redirects=True, event_hooks={"request": [_refuse_non_public_hop]}
+    )
+
+
+def _apify_quality(max_height: int | None) -> str:
+    """Map ``max_video_height`` (0 or None: no cap) to the Actor's quality setting."""
+    height = next((h for h in _APIFY_HEIGHTS if not max_height or h <= max_height), 144)
+    return f"{height}p"
+
+
+def _apify_youtube_download(url: str, dest: Path, cfg: Any) -> dict | None:
+    """Download a YouTube video through Apify into ``dest`` (called via asyncio.to_thread).
+
+    Returns a yt-dlp-style info dict (the title) once ``dest/video.<ext>`` is
+    written. Returns None when the fallback is off (the env var named by
+    ``apify_token_env`` is empty), the link is not YouTube, or Apify could not
+    deliver the file; the caller then reports the original block.
+    """
+    token = os.getenv(getattr(cfg, "apify_token_env", "") or "", "")
+    if not token or usage_source(url) != "youtube":
+        return None
+    run_input = {
+        "videoUrls": [url],
+        "format": "video",
+        "quality": _apify_quality(getattr(cfg, "max_video_height", 720)),
+        # H.264 + AAC in mp4, the same kind of file the yt-dlp format chain prefers.
+        "videoCodec": "h264",
+        # Larger files are skipped at no charge, like yt-dlp's max_filesize.
+        "maxMegabytes": cfg.max_upload_mb,
+    }
+    try:
+        # Each waitForFinish request is held open for up to 60 s; the run itself
+        # is stopped by Apify after 20 minutes.
+        with httpx.Client(
+            base_url=_APIFY_API, headers={"Authorization": f"Bearer {token}"}, timeout=120
+        ) as client:
+            response = client.post(
+                f"/acts/{_APIFY_DOWNLOAD_ACTOR}/runs",
+                params={"timeout": 1200, "waitForFinish": 60},
+                json=run_input,
+            )
+            response.raise_for_status()
+            run = response.json()["data"]
+            deadline = time.monotonic() + _APIFY_WAIT_SECONDS
+            while run["status"] not in _APIFY_TERMINAL:
+                if time.monotonic() > deadline:
+                    # Stop the run, so a download nobody will receive is not billed.
+                    client.post(f"/actor-runs/{run['id']}/abort")
+                    logger.warning(
+                        "Apify run for url={} took over {} s; aborted",
+                        _redact_query_credentials(url),
+                        _APIFY_WAIT_SECONDS,
+                    )
+                    return None
+                response = client.get(f"/actor-runs/{run['id']}", params={"waitForFinish": 60})
+                response.raise_for_status()
+                run = response.json()["data"]
+            response = client.get(f"/datasets/{run['defaultDatasetId']}/items")
+            response.raise_for_status()
+            items = response.json()
+            # A malformed payload counts as no file, so the caller keeps its 503.
+            rows = items if isinstance(items, list) else []
+            row = next((r for r in rows if isinstance(r, dict) and r.get("fileUrl")), None)
+        if row is None:
+            logger.warning(
+                "Apify returned no file for url={} (run {})",
+                _redact_query_credentials(url),
+                run["status"],
+            )
+            return None
+        # fileUrl is signed, so the download needs no token. The Actor's
+        # maxMegabytes is an estimate, so stop one byte past max_upload_mb: the
+        # caller's size check then turns an oversized file into a 413.
+        limit = cfg.max_upload_mb * 1024 * 1024 + 1
+        written = 0
+        target = dest / f"video.{row.get('container') or 'mp4'}"
+        # The record endpoint may answer with a 302 to where the file is stored;
+        # the media client follows it and checks every hop.
+        with _apify_media_client() as media_client:
+            with media_client.stream("GET", row["fileUrl"]) as media:
+                media.raise_for_status()
+                with target.open("wb") as fh:
+                    for chunk in media.iter_bytes():
+                        piece = chunk[: limit - written]
+                        fh.write(piece)
+                        written += len(piece)
+                        if written >= limit:
+                            break
+    except (httpx.HTTPError, OSError, KeyError, TypeError, ValueError) as exc:
+        # Log the error type and HTTP status only: httpx puts the request URL in
+        # its messages, and the media URL carries a signature.
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        logger.warning(
+            "Apify download failed for url={}: {} (HTTP status {})",
+            _redact_query_credentials(url),
+            type(exc).__name__,
+            status,
+        )
+        return None
+    logger.info("Downloaded url={} through Apify", _redact_query_credentials(url))
+    return {"title": row.get("title") or ""}
 
 
 @app.get("/video-sessions/{session_id}")
