@@ -1187,6 +1187,18 @@ async def lifespan(app: FastAPI):
     query_engine = RAGQueryEngine(config)
     query_engine.initialize()
 
+    # Build the /search-by-name index in the background, so the first search
+    # does not read the whole metadata folder (about 107,000 files on prod).
+    if config.web_metadata.source in {"local", "hybrid"}:
+        from rainrag.ingest import warm_name_index
+
+        threading.Thread(
+            target=warm_name_index,
+            args=(Path(config.web_metadata.path),),
+            name="name-index-warm",
+            daemon=True,
+        ).start()
+
     # Initialize the single-video upload manager (transcribe → scoped Q&A)
     if config.video_upload.enabled:
         try:
