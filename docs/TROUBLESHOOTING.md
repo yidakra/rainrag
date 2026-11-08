@@ -300,6 +300,18 @@ qdrant:
   collection_name: "broadcast_transcripts"  # Must match across all commands
 ```
 
+### "/similar-videos" hangs, or "Operation 'scroll_by_id' timed out"
+
+**Symptoms**: `/similar-videos` (or `/related-chunks`) gives no answer for 60 s, and the API log shows a Qdrant 500 with `Timeout error: Operation 'scroll_by_id' timed out after 60s`.
+
+**Cause**: the collection has no payload indexes, so Qdrant reads every point to answer the filter on `video_id`, `path`, `language` or `doc_id`. Collections created before the indexer made these indexes have none (`payload_schema` is empty in `GET /collections/<name>`).
+
+**Solution**: create the missing indexes on the live collection. Points and vectors do not change, and no restart is needed:
+```bash
+rainrag ensure-indexes
+```
+`rainrag index` does the same on every run, so a new or rebuilt collection gets them automatically.
+
 ---
 
 ## Performance Issues

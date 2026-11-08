@@ -64,6 +64,12 @@ def _build_payload(doc: Document) -> dict:
     }
 
 
+# Payload fields that query.py filters on: video_id and path select the chunks of
+# one video (_seed_conditions), language narrows them (find_similar_videos), and
+# doc_id finds one chunk (related chunks). Each gets a keyword index.
+PAYLOAD_INDEX_FIELDS: tuple[str, ...] = ("video_id", "path", "language", "doc_id")
+
+
 class CollectionIsAliasError(RuntimeError):
     """Raised when a recreate targets a name that is a collection alias."""
 
@@ -131,6 +137,50 @@ class QdrantIndexer:
         }
         return distance_map.get(self.config.qdrant.distance, models.Distance.COSINE)
 
+    def ensure_payload_indexes(self, collection_name: str | None = None) -> list[str]:
+        """Create the keyword payload indexes that the query engine filters on.
+
+        Without an index, Qdrant answers a payload filter by reading every
+        point. On the production collection (2.7 million points) the seed
+        lookup of /similar-videos timed out after 60 s for that reason.
+
+        Only missing indexes are created, so a call on every run is safe. Points
+        and vectors do not change. An alias is resolved to its collection.
+        A field indexed with another type (text, integer) does not serve the
+        exact-match filters, so that index is replaced with a keyword index.
+        Returns the fields that this call indexed.
+        """
+        client = self._get_client()
+        name = collection_name or self.config.qdrant.collection_name
+        target = self._alias_target(name) or name
+        existing = client.get_collection(target).payload_schema or {}
+        created: list[str] = []
+        for field in PAYLOAD_INDEX_FIELDS:
+            info = existing.get(field)
+            if info is not None:
+                kind = getattr(info, "data_type", None)
+                kind = getattr(kind, "value", kind)
+                if kind == models.PayloadSchemaType.KEYWORD.value:
+                    continue
+                if kind is None:
+                    # An unreadable type is never replaced: a rebuild on every
+                    # run would cost minutes on a large collection.
+                    logger.warning(f"{target}.{field} has an index of unknown type; left as it is")
+                    continue
+                logger.warning(
+                    f"{target}.{field} has a {kind} index; replacing it with a keyword index"
+                )
+                client.delete_payload_index(collection_name=target, field_name=field, wait=True)
+            logger.info(f"Creating keyword payload index on {target}.{field}")
+            client.create_payload_index(
+                collection_name=target,
+                field_name=field,
+                field_schema=models.PayloadSchemaType.KEYWORD,
+                wait=True,
+            )
+            created.append(field)
+        return created
+
     def create_collection(self, recreate: bool = False) -> None:
         """
         Create or recreate the collection.
@@ -158,6 +208,7 @@ class QdrantIndexer:
                     f"Collection {collection_name} is an alias for {alias_target}; "
                     + "writes go through the alias"
                 )
+                self.ensure_payload_indexes(collection_name)
                 return
 
         if collection_exists:
@@ -167,6 +218,7 @@ class QdrantIndexer:
                 collection_exists = False
             else:
                 logger.info(f"Collection {collection_name} already exists")
+                self.ensure_payload_indexes(collection_name)
                 return
 
         logger.info(f"Creating collection: {collection_name}")
@@ -181,6 +233,7 @@ class QdrantIndexer:
                 distance=distance,
             ),
         )
+        self.ensure_payload_indexes(collection_name)
 
         logger.info(f"Collection {collection_name} created successfully")
 
@@ -195,6 +248,7 @@ class QdrantIndexer:
                 distance=distance,
             ),
         )
+        self.ensure_payload_indexes(collection_name)
         logger.info(f"Created staging collection: {collection_name}")
 
     def ensure_collection(self, collection_name: str) -> None:
