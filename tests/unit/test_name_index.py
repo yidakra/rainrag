@@ -7,6 +7,7 @@ count the parses instead of timing them, so they are deterministic.
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -19,11 +20,11 @@ from rainrag.ingest import WebMetadataLoader, name_index_for, warm_name_index
 
 @pytest.fixture(autouse=True)
 def fresh_process_caches():
-    ingest._NAME_INDEXES.clear()
-    ingest._API_BATCH_CACHE.clear()
+    for cache in (ingest._NAME_INDEXES, ingest._API_BATCH_CACHE, ingest._API_BATCH_FETCH_LOCKS):
+        cache.clear()
     yield
-    ingest._NAME_INDEXES.clear()
-    ingest._API_BATCH_CACHE.clear()
+    for cache in (ingest._NAME_INDEXES, ingest._API_BATCH_CACHE, ingest._API_BATCH_FETCH_LOCKS):
+        cache.clear()
 
 
 def _hash(i: int) -> str:
@@ -182,3 +183,86 @@ def test_the_api_batch_is_shared_by_loaders_until_the_ttl(tmp_path, monkeypatch)
     monkeypatch.setenv("RAINRAG_WEB_METADATA_BATCH_TTL_SECONDS", "0")
     WebMetadataLoader(tmp_path, source="hybrid", api_client=client).search_by_name("выпуск")
     assert client.export_batch.call_count == 2
+
+
+def test_an_unreadable_folder_gives_no_results_not_an_error(tmp_path, monkeypatch):
+    _write(tmp_path, 1, "Выпуск")
+    loader = WebMetadataLoader(tmp_path)
+    assert loader.search_by_name("выпуск")
+
+    def fail(_path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(ingest.os, "scandir", fail)
+    _touch_dir(tmp_path)
+    assert loader.search_by_name("выпуск") == []
+
+
+def test_a_failed_warm_up_is_logged_not_raised(tmp_path, monkeypatch):
+    def boom(_path):
+        raise RuntimeError("broken")
+
+    monkeypatch.setattr(ingest, "name_index_for", boom)
+    warm_name_index(tmp_path)  # must not raise
+
+
+def test_a_search_during_a_refresh_does_not_wait_for_it(tmp_path, monkeypatch):
+    _write(tmp_path, 1, "Выпуск 1")
+    index = name_index_for(tmp_path)
+    assert len(index.entries(tmp_path)) == 1
+
+    started, release = threading.Event(), threading.Event()
+    real_scan = ingest._NameIndex._scan
+
+    def slow_scan(path, known):
+        started.set()
+        release.wait(5)
+        return real_scan(path, known)
+
+    monkeypatch.setattr(ingest._NameIndex, "_scan", staticmethod(slow_scan))
+    _write(tmp_path, 2, "Выпуск 2")
+    _touch_dir(tmp_path)
+    refresher = threading.Thread(target=index.entries, args=(tmp_path,))
+    refresher.start()
+    assert started.wait(5)
+
+    t0 = time.monotonic()
+    current = index.entries(tmp_path)  # the scan is still blocked
+    assert time.monotonic() - t0 < 1.0
+    assert [e["video_hash"] for e in current] == [_hash(1)]
+
+    release.set()
+    refresher.join(5)
+    assert sorted(e["video_hash"] for e in index.entries(tmp_path)) == [_hash(1), _hash(2)]
+
+
+def test_an_empty_api_batch_is_cached_too(tmp_path):
+    client = MagicMock(base_url="https://library.example")
+    client.export_batch.return_value = []
+    for _ in range(3):
+        WebMetadataLoader(tmp_path, source="api", api_client=client).search_by_name("выпуск")
+    assert client.export_batch.call_count == 1
+
+
+def test_concurrent_requests_fetch_the_api_batch_once(tmp_path):
+    client = MagicMock(base_url="https://library.example")
+
+    def slow_export():
+        time.sleep(0.3)
+        return [{"video_hash": _hash(7), "name": "Выпуск из API"}]
+
+    client.export_batch.side_effect = slow_export
+    results: list[list] = []
+
+    def search():
+        loader = WebMetadataLoader(tmp_path, source="api", api_client=client)
+        results.append(loader.search_by_name("выпуск"))
+
+    threads = [threading.Thread(target=search) for _ in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(5)
+    assert client.export_batch.call_count == 1
+    assert all([r["video_hash"] for r in res] == [_hash(7)] for res in results)
+    assert len(results) == 4

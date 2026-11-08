@@ -970,32 +970,71 @@ class _NameIndex:
     """
 
     def __init__(self, max_age: float = 300.0) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # guards the fields below; never held during a scan
+        self._refresh_lock = threading.Lock()  # one scan at a time
         self._max_age = max_age
         self._dir_mtime_ns: int | None = None
         self._refreshed_at = 0.0
+        self._built = False
         self._files: dict[str, tuple[int, dict[str, Any]]] = {}
 
     def entries(self, path: Path) -> list[dict[str, Any]]:
-        """Return the current entries, refreshing them first when the folder changed."""
+        """Return the current entries, refreshing them first when the folder changed.
+
+        The scan runs outside ``_lock`` and its result is swapped in. While a
+        scan runs, other callers get the current entries at once; only before
+        the first build do they wait for it. A folder that cannot be read
+        gives no entries, never an error.
+        """
+        try:
+            # Read before the scan: a write during the scan changes the
+            # mtime again, so the next call scans once more.
+            dir_mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            self._reset()
+            return []
+        if self._needs_refresh(dir_mtime_ns):
+            with self._lock:
+                built = self._built
+            if self._refresh_lock.acquire(blocking=not built):
+                try:
+                    # Another caller may have refreshed while this one waited.
+                    if self._needs_refresh(dir_mtime_ns):
+                        with self._lock:
+                            known = dict(self._files)
+                        try:
+                            files = self._scan(path, known)
+                        except OSError as exc:
+                            logger.warning(f"Name index for {path}: cannot read the folder: {exc}")
+                            self._reset()
+                            return []
+                        with self._lock:
+                            self._files = files
+                            self._dir_mtime_ns = dir_mtime_ns
+                            self._refreshed_at = time.monotonic()
+                            self._built = True
+                finally:
+                    self._refresh_lock.release()
         with self._lock:
-            try:
-                dir_mtime_ns = path.stat().st_mtime_ns
-            except OSError:
-                self._files.clear()
-                self._dir_mtime_ns = None
-                return []
-            stale = time.monotonic() - self._refreshed_at > self._max_age
-            if dir_mtime_ns != self._dir_mtime_ns or stale:
-                # The mtime is read before the scan: a write during the scan
-                # changes it again, so the next call scans once more.
-                self._refresh(path)
-                self._dir_mtime_ns = dir_mtime_ns
-                self._refreshed_at = time.monotonic()
             return [entry for _, entry in self._files.values()]
 
-    def _refresh(self, path: Path) -> None:
-        seen: set[str] = set()
+    def _needs_refresh(self, dir_mtime_ns: int) -> bool:
+        with self._lock:
+            stale = time.monotonic() - self._refreshed_at > self._max_age
+            return dir_mtime_ns != self._dir_mtime_ns or stale
+
+    def _reset(self) -> None:
+        with self._lock:
+            self._files = {}
+            self._dir_mtime_ns = None
+            self._built = False
+
+    @staticmethod
+    def _scan(
+        path: Path, known: dict[str, tuple[int, dict[str, Any]]]
+    ) -> dict[str, tuple[int, dict[str, Any]]]:
+        """List the folder; keep known entries whose file is unchanged, parse the rest."""
+        files: dict[str, tuple[int, dict[str, Any]]] = {}
         parsed = 0
         with os.scandir(path) as listing:
             for item in listing:
@@ -1007,29 +1046,26 @@ class _NameIndex:
                     mtime_ns = item.stat().st_mtime_ns
                 except OSError:
                     continue
-                seen.add(item.name)
-                known = self._files.get(item.name)
-                if known is not None and known[0] == mtime_ns:
+                entry = known.get(item.name)
+                if entry is not None and entry[0] == mtime_ns:
+                    files[item.name] = entry
                     continue
                 try:
                     with open(item.path, encoding="utf-8") as f:
                         data = json.load(f)
                 except (ValueError, OSError):
                     # Same tolerance as local_records: a broken file is skipped.
-                    self._files.pop(item.name, None)
                     continue
                 if not isinstance(data, dict):
-                    self._files.pop(item.name, None)
                     continue
-                self._files[item.name] = (
+                files[item.name] = (
                     mtime_ns,
                     {k: data[k] for k in _NAME_INDEX_FIELDS if k in data},
                 )
                 parsed += 1
-        for name in [n for n in self._files if n not in seen]:
-            del self._files[name]
         if parsed:
-            logger.info(f"Name index for {path}: parsed {parsed}, {len(self._files)} entries")
+            logger.info(f"Name index for {path}: parsed {parsed}, {len(files)} entries")
+        return files
 
 
 _NAME_INDEXES: dict[Path, _NameIndex] = {}
@@ -1039,6 +1075,13 @@ _NAME_INDEXES_LOCK = threading.Lock()
 # new WebMetadataLoader per request, so a cache on the instance never survived.
 _API_BATCH_CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 _API_BATCH_LOCK = threading.Lock()
+_API_BATCH_FETCH_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+
+
+def _api_batch_fetch_lock(key: tuple[str, str]) -> threading.Lock:
+    """Return the lock that lets only one loader fetch the batch for key."""
+    with _API_BATCH_LOCK:
+        return _API_BATCH_FETCH_LOCKS.setdefault(key, threading.Lock())
 
 
 def name_index_for(metadata_path: Path) -> _NameIndex:
@@ -1054,7 +1097,12 @@ def name_index_for(metadata_path: Path) -> _NameIndex:
 def warm_name_index(metadata_path: Path) -> None:
     """Build the name index ahead of the first search (call it in a thread)."""
     started = time.monotonic()
-    count = len(name_index_for(metadata_path).entries(metadata_path))
+    try:
+        count = len(name_index_for(metadata_path).entries(metadata_path))
+    except Exception:
+        # A failed warm-up only costs the first search its speed; log it and go on.
+        logger.exception(f"Name index warm-up failed for {metadata_path}")
+        return
     logger.info(f"Name index warm: {count} entries in {time.monotonic() - started:.1f} s")
 
 
@@ -1126,33 +1174,43 @@ class WebMetadataLoader:
             return []
 
         key = (str(self.metadata_path.resolve()), str(getattr(self.api_client, "base_url", "")))
-        now = time.time()
+        cached = self._fresh_api_batch(key)
+        if cached is not None:
+            return cached
+
+        # One fetch per key at a time: a second request waits for the first
+        # and then reads its result from the cache.
+        with _api_batch_fetch_lock(key):
+            cached = self._fresh_api_batch(key)
+            if cached is not None:
+                return cached
+
+            now = time.time()
+            api_candidates = self.api_client.export_batch()
+            self._api_batch_cache = api_candidates
+            self._api_batch_cache_mtime = now
+            with _API_BATCH_LOCK:
+                _API_BATCH_CACHE[key] = (now, api_candidates)
+
+            self.metadata_path.mkdir(parents=True, exist_ok=True)
+            for article in api_candidates:
+                safe_hash = self._safe_metadata_hash(str(article.get("video_hash", "")))
+                if not safe_hash:
+                    continue
+                try:
+                    self._write_cache_record(self.metadata_path / f"{safe_hash}.json", article)
+                except OSError:
+                    continue
+            return api_candidates
+
+    def _fresh_api_batch(self, key: tuple[str, str]) -> list[dict[str, Any]] | None:
+        """Return the cached batch for key if it is within the TTL (an empty batch counts)."""
         with _API_BATCH_LOCK:
             cached = _API_BATCH_CACHE.get(key)
-        if (
-            cached is not None
-            and cached[1]
-            and (now - cached[0]) < self._api_batch_cache_ttl_seconds
-        ):
-            self._api_batch_cache_mtime, self._api_batch_cache = cached
-            return cached[1]
-
-        api_candidates = self.api_client.export_batch()
-        self._api_batch_cache = api_candidates
-        self._api_batch_cache_mtime = now
-        with _API_BATCH_LOCK:
-            _API_BATCH_CACHE[key] = (now, api_candidates)
-
-        self.metadata_path.mkdir(parents=True, exist_ok=True)
-        for article in api_candidates:
-            safe_hash = self._safe_metadata_hash(str(article.get("video_hash", "")))
-            if not safe_hash:
-                continue
-            try:
-                self._write_cache_record(self.metadata_path / f"{safe_hash}.json", article)
-            except OSError:
-                continue
-        return api_candidates
+        if cached is None or (time.time() - cached[0]) >= self._api_batch_cache_ttl_seconds:
+            return None
+        self._api_batch_cache_mtime, self._api_batch_cache = cached
+        return cached[1]
 
     # ------------------------------------------------------------------
     # Local helpers
