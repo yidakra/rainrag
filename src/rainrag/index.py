@@ -146,6 +146,8 @@ class QdrantIndexer:
 
         Only missing indexes are created, so a call on every run is safe. Points
         and vectors do not change. An alias is resolved to its collection.
+        A field indexed with another type (text, integer) does not serve the
+        exact-match filters, so that index is replaced with a keyword index.
         Returns the fields that this call indexed.
         """
         client = self._get_client()
@@ -154,8 +156,16 @@ class QdrantIndexer:
         existing = client.get_collection(target).payload_schema or {}
         created: list[str] = []
         for field in PAYLOAD_INDEX_FIELDS:
-            if field in existing:
-                continue
+            info = existing.get(field)
+            if info is not None:
+                kind = getattr(info, "data_type", None)
+                kind = getattr(kind, "value", kind)
+                if kind == models.PayloadSchemaType.KEYWORD.value:
+                    continue
+                logger.warning(
+                    f"{target}.{field} has a {kind} index; replacing it with a keyword index"
+                )
+                client.delete_payload_index(collection_name=target, field_name=field, wait=True)
             logger.info(f"Creating keyword payload index on {target}.{field}")
             client.create_payload_index(
                 collection_name=target,

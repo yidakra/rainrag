@@ -16,6 +16,9 @@ from rainrag.config import Config
 from rainrag.index import PAYLOAD_INDEX_FIELDS, QdrantIndexer
 
 
+_KEYWORD = SimpleNamespace(data_type=models.PayloadSchemaType.KEYWORD)
+
+
 def _mock_indexer(test_config: Config, schema: dict, aliases: list | None = None):
     client = MagicMock()
     client.get_collection.return_value = SimpleNamespace(payload_schema=schema)
@@ -48,15 +51,37 @@ def test_every_missing_field_gets_a_keyword_index(test_config: Config) -> None:
 
 
 def test_an_existing_index_is_not_created_again(test_config: Config) -> None:
-    indexer, client = _mock_indexer(test_config, schema={"video_id": object(), "path": object()})
+    indexer, client = _mock_indexer(test_config, schema={"video_id": _KEYWORD, "path": _KEYWORD})
     assert indexer.ensure_payload_indexes() == ["language", "doc_id"]
     assert [f for _, f in _indexed(client)] == ["language", "doc_id"]
 
 
 def test_a_second_call_creates_nothing(test_config: Config) -> None:
-    indexer, client = _mock_indexer(test_config, schema={f: object() for f in PAYLOAD_INDEX_FIELDS})
+    indexer, client = _mock_indexer(
+        test_config, schema=dict.fromkeys(PAYLOAD_INDEX_FIELDS, _KEYWORD)
+    )
     assert indexer.ensure_payload_indexes() == []
     client.create_payload_index.assert_not_called()
+
+
+def test_a_keyword_index_given_as_a_string_counts(test_config: Config) -> None:
+    indexer, client = _mock_indexer(
+        test_config, schema={f: SimpleNamespace(data_type="keyword") for f in PAYLOAD_INDEX_FIELDS}
+    )
+    assert indexer.ensure_payload_indexes() == []
+    client.create_payload_index.assert_not_called()
+
+
+def test_an_index_of_another_type_is_replaced(test_config: Config) -> None:
+    text = SimpleNamespace(data_type=models.PayloadSchemaType.TEXT)
+    schema = {"video_id": _KEYWORD, "path": _KEYWORD, "language": _KEYWORD, "doc_id": text}
+    indexer, client = _mock_indexer(test_config, schema=schema)
+    assert indexer.ensure_payload_indexes() == ["doc_id"]
+    name = test_config.qdrant.collection_name
+    client.delete_payload_index.assert_called_once_with(
+        collection_name=name, field_name="doc_id", wait=True
+    )
+    assert _indexed(client) == [(name, "doc_id")]
 
 
 def test_an_alias_is_indexed_on_its_collection(test_config: Config) -> None:
