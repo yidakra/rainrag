@@ -1076,6 +1076,9 @@ _NAME_INDEXES_LOCK = threading.Lock()
 _API_BATCH_CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 _API_BATCH_LOCK = threading.Lock()
 _API_BATCH_FETCH_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+# When the last fetch for a key failed, and how long requests skip the API after it.
+_API_BATCH_FAILED_AT: dict[tuple[str, str], float] = {}
+_API_BATCH_RETRY_SECONDS = 60.0
 
 
 def _api_batch_fetch_lock(key: tuple[str, str]) -> threading.Lock:
@@ -1179,29 +1182,43 @@ class WebMetadataLoader:
             return cached
 
         # One fetch per key at a time: a second request waits for the first
-        # and then reads its result from the cache.
+        # and then reads its result from the cache. After a failed fetch,
+        # requests skip the API for _API_BATCH_RETRY_SECONDS instead of each
+        # retrying it in turn.
         with _api_batch_fetch_lock(key):
             cached = self._fresh_api_batch(key)
             if cached is not None:
                 return cached
+            with _API_BATCH_LOCK:
+                failed_at = _API_BATCH_FAILED_AT.get(key)
+            if failed_at is not None and time.time() - failed_at < _API_BATCH_RETRY_SECONDS:
+                return []
 
             now = time.time()
-            api_candidates = self.api_client.export_batch()
+            try:
+                api_candidates = self.api_client.export_batch()
+            except Exception:
+                with _API_BATCH_LOCK:
+                    _API_BATCH_FAILED_AT[key] = time.time()
+                raise
             self._api_batch_cache = api_candidates
             self._api_batch_cache_mtime = now
             with _API_BATCH_LOCK:
                 _API_BATCH_CACHE[key] = (now, api_candidates)
+                _API_BATCH_FAILED_AT.pop(key, None)
 
-            self.metadata_path.mkdir(parents=True, exist_ok=True)
-            for article in api_candidates:
-                safe_hash = self._safe_metadata_hash(str(article.get("video_hash", "")))
-                if not safe_hash:
-                    continue
-                try:
-                    self._write_cache_record(self.metadata_path / f"{safe_hash}.json", article)
-                except OSError:
-                    continue
-            return api_candidates
+        # Persist outside the fetch lock: waiting requests already have the
+        # batch from the cache and need not wait for the disk writes.
+        self.metadata_path.mkdir(parents=True, exist_ok=True)
+        for article in api_candidates:
+            safe_hash = self._safe_metadata_hash(str(article.get("video_hash", "")))
+            if not safe_hash:
+                continue
+            try:
+                self._write_cache_record(self.metadata_path / f"{safe_hash}.json", article)
+            except OSError:
+                continue
+        return api_candidates
 
     def _fresh_api_batch(self, key: tuple[str, str]) -> list[dict[str, Any]] | None:
         """Return the cached batch for key if it is within the TTL (an empty batch counts)."""

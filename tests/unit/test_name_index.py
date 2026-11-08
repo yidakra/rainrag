@@ -20,10 +20,20 @@ from rainrag.ingest import WebMetadataLoader, name_index_for, warm_name_index
 
 @pytest.fixture(autouse=True)
 def fresh_process_caches():
-    for cache in (ingest._NAME_INDEXES, ingest._API_BATCH_CACHE, ingest._API_BATCH_FETCH_LOCKS):
+    for cache in (
+        ingest._NAME_INDEXES,
+        ingest._API_BATCH_CACHE,
+        ingest._API_BATCH_FETCH_LOCKS,
+        ingest._API_BATCH_FAILED_AT,
+    ):
         cache.clear()
     yield
-    for cache in (ingest._NAME_INDEXES, ingest._API_BATCH_CACHE, ingest._API_BATCH_FETCH_LOCKS):
+    for cache in (
+        ingest._NAME_INDEXES,
+        ingest._API_BATCH_CACHE,
+        ingest._API_BATCH_FETCH_LOCKS,
+        ingest._API_BATCH_FAILED_AT,
+    ):
         cache.clear()
 
 
@@ -266,3 +276,66 @@ def test_concurrent_requests_fetch_the_api_batch_once(tmp_path):
     assert client.export_batch.call_count == 1
     assert all([r["video_hash"] for r in res] == [_hash(7)] for res in results)
     assert len(results) == 4
+
+
+def test_a_failed_fetch_is_not_retried_by_every_waiting_request(tmp_path, monkeypatch):
+    _write(tmp_path, 1, "Локальный выпуск")
+    client = MagicMock(base_url="https://library.example")
+
+    def failing_export():
+        time.sleep(0.2)
+        raise ConnectionError("library down")
+
+    client.export_batch.side_effect = failing_export
+    results: list[list] = []
+
+    def search():
+        loader = WebMetadataLoader(tmp_path, source="hybrid", api_client=client)
+        results.append(loader.search_by_name("выпуск"))
+
+    threads = [threading.Thread(target=search) for _ in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(5)
+    assert client.export_batch.call_count == 1
+    # Every search still answers from the local folder.
+    assert len(results) == 4
+    assert all([r["video_hash"] for r in res] == [_hash(1)] for res in results)
+
+    # After the retry window the next request asks the API again.
+    monkeypatch.setattr(ingest, "_API_BATCH_RETRY_SECONDS", 0.0)
+    client.export_batch.side_effect = None
+    client.export_batch.return_value = []
+    WebMetadataLoader(tmp_path, source="hybrid", api_client=client).search_by_name("выпуск")
+    assert client.export_batch.call_count == 2
+
+
+def test_waiting_requests_do_not_wait_for_the_disk_writes(tmp_path, monkeypatch):
+    client = MagicMock(base_url="https://library.example")
+    client.export_batch.return_value = [{"video_hash": _hash(7), "name": "Выпуск из API"}]
+    persisting, release = threading.Event(), threading.Event()
+    real_write = WebMetadataLoader._write_cache_record
+
+    def slow_write(cache_file, data):
+        persisting.set()
+        release.wait(5)
+        real_write(cache_file, data)
+
+    monkeypatch.setattr(WebMetadataLoader, "_write_cache_record", staticmethod(slow_write))
+    first = threading.Thread(
+        target=lambda: WebMetadataLoader(tmp_path, source="api", api_client=client).search_by_name(
+            "выпуск"
+        )
+    )
+    first.start()
+    assert persisting.wait(5)
+
+    t0 = time.monotonic()
+    loader = WebMetadataLoader(tmp_path, source="api", api_client=client)
+    assert [r["video_hash"] for r in loader.search_by_name("выпуск")] == [_hash(7)]
+    assert time.monotonic() - t0 < 1.0
+    assert client.export_batch.call_count == 1
+
+    release.set()
+    first.join(5)
