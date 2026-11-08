@@ -20,6 +20,7 @@ _KEYWORD = SimpleNamespace(data_type=models.PayloadSchemaType.KEYWORD)
 
 
 def _mock_indexer(test_config: Config, schema: dict, aliases: list | None = None):
+    """Return an indexer whose Qdrant client is a mock with the given payload schema and aliases."""
     client = MagicMock()
     client.get_collection.return_value = SimpleNamespace(payload_schema=schema)
     client.get_aliases.return_value = SimpleNamespace(aliases=aliases or [])
@@ -29,6 +30,7 @@ def _mock_indexer(test_config: Config, schema: dict, aliases: list | None = None
 
 
 def _indexed(client: MagicMock) -> list[tuple[str, str]]:
+    """Return (collection, field) for every create_payload_index call on the client."""
     return [
         (c.kwargs["collection_name"], c.kwargs["field_name"])
         for c in client.create_payload_index.call_args_list
@@ -36,10 +38,12 @@ def _indexed(client: MagicMock) -> list[tuple[str, str]]:
 
 
 def test_the_fields_are_the_ones_query_filters_on() -> None:
+    """The indexed fields are exactly the payload keys that query.py filters on."""
     assert set(PAYLOAD_INDEX_FIELDS) == {"video_id", "path", "language", "doc_id"}
 
 
 def test_every_missing_field_gets_a_keyword_index(test_config: Config) -> None:
+    """With no index yet, each field gets a keyword index, and the call waits for it."""
     indexer, client = _mock_indexer(test_config, schema={})
     created = indexer.ensure_payload_indexes()
     name = test_config.qdrant.collection_name
@@ -51,12 +55,14 @@ def test_every_missing_field_gets_a_keyword_index(test_config: Config) -> None:
 
 
 def test_an_existing_index_is_not_created_again(test_config: Config) -> None:
+    """A field that already has a keyword index is skipped."""
     indexer, client = _mock_indexer(test_config, schema={"video_id": _KEYWORD, "path": _KEYWORD})
     assert indexer.ensure_payload_indexes() == ["language", "doc_id"]
     assert [f for _, f in _indexed(client)] == ["language", "doc_id"]
 
 
 def test_a_second_call_creates_nothing(test_config: Config) -> None:
+    """When every field is indexed, the call creates nothing."""
     indexer, client = _mock_indexer(
         test_config, schema=dict.fromkeys(PAYLOAD_INDEX_FIELDS, _KEYWORD)
     )
@@ -65,6 +71,7 @@ def test_a_second_call_creates_nothing(test_config: Config) -> None:
 
 
 def test_a_keyword_index_given_as_a_string_counts(test_config: Config) -> None:
+    """A keyword type reported as the string 'keyword' counts as done."""
     indexer, client = _mock_indexer(
         test_config, schema={f: SimpleNamespace(data_type="keyword") for f in PAYLOAD_INDEX_FIELDS}
     )
@@ -73,6 +80,7 @@ def test_a_keyword_index_given_as_a_string_counts(test_config: Config) -> None:
 
 
 def test_an_index_of_another_type_is_replaced(test_config: Config) -> None:
+    """A text index is deleted and replaced with a keyword index."""
     text = SimpleNamespace(data_type=models.PayloadSchemaType.TEXT)
     schema = {"video_id": _KEYWORD, "path": _KEYWORD, "language": _KEYWORD, "doc_id": text}
     indexer, client = _mock_indexer(test_config, schema=schema)
@@ -85,6 +93,7 @@ def test_an_index_of_another_type_is_replaced(test_config: Config) -> None:
 
 
 def test_an_index_of_unknown_type_is_left_alone(test_config: Config) -> None:
+    """An index whose type cannot be read is neither deleted nor rebuilt."""
     unknown = SimpleNamespace(data_type=None)
     indexer, client = _mock_indexer(
         test_config, schema=dict.fromkeys(PAYLOAD_INDEX_FIELDS, unknown)
@@ -95,6 +104,7 @@ def test_an_index_of_unknown_type_is_left_alone(test_config: Config) -> None:
 
 
 def test_an_alias_is_indexed_on_its_collection(test_config: Config) -> None:
+    """An alias is resolved, and the indexes go on the collection behind it."""
     alias = test_config.qdrant.collection_name
     indexer, client = _mock_indexer(
         test_config,
@@ -107,6 +117,7 @@ def test_an_alias_is_indexed_on_its_collection(test_config: Config) -> None:
 
 
 def _spy_indexer(test_config: Config) -> tuple[QdrantIndexer, MagicMock]:
+    """Return an indexer over an in-memory Qdrant client wrapped in a spy."""
     spy = MagicMock(wraps=QdrantClient(":memory:"))
     indexer = QdrantIndexer(test_config)
     indexer.client = spy
@@ -114,6 +125,7 @@ def _spy_indexer(test_config: Config) -> tuple[QdrantIndexer, MagicMock]:
 
 
 def test_a_new_collection_is_indexed(test_config: Config) -> None:
+    """create_collection indexes a collection it creates."""
     indexer, spy = _spy_indexer(test_config)
     indexer.create_collection()
     name = test_config.qdrant.collection_name
@@ -121,6 +133,7 @@ def test_a_new_collection_is_indexed(test_config: Config) -> None:
 
 
 def test_an_existing_collection_is_indexed_without_a_recreate(test_config: Config) -> None:
+    """create_collection indexes an existing collection without deleting it."""
     indexer, spy = _spy_indexer(test_config)
     indexer.create_collection()
     spy.create_payload_index.reset_mock()
@@ -134,12 +147,14 @@ def test_an_existing_collection_is_indexed_without_a_recreate(test_config: Confi
 
 
 def test_a_staging_collection_is_indexed(test_config: Config) -> None:
+    """The staging collection of the blue-green rebuild is indexed."""
     indexer, spy = _spy_indexer(test_config)
     indexer._create_collection_with_name("x_staging_1")
     assert _indexed(spy) == [("x_staging_1", f) for f in PAYLOAD_INDEX_FIELDS]
 
 
 def test_the_cli_command_reports_what_it_created() -> None:
+    """ensure-indexes prints the fields it indexed, or that all exist."""
     from rainrag.cli import app
 
     runner = CliRunner()
@@ -166,6 +181,7 @@ def test_the_cli_command_reports_what_it_created() -> None:
 
 
 def test_the_cli_command_fails_loudly() -> None:
+    """ensure-indexes exits 1 and prints the error when indexing fails."""
     from rainrag.cli import app
 
     indexer = MagicMock()
