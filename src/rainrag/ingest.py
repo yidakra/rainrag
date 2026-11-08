@@ -955,6 +955,109 @@ class VTTParser:
         return date_iso, duration, date_ts
 
 
+# The record fields that a name search returns (see /search-by-name in api.py).
+_NAME_INDEX_FIELDS = ("video_hash", "name", "date_active_start", "url", "teleshow")
+
+
+class _NameIndex:
+    """Process-wide index of one metadata folder for name search.
+
+    Each ``{hash}.json`` contributes one entry with only ``_NAME_INDEX_FIELDS``.
+    Production holds about 107,000 files (1 GB); reading all of them on every
+    search took more than 60 s. A refresh lists the folder only when its mtime
+    changed (writers replace files through an atomic rename, which changes it)
+    or after ``max_age`` seconds, and parses only new or changed files.
+    """
+
+    def __init__(self, max_age: float = 300.0) -> None:
+        self._lock = threading.Lock()
+        self._max_age = max_age
+        self._dir_mtime_ns: int | None = None
+        self._refreshed_at = 0.0
+        self._files: dict[str, tuple[int, dict[str, Any]]] = {}
+
+    def entries(self, path: Path) -> list[dict[str, Any]]:
+        """Return the current entries, refreshing them first when the folder changed."""
+        with self._lock:
+            try:
+                dir_mtime_ns = path.stat().st_mtime_ns
+            except OSError:
+                self._files.clear()
+                self._dir_mtime_ns = None
+                return []
+            stale = time.monotonic() - self._refreshed_at > self._max_age
+            if dir_mtime_ns != self._dir_mtime_ns or stale:
+                # The mtime is read before the scan: a write during the scan
+                # changes it again, so the next call scans once more.
+                self._refresh(path)
+                self._dir_mtime_ns = dir_mtime_ns
+                self._refreshed_at = time.monotonic()
+            return [entry for _, entry in self._files.values()]
+
+    def _refresh(self, path: Path) -> None:
+        seen: set[str] = set()
+        parsed = 0
+        with os.scandir(path) as listing:
+            for item in listing:
+                if not item.name.endswith(".json"):
+                    continue
+                try:
+                    if not item.is_file():
+                        continue
+                    mtime_ns = item.stat().st_mtime_ns
+                except OSError:
+                    continue
+                seen.add(item.name)
+                known = self._files.get(item.name)
+                if known is not None and known[0] == mtime_ns:
+                    continue
+                try:
+                    with open(item.path, encoding="utf-8") as f:
+                        data = json.load(f)
+                except (ValueError, OSError):
+                    # Same tolerance as local_records: a broken file is skipped.
+                    self._files.pop(item.name, None)
+                    continue
+                if not isinstance(data, dict):
+                    self._files.pop(item.name, None)
+                    continue
+                self._files[item.name] = (
+                    mtime_ns,
+                    {k: data[k] for k in _NAME_INDEX_FIELDS if k in data},
+                )
+                parsed += 1
+        for name in [n for n in self._files if n not in seen]:
+            del self._files[name]
+        if parsed:
+            logger.info(f"Name index for {path}: parsed {parsed}, {len(self._files)} entries")
+
+
+_NAME_INDEXES: dict[Path, _NameIndex] = {}
+_NAME_INDEXES_LOCK = threading.Lock()
+
+# The API export batch, shared by every loader in the process: the API builds a
+# new WebMetadataLoader per request, so a cache on the instance never survived.
+_API_BATCH_CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
+_API_BATCH_LOCK = threading.Lock()
+
+
+def name_index_for(metadata_path: Path) -> _NameIndex:
+    """Return the process-wide name index for a metadata folder."""
+    key = metadata_path.resolve()
+    with _NAME_INDEXES_LOCK:
+        index = _NAME_INDEXES.get(key)
+        if index is None:
+            index = _NAME_INDEXES[key] = _NameIndex()
+        return index
+
+
+def warm_name_index(metadata_path: Path) -> None:
+    """Build the name index ahead of the first search (call it in a thread)."""
+    started = time.monotonic()
+    count = len(name_index_for(metadata_path).entries(metadata_path))
+    logger.info(f"Name index warm: {count} entries in {time.monotonic() - started:.1f} s")
+
+
 class WebMetadataLoader:
     """Loader for web metadata JSON files, with optional API backend.
 
@@ -1022,17 +1125,23 @@ class WebMetadataLoader:
         if self.api_client is None:
             return []
 
+        key = (str(self.metadata_path.resolve()), str(getattr(self.api_client, "base_url", "")))
         now = time.time()
+        with _API_BATCH_LOCK:
+            cached = _API_BATCH_CACHE.get(key)
         if (
-            self._api_batch_cache
-            and self._api_batch_cache_mtime is not None
-            and (now - self._api_batch_cache_mtime) < self._api_batch_cache_ttl_seconds
+            cached is not None
+            and cached[1]
+            and (now - cached[0]) < self._api_batch_cache_ttl_seconds
         ):
-            return self._api_batch_cache
+            self._api_batch_cache_mtime, self._api_batch_cache = cached
+            return cached[1]
 
         api_candidates = self.api_client.export_batch()
         self._api_batch_cache = api_candidates
         self._api_batch_cache_mtime = now
+        with _API_BATCH_LOCK:
+            _API_BATCH_CACHE[key] = (now, api_candidates)
 
         self.metadata_path.mkdir(parents=True, exist_ok=True)
         for article in api_candidates:
@@ -1403,18 +1512,11 @@ class WebMetadataLoader:
         if not query_lower:
             return []
 
-        # Collect candidates from local cache
+        # Candidates from the local cache, through the process-wide name index
+        # (one entry per file, refreshed only when the folder changed).
         local_candidates: list[dict[str, Any]] = []
-        if self.metadata_path.exists():
-            for metadata_file in self.metadata_path.glob("*.json"):
-                if not metadata_file.is_file():
-                    continue
-                try:
-                    with open(metadata_file, encoding="utf-8") as f:
-                        data = json.load(f)
-                except (json.JSONDecodeError, OSError):
-                    continue
-                local_candidates.append(data)
+        if self.source in {"local", "hybrid"}:
+            local_candidates = name_index_for(self.metadata_path).entries(self.metadata_path)
 
         # Optionally collect candidates from API export
         api_candidates: list[dict[str, Any]] = []
