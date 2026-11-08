@@ -84,6 +84,16 @@ def test_an_index_of_another_type_is_replaced(test_config: Config) -> None:
     assert _indexed(client) == [(name, "doc_id")]
 
 
+def test_an_index_of_unknown_type_is_left_alone(test_config: Config) -> None:
+    unknown = SimpleNamespace(data_type=None)
+    indexer, client = _mock_indexer(
+        test_config, schema=dict.fromkeys(PAYLOAD_INDEX_FIELDS, unknown)
+    )
+    assert indexer.ensure_payload_indexes() == []
+    client.delete_payload_index.assert_not_called()
+    client.create_payload_index.assert_not_called()
+
+
 def test_an_alias_is_indexed_on_its_collection(test_config: Config) -> None:
     alias = test_config.qdrant.collection_name
     indexer, client = _mock_indexer(

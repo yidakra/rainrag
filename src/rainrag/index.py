@@ -162,6 +162,11 @@ class QdrantIndexer:
                 kind = getattr(kind, "value", kind)
                 if kind == models.PayloadSchemaType.KEYWORD.value:
                     continue
+                if kind is None:
+                    # An unreadable type is never replaced: a rebuild on every
+                    # run would cost minutes on a large collection.
+                    logger.warning(f"{target}.{field} has an index of unknown type; left as it is")
+                    continue
                 logger.warning(
                     f"{target}.{field} has a {kind} index; replacing it with a keyword index"
                 )
