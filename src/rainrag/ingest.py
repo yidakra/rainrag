@@ -970,6 +970,7 @@ class _NameIndex:
     """
 
     def __init__(self, max_age: float = 300.0) -> None:
+        """Start empty; the first entries() call builds the index."""
         self._lock = threading.Lock()  # guards the fields below; never held during a scan
         self._refresh_lock = threading.Lock()  # one scan at a time
         self._max_age = max_age
@@ -1019,11 +1020,13 @@ class _NameIndex:
             return [entry for _, entry in self._files.values()]
 
     def _needs_refresh(self, dir_mtime_ns: int) -> bool:
+        """Return True when the folder mtime changed or the entries are older than max_age."""
         with self._lock:
             stale = time.monotonic() - self._refreshed_at > self._max_age
             return dir_mtime_ns != self._dir_mtime_ns or stale
 
     def _reset(self) -> None:
+        """Forget every entry, as for a folder that cannot be read."""
         with self._lock:
             self._files = {}
             self._dir_mtime_ns = None
