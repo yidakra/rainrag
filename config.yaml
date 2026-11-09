@@ -267,6 +267,19 @@ incremental:
   manifest_path: "./data/manifest.json"  # File tracking source VTT file state for change detection
   alias_swap: false  # Use two-phase indexing with collection alias swap for zero-downtime updates
 
+# Event-driven indexing: the transcoder posts a video hash to POST /ingest/notify
+# and an in-process worker indexes that video within minutes. The 6-hour
+# incremental sweep stays the safety net. See README "Event-driven indexing".
+notify:
+  enabled: false  # Accept notifications and run the worker (the API must be restarted)
+  queue_path: "./data/notify-queue.json"  # Per-hash state, survives an API restart
+  max_wait_hours: 24  # Give up on a hash this long after the notification
+  poll_seconds: 30  # Re-check interval for VTT files, the sweep lock and retries
+  partial_after_seconds: 600  # Index the VTT files present when the rest are late
+  vtt_languages: ["ru", "en"]  # The worker waits for {hash}.ru.vtt and {hash}.en.vtt
+  lock_path: "/tmp/rainrag-incremental.lock"  # The sweep's flock; same path as the timer script
+  lock_timeout_seconds: 5  # One cycle's wait for the lock before the hash stays files_pending
+
 # Web metadata integration
 web_metadata:
   enabled: true

@@ -605,6 +605,46 @@ class IncrementalConfig(BaseModel):
     )
 
 
+class NotifyConfig(BaseModel):
+    """Configuration for event-driven indexing (POST /ingest/notify)."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Accept transcoder notifications and run the in-process indexing worker",
+    )
+    queue_path: str = Field(
+        default="./data/notify-queue.json",
+        description="Persistent per-hash state of notified videos (survives an API restart)",
+    )
+    max_wait_hours: float = Field(
+        default=24.0,
+        description="Give up on a notified video this long after the notification",
+    )
+    poll_seconds: float = Field(
+        default=30.0,
+        description="How often the worker re-checks for VTT files, the lock and retries",
+    )
+    partial_after_seconds: float = Field(
+        default=600.0,
+        description=(
+            "Index the VTT files present so far when the other languages have not appeared "
+            "this long after the notification; the sweep picks up the rest later"
+        ),
+    )
+    vtt_languages: list[str] = Field(
+        default_factory=lambda: ["ru", "en"],
+        description="Language suffixes of the VTT files the worker waits for ({hash}.{lang}.vtt)",
+    )
+    lock_path: str = Field(
+        default="/tmp/rainrag-incremental.lock",
+        description="The flock the incremental sweep holds; the worker takes it to write files",
+    )
+    lock_timeout_seconds: float = Field(
+        default=5.0,
+        description="How long one worker cycle waits for the sweep lock before it retries later",
+    )
+
+
 class WebMetadataConfig(BaseModel):
     """Configuration for web metadata integration."""
 
@@ -722,6 +762,7 @@ class Config(BaseModel):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     web_metadata: WebMetadataConfig = Field(default_factory=WebMetadataConfig)
     incremental: IncrementalConfig = Field(default_factory=IncrementalConfig)
+    notify: NotifyConfig = Field(default_factory=NotifyConfig)
 
     def get_max_chunk_tokens(self) -> int:
         """

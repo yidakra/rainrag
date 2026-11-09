@@ -336,6 +336,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
 from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS, WebMetadataLoader
+from rainrag.notify import NotifyWorker, build_worker
 from rainrag.query import RAGQueryEngine
 from rainrag.subtitles import vtt_to_srt
 from rainrag.video_session import VideoSessionManager
@@ -345,6 +346,8 @@ from rainrag.video_session import VideoSessionManager
 query_engine: RAGQueryEngine | None = None
 # Manager for single-video upload sessions (initialized on startup when enabled)
 video_session_manager: VideoSessionManager | None = None
+# Worker behind POST /ingest/notify (started on startup when notify.enabled)
+notify_worker: NotifyWorker | None = None
 config: Config | None = None
 HLS_CACHE_ROOT = Path(os.getenv("RAINRAG_HLS_CACHE_DIR", "/tmp/rainrag_hls_cache"))
 _hls_prewarm_inflight: set[str] = set()
@@ -1167,7 +1170,7 @@ def get_video_base_name(vtt_path: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize the query engine on startup."""
-    global query_engine, config, video_session_manager
+    global query_engine, config, video_session_manager, notify_worker
 
     logger.info("Initializing RainRAG API...")
 
@@ -1209,14 +1212,40 @@ async def lifespan(app: FastAPI):
             logger.exception("Failed to initialize video session manager; upload mode disabled")
             video_session_manager = None
 
+    # Event-driven indexing: the transcoder posts a hash, the worker indexes it.
+    if config.notify.enabled:
+        try:
+            notify_worker = build_worker(config, _notify_embedder)
+            notify_worker.start()
+        except Exception:
+            logger.exception("Failed to start the notify worker; POST /ingest/notify answers 503")
+            notify_worker = None
+
     logger.info("RainRAG API initialized successfully")
 
     yield
 
     # Cleanup (if needed)
+    if notify_worker is not None:
+        notify_worker.stop()
     if video_session_manager is not None:
         video_session_manager.shutdown()
     logger.info("Shutting down RainRAG API...")
+
+
+def _notify_embedder():
+    """The notify worker's embedder; it shares the query engine's loaded local model."""
+    from rainrag.embed import Embedder
+
+    assert config is not None
+    embedder = Embedder(config)
+    if (
+        config.embedding.provider == "local"
+        and query_engine is not None
+        and getattr(query_engine, "embedding_model", None) is not None
+    ):
+        embedder.model = query_engine.embedding_model
+    return embedder
 
 
 # Create FastAPI app
@@ -2941,6 +2970,87 @@ async def search_by_url(
 
     logger.info(f"URL lookup for {url!r}: found {video_hash}")
     return VideoUrlLookupResponse(result=result, url=url)
+
+
+# ---------------------------------------------------------------------------
+# Event-driven indexing. The transcoder posts a hash when a video is ready;
+# the in-process worker (rainrag.notify) indexes it within minutes. The
+# six-hour sweep stays the safety net.
+# ---------------------------------------------------------------------------
+
+_NOTIFY_STATUS_FIELDS = (
+    "video_hash",
+    "path",
+    "state",
+    "notified_at",
+    "updated_at",
+    "searchable_at",
+    "indexed_at",
+    "failed_at",
+    "attempts",
+    "error",
+    "vtt_files",
+    "doc_count",
+)
+
+
+class IngestNotifyRequest(BaseModel):
+    """Body of POST /ingest/notify: the archive hash, and the folder for the record."""
+
+    video_hash: str = Field(..., description="40-hex archive hash of the video")
+    path: str | None = Field(default=None, description="Folder the transcoder wrote (recorded)")
+
+
+class IngestNotifyResponse(BaseModel):
+    """Acknowledgement of a notification."""
+
+    video_hash: str
+    state: str
+
+
+def _notify_worker_or_503() -> NotifyWorker:
+    """The running worker, or 503 when notify is disabled or the worker is down."""
+    if config is None or not config.notify.enabled:
+        raise HTTPException(status_code=503, detail="Event-driven indexing is disabled")
+    if notify_worker is None or not notify_worker.is_running():
+        raise HTTPException(status_code=503, detail="The notify worker is not running")
+    return notify_worker
+
+
+def _notify_hash_or_400(video_hash: str) -> str:
+    """The hash lower-cased, or 400 when it is not 40 hex characters."""
+    candidate = video_hash.strip().lower()
+    if not _VIDEO_HASH.match(candidate):
+        raise HTTPException(status_code=400, detail="video_hash must be 40 hex characters")
+    return candidate
+
+
+@app.post("/ingest/notify", response_model=IngestNotifyResponse, status_code=202)
+async def ingest_notify(
+    body: IngestNotifyRequest,
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """Queue one video for indexing; duplicates are safe and keep one entry."""
+    verify_auth_token(authorization=authorization)
+    video_hash = _notify_hash_or_400(body.video_hash)
+    worker = _notify_worker_or_503()
+    entry = worker.notify(video_hash, body.path)
+    return IngestNotifyResponse(video_hash=video_hash, state=entry["state"])
+
+
+@app.get("/ingest/notify/{video_hash}")
+async def ingest_notify_status(
+    video_hash: str,
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """The state of a notified video with its timestamps; 404 when the hash is unknown."""
+    verify_auth_token(authorization=authorization)
+    candidate = _notify_hash_or_400(video_hash)
+    worker = _notify_worker_or_503()
+    entry = worker.status(candidate)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unknown video_hash")
+    return {key: entry.get(key) for key in _NOTIFY_STATUS_FIELDS}
 
 
 # ---------------------------------------------------------------------------
