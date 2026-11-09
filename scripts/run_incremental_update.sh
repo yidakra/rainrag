@@ -42,7 +42,11 @@ fi
 cd "$REPO_DIR"
 
 exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
+# The notify worker in the API (rainrag.notify) holds this lock for a few
+# seconds while it appends to docs.jsonl and saves the manifest. Wait that
+# out instead of skipping a six-hour slot; a run that is still active after
+# the wait is a real concurrent sweep.
+if ! flock -w 60 9; then
   log "Another incremental run is already active (lock: $LOCK_FILE). Exiting."
   exit 0
 fi
