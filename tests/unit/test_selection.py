@@ -150,3 +150,13 @@ def test_configuration_signature_ignores_secrets_but_binds_corpus(test_config):
 def test_fit_rejects_invalid_alpha(alpha):
     with pytest.raises(ValueError, match="alpha"):
         fit_ridge([np.zeros((2, 3))], [np.zeros(2)], "fixture", alpha)
+
+
+def test_a_failed_save_leaves_no_artifact(tmp_path):
+    """A non-finite coefficient fails serialisation before the file exists (CodeRabbit on #111)."""
+    model = top_score_model()
+    model.coefficients[1] = float("nan")
+    path = tmp_path / "model.json"
+    with pytest.raises(ValueError):
+        model.save(path)
+    assert not path.exists()

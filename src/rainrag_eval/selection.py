@@ -353,8 +353,9 @@ def train(
             )
             fitted.save(model)
         try:
+            text = json.dumps(result, indent=2, allow_nan=False) + "\n"
             with report.open("x", encoding="utf-8") as stream:
-                stream.write(json.dumps(result, indent=2, allow_nan=False) + "\n")
+                stream.write(text)
         except BaseException:
             if model is not None:
                 model.unlink(missing_ok=True)

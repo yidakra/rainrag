@@ -156,8 +156,11 @@ class RidgeSelector:
             "scale": self.scale.tolist(),
             "coefficients": self.coefficients.tolist(),
         }
+        # Serialise before creating the file: a non-finite value fails here and
+        # must not leave an empty artifact behind the exclusive-create guard.
+        text = json.dumps(payload, indent=2, allow_nan=False) + "\n"
         with path.open("x", encoding="utf-8") as stream:
-            stream.write(json.dumps(payload, indent=2, allow_nan=False) + "\n")
+            stream.write(text)
 
     @classmethod
     def load(cls, path: Path, signature: str) -> RidgeSelector:
