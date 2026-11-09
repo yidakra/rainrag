@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import cohere
+import httpx
 import numpy as np
 import torch
 from anthropic import Anthropic
@@ -19,7 +20,7 @@ from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
-from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 
 try:
@@ -104,10 +105,20 @@ class SimilarVideosTimeoutError(RuntimeError):
     """Qdrant did not finish the similar-videos search within SIMILAR_SEARCH_TIMEOUT_S."""
 
 
-def _as_timeout(exc: UnexpectedResponse) -> Exception:
-    """Return SimilarVideosTimeoutError for a Qdrant timeout response, else the error itself."""
-    body = exc.content.decode("utf-8", "replace") if isinstance(exc.content, bytes) else ""
-    if "timed out" in body.lower():
+def _as_timeout(exc: UnexpectedResponse | ResponseHandlingException) -> Exception:
+    """Return SimilarVideosTimeoutError for a Qdrant timeout, else the error itself.
+
+    A timeout shows up in two ways: the server answers 500 with "timed out"
+    in the body (or 408/504), or the client's own deadline fires first, which
+    the Qdrant client reports as ResponseHandlingException around an httpx
+    timeout.
+    """
+    if isinstance(exc, UnexpectedResponse):
+        body = exc.content.decode("utf-8", "replace") if isinstance(exc.content, bytes) else ""
+        timed_out = exc.status_code in (408, 504) or "timed out" in body.lower()
+    else:
+        timed_out = isinstance(exc.source, httpx.TimeoutException)
+    if timed_out:
         return SimilarVideosTimeoutError(
             f"Qdrant did not answer within {SIMILAR_SEARCH_TIMEOUT_S} s"
         )
@@ -1094,7 +1105,7 @@ class RAGQueryEngine:
                 with_vectors=True,
                 timeout=SIMILAR_SEARCH_TIMEOUT_S,
             )
-        except UnexpectedResponse as exc:
+        except (UnexpectedResponse, ResponseHandlingException) as exc:
             raise _as_timeout(exc) from exc
         if not seeds:
             logger.info(f"No indexed chunks for video {video_hash}")
@@ -1129,7 +1140,7 @@ class RAGQueryEngine:
                 requests=requests,
                 timeout=SIMILAR_SEARCH_TIMEOUT_S,
             )
-        except UnexpectedResponse as exc:
+        except (UnexpectedResponse, ResponseHandlingException) as exc:
             raise _as_timeout(exc) from exc
         agg: dict[str, dict[str, Any]] = {}
         for response in responses:

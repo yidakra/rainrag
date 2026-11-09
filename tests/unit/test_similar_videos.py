@@ -185,6 +185,7 @@ class _FakeQdrant:
     def scroll(
         self, collection_name, scroll_filter, limit, with_payload, with_vectors, timeout=None
     ):
+        """Return the seed points that match the filter, and record the call."""
         self.scroll_filters.append(scroll_filter)
         self.scroll_limits.append(limit)
         self.timeouts.append(("scroll", timeout))
@@ -200,6 +201,7 @@ class _FakeQdrant:
         return SimpleNamespace(score=score, payload=payload)
 
     def query_batch_points(self, collection_name, requests, timeout=None):
+        """Answer every request in the batch, and record the call."""
         self.timeouts.append(("query_batch_points", timeout))
         self.batches.append(requests)
         return [
@@ -611,6 +613,7 @@ def test_a_qdrant_timeout_becomes_similar_videos_timeout(tmp_path):
     error = _qdrant_error("Timeout error: Operation 'Search' timed out after 30s")
 
     def batch_timeout(**_kw):
+        """Fail the batch search the way a Qdrant server timeout does."""
         raise error
 
     fake.query_batch_points = batch_timeout  # type: ignore[method-assign]
@@ -618,10 +621,53 @@ def test_a_qdrant_timeout_becomes_similar_videos_timeout(tmp_path):
         engine.find_similar_videos(HASH_A, limit=10)
 
     def scroll_timeout(**_kw):
+        """Fail the seed scroll the way a Qdrant server timeout does."""
         raise error
 
     fake.scroll = scroll_timeout  # type: ignore[method-assign]
     with pytest.raises(SimilarVideosTimeoutError):
+        engine.find_similar_videos(HASH_A, limit=10)
+
+
+def test_a_client_side_timeout_and_a_504_are_timeouts_too(tmp_path):
+    """The client's own deadline (httpx timeout) and a 504 status both raise the timeout error."""
+    import httpx
+    from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+
+    from src.rainrag.query import SimilarVideosTimeoutError
+
+    engine, fake = _engine(tmp_path)
+
+    def client_deadline(**_kw):
+        """Fail as the Qdrant client does when its own read timeout fires."""
+        raise ResponseHandlingException(httpx.ReadTimeout("read timed out"))
+
+    fake.query_batch_points = client_deadline  # type: ignore[method-assign]
+    with pytest.raises(SimilarVideosTimeoutError):
+        engine.find_similar_videos(HASH_A, limit=10)
+
+    def gateway_timeout(**_kw):
+        """Fail with a 504 whose body does not say 'timed out'."""
+        raise UnexpectedResponse(504, "Gateway Timeout", b"upstream", httpx.Headers())
+
+    fake.query_batch_points = gateway_timeout  # type: ignore[method-assign]
+    with pytest.raises(SimilarVideosTimeoutError):
+        engine.find_similar_videos(HASH_A, limit=10)
+
+
+def test_a_client_error_that_is_not_a_timeout_propagates(tmp_path):
+    """A ResponseHandlingException around a connection error is not called a timeout."""
+    import httpx
+    from qdrant_client.http.exceptions import ResponseHandlingException
+
+    engine, fake = _engine(tmp_path)
+
+    def refused(**_kw):
+        """Fail as the client does when Qdrant refuses the connection."""
+        raise ResponseHandlingException(httpx.ConnectError("refused"))
+
+    fake.query_batch_points = refused  # type: ignore[method-assign]
+    with pytest.raises(ResponseHandlingException):
         engine.find_similar_videos(HASH_A, limit=10)
 
 
@@ -632,6 +678,7 @@ def test_another_qdrant_error_is_not_called_a_timeout(tmp_path):
     engine, fake = _engine(tmp_path)
 
     def broken(**_kw):
+        """Fail with a Qdrant 500 that is not a timeout."""
         raise _qdrant_error("Wrong input: bad vector")
 
     fake.query_batch_points = broken  # type: ignore[method-assign]
