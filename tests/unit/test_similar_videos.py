@@ -174,6 +174,7 @@ class _FakeQdrant:
     """Seed chunks filtered the way Qdrant would; hits spread over two other videos."""
 
     def __init__(self, archive_root: Path, points: list[SimpleNamespace]):
+        """Hold the seed points and record every scroll and search the engine makes."""
         self.root = archive_root
         self.points = points
         self.scroll_filters = []
