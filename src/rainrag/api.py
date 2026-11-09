@@ -3120,7 +3120,16 @@ async def similar_videos(
         raise HTTPException(status_code=503, detail="Query engine not initialized")
     loader = _metadata_loader()
     video_hash = await asyncio.to_thread(_resolve_video_ref, video_id, loader)
-    ranked = await asyncio.to_thread(query_engine.find_similar_videos, video_hash, limit, language)
+    from rainrag.query import SimilarVideosTimeoutError
+
+    try:
+        ranked = await asyncio.to_thread(
+            query_engine.find_similar_videos, video_hash, limit, language
+        )
+    except SimilarVideosTimeoutError as exc:
+        raise HTTPException(
+            status_code=504, detail="The similar-videos search timed out; try again"
+        ) from exc
     records = await _enrich_records(loader, [entry["video_hash"] for entry in ranked])
     results: list[SimilarVideo] = []
     for entry, record in zip(ranked, records, strict=True):

@@ -71,6 +71,14 @@ class QdrantConfig(BaseModel):
     vector_size: int = Field(default=1024)
     distance: str = Field(default="Cosine")
     recreate_collection: bool = Field(default=False)
+    scalar_quantization: bool = Field(
+        default=True,
+        description=(
+            "Create collections with an int8 copy of the vectors kept in RAM "
+            "(Qdrant scalar quantization). Searches then read RAM instead of disk; "
+            "the full vectors rescore the best candidates."
+        ),
+    )
     scroll_batch_size: int = Field(
         default=500,
         ge=1,
