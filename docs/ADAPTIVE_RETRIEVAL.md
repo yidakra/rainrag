@@ -153,6 +153,14 @@ falls back rather than applying mismatched weights. Keep the evaluation configur
 identical to serving, including candidate
 depth and preprocessing. Changing the signature rejects the model at startup.
 
+With the reranker disabled, depth is the request's `top_k`, and the Streamlit UI
+defaults it to 3 (`DEFAULT_TOP_K` in `app.py`) while the provider config uses 5. A
+model trained on default UI captures is bound to depth 3, and one trained at 5 falls
+back on every default UI query. Set the UI slider to the provider's `top_k` both
+when capturing training queries and when serving, or capture and serve at the same
+slider value. With the reranker enabled, depth comes from its `initial_k` and the
+slider does not affect it.
+
 `select` requires both a model and an explicit corpus revision. Ties and improvements
 below the configured predicted-gain threshold keep the original. Empty alternatives
 are excluded; when every ranking is empty, the original remains the fallback. Invalid
