@@ -2382,6 +2382,9 @@ _APIFY_HEIGHTS = (1080, 720, 480, 360, 240, 144)
 # How long the endpoint waits for a run before it aborts it and answers 503.
 # Apify's own run timeout (20 minutes) is the backstop.
 _APIFY_WAIT_SECONDS = 600
+# The httpx timeout covers each read, not the whole transfer, so the media
+# download also gets a total time limit.
+_APIFY_MEDIA_SECONDS = 600
 
 
 def _refuse_non_public_hop(request: httpx.Request) -> None:
@@ -2481,8 +2484,11 @@ def _apify_youtube_download(url: str, dest: Path, cfg: Any) -> dict | None:
         with _apify_media_client() as media_client:
             with media_client.stream("GET", row["fileUrl"]) as media:
                 media.raise_for_status()
+                deadline = time.monotonic() + _APIFY_MEDIA_SECONDS
                 with target.open("wb") as fh:
                     for chunk in media.iter_bytes():
+                        if time.monotonic() > deadline:
+                            raise httpx.ReadTimeout("media download took too long")
                         piece = chunk[: limit - written]
                         fh.write(piece)
                         written += len(piece)

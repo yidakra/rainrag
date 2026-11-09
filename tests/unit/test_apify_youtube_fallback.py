@@ -235,6 +235,17 @@ class TestApifyDownload:
         assert fake_apify.calls[1][:2] == ("POST", "/actor-runs/run1/abort")
         assert len(fake_apify.calls) == 2
 
+    def test_a_slow_media_download_gives_up(self, fake_apify, monkeypatch, tmp_path):
+        monkeypatch.setattr("rainrag.api._APIFY_MEDIA_SECONDS", -1)
+        fake_apify.responses = [_run("SUCCEEDED"), _FakeResponse([FILE_ROW])]
+
+        with patch("rainrag.api.logger") as log:
+            assert _apify_youtube_download(YOUTUBE_URL, tmp_path, _cfg()) is None
+
+        logged = " ".join(str(arg) for call in log.warning.call_args_list for arg in call.args)
+        assert "ReadTimeout" in logged
+        assert (tmp_path / "video.mp4").stat().st_size == 0
+
     def test_media_hops_to_internal_addresses_are_refused(self):
         for target in ("http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:6333/"):
             with pytest.raises(httpx.RequestError):
