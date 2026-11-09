@@ -145,6 +145,25 @@ def test_cli_writes_evaluation_and_portable_model_without_providers(tmp_path):
     assert "overwrite" in again.output
 
 
+@pytest.mark.parametrize("missing", ["model", "report"])
+def test_cli_failed_output_leaves_nothing_to_block_a_rerun(tmp_path, missing):
+    """If either output cannot be written, neither is left behind (CodeRabbit on #111)."""
+    dataset = write_dataset(tmp_path)
+    report = tmp_path / "report.json"
+    model = tmp_path / "model.json"
+    if missing == "model":
+        model = tmp_path / "absent" / "model.json"
+    else:
+        report = tmp_path / "absent" / "report.json"
+    result = CliRunner().invoke(
+        app,
+        ["--dataset", str(dataset), "--report", str(report), "--model", str(model), "--folds", "4"],
+    )
+    assert result.exit_code != 0
+    assert not report.exists()
+    assert not model.exists()
+
+
 def test_cli_rejects_shared_output_paths(tmp_path):
     dataset = write_dataset(tmp_path)
     target = tmp_path / "both.json"

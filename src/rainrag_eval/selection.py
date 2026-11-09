@@ -341,8 +341,9 @@ def train(
                 "Warning: single-positive labels can hide other relevant segments; pool judgments.",
                 err=True,
             )
-        with report.open("x", encoding="utf-8") as stream:
-            stream.write(json.dumps(result, indent=2, allow_nan=False) + "\n")
+        # Fit and save the model before the report, and take the model back if
+        # the report cannot be written: a failure on either output must leave
+        # neither behind, or the next run stops at the overwrite guard.
         if model is not None:
             fitted = fit_ridge(
                 [feature_matrix(c.alternatives) for c in cases],
@@ -351,6 +352,13 @@ def train(
                 alpha,
             )
             fitted.save(model)
+        try:
+            with report.open("x", encoding="utf-8") as stream:
+                stream.write(json.dumps(result, indent=2, allow_nan=False) + "\n")
+        except BaseException:
+            if model is not None:
+                model.unlink(missing_ok=True)
+            raise
     except (ValueError, OSError, KeyError, TypeError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(f"Wrote first-stage evaluation to {report}; production selection remains opt-in.")
