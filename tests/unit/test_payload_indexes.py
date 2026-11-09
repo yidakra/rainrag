@@ -194,3 +194,20 @@ def test_the_cli_command_fails_loudly() -> None:
         result = CliRunner().invoke(app, ["ensure-indexes"])
     assert result.exit_code == 1
     assert "Creating payload indexes failed: qdrant down" in result.output
+
+
+def test_a_new_collection_gets_int8_quantization_in_ram(test_config: Config) -> None:
+    """create_collection keeps an int8 copy of the vectors in RAM."""
+    indexer, spy = _spy_indexer(test_config)
+    indexer.create_collection()
+    quant = spy.create_collection.call_args.kwargs["quantization_config"]
+    assert quant.scalar.type == models.ScalarType.INT8
+    assert quant.scalar.always_ram is True
+
+
+def test_quantization_can_be_turned_off(test_config: Config) -> None:
+    """With scalar_quantization false, collections are created without quantization."""
+    test_config.qdrant.scalar_quantization = False
+    indexer, spy = _spy_indexer(test_config)
+    indexer._create_collection_with_name("x_staging_2")
+    assert spy.create_collection.call_args.kwargs["quantization_config"] is None

@@ -178,9 +178,16 @@ class _FakeQdrant:
         self.points = points
         self.scroll_filters = []
         self.query_filters = []
+        self.scroll_limits = []
+        self.timeouts = []
+        self.batches = []
 
-    def scroll(self, collection_name, scroll_filter, limit, with_payload, with_vectors):
+    def scroll(
+        self, collection_name, scroll_filter, limit, with_payload, with_vectors, timeout=None
+    ):
         self.scroll_filters.append(scroll_filter)
+        self.scroll_limits.append(limit)
+        self.timeouts.append(("scroll", timeout))
         return [p for p in self.points if _matches(scroll_filter, p.payload)][:limit], None
 
     def _hit(self, video_hash, score, lang="ru", **web):
@@ -192,7 +199,9 @@ class _FakeQdrant:
         payload = {"path": path, "video_id": video_hash[:16], "language": lang, **web}
         return SimpleNamespace(score=score, payload=payload)
 
-    def query_batch_points(self, collection_name, requests):
+    def query_batch_points(self, collection_name, requests, timeout=None):
+        self.timeouts.append(("query_batch_points", timeout))
+        self.batches.append(requests)
         return [
             self.query_points(collection_name, list(r.query), r.filter, r.limit, r.with_payload)
             for r in requests
@@ -567,3 +576,80 @@ def test_library_id_index_is_not_cached_when_empty(tmp_path, monkeypatch):
     assert api_module._library_ids(loader) == {}
     _write_record(cache, HASH_A, 9, "https://tvrain.tv/a")
     assert api_module._library_ids(loader) == {9: HASH_A}
+
+
+def test_find_similar_videos_uses_16_seed_chunks_quantized_search_and_a_timeout(tmp_path):
+    """The search takes at most 16 seed chunks, searches the int8 copy with rescoring, and sets a time limit."""
+    from src.rainrag.query import SIMILAR_SEARCH_TIMEOUT_S
+
+    engine, fake = _engine(tmp_path)
+    engine.find_similar_videos(HASH_A, limit=10)
+    assert fake.scroll_limits == [16]
+    assert fake.timeouts == [
+        ("scroll", SIMILAR_SEARCH_TIMEOUT_S),
+        ("query_batch_points", SIMILAR_SEARCH_TIMEOUT_S),
+    ]
+    for request in fake.batches[0]:
+        assert request.params.quantization.rescore is True
+        assert request.params.quantization.oversampling == 2.0
+
+
+def _qdrant_error(message: str):
+    """Return the error the Qdrant client raises for a 500 with this message."""
+    import httpx
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
+    body = json.dumps({"status": {"error": message}}).encode()
+    return UnexpectedResponse(500, "Internal Server Error", body, httpx.Headers())
+
+
+def test_a_qdrant_timeout_becomes_similar_videos_timeout(tmp_path):
+    """A Qdrant 'timed out' 500 from either call raises SimilarVideosTimeoutError."""
+    from src.rainrag.query import SimilarVideosTimeoutError
+
+    engine, fake = _engine(tmp_path)
+    error = _qdrant_error("Timeout error: Operation 'Search' timed out after 30s")
+
+    def batch_timeout(**_kw):
+        raise error
+
+    fake.query_batch_points = batch_timeout  # type: ignore[method-assign]
+    with pytest.raises(SimilarVideosTimeoutError):
+        engine.find_similar_videos(HASH_A, limit=10)
+
+    def scroll_timeout(**_kw):
+        raise error
+
+    fake.scroll = scroll_timeout  # type: ignore[method-assign]
+    with pytest.raises(SimilarVideosTimeoutError):
+        engine.find_similar_videos(HASH_A, limit=10)
+
+
+def test_another_qdrant_error_is_not_called_a_timeout(tmp_path):
+    """A Qdrant 500 that is not a timeout propagates as it is."""
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
+    engine, fake = _engine(tmp_path)
+
+    def broken(**_kw):
+        raise _qdrant_error("Wrong input: bad vector")
+
+    fake.query_batch_points = broken  # type: ignore[method-assign]
+    with pytest.raises(UnexpectedResponse):
+        engine.find_similar_videos(HASH_A, limit=10)
+
+
+def test_similar_videos_endpoint_returns_504_on_a_search_timeout(client, tmp_path, monkeypatch):
+    """The route answers 504 with a clear message instead of hanging or a 500."""
+    from rainrag.query import SimilarVideosTimeoutError  # the class the route catches
+
+    _write_record(tmp_path / "web_metadata", HASH_A, 1, "https://tvrain.tv/a", name="A")
+    monkeypatch.setattr(api_module, "_LIBRARY_IDS", None)
+    with (
+        patch("src.rainrag.api.query_engine") as engine,
+        patch("src.rainrag.api.config", _config(tmp_path)),
+    ):
+        engine.find_similar_videos.side_effect = SimilarVideosTimeoutError("slow")
+        r = client.get("/similar-videos", params={"video_id": "1"})
+    assert r.status_code == 504
+    assert "timed out" in r.json()["detail"]

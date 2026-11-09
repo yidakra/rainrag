@@ -19,6 +19,7 @@ from loguru import logger
 from mistralai import Mistral
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 
 try:
@@ -86,6 +87,31 @@ def accumulate_token_usage(sink: dict[str, int] | None, response: Any) -> None:
             return
     except Exception:  # pragma: no cover - defensive, see above
         logger.debug("Token usage accounting failed; continuing without counts")
+
+
+# Server-side limit for the Qdrant calls of find_similar_videos, in seconds.
+SIMILAR_SEARCH_TIMEOUT_S = 30
+
+# Search the in-RAM int8 copy of the vectors (when the collection has scalar
+# quantization) and rescore the best candidates with the full vectors. A
+# collection without quantization ignores these parameters.
+_QUANTIZED_SEARCH = models.SearchParams(
+    quantization=models.QuantizationSearchParams(rescore=True, oversampling=2.0)
+)
+
+
+class SimilarVideosTimeoutError(RuntimeError):
+    """Qdrant did not finish the similar-videos search within SIMILAR_SEARCH_TIMEOUT_S."""
+
+
+def _as_timeout(exc: UnexpectedResponse) -> Exception:
+    """Return SimilarVideosTimeoutError for a Qdrant timeout response, else the error itself."""
+    body = exc.content.decode("utf-8", "replace") if isinstance(exc.content, bytes) else ""
+    if "timed out" in body.lower():
+        return SimilarVideosTimeoutError(
+            f"Qdrant did not answer within {SIMILAR_SEARCH_TIMEOUT_S} s"
+        )
+    return exc
 
 
 class RAGQueryEngine:
@@ -1030,7 +1056,7 @@ class RAGQueryEngine:
         video_hash: str,
         limit: int = 10,
         language: str | None = None,
-        max_seed_chunks: int = 40,
+        max_seed_chunks: int = 16,
         per_chunk: int = 8,
     ) -> list[dict[str, Any]]:
         """Rank other videos by how much of this video's content they share.
@@ -1059,13 +1085,17 @@ class RAGQueryEngine:
             must.append(
                 models.FieldCondition(key="language", match=models.MatchValue(value=language))
             )
-        seeds, _ = self.qdrant_client.scroll(
-            collection_name=self.config.qdrant.collection_name,
-            scroll_filter=models.Filter(must=must),
-            limit=max_seed_chunks,
-            with_payload=False,
-            with_vectors=True,
-        )
+        try:
+            seeds, _ = self.qdrant_client.scroll(
+                collection_name=self.config.qdrant.collection_name,
+                scroll_filter=models.Filter(must=must),
+                limit=max_seed_chunks,
+                with_payload=False,
+                with_vectors=True,
+                timeout=SIMILAR_SEARCH_TIMEOUT_S,
+            )
+        except UnexpectedResponse as exc:
+            raise _as_timeout(exc) from exc
         if not seeds:
             logger.info(f"No indexed chunks for video {video_hash}")
             return []
@@ -1080,16 +1110,27 @@ class RAGQueryEngine:
                 continue
             requests.append(
                 models.QueryRequest(
-                    query=vector, filter=exclude_seed, limit=per_chunk, with_payload=True
+                    query=vector,
+                    filter=exclude_seed,
+                    limit=per_chunk,
+                    with_payload=True,
+                    # Search the in-RAM int8 copy when the collection has one,
+                    # then rescore the candidates with the full vectors.
+                    params=_QUANTIZED_SEARCH,
                 )
             )
         if not requests:
             logger.info(f"No seed vectors for video {video_hash}")
             return []
         # One round trip for all seed chunks instead of one per chunk.
-        responses = self.qdrant_client.query_batch_points(
-            collection_name=self.config.qdrant.collection_name, requests=requests
-        )
+        try:
+            responses = self.qdrant_client.query_batch_points(
+                collection_name=self.config.qdrant.collection_name,
+                requests=requests,
+                timeout=SIMILAR_SEARCH_TIMEOUT_S,
+            )
+        except UnexpectedResponse as exc:
+            raise _as_timeout(exc) from exc
         agg: dict[str, dict[str, Any]] = {}
         for response in responses:
             for hit in response.points:

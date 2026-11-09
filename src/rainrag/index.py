@@ -137,6 +137,21 @@ class QdrantIndexer:
         }
         return distance_map.get(self.config.qdrant.distance, models.Distance.COSINE)
 
+    def _quantization_config(self) -> models.ScalarQuantization | None:
+        """Return int8 scalar quantization kept in RAM, or None when the config turns it off.
+
+        Searches then walk an in-RAM copy of the vectors (a quarter of their
+        size) instead of reading the full vectors from disk; the full vectors
+        rescore the best candidates.
+        """
+        if not self.config.qdrant.scalar_quantization:
+            return None
+        return models.ScalarQuantization(
+            scalar=models.ScalarQuantizationConfig(
+                type=models.ScalarType.INT8, quantile=0.99, always_ram=True
+            )
+        )
+
     def ensure_payload_indexes(self, collection_name: str | None = None) -> list[str]:
         """Create the keyword payload indexes that the query engine filters on.
 
@@ -232,6 +247,7 @@ class QdrantIndexer:
                 size=self.config.qdrant.vector_size,
                 distance=distance,
             ),
+            quantization_config=self._quantization_config(),
         )
         self.ensure_payload_indexes(collection_name)
 
@@ -247,6 +263,7 @@ class QdrantIndexer:
                 size=self.config.qdrant.vector_size,
                 distance=distance,
             ),
+            quantization_config=self._quantization_config(),
         )
         self.ensure_payload_indexes(collection_name)
         logger.info(f"Created staging collection: {collection_name}")
