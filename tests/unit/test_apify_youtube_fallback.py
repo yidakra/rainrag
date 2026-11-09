@@ -212,6 +212,7 @@ class TestApifyDownload:
         assert (tmp_path / "video.mp4").stat().st_size == limit + 1
 
     def test_failure_log_leaves_out_the_signed_media_url(self, fake_apify, monkeypatch, tmp_path):
+        """A failed media download logs the error type and status, never the signed URL."""
         request = httpx.Request("GET", FILE_URL)
         error = httpx.HTTPStatusError(
             f"403 Forbidden for url '{FILE_URL}'", request=request, response=httpx.Response(403)
@@ -236,6 +237,7 @@ class TestApifyDownload:
         assert len(fake_apify.calls) == 2
 
     def test_a_slow_media_download_gives_up(self, fake_apify, monkeypatch, tmp_path):
+        """A media download past _APIFY_MEDIA_SECONDS stops and returns None."""
         monkeypatch.setattr("rainrag.api._APIFY_MEDIA_SECONDS", -1)
         fake_apify.responses = [_run("SUCCEEDED"), _FakeResponse([FILE_ROW])]
 
@@ -247,6 +249,7 @@ class TestApifyDownload:
         assert (tmp_path / "video.mp4").stat().st_size == 0
 
     def test_media_hops_to_internal_addresses_are_refused(self):
+        """The hop check refuses metadata and loopback targets."""
         for target in ("http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:6333/"):
             with pytest.raises(httpx.RequestError):
                 _refuse_non_public_hop(httpx.Request("GET", target))
