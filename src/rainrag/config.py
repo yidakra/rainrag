@@ -651,6 +651,14 @@ class NotifyConfig(BaseModel):
         default=5.0,
         description="How long one worker cycle waits for the sweep lock before it retries later",
     )
+    token_env: str = Field(
+        default="RAINRAG_NOTIFY_TOKEN",
+        description=(
+            "Environment variable with a token that the /ingest/notify routes accept "
+            "in addition to the API token. Give this one to the system that sends the "
+            "events; it is valid nowhere else. Unset means only the API token works."
+        ),
+    )
 
 
 class WebMetadataConfig(BaseModel):

@@ -1608,6 +1608,8 @@ How the worker fits the sweep:
 - It does not touch the embedding cache. The next sweep embeds the few new
   chunks again, which is cheap, and the worker stays out of the cache rewrite.
 
+**Token for the sender.** The two `/ingest/notify` routes also accept a dedicated token from the environment variable named by `notify.token_env` (default `RAINRAG_NOTIFY_TOKEN`). Give that token to the system that sends the events; it opens nothing else. The API token keeps working on these routes, so you can read the status with it.
+
 ## Hybrid Search (Vector + BM25)
 
 RainRAG supports **hybrid search** that combines vector similarity with BM25 keyword matching for improved search quality.

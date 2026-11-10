@@ -279,6 +279,7 @@ notify:
   vtt_languages: ["ru", "en"]  # The worker waits for {hash}.ru.vtt and {hash}.en.vtt
   lock_path: "/tmp/rainrag-incremental.lock"  # The sweep's flock; same path as the timer script
   lock_timeout_seconds: 5  # One cycle's wait for the lock before the hash stays files_pending
+  token_env: RAINRAG_NOTIFY_TOKEN  # Env var with the webhook-only token; the API token works here too
 
 # Web metadata integration
 web_metadata:
