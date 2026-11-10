@@ -122,6 +122,23 @@ ingestion:
       max_file_size: 10485760
       min_text_length: 50
 
+    # Event-driven indexing (POST /ingest/notify). Off by default, as in
+    # NotifyConfig. With enabled: true the API pod also mounts the archive
+    # volume read-only, because the worker reads {hash}.<lang>.vtt from
+    # paths.archive_root. Keep queue_path and lock_path on the data volume:
+    # the queue must survive a pod restart, and the incremental sweep must
+    # take the same lock file.
+    notify:
+      enabled: false
+      queue_path: "/data/rainrag/notify-queue.json"
+      max_wait_hours: 24
+      poll_seconds: 30
+      partial_after_seconds: 600
+      vtt_languages: ["ru", "en"]
+      lock_path: "/data/rainrag/rainrag-incremental.lock"
+      lock_timeout_seconds: 5
+      token_env: "RAINRAG_NOTIFY_TOKEN"
+
     logging:
       level: "INFO"
       format: "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
@@ -152,6 +169,10 @@ api:
 
   # Optional authentication token
   authToken: ""  # Set to enable token-based authentication
+
+  # Optional webhook-only token for the /ingest/notify routes. Give it to the
+  # transcoder instead of authToken. Generate with: openssl rand -hex 32
+  notifyToken: ""
 
   resources:
     requests:
@@ -187,6 +208,19 @@ streamlit:
     limits:
       memory: "1Gi"
       cpu: "1000m"
+
+# Ingress for the Streamlit UI. templates/ingress.yaml reads these keys, so
+# they must exist even when the ingress is off.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: rainrag.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
 
 # Global settings
 nameOverride: ""
