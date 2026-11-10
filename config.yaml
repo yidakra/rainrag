@@ -271,7 +271,7 @@ incremental:
 # and an in-process worker indexes that video within minutes. The 6-hour
 # incremental sweep stays the safety net. See README "Event-driven indexing".
 notify:
-  enabled: false  # Accept notifications and run the worker (the API must be restarted)
+  enabled: true  # Accept notifications and run the worker (the API must be restarted)
   queue_path: "./data/notify-queue.json"  # Per-hash state, survives an API restart
   max_wait_hours: 24  # Give up on a hash this long after the notification
   poll_seconds: 30  # Re-check interval for VTT files, the sweep lock and retries
