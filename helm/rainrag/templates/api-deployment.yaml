@@ -1,4 +1,7 @@
 {{- if .Values.api.enabled }}
+{{- if and .Values.ingestion.config.notify.enabled (gt (int .Values.api.replicas) 1) }}
+{{- fail "notify.enabled needs api.replicas: 1. The notify queue is a file with an in-process lock, so two API replicas would overwrite each other's entries." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

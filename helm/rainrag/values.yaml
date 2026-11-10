@@ -67,7 +67,8 @@ ingestion:
   volumes:
     # Archive directory containing .vtt files
     archive:
-      # Use hostPath for local development
+      # Use hostPath for local development. When persistentVolumeClaim is set
+      # it wins over hostPath in every workload, so hostPath can stay.
       hostPath: /data/archive
       # Or use PVC
       # persistentVolumeClaim: archive-pvc
@@ -122,12 +123,20 @@ ingestion:
       max_file_size: 10485760
       min_text_length: 50
 
+    # The file manifest records which VTT files docs.jsonl already holds. A
+    # full ingestion writes it, and the notify worker reads and updates it, so
+    # it must sit on the shared data volume (the default ./data/manifest.json
+    # is inside each container and is lost on restart).
+    incremental:
+      manifest_path: "/data/rainrag/manifest.json"
+
     # Event-driven indexing (POST /ingest/notify). Off by default, as in
     # NotifyConfig. With enabled: true the API pod also mounts the archive
     # volume read-only, because the worker reads {hash}.<lang>.vtt from
     # paths.archive_root. Keep queue_path and lock_path on the data volume:
     # the queue must survive a pod restart, and the incremental sweep must
-    # take the same lock file.
+    # take the same lock file. The queue is a plain file with an in-process
+    # lock, so the chart refuses notify with api.replicas above 1.
     notify:
       enabled: false
       queue_path: "/data/rainrag/notify-queue.json"

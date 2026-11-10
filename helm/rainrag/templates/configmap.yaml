@@ -40,6 +40,11 @@ data:
       max_file_size: {{ .Values.ingestion.config.processing.max_file_size }}
       min_text_length: {{ .Values.ingestion.config.processing.min_text_length }}
 
+    {{- with .Values.ingestion.config.incremental }}
+    incremental:
+      manifest_path: {{ .manifest_path | quote }}
+    {{- end }}
+
     {{- with .Values.ingestion.config.notify }}
     notify:
       enabled: {{ .enabled }}

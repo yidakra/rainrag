@@ -58,31 +58,31 @@ spec:
             configMap:
               name: {{ include "rainrag.fullname" . }}-config
           - name: archive
-            {{- if .Values.ingestion.volumes.archive.hostPath }}
+            {{- if .Values.ingestion.volumes.archive.persistentVolumeClaim }}
+            persistentVolumeClaim:
+              claimName: {{ .Values.ingestion.volumes.archive.persistentVolumeClaim }}
+            {{- else }}
             hostPath:
               path: {{ .Values.ingestion.volumes.archive.hostPath }}
               type: Directory
-            {{- else }}
-            persistentVolumeClaim:
-              claimName: {{ .Values.ingestion.volumes.archive.persistentVolumeClaim }}
             {{- end }}
           - name: data
-            {{- if .Values.ingestion.volumes.data.hostPath }}
+            {{- if .Values.ingestion.volumes.data.persistentVolumeClaim }}
+            persistentVolumeClaim:
+              claimName: {{ .Values.ingestion.volumes.data.persistentVolumeClaim }}
+            {{- else }}
             hostPath:
               path: {{ .Values.ingestion.volumes.data.hostPath }}
               type: DirectoryOrCreate
-            {{- else }}
-            persistentVolumeClaim:
-              claimName: {{ .Values.ingestion.volumes.data.persistentVolumeClaim }}
             {{- end }}
           - name: embeddings
-            {{- if .Values.ingestion.volumes.embeddings.hostPath }}
+            {{- if .Values.ingestion.volumes.embeddings.persistentVolumeClaim }}
+            persistentVolumeClaim:
+              claimName: {{ .Values.ingestion.volumes.embeddings.persistentVolumeClaim }}
+            {{- else }}
             hostPath:
               path: {{ .Values.ingestion.volumes.embeddings.hostPath }}
               type: DirectoryOrCreate
-            {{- else }}
-            persistentVolumeClaim:
-              claimName: {{ .Values.ingestion.volumes.embeddings.persistentVolumeClaim }}
             {{- end }}
 {{- else }}
 apiVersion: batch/v1
@@ -138,31 +138,31 @@ spec:
         configMap:
           name: {{ include "rainrag.fullname" . }}-config
       - name: archive
-        {{- if .Values.ingestion.volumes.archive.hostPath }}
+        {{- if .Values.ingestion.volumes.archive.persistentVolumeClaim }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.ingestion.volumes.archive.persistentVolumeClaim }}
+        {{- else }}
         hostPath:
           path: {{ .Values.ingestion.volumes.archive.hostPath }}
           type: Directory
-        {{- else }}
-        persistentVolumeClaim:
-          claimName: {{ .Values.ingestion.volumes.archive.persistentVolumeClaim }}
         {{- end }}
       - name: data
-        {{- if .Values.ingestion.volumes.data.hostPath }}
+        {{- if .Values.ingestion.volumes.data.persistentVolumeClaim }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.ingestion.volumes.data.persistentVolumeClaim }}
+        {{- else }}
         hostPath:
           path: {{ .Values.ingestion.volumes.data.hostPath }}
           type: DirectoryOrCreate
-        {{- else }}
-        persistentVolumeClaim:
-          claimName: {{ .Values.ingestion.volumes.data.persistentVolumeClaim }}
         {{- end }}
       - name: embeddings
-        {{- if .Values.ingestion.volumes.embeddings.hostPath }}
+        {{- if .Values.ingestion.volumes.embeddings.persistentVolumeClaim }}
+        persistentVolumeClaim:
+          claimName: {{ .Values.ingestion.volumes.embeddings.persistentVolumeClaim }}
+        {{- else }}
         hostPath:
           path: {{ .Values.ingestion.volumes.embeddings.hostPath }}
           type: DirectoryOrCreate
-        {{- else }}
-        persistentVolumeClaim:
-          claimName: {{ .Values.ingestion.volumes.embeddings.persistentVolumeClaim }}
         {{- end }}
 {{- end }}
 {{- end }}

@@ -3031,6 +3031,10 @@ def _verify_notify_caller(authorization: str | None) -> None:
     The sender of the events (the transcoder) holds only this token, which
     opens nothing but /ingest/notify. The API token keeps working here too,
     so the status route can be read with it.
+
+    A configured webhook token closes these routes even when the API token is
+    unset: an operator who set a webhook token wants the webhook protected, so
+    the "no API token, allow all" fallback does not apply here.
     """
     env_name = getattr(getattr(config, "notify", None), "token_env", "") or ""
     webhook_token = os.getenv(env_name) if env_name else None
@@ -3042,6 +3046,8 @@ def _verify_notify_caller(authorization: str | None) -> None:
             and hmac.compare_digest(parts[1], webhook_token)
         ):
             return
+    if webhook_token and not os.getenv("RAINRAG_AUTH_TOKEN"):
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
     verify_auth_token(authorization=authorization)
 
 
