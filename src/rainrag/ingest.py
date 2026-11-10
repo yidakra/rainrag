@@ -1743,11 +1743,13 @@ class FileManifest:
             return False
 
     def save(self) -> None:
-        """Save manifest to disk."""
+        """Save manifest to disk, via a temp file and rename so a crash never truncates it."""
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
         data = {k: v.model_dump() for k, v in self.entries.items()}
-        with open(self.manifest_path, "w", encoding="utf-8") as f:
+        tmp_path = self.manifest_path.with_name(self.manifest_path.name + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+        tmp_path.replace(self.manifest_path)
         logger.info(f"Saved manifest with {len(self.entries)} file entries")
 
     def classify_file(self, file_path: Path) -> str:
