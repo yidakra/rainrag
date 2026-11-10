@@ -711,3 +711,75 @@ def test_notify_embedder_shares_the_query_engines_model(monkeypatch):
         embedder = api_module._notify_embedder()
     embedder_cls.assert_called_once_with(config)
     assert embedder.model is model
+
+
+def test_an_empty_parse_is_parsed_again_on_the_next_cycle(test_config, tmp_path, sample_vtt_ru):
+    """A parse that yields no documents is not cached: the next cycle parses the files again."""
+    config = _worker_config(test_config, tmp_path)
+    fakes, clock = _Fakes(), _Clock()
+    fakes.docs_per_file = 0
+    worker = _make_worker(config, fakes, clock)
+    _write_vtts(worker, HASH, sample_vtt_ru)
+    worker.notify(HASH)
+    worker.run_once()
+    assert worker.status(HASH)["state"] == STATE_QUEUED
+    first_parses = len(fakes.ingested)
+
+    fakes.docs_per_file = 2  # the metadata arrived
+    clock.advance(31)
+    worker.run_once()
+    assert worker.status(HASH)["state"] == STATE_INDEXED
+    assert len(fakes.ingested) == 2 * first_parses
+
+
+def test_a_vtt_rewritten_while_the_lock_was_held_is_parsed_again_before_the_write(
+    test_config, tmp_path, sample_vtt_ru
+):
+    """A file that changed during files_pending is re-parsed and re-upserted; the stale parse is never written."""
+    config = _worker_config(test_config, tmp_path)
+    fakes, clock = _Fakes(), _Clock()
+    worker = _make_worker(config, fakes, clock)
+    ru, en = _write_vtts(worker, HASH, sample_vtt_ru)
+    fakes.locked = True
+    worker.notify(HASH)
+    worker.run_once()
+    assert worker.status(HASH)["state"] == STATE_FILES_PENDING
+    assert len(fakes.upserts) == 1
+    parses_before = len(fakes.ingested)
+
+    # The transcriber rewrote the Russian file while the sweep held the lock.
+    ru.write_text(sample_vtt_ru + "\n4\n00:00:15.000 --> 00:00:20.000\nЕщё.\n", encoding="utf-8")
+    st = ru.stat()
+    os.utime(ru, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+    fakes.locked = False
+    clock.advance(31)
+    worker.run_once()  # parses again, upserts the fresh chunks, writes, upserts once more
+    assert worker.status(HASH)["state"] == STATE_INDEXED
+    assert len(fakes.ingested) == 2 * parses_before
+    assert len(fakes.upserts) == 3
+    events = fakes.events
+    busy = events.index("lock-busy")
+    reparse = events.index("ingest:" + ru.name, busy)
+    assert reparse < events.index("upsert", busy) < events.index("lock", busy)
+
+
+def test_an_unreadable_manifest_fails_the_attempt_and_writes_nothing(
+    test_config, tmp_path, sample_vtt_ru
+):
+    """A manifest file that exists but cannot be read is left alone; the attempt is retried."""
+    config = _worker_config(test_config, tmp_path)
+    fakes, clock = _Fakes(), _Clock()
+    worker = _make_worker(config, fakes, clock)
+    _write_vtts(worker, HASH, sample_vtt_ru)
+    manifest_path = Path(config.incremental.manifest_path)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("{not json", encoding="utf-8")
+    docs_path = Path(config.paths.docs_output)
+
+    worker.notify(HASH)
+    worker.run_once()
+    entry = worker.status(HASH)
+    assert entry["state"] != STATE_INDEXED
+    assert "cannot read the manifest" in entry["error"]
+    assert manifest_path.read_text(encoding="utf-8") == "{not json"
+    assert not docs_path.exists() or docs_path.read_text(encoding="utf-8") == ""

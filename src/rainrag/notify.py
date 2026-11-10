@@ -205,16 +205,37 @@ class SweepLock:
             os.close(fd)
 
 
+def _signature(paths: list[Path]) -> list[tuple[str, int, int]]:
+    """(path, mtime_ns, size) per file: the identity of the parsed content, in file order."""
+    out = []
+    for path in paths:
+        try:
+            st = path.stat()
+            out.append((str(path), st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append((str(path), -1, -1))
+    return out
+
+
 class _Prepared:
-    """One video's parsed documents and their embeddings, kept between worker cycles."""
+    """One video's parsed documents and their embeddings, kept between worker cycles.
+
+    ``signature`` records the files' (path, mtime_ns, size) at parse time. A
+    cycle that finds a different signature re-parses, so a VTT rewritten while
+    the hash waited (for example during a long sweep) is never written stale.
+    """
 
     def __init__(
-        self, files: list[tuple[Path, list[Document]]], embeddings: np.ndarray | None
+        self,
+        files: list[tuple[Path, list[Document]]],
+        embeddings: np.ndarray | None,
+        signature: list[tuple[str, int, int]],
     ) -> None:
-        """Hold the per-file documents and the embeddings of all of them, in file order."""
+        """Hold the per-file documents, the embeddings of all of them, and the files' signature."""
         self.files = files
         self.docs: list[Document] = [doc for _, docs in files for doc in docs]
         self.embeddings = embeddings
+        self.signature = signature
 
 
 class NotifyWorker:
@@ -356,10 +377,21 @@ class NotifyWorker:
             return
 
         prepared = self._prepared.get(video_hash)
-        if prepared is None or [str(p) for p, _ in prepared.files] != [str(p) for p in present]:
+        if prepared is not None and prepared.signature != _signature(present):
+            # The files changed since the last parse (a rewrite during a long
+            # wait). Parse again, and upsert the fresh chunks right away: the
+            # points in the index come from the old content until then.
+            prepared = None
+            if entry.get("searchable_at"):
+                entry = self.queue.update(video_hash, now, searchable_at=None)
+            logger.info(f"[notify {video_hash}] VTT files changed since the last parse; re-parsing")
+        if prepared is None:
             prepared = self._prepare(present)
             self._prepared[video_hash] = prepared
         if not prepared.docs:
+            # Not cached: the next cycle parses the files again, so metadata or
+            # speech that arrives later is picked up instead of the empty result.
+            self._prepared.pop(video_hash, None)
             self._retry_later(
                 video_hash, "the VTT files produced no documents (no speech, or metadata missing)"
             )
@@ -388,6 +420,18 @@ class NotifyWorker:
                     next_attempt_ts=self._clock() + cfg.poll_seconds,
                 )
                 return
+            if prepared.signature != _signature(present):
+                # The files changed while the hash waited for the lock. Drop the
+                # parse; the next cycle re-parses, re-upserts and writes the fresh one.
+                self._prepared.pop(video_hash, None)
+                self.queue.update(
+                    video_hash,
+                    self._clock(),
+                    searchable_at=None,
+                    next_attempt_ts=self._clock(),
+                )
+                logger.info(f"[notify {video_hash}] VTT files changed before the write; re-parsing")
+                return
             self._write_files(prepared)
 
         # A sweep may have finished between the first upsert and the lock and
@@ -399,8 +443,9 @@ class NotifyWorker:
 
     def _prepare(self, vtts: list[Path]) -> _Prepared:
         """Parse each VTT into documents (as the sweep does) and embed them all."""
+        signature = _signature(vtts)
         files = [(path, self._ingest(path)) for path in vtts]
-        prepared = _Prepared(files, None)
+        prepared = _Prepared(files, None, signature)
         if prepared.docs:
             prepared.embeddings = self._embed(prepared.docs)
         return prepared
@@ -417,7 +462,11 @@ class NotifyWorker:
         docs_path = Path(self.config.paths.docs_output)
         docs_path.parent.mkdir(parents=True, exist_ok=True)
         manifest = FileManifest(self.config.incremental.manifest_path)
-        manifest.load()
+        if not manifest.load() and manifest.manifest_path.exists():
+            # A manifest that exists but cannot be read must not be replaced by
+            # a near-empty one: the next sweep would then treat every file as
+            # new and duplicate the corpus. Fail this attempt; the job retries.
+            raise RuntimeError(f"cannot read the manifest {manifest.manifest_path}")
         written = 0
         with open(docs_path, "a", encoding="utf-8") as out:
             for vtt, docs in prepared.files:
