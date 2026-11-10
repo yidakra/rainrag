@@ -2,6 +2,9 @@
 {{- if and .Values.ingestion.config.notify.enabled (gt (int .Values.api.replicas) 1) }}
 {{- fail "notify.enabled needs api.replicas: 1. The notify queue is a file with an in-process lock, so two API replicas would overwrite each other's entries." }}
 {{- end }}
+{{- if and .Values.api.notifyToken (eq (include "rainrag.notifyTokenEnv" .) "RAINRAG_AUTH_TOKEN") }}
+{{- fail "ingestion.config.notify.token_env must not be RAINRAG_AUTH_TOKEN: the webhook token would replace the API token and open every route." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,6 +13,12 @@ metadata:
     {{- include "rainrag.api.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.api.replicas }}
+  {{- if .Values.ingestion.config.notify.enabled }}
+  # The notify queue's lock is per process: a rolling update would run the old
+  # and the new worker on one queue file at once.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "rainrag.api.selectorLabels" . | nindent 6 }}
@@ -17,6 +26,11 @@ spec:
     metadata:
       labels:
         {{- include "rainrag.api.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pod when a token or the config changes: env vars and the
+        # mounted config are read at start.
+        checksum/api-secret: {{ include (print $.Template.BasePath "/api-secret.yaml") . | sha256sum }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       containers:
       - name: api
@@ -46,7 +60,7 @@ spec:
               key: auth-token
         {{- end }}
         {{- if .Values.api.notifyToken }}
-        - name: {{ .Values.ingestion.config.notify.token_env | default "RAINRAG_NOTIFY_TOKEN" }}
+        - name: {{ include "rainrag.notifyTokenEnv" . }}
           valueFrom:
             secretKeyRef:
               name: {{ include "rainrag.fullname" . }}-api-secret

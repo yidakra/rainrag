@@ -111,6 +111,9 @@ ingestion:
       distance: "Cosine"
       recreate_collection: false
 
+    llm:
+      provider: "mistral"  # LLMConfig.provider; the API needs an llm section
+
     mistral:
       api_key: ""  # Set via environment variable MISTRAL_API_KEY
       model_name: "mistral-small-latest"

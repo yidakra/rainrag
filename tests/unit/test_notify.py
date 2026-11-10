@@ -868,3 +868,13 @@ def test_an_unreadable_manifest_fails_the_attempt_and_writes_nothing(
     assert "cannot read the manifest" in entry["error"]
     assert manifest_path.read_text(encoding="utf-8") == "{not json"
     assert not docs_path.exists() or docs_path.read_text(encoding="utf-8") == ""
+
+
+def test_notify_token_env_must_not_be_the_api_token():
+    """token_env RAINRAG_AUTH_TOKEN would make the webhook token the API token."""
+    from src.rainrag.config import NotifyConfig
+
+    with pytest.raises(ValueError, match="must not be RAINRAG_AUTH_TOKEN"):
+        NotifyConfig(token_env="RAINRAG_AUTH_TOKEN")
+    assert NotifyConfig(token_env="RAINRAG_NOTIFY_TOKEN").token_env == "RAINRAG_NOTIFY_TOKEN"
+    assert NotifyConfig().token_env == "RAINRAG_NOTIFY_TOKEN"
