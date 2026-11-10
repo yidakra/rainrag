@@ -3025,13 +3025,33 @@ def _notify_hash_or_400(video_hash: str) -> str:
     return candidate
 
 
+def _verify_notify_caller(authorization: str | None) -> None:
+    """Accept the dedicated webhook token on the notify routes, else require the API token.
+
+    The sender of the events (the transcoder) holds only this token, which
+    opens nothing but /ingest/notify. The API token keeps working here too,
+    so the status route can be read with it.
+    """
+    env_name = getattr(getattr(config, "notify", None), "token_env", "") or ""
+    webhook_token = os.getenv(env_name) if env_name else None
+    if webhook_token and authorization:
+        parts = authorization.split()
+        if (
+            len(parts) == 2
+            and parts[0].lower() == "bearer"
+            and hmac.compare_digest(parts[1], webhook_token)
+        ):
+            return
+    verify_auth_token(authorization=authorization)
+
+
 @app.post("/ingest/notify", response_model=IngestNotifyResponse, status_code=202)
 async def ingest_notify(
     body: IngestNotifyRequest,
     authorization: Annotated[str | None, Header()] = None,
 ):
     """Queue one video for indexing; duplicates are safe and keep one entry."""
-    verify_auth_token(authorization=authorization)
+    _verify_notify_caller(authorization)
     video_hash = _notify_hash_or_400(body.video_hash)
     worker = _notify_worker_or_503()
     entry = worker.notify(video_hash, body.path)
@@ -3044,7 +3064,7 @@ async def ingest_notify_status(
     authorization: Annotated[str | None, Header()] = None,
 ):
     """The state of a notified video with its timestamps; 404 when the hash is unknown."""
-    verify_auth_token(authorization=authorization)
+    _verify_notify_caller(authorization)
     candidate = _notify_hash_or_400(video_hash)
     worker = _notify_worker_or_503()
     entry = worker.status(candidate)

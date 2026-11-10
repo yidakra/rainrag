@@ -1548,12 +1548,14 @@ stays the safety net.
 ### Contract
 
 ```bash
+# The sender uses the dedicated webhook token (notify.token_env), never the API token.
 curl -X POST https://rag.tvrain.tv/ingest/notify \
-  -H "Authorization: Bearer $RAINRAG_AUTH_TOKEN" \
+  -H "Authorization: Bearer $RAINRAG_NOTIFY_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"video_hash": "0c14229efcba436a4c22f8d96f67e0cb93bc9076", "path": "/mnt/vod/.../76"}'
 # 202 {"video_hash": "0c14...9076", "state": "queued"}
 
+# Reading the status works with either token; operators use the API token.
 curl -H "Authorization: Bearer $RAINRAG_AUTH_TOKEN" \
   https://rag.tvrain.tv/ingest/notify/0c14229efcba436a4c22f8d96f67e0cb93bc9076
 # 200 {"state": "indexed", "notified_at": ..., "searchable_at": ..., "indexed_at": ..., ...}
@@ -1607,6 +1609,8 @@ How the worker fits the sweep:
   it and drops the superseded lines.
 - It does not touch the embedding cache. The next sweep embeds the few new
   chunks again, which is cheap, and the worker stays out of the cache rewrite.
+
+**Token for the sender.** The two `/ingest/notify` routes also accept a dedicated token from the environment variable named by `notify.token_env` (default `RAINRAG_NOTIFY_TOKEN`). Give that token to the system that sends the events; it opens nothing else. The API token keeps working on these routes, so you can read the status with it.
 
 ## Hybrid Search (Vector + BM25)
 

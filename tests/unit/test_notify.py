@@ -131,6 +131,48 @@ def test_notify_route_requires_the_bearer_token(client, monkeypatch):
     assert status.status_code == 401
 
 
+def test_notify_routes_accept_the_webhook_token_and_nothing_else_does(client, monkeypatch):
+    """The dedicated token works on both notify routes, the API token still works there, and
+    the dedicated token is refused on any other route."""
+    monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "s3cret")
+    monkeypatch.setenv("RAINRAG_NOTIFY_TOKEN", "hook-only")
+    worker = _FakeWorker()
+    cfg = SimpleNamespace(notify=SimpleNamespace(enabled=True, token_env="RAINRAG_NOTIFY_TOKEN"))
+    hook = {"Authorization": "Bearer hook-only"}
+    with (
+        patch("src.rainrag.api.config", cfg),
+        patch("src.rainrag.api.notify_worker", worker),
+    ):
+        posted = client.post("/ingest/notify", json={"video_hash": HASH}, headers=hook)
+        status = client.get(f"/ingest/notify/{HASH}", headers=hook)
+        master = client.post(
+            "/ingest/notify", json={"video_hash": HASH}, headers={"Authorization": "Bearer s3cret"}
+        )
+        elsewhere = client.get("/similar-videos", params={"video_id": HASH}, headers=hook)
+    assert posted.status_code == 202
+    assert status.status_code != 401
+    assert master.status_code == 202
+    assert elsewhere.status_code == 401
+
+
+def test_without_a_webhook_token_only_the_api_token_opens_the_notify_routes(client, monkeypatch):
+    """When the dedicated token is not set, the routes behave as before."""
+    monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "s3cret")
+    monkeypatch.delenv("RAINRAG_NOTIFY_TOKEN", raising=False)
+    worker = _FakeWorker()
+    cfg = SimpleNamespace(notify=SimpleNamespace(enabled=True, token_env="RAINRAG_NOTIFY_TOKEN"))
+    with (
+        patch("src.rainrag.api.config", cfg),
+        patch("src.rainrag.api.notify_worker", worker),
+    ):
+        wrong = client.post(
+            "/ingest/notify",
+            json={"video_hash": HASH},
+            headers={"Authorization": "Bearer hook-only"},
+        )
+    assert wrong.status_code == 401
+
+
 def test_notify_route_is_503_when_disabled_or_without_a_worker(client):
     """notify.enabled false, no worker, or a dead worker thread all answer 503."""
     with (
