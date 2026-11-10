@@ -1545,6 +1545,81 @@ RainRAG automatically:
 - **Source Attribution**: URLs link back to original content
 - **Flexible Deployment**: Choose between comprehensive or curated indexing
 
+## Event-driven indexing
+
+A new video reaches the index through the incremental sweep
+(`rainrag-incremental-update.timer`, every 6 hours, about 2.5 hours per run).
+With event-driven indexing the transcoder tells the API when a video is ready
+and an in-process worker indexes that one video within minutes. The sweep
+stays the safety net.
+
+### Contract
+
+```bash
+# The sender uses the dedicated webhook token (notify.token_env), never the API token.
+curl -X POST https://rag.tvrain.tv/ingest/notify \
+  -H "Authorization: Bearer $RAINRAG_NOTIFY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"video_hash": "0c14229efcba436a4c22f8d96f67e0cb93bc9076", "path": "/mnt/vod/.../76"}'
+# 202 {"video_hash": "0c14...9076", "state": "queued"}
+
+# Reading the status works with either token; operators use the API token.
+curl -H "Authorization: Bearer $RAINRAG_AUTH_TOKEN" \
+  https://rag.tvrain.tv/ingest/notify/0c14229efcba436a4c22f8d96f67e0cb93bc9076
+# 200 {"state": "indexed", "notified_at": ..., "searchable_at": ..., "indexed_at": ..., ...}
+```
+
+- `video_hash` is the 40-hex archive hash. Anything else is `400`.
+- `path` is optional and only recorded. The worker resolves the folder from
+  the hash (`archive_root/<hash split 2-by-2>/`), the same way the sweep does.
+- The same Bearer token as the rest of the API (`401` without it).
+- Duplicates are safe: a hash that is already pending keeps its one entry.
+- `503` when `notify.enabled` is false or the worker is not running.
+- `GET /ingest/notify/{video_hash}` is `404` for a hash that was never notified.
+
+### Configuration
+
+```yaml
+notify:
+  enabled: true                      # default false; restart rainrag-api after a change
+  queue_path: "./data/notify-queue.json"
+  max_wait_hours: 24
+  poll_seconds: 30
+  partial_after_seconds: 600
+  vtt_languages: ["ru", "en"]
+  lock_path: "/tmp/rainrag-incremental.lock"
+  lock_timeout_seconds: 5
+```
+
+### States
+
+The worker keeps one entry per hash in `notify.queue_path`, so a restart loses
+nothing. `GET /ingest/notify/{hash}` returns the entry.
+
+| State | Meaning |
+| --- | --- |
+| `queued` | Accepted, not processed yet. Also the state while a failed step waits for its retry (exponential backoff from `poll_seconds`, capped at 15 minutes). |
+| `waiting_for_vtt` | No `{hash}.ru.vtt` / `{hash}.en.vtt` yet. rainrag does not transcribe; dir2mcp writes the VTT files later. The worker polls every `poll_seconds`. When some languages are present and the rest are still missing `partial_after_seconds` after the notification, the worker indexes what is there; the sweep adds the rest. |
+| `files_pending` | The chunks are in Qdrant and search finds the video (`searchable_at` is set), but `docs.jsonl` and the manifest are not written yet because a running sweep holds `lock_path`. The sweep deletes every point that is not in `docs.jsonl`, so once the lock frees the worker writes the files and upserts again, which repairs any delete in between. |
+| `indexed` | Done. The entry keeps `searchable_at` and `indexed_at`. |
+| `failed` | Given up `max_wait_hours` after the notification. The sweep still indexes the video when its VTT files exist. |
+
+How the worker fits the sweep:
+
+- It parses each VTT with `Ingester.process_file`, so the documents carry the
+  same path-derived ids the sweep produces. A later sweep overwrites the same
+  Qdrant points, never duplicates them. This needs the API and the sweep to
+  see the archive at the same mount path (they run on the same host and config).
+- It appends to `docs.jsonl` and saves the manifest only while it holds the
+  sweep's `flock`, so the two never write the files at once. A file the
+  manifest already lists as unchanged is skipped. A modified file is appended
+  but its manifest entry is left stale on purpose, so the next sweep re-parses
+  it and drops the superseded lines.
+- It does not touch the embedding cache. The next sweep embeds the few new
+  chunks again, which is cheap, and the worker stays out of the cache rewrite.
+
+**Token for the sender.** The two `/ingest/notify` routes also accept a dedicated token from the environment variable named by `notify.token_env` (default `RAINRAG_NOTIFY_TOKEN`). Give that token to the system that sends the events; it opens nothing else. The API token keeps working on these routes, so you can read the status with it.
+
 ## Hybrid Search (Vector + BM25)
 
 RainRAG supports **hybrid search** that combines vector similarity with BM25 keyword matching for improved search quality.

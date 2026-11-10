@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
 
+import httpx
 from loguru import logger
 from prometheus_client import Counter, Gauge
 
@@ -342,6 +343,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
 from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS, WebMetadataLoader
+from rainrag.notify import NotifyWorker, build_worker
 from rainrag.query import RAGQueryEngine
 from rainrag.subtitles import vtt_to_srt
 from rainrag.video_session import VideoSessionManager
@@ -351,6 +353,8 @@ from rainrag.video_session import VideoSessionManager
 query_engine: RAGQueryEngine | None = None
 # Manager for single-video upload sessions (initialized on startup when enabled)
 video_session_manager: VideoSessionManager | None = None
+# Worker behind POST /ingest/notify (started on startup when notify.enabled)
+notify_worker: NotifyWorker | None = None
 config: Config | None = None
 HLS_CACHE_ROOT = Path(os.getenv("RAINRAG_HLS_CACHE_DIR", "/tmp/rainrag_hls_cache"))
 _hls_prewarm_inflight: set[str] = set()
@@ -1173,7 +1177,7 @@ def get_video_base_name(vtt_path: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize the query engine on startup."""
-    global query_engine, config, video_session_manager
+    global query_engine, config, video_session_manager, notify_worker
 
     logger.info("Initializing RainRAG API...")
 
@@ -1194,6 +1198,18 @@ async def lifespan(app: FastAPI):
     query_engine = RAGQueryEngine(config)
     query_engine.initialize()
 
+    # Build the /search-by-name index in the background, so the first search
+    # does not read the whole metadata folder (about 107,000 files on prod).
+    if config.web_metadata.source in {"local", "hybrid"}:
+        from rainrag.ingest import warm_name_index
+
+        threading.Thread(
+            target=warm_name_index,
+            args=(Path(config.web_metadata.path),),
+            name="name-index-warm",
+            daemon=True,
+        ).start()
+
     # Initialize the single-video upload manager (transcribe → scoped Q&A)
     if config.video_upload.enabled:
         try:
@@ -1203,14 +1219,40 @@ async def lifespan(app: FastAPI):
             logger.exception("Failed to initialize video session manager; upload mode disabled")
             video_session_manager = None
 
+    # Event-driven indexing: the transcoder posts a hash, the worker indexes it.
+    if config.notify.enabled:
+        try:
+            notify_worker = build_worker(config, _notify_embedder)
+            notify_worker.start()
+        except Exception:
+            logger.exception("Failed to start the notify worker; POST /ingest/notify answers 503")
+            notify_worker = None
+
     logger.info("RainRAG API initialized successfully")
 
     yield
 
     # Cleanup (if needed)
+    if notify_worker is not None:
+        notify_worker.stop()
     if video_session_manager is not None:
         video_session_manager.shutdown()
     logger.info("Shutting down RainRAG API...")
+
+
+def _notify_embedder():
+    """The notify worker's embedder; it shares the query engine's loaded local model."""
+    from rainrag.embed import Embedder
+
+    assert config is not None
+    embedder = Embedder(config)
+    if (
+        config.embedding.provider == "local"
+        and query_engine is not None
+        and getattr(query_engine, "embedding_model", None) is not None
+    ):
+        embedder.model = query_engine.embedding_model
+    return embedder
 
 
 # Create FastAPI app
@@ -2309,20 +2351,30 @@ async def create_video_session_from_url(
                     "yt-dlp download failed for url={}", _redact_query_credentials(url)
                 )
                 kind = _download_failure_kind(exc)
-                usage["reason"] = kind
+                # YouTube refuses this server's datacenter IP (#41). With an Apify
+                # token configured, fetch the same video through Apify instead.
+                info = None
                 if kind == "blocked":
-                    # 503, not 422: nothing is wrong with the link, and the
-                    # request is worth repeating later.
-                    raise HTTPException(
-                        status_code=503,
-                        detail="The video platform refused the download; try again later",
-                    ) from exc
-                if kind == "geo":
-                    raise HTTPException(
-                        status_code=451,
-                        detail="This video is not available in the server's region",
-                    ) from exc
-                raise HTTPException(status_code=422, detail="Video download failed") from exc
+                    info = await asyncio.to_thread(
+                        _apify_youtube_download, url, work_path, manager.cfg
+                    )
+                if info is not None:
+                    usage["via"] = "apify"
+                else:
+                    usage["reason"] = kind
+                    if kind == "blocked":
+                        # 503, not 422: nothing is wrong with the link, and the
+                        # request is worth repeating later.
+                        raise HTTPException(
+                            status_code=503,
+                            detail="The video platform refused the download; try again later",
+                        ) from exc
+                    if kind == "geo":
+                        raise HTTPException(
+                            status_code=451,
+                            detail="This video is not available in the server's region",
+                        ) from exc
+                    raise HTTPException(status_code=422, detail="Video download failed") from exc
 
             if not info:
                 # Some extractors return None instead of raising when a page holds no
@@ -2378,6 +2430,143 @@ def _yt_dlp_download(url: str, ydl_opts: dict) -> dict | None:
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(url, download=True)
+
+
+# Optional fallback for YouTube refusing this server's IP (#41): the
+# johnvc/youtube-download-api Apify Actor downloads the video on Apify's network.
+_APIFY_API = "https://api.apify.com/v2"
+_APIFY_DOWNLOAD_ACTOR = "johnvc~youtube-download-api"
+_APIFY_TERMINAL = ("SUCCEEDED", "FAILED", "TIMED-OUT", "ABORTED")
+# Qualities the Actor offers in H.264, highest first.
+_APIFY_HEIGHTS = (1080, 720, 480, 360, 240, 144)
+# How long the endpoint waits for a run before it aborts it and answers 503.
+# Apify's own run timeout (20 minutes) is the backstop.
+_APIFY_WAIT_SECONDS = 600
+# The httpx timeout covers each read, not the whole transfer, so the media
+# download also gets a total time limit.
+_APIFY_MEDIA_SECONDS = 600
+
+
+def _refuse_non_public_hop(request: httpx.Request) -> None:
+    """httpx request hook: refuse a media request, or a redirect, to a non-public host.
+
+    Each hop gets the same check as a submitted URL, so neither the Actor's
+    fileUrl nor a redirect from it can reach a loopback, private, link-local
+    or metadata address.
+    """
+    try:
+        _validate_video_url(str(request.url))
+    except HTTPException as exc:
+        raise httpx.RequestError("Refused a non-public media address", request=request) from exc
+
+
+def _apify_media_client() -> httpx.Client:
+    """An httpx client for the media download that checks every hop."""
+    return httpx.Client(
+        timeout=120, follow_redirects=True, event_hooks={"request": [_refuse_non_public_hop]}
+    )
+
+
+def _apify_quality(max_height: int | None) -> str:
+    """Map ``max_video_height`` (0 or None: no cap) to the Actor's quality setting."""
+    height = next((h for h in _APIFY_HEIGHTS if not max_height or h <= max_height), 144)
+    return f"{height}p"
+
+
+def _apify_youtube_download(url: str, dest: Path, cfg: Any) -> dict | None:
+    """Download a YouTube video through Apify into ``dest`` (called via asyncio.to_thread).
+
+    Returns a yt-dlp-style info dict (the title) once ``dest/video.<ext>`` is
+    written. Returns None when the fallback is off (the env var named by
+    ``apify_token_env`` is empty), the link is not YouTube, or Apify could not
+    deliver the file; the caller then reports the original block.
+    """
+    token = os.getenv(getattr(cfg, "apify_token_env", "") or "", "")
+    if not token or usage_source(url) != "youtube":
+        return None
+    run_input = {
+        "videoUrls": [url],
+        "format": "video",
+        "quality": _apify_quality(getattr(cfg, "max_video_height", 720)),
+        # H.264 + AAC in mp4, the same kind of file the yt-dlp format chain prefers.
+        "videoCodec": "h264",
+        # Larger files are skipped at no charge, like yt-dlp's max_filesize.
+        "maxMegabytes": cfg.max_upload_mb,
+    }
+    try:
+        # Each waitForFinish request is held open for up to 60 s; the run itself
+        # is stopped by Apify after 20 minutes.
+        with httpx.Client(
+            base_url=_APIFY_API, headers={"Authorization": f"Bearer {token}"}, timeout=120
+        ) as client:
+            response = client.post(
+                f"/acts/{_APIFY_DOWNLOAD_ACTOR}/runs",
+                params={"timeout": 1200, "waitForFinish": 60},
+                json=run_input,
+            )
+            response.raise_for_status()
+            run = response.json()["data"]
+            deadline = time.monotonic() + _APIFY_WAIT_SECONDS
+            while run["status"] not in _APIFY_TERMINAL:
+                if time.monotonic() > deadline:
+                    # Stop the run, so a download nobody will receive is not billed.
+                    client.post(f"/actor-runs/{run['id']}/abort")
+                    logger.warning(
+                        "Apify run for url={} took over {} s; aborted",
+                        _redact_query_credentials(url),
+                        _APIFY_WAIT_SECONDS,
+                    )
+                    return None
+                response = client.get(f"/actor-runs/{run['id']}", params={"waitForFinish": 60})
+                response.raise_for_status()
+                run = response.json()["data"]
+            response = client.get(f"/datasets/{run['defaultDatasetId']}/items")
+            response.raise_for_status()
+            items = response.json()
+            # A malformed payload counts as no file, so the caller keeps its 503.
+            rows = items if isinstance(items, list) else []
+            row = next((r for r in rows if isinstance(r, dict) and r.get("fileUrl")), None)
+        if row is None:
+            logger.warning(
+                "Apify returned no file for url={} (run {})",
+                _redact_query_credentials(url),
+                run["status"],
+            )
+            return None
+        # fileUrl is signed, so the download needs no token. The Actor's
+        # maxMegabytes is an estimate, so stop one byte past max_upload_mb: the
+        # caller's size check then turns an oversized file into a 413.
+        limit = cfg.max_upload_mb * 1024 * 1024 + 1
+        written = 0
+        target = dest / f"video.{row.get('container') or 'mp4'}"
+        # The record endpoint may answer with a 302 to where the file is stored;
+        # the media client follows it and checks every hop.
+        with _apify_media_client() as media_client:
+            with media_client.stream("GET", row["fileUrl"]) as media:
+                media.raise_for_status()
+                deadline = time.monotonic() + _APIFY_MEDIA_SECONDS
+                with target.open("wb") as fh:
+                    for chunk in media.iter_bytes():
+                        if time.monotonic() > deadline:
+                            raise httpx.ReadTimeout("media download took too long")
+                        piece = chunk[: limit - written]
+                        fh.write(piece)
+                        written += len(piece)
+                        if written >= limit:
+                            break
+    except (httpx.HTTPError, OSError, KeyError, TypeError, ValueError) as exc:
+        # Log the error type and HTTP status only: httpx puts the request URL in
+        # its messages, and the media URL carries a signature.
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        logger.warning(
+            "Apify download failed for url={}: {} (HTTP status {})",
+            _redact_query_credentials(url),
+            type(exc).__name__,
+            status,
+        )
+        return None
+    logger.info("Downloaded url={} through Apify", _redact_query_credentials(url))
+    return {"title": row.get("title") or ""}
 
 
 @app.get("/video-sessions/{session_id}")
@@ -2791,6 +2980,107 @@ async def search_by_url(
 
 
 # ---------------------------------------------------------------------------
+# Event-driven indexing. The transcoder posts a hash when a video is ready;
+# the in-process worker (rainrag.notify) indexes it within minutes. The
+# six-hour sweep stays the safety net.
+# ---------------------------------------------------------------------------
+
+_NOTIFY_STATUS_FIELDS = (
+    "video_hash",
+    "path",
+    "state",
+    "notified_at",
+    "updated_at",
+    "searchable_at",
+    "indexed_at",
+    "failed_at",
+    "attempts",
+    "error",
+    "vtt_files",
+    "doc_count",
+)
+
+
+class IngestNotifyRequest(BaseModel):
+    """Body of POST /ingest/notify: the archive hash, and the folder for the record."""
+
+    video_hash: str = Field(..., description="40-hex archive hash of the video")
+    path: str | None = Field(default=None, description="Folder the transcoder wrote (recorded)")
+
+
+class IngestNotifyResponse(BaseModel):
+    """Acknowledgement of a notification."""
+
+    video_hash: str
+    state: str
+
+
+def _notify_worker_or_503() -> NotifyWorker:
+    """The running worker, or 503 when notify is disabled or the worker is down."""
+    if config is None or not config.notify.enabled:
+        raise HTTPException(status_code=503, detail="Event-driven indexing is disabled")
+    if notify_worker is None or not notify_worker.is_running():
+        raise HTTPException(status_code=503, detail="The notify worker is not running")
+    return notify_worker
+
+
+def _notify_hash_or_400(video_hash: str) -> str:
+    """The hash lower-cased, or 400 when it is not 40 hex characters."""
+    candidate = video_hash.strip().lower()
+    if not _VIDEO_HASH.match(candidate):
+        raise HTTPException(status_code=400, detail="video_hash must be 40 hex characters")
+    return candidate
+
+
+def _verify_notify_caller(authorization: str | None) -> None:
+    """Accept the dedicated webhook token on the notify routes, else require the API token.
+
+    The sender of the events (the transcoder) holds only this token, which
+    opens nothing but /ingest/notify. The API token keeps working here too,
+    so the status route can be read with it.
+    """
+    env_name = getattr(getattr(config, "notify", None), "token_env", "") or ""
+    webhook_token = os.getenv(env_name) if env_name else None
+    if webhook_token and authorization:
+        parts = authorization.split()
+        if (
+            len(parts) == 2
+            and parts[0].lower() == "bearer"
+            and hmac.compare_digest(parts[1], webhook_token)
+        ):
+            return
+    verify_auth_token(authorization=authorization)
+
+
+@app.post("/ingest/notify", response_model=IngestNotifyResponse, status_code=202)
+async def ingest_notify(
+    body: IngestNotifyRequest,
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """Queue one video for indexing; duplicates are safe and keep one entry."""
+    _verify_notify_caller(authorization)
+    video_hash = _notify_hash_or_400(body.video_hash)
+    worker = _notify_worker_or_503()
+    entry = worker.notify(video_hash, body.path)
+    return IngestNotifyResponse(video_hash=video_hash, state=entry["state"])
+
+
+@app.get("/ingest/notify/{video_hash}")
+async def ingest_notify_status(
+    video_hash: str,
+    authorization: Annotated[str | None, Header()] = None,
+):
+    """The state of a notified video with its timestamps; 404 when the hash is unknown."""
+    _verify_notify_caller(authorization)
+    candidate = _notify_hash_or_400(video_hash)
+    worker = _notify_worker_or_503()
+    entry = worker.status(candidate)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unknown video_hash")
+    return {key: entry.get(key) for key in _NOTIFY_STATUS_FIELDS}
+
+
+# ---------------------------------------------------------------------------
 # Video-level lookups for the site (related articles, transcripts on request).
 # A video is addressed by its 40-hex archive hash, its numeric library id, or
 # its tvrain.tv URL. The answers are other videos, or one subtitle track.
@@ -2967,7 +3257,16 @@ async def similar_videos(
         raise HTTPException(status_code=503, detail="Query engine not initialized")
     loader = _metadata_loader()
     video_hash = await asyncio.to_thread(_resolve_video_ref, video_id, loader)
-    ranked = await asyncio.to_thread(query_engine.find_similar_videos, video_hash, limit, language)
+    from rainrag.query import SimilarVideosTimeoutError
+
+    try:
+        ranked = await asyncio.to_thread(
+            query_engine.find_similar_videos, video_hash, limit, language
+        )
+    except SimilarVideosTimeoutError as exc:
+        raise HTTPException(
+            status_code=504, detail="The similar-videos search timed out; try again"
+        ) from exc
     records = await _enrich_records(loader, [entry["video_hash"] for entry in ranked])
     results: list[SimilarVideo] = []
     for entry, record in zip(ranked, records, strict=True):

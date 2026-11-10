@@ -300,6 +300,25 @@ qdrant:
   collection_name: "broadcast_transcripts"  # Must match across all commands
 ```
 
+### "/similar-videos" hangs, or "Operation 'scroll_by_id' timed out"
+
+**Symptoms**: `/similar-videos` (or `/related-chunks`) gives no answer for 60 s, and the API log shows a Qdrant 500 with `Timeout error: Operation 'scroll_by_id' timed out after 60s`.
+
+**Cause**: the collection has no payload indexes, so Qdrant reads every point to answer the filter on `video_id`, `path`, `language` or `doc_id`. Collections created before the indexer made these indexes have none (`payload_schema` is empty in `GET /collections/<name>`).
+
+**Solution**: create the missing indexes on the live collection. Points and vectors do not change, and no restart is needed:
+```bash
+rainrag ensure-indexes
+```
+`rainrag index` does the same on every run, so a new or rebuilt collection gets them automatically.
+
+If the log instead shows `Operation 'Search' timed out`, the vector search itself is slow: the full vectors (about 11 GB for 2.7 million 1024-dim points) do not stay in RAM, so a cold search reads them from disk (12.8 s for one search on production, 0.01 s warm). Turn on int8 scalar quantization, which keeps a quarter-size copy in RAM; Qdrant rebuilds it in the background (the collection is yellow meanwhile):
+```bash
+curl -X PATCH localhost:6333/collections/<collection> -H "Content-Type: application/json" \
+  -d '{"quantization_config":{"scalar":{"type":"int8","quantile":0.99,"always_ram":true}}}'
+```
+Use the real collection name, not an alias. Every search on the collection then uses the int8 copy and rescores the best hits with the full vectors, so spot-check a few known questions afterwards. To undo it: `-d '{"quantization_config":"Disabled"}'`. New collections get it from `qdrant.scalar_quantization` (default `true`). `/similar-videos` gives up after 30 s with a 504 instead of hanging.
+
 ---
 
 ## Performance Issues

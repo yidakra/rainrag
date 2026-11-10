@@ -955,6 +955,163 @@ class VTTParser:
         return date_iso, duration, date_ts
 
 
+# The record fields that a name search returns (see /search-by-name in api.py).
+_NAME_INDEX_FIELDS = ("video_hash", "name", "date_active_start", "url", "teleshow")
+
+
+class _NameIndex:
+    """Process-wide index of one metadata folder for name search.
+
+    Each ``{hash}.json`` contributes one entry with only ``_NAME_INDEX_FIELDS``.
+    Production holds about 107,000 files (1 GB); reading all of them on every
+    search took more than 60 s. A refresh lists the folder only when its mtime
+    changed (writers replace files through an atomic rename, which changes it)
+    or after ``max_age`` seconds, and parses only new or changed files.
+    """
+
+    def __init__(self, max_age: float = 300.0) -> None:
+        """Start empty; the first entries() call builds the index."""
+        self._lock = threading.Lock()  # guards the fields below; never held during a scan
+        self._refresh_lock = threading.Lock()  # one scan at a time
+        self._max_age = max_age
+        self._dir_mtime_ns: int | None = None
+        self._refreshed_at = 0.0
+        self._built = False
+        self._files: dict[str, tuple[int, dict[str, Any]]] = {}
+
+    def entries(self, path: Path) -> list[dict[str, Any]]:
+        """Return the current entries, refreshing them first when the folder changed.
+
+        The scan runs outside ``_lock`` and its result is swapped in. While a
+        scan runs, other callers get the current entries at once; only before
+        the first build do they wait for it. A folder that cannot be read
+        gives no entries, never an error.
+        """
+        try:
+            # Read before the scan: a write during the scan changes the
+            # mtime again, so the next call scans once more.
+            dir_mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            self._reset()
+            return []
+        if self._needs_refresh(dir_mtime_ns):
+            with self._lock:
+                built = self._built
+            if self._refresh_lock.acquire(blocking=not built):
+                try:
+                    # Another caller may have refreshed while this one waited.
+                    if self._needs_refresh(dir_mtime_ns):
+                        with self._lock:
+                            known = dict(self._files)
+                        try:
+                            files = self._scan(path, known)
+                        except OSError as exc:
+                            logger.warning(f"Name index for {path}: cannot read the folder: {exc}")
+                            self._reset()
+                            return []
+                        with self._lock:
+                            self._files = files
+                            self._dir_mtime_ns = dir_mtime_ns
+                            self._refreshed_at = time.monotonic()
+                            self._built = True
+                finally:
+                    self._refresh_lock.release()
+        with self._lock:
+            return [entry for _, entry in self._files.values()]
+
+    def _needs_refresh(self, dir_mtime_ns: int) -> bool:
+        """Return True when the folder mtime changed or the entries are older than max_age."""
+        with self._lock:
+            stale = time.monotonic() - self._refreshed_at > self._max_age
+            return dir_mtime_ns != self._dir_mtime_ns or stale
+
+    def _reset(self) -> None:
+        """Forget every entry, as for a folder that cannot be read."""
+        with self._lock:
+            self._files = {}
+            self._dir_mtime_ns = None
+            self._built = False
+
+    @staticmethod
+    def _scan(
+        path: Path, known: dict[str, tuple[int, dict[str, Any]]]
+    ) -> dict[str, tuple[int, dict[str, Any]]]:
+        """List the folder; keep known entries whose file is unchanged, parse the rest."""
+        files: dict[str, tuple[int, dict[str, Any]]] = {}
+        parsed = 0
+        with os.scandir(path) as listing:
+            for item in listing:
+                if not item.name.endswith(".json"):
+                    continue
+                try:
+                    if not item.is_file():
+                        continue
+                    mtime_ns = item.stat().st_mtime_ns
+                except OSError:
+                    continue
+                entry = known.get(item.name)
+                if entry is not None and entry[0] == mtime_ns:
+                    files[item.name] = entry
+                    continue
+                try:
+                    with open(item.path, encoding="utf-8") as f:
+                        data = json.load(f)
+                except (ValueError, OSError):
+                    # Same tolerance as local_records: a broken file is skipped.
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                files[item.name] = (
+                    mtime_ns,
+                    {k: data[k] for k in _NAME_INDEX_FIELDS if k in data},
+                )
+                parsed += 1
+        if parsed:
+            logger.info(f"Name index for {path}: parsed {parsed}, {len(files)} entries")
+        return files
+
+
+_NAME_INDEXES: dict[Path, _NameIndex] = {}
+_NAME_INDEXES_LOCK = threading.Lock()
+
+# The API export batch, shared by every loader in the process: the API builds a
+# new WebMetadataLoader per request, so a cache on the instance never survived.
+_API_BATCH_CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
+_API_BATCH_LOCK = threading.Lock()
+_API_BATCH_FETCH_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+# When the last fetch for a key failed, and how long requests skip the API after it.
+_API_BATCH_FAILED_AT: dict[tuple[str, str], float] = {}
+_API_BATCH_RETRY_SECONDS = 60.0
+
+
+def _api_batch_fetch_lock(key: tuple[str, str]) -> threading.Lock:
+    """Return the lock that lets only one loader fetch the batch for key."""
+    with _API_BATCH_LOCK:
+        return _API_BATCH_FETCH_LOCKS.setdefault(key, threading.Lock())
+
+
+def name_index_for(metadata_path: Path) -> _NameIndex:
+    """Return the process-wide name index for a metadata folder."""
+    key = metadata_path.resolve()
+    with _NAME_INDEXES_LOCK:
+        index = _NAME_INDEXES.get(key)
+        if index is None:
+            index = _NAME_INDEXES[key] = _NameIndex()
+        return index
+
+
+def warm_name_index(metadata_path: Path) -> None:
+    """Build the name index ahead of the first search (call it in a thread)."""
+    started = time.monotonic()
+    try:
+        count = len(name_index_for(metadata_path).entries(metadata_path))
+    except Exception:
+        # A failed warm-up only costs the first search its speed; log it and go on.
+        logger.exception(f"Name index warm-up failed for {metadata_path}")
+        return
+    logger.info(f"Name index warm: {count} entries in {time.monotonic() - started:.1f} s")
+
+
 class WebMetadataLoader:
     """Loader for web metadata JSON files, with optional API backend.
 
@@ -1022,18 +1179,39 @@ class WebMetadataLoader:
         if self.api_client is None:
             return []
 
-        now = time.time()
-        if (
-            self._api_batch_cache
-            and self._api_batch_cache_mtime is not None
-            and (now - self._api_batch_cache_mtime) < self._api_batch_cache_ttl_seconds
-        ):
-            return self._api_batch_cache
+        key = (str(self.metadata_path.resolve()), str(getattr(self.api_client, "base_url", "")))
+        cached = self._fresh_api_batch(key)
+        if cached is not None:
+            return cached
 
-        api_candidates = self.api_client.export_batch()
-        self._api_batch_cache = api_candidates
-        self._api_batch_cache_mtime = now
+        # One fetch per key at a time: a second request waits for the first
+        # and then reads its result from the cache. After a failed fetch,
+        # requests skip the API for _API_BATCH_RETRY_SECONDS instead of each
+        # retrying it in turn.
+        with _api_batch_fetch_lock(key):
+            cached = self._fresh_api_batch(key)
+            if cached is not None:
+                return cached
+            with _API_BATCH_LOCK:
+                failed_at = _API_BATCH_FAILED_AT.get(key)
+            if failed_at is not None and time.time() - failed_at < _API_BATCH_RETRY_SECONDS:
+                return []
 
+            now = time.time()
+            try:
+                api_candidates = self.api_client.export_batch()
+            except Exception:
+                with _API_BATCH_LOCK:
+                    _API_BATCH_FAILED_AT[key] = time.time()
+                raise
+            self._api_batch_cache = api_candidates
+            self._api_batch_cache_mtime = now
+            with _API_BATCH_LOCK:
+                _API_BATCH_CACHE[key] = (now, api_candidates)
+                _API_BATCH_FAILED_AT.pop(key, None)
+
+        # Persist outside the fetch lock: waiting requests already have the
+        # batch from the cache and need not wait for the disk writes.
         self.metadata_path.mkdir(parents=True, exist_ok=True)
         for article in api_candidates:
             safe_hash = self._safe_metadata_hash(str(article.get("video_hash", "")))
@@ -1044,6 +1222,15 @@ class WebMetadataLoader:
             except OSError:
                 continue
         return api_candidates
+
+    def _fresh_api_batch(self, key: tuple[str, str]) -> list[dict[str, Any]] | None:
+        """Return the cached batch for key if it is within the TTL (an empty batch counts)."""
+        with _API_BATCH_LOCK:
+            cached = _API_BATCH_CACHE.get(key)
+        if cached is None or (time.time() - cached[0]) >= self._api_batch_cache_ttl_seconds:
+            return None
+        self._api_batch_cache_mtime, self._api_batch_cache = cached
+        return cached[1]
 
     # ------------------------------------------------------------------
     # Local helpers
@@ -1403,18 +1590,11 @@ class WebMetadataLoader:
         if not query_lower:
             return []
 
-        # Collect candidates from local cache
+        # Candidates from the local cache, through the process-wide name index
+        # (one entry per file, refreshed only when the folder changed).
         local_candidates: list[dict[str, Any]] = []
-        if self.metadata_path.exists():
-            for metadata_file in self.metadata_path.glob("*.json"):
-                if not metadata_file.is_file():
-                    continue
-                try:
-                    with open(metadata_file, encoding="utf-8") as f:
-                        data = json.load(f)
-                except (json.JSONDecodeError, OSError):
-                    continue
-                local_candidates.append(data)
+        if self.source in {"local", "hybrid"}:
+            local_candidates = name_index_for(self.metadata_path).entries(self.metadata_path)
 
         # Optionally collect candidates from API export
         api_candidates: list[dict[str, Any]] = []
@@ -1563,11 +1743,13 @@ class FileManifest:
             return False
 
     def save(self) -> None:
-        """Save manifest to disk."""
+        """Save manifest to disk, via a temp file and rename so a crash never truncates it."""
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
         data = {k: v.model_dump() for k, v in self.entries.items()}
-        with open(self.manifest_path, "w", encoding="utf-8") as f:
+        tmp_path = self.manifest_path.with_name(self.manifest_path.name + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+        tmp_path.replace(self.manifest_path)
         logger.info(f"Saved manifest with {len(self.entries)} file entries")
 
     def classify_file(self, file_path: Path) -> str:

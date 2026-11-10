@@ -258,6 +258,32 @@ def index(
         raise typer.Exit(code=1)
 
 
+@app.command("ensure-indexes")
+def ensure_indexes(config: str = CONFIG_OPTION) -> None:
+    """
+    Create the Qdrant payload indexes that queries filter on.
+
+    Safe on a live collection: only missing indexes are created, and points
+    and vectors do not change. `index` does the same on every run; use this
+    command to fix an existing collection without a reindex.
+    """
+    setup_logging(config)
+    from rainrag.index import QdrantIndexer
+
+    try:
+        indexer = QdrantIndexer(load_config(config), config_path=config)
+        indexer.connect()
+        created = indexer.ensure_payload_indexes()
+        if created:
+            typer.echo("Created payload indexes: " + ", ".join(created))
+        else:
+            typer.echo("All payload indexes already exist")
+    except Exception as e:
+        logger.exception(f"Creating payload indexes failed: {e}")
+        typer.echo(f"Creating payload indexes failed: {e}", err=True)
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def pipeline(
     config: str = CONFIG_OPTION,

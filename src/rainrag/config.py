@@ -71,6 +71,14 @@ class QdrantConfig(BaseModel):
     vector_size: int = Field(default=1024)
     distance: str = Field(default="Cosine")
     recreate_collection: bool = Field(default=False)
+    scalar_quantization: bool = Field(
+        default=True,
+        description=(
+            "Create collections with an int8 copy of the vectors kept in RAM "
+            "(Qdrant scalar quantization). Searches then read RAM instead of disk; "
+            "the full vectors rescore the best candidates."
+        ),
+    )
     scroll_batch_size: int = Field(
         default=500,
         ge=1,
@@ -377,6 +385,15 @@ class VideoUploadConfig(BaseModel):
             "unreadable files are ignored, so the endpoint keeps working for other sites."
         ),
     )
+    apify_token_env: str = Field(
+        default="APIFY_API_TOKEN",
+        description=(
+            "Env var holding an Apify API token. When it is set and YouTube refuses a "
+            "download from this server (HTTP 403/429, bot check), the import is fetched "
+            "once through the johnvc/youtube-download-api Apify Actor instead. Unset or "
+            "empty keeps imports direct-only. Treat the token as a credential."
+        ),
+    )
     telegram_enabled: bool = Field(
         default=False,
         description=(
@@ -596,6 +613,54 @@ class IncrementalConfig(BaseModel):
     )
 
 
+class NotifyConfig(BaseModel):
+    """Configuration for event-driven indexing (POST /ingest/notify)."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Accept transcoder notifications and run the in-process indexing worker",
+    )
+    queue_path: str = Field(
+        default="./data/notify-queue.json",
+        description="Persistent per-hash state of notified videos (survives an API restart)",
+    )
+    max_wait_hours: float = Field(
+        default=24.0,
+        description="Give up on a notified video this long after the notification",
+    )
+    poll_seconds: float = Field(
+        default=30.0,
+        description="How often the worker re-checks for VTT files, the lock and retries",
+    )
+    partial_after_seconds: float = Field(
+        default=600.0,
+        description=(
+            "Index the VTT files present so far when the other languages have not appeared "
+            "this long after the notification; the sweep picks up the rest later"
+        ),
+    )
+    vtt_languages: list[str] = Field(
+        default_factory=lambda: ["ru", "en"],
+        description="Language suffixes of the VTT files the worker waits for ({hash}.{lang}.vtt)",
+    )
+    lock_path: str = Field(
+        default="/tmp/rainrag-incremental.lock",
+        description="The flock the incremental sweep holds; the worker takes it to write files",
+    )
+    lock_timeout_seconds: float = Field(
+        default=5.0,
+        description="How long one worker cycle waits for the sweep lock before it retries later",
+    )
+    token_env: str = Field(
+        default="RAINRAG_NOTIFY_TOKEN",
+        description=(
+            "Environment variable with a token that the /ingest/notify routes accept "
+            "in addition to the API token. Give this one to the system that sends the "
+            "events; it is valid nowhere else. Unset means only the API token works."
+        ),
+    )
+
+
 class WebMetadataConfig(BaseModel):
     """Configuration for web metadata integration."""
 
@@ -725,6 +790,7 @@ class Config(BaseModel):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     web_metadata: WebMetadataConfig = Field(default_factory=WebMetadataConfig)
     incremental: IncrementalConfig = Field(default_factory=IncrementalConfig)
+    notify: NotifyConfig = Field(default_factory=NotifyConfig)
 
     def get_max_chunk_tokens(self) -> int:
         """

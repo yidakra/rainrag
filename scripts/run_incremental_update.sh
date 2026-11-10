@@ -3,8 +3,20 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/home/ubuntu/rainrag}"
 CONFIG_PATH="${RAINRAG_CONFIG:-$REPO_DIR/config.yaml}"
-LOCK_FILE="${LOCK_FILE:-/tmp/rainrag-incremental.lock}"
 LOG_DIR="${LOG_DIR:-$REPO_DIR/logs}"
+# The lock is shared with the notify worker in the API (rainrag.notify), which
+# reads notify.lock_path from the same config. Both sides must use one path,
+# so the default comes from the config. LOCK_FILE in the environment still
+# overrides it; set notify.lock_path to the same value when you do.
+if [ -z "${LOCK_FILE:-}" ]; then
+  LOCK_FILE="$(cd "$REPO_DIR" && uv run python - "$CONFIG_PATH" <<'PY'
+import sys
+import yaml
+cfg = yaml.safe_load(open(sys.argv[1])) or {}
+print((cfg.get("notify") or {}).get("lock_path") or "/tmp/rainrag-incremental.lock")
+PY
+  )"
+fi
 
 # Safety knobs (override via systemd Environment= or shell env).
 BOOTSTRAP_ON_MISSING="${BOOTSTRAP_ON_MISSING:-0}"
@@ -42,7 +54,11 @@ fi
 cd "$REPO_DIR"
 
 exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
+# The notify worker in the API (rainrag.notify) holds this lock for a few
+# seconds while it appends to docs.jsonl and saves the manifest. Wait that
+# out instead of skipping a six-hour slot; a run that is still active after
+# the wait is a real concurrent sweep.
+if ! flock -w 60 9; then
   log "Another incremental run is already active (lock: $LOCK_FILE). Exiting."
   exit 0
 fi
