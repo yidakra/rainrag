@@ -234,6 +234,13 @@ ingress:
           pathType: Prefix
   tls: []
 
+# Name of an existing Secret with the provider keys (MISTRAL_API_KEY and, if
+# used, OPENAI_API_KEY, COHERE_API_KEY, ...). The API and the ingestion job load
+# it with envFrom, so the keys never sit in values.yaml. The default embedding
+# provider (mistral) needs MISTRAL_API_KEY. Create it with, for example:
+#   kubectl create secret generic rainrag-providers --from-literal=MISTRAL_API_KEY=...
+providerSecret: ""
+
 # Global settings
 nameOverride: ""
 fullnameOverride: ""

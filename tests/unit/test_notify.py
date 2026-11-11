@@ -31,6 +31,7 @@ from src.rainrag.notify import (  # noqa: E402
     STATE_WAITING_FOR_VTT,
     NotifyQueue,
     NotifyWorker,
+    QueueNotOwnedError,
     SweepLock,
     build_worker,
 )
@@ -53,6 +54,7 @@ class _FakeWorker:
         self.running = running
         self.entries: dict[str, dict] = {}
         self.calls: list[tuple[str, str | None]] = []
+        self.queue = SimpleNamespace(owned=True)
 
     def is_running(self) -> bool:
         """Report the configured liveness."""
@@ -290,6 +292,7 @@ def test_queue_state_survives_a_new_instance(tmp_path):
     queue = NotifyQueue(path)
     queue.enqueue(HASH, "/folder", now=1000.0)
     queue.update(HASH, 1030.0, state=STATE_WAITING_FOR_VTT, next_attempt_ts=1060.0)
+    queue.release()  # the old process exits, which drops its owner lock
 
     reloaded = NotifyQueue(path)
     entry = reloaded.get(HASH)
@@ -563,6 +566,7 @@ def test_files_pending_survives_a_restart(test_config, tmp_path, sample_vtt_ru):
 
     fakes.locked = False
     clock.advance(30.0)
+    worker.queue.release()  # the old process exits, which drops its owner lock
     restarted = _make_worker(config, fakes, clock)  # fresh in-memory cache, same queue file
     assert restarted.run_once() is True
     assert restarted.status(HASH)["state"] == STATE_INDEXED
@@ -878,3 +882,47 @@ def test_notify_token_env_must_not_be_the_api_token():
         NotifyConfig(token_env="RAINRAG_AUTH_TOKEN")
     assert NotifyConfig(token_env="RAINRAG_NOTIFY_TOKEN").token_env == "RAINRAG_NOTIFY_TOKEN"
     assert NotifyConfig().token_env == "RAINRAG_NOTIFY_TOKEN"
+
+
+def test_a_second_queue_on_the_same_file_stands_by_until_the_owner_exits(tmp_path):
+    """Two processes on one queue file (a replacement pod while the old one stops):
+    only the owner reads or writes; the other takes over, with the owner's entries."""
+    path = tmp_path / "notify-queue.json"
+    owner = NotifyQueue(path)
+    owner.enqueue(HASH, None, 1000.0)
+    standby = NotifyQueue(path)
+    assert owner.owned
+    assert not standby.owned
+    with pytest.raises(QueueNotOwnedError):
+        standby.enqueue(HASH, None, 1001.0)
+    with pytest.raises(QueueNotOwnedError):
+        standby.get(HASH)
+    assert not standby.claim()
+
+    owner.release()
+    assert standby.claim()
+    assert standby.get(HASH)["state"] == STATE_QUEUED
+    standby.release()
+
+
+def test_notify_routes_are_503_with_retry_after_while_the_queue_is_owned_elsewhere(
+    client, monkeypatch
+):
+    """A standby process answers 503 and asks the sender to retry."""
+    monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("RAINRAG_NOTIFY_TOKEN", raising=False)
+    worker = _FakeWorker()
+    worker.queue = SimpleNamespace(owned=False)
+    cfg = SimpleNamespace(
+        notify=SimpleNamespace(enabled=True, token_env="RAINRAG_NOTIFY_TOKEN", poll_seconds=30)
+    )
+    with (
+        patch("src.rainrag.api.config", cfg),
+        patch("src.rainrag.api.notify_worker", worker),
+    ):
+        posted = client.post("/ingest/notify", json={"video_hash": HASH})
+        status = client.get(f"/ingest/notify/{HASH}")
+    assert posted.status_code == 503
+    assert posted.headers.get("retry-after") == "30"
+    assert status.status_code == 503
+    assert worker.calls == []

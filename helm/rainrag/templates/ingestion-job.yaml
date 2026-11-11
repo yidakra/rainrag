@@ -41,6 +41,11 @@ spec:
                 rainrag index {{ if .Values.ingestion.pipeline.recreateIndex }}--recreate{{ end }}
                 {{- end }}
             {{- end }}
+            {{- with .Values.providerSecret }}
+            envFrom:
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
             volumeMounts:
             - name: config
               mountPath: /app/config.yaml
@@ -120,6 +125,11 @@ spec:
             {{- if .Values.ingestion.pipeline.runIndex }}
             rainrag index {{ if .Values.ingestion.pipeline.recreateIndex }}--recreate{{ end }}
             {{- end }}
+        {{- end }}
+        {{- with .Values.providerSecret }}
+        envFrom:
+        - secretRef:
+            name: {{ . }}
         {{- end }}
         volumeMounts:
         - name: config

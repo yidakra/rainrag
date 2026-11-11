@@ -3014,6 +3014,14 @@ def _notify_worker_or_503() -> NotifyWorker:
         raise HTTPException(status_code=503, detail="Event-driven indexing is disabled")
     if notify_worker is None or not notify_worker.is_running():
         raise HTTPException(status_code=503, detail="The notify worker is not running")
+    if not notify_worker.queue.owned:
+        # A second API process (a replacement pod while the old one stops) waits
+        # for the queue's owner lock; the sender retries.
+        raise HTTPException(
+            status_code=503,
+            detail="Another API process owns the notify queue; retry shortly",
+            headers={"Retry-After": str(int(config.notify.poll_seconds))},
+        )
     return notify_worker
 
 
