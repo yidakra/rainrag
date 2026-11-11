@@ -926,3 +926,57 @@ def test_notify_routes_are_503_with_retry_after_while_the_queue_is_owned_elsewhe
     assert posted.headers.get("retry-after") == "30"
     assert status.status_code == 503
     assert worker.calls == []
+
+
+def test_a_standby_queue_refuses_update_and_len(tmp_path):
+    """Every read and write on a standby queue raises QueueNotOwnedError, not KeyError."""
+    path = tmp_path / "notify-queue.json"
+    owner = NotifyQueue(path)
+    owner.enqueue(HASH, None, 1000.0)
+    standby = NotifyQueue(path)
+    with pytest.raises(QueueNotOwnedError):
+        standby.update(HASH, 1001.0, state=STATE_WAITING_FOR_VTT)
+    with pytest.raises(QueueNotOwnedError):
+        len(standby)
+    owner.release()
+
+
+def test_notify_route_maps_a_lost_queue_to_503(client, monkeypatch):
+    """Ownership dropping between the route's check and the call is 503, not 500."""
+    monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("RAINRAG_NOTIFY_TOKEN", raising=False)
+    worker = _FakeWorker()
+
+    def lost(*_args, **_kwargs):
+        # the class the api module imported (the tests reach notify.py by two paths)
+        raise api_module.QueueNotOwnedError("released during shutdown")
+
+    worker.notify = lost
+    worker.status = lost
+    cfg = SimpleNamespace(
+        notify=SimpleNamespace(enabled=True, token_env="RAINRAG_NOTIFY_TOKEN", poll_seconds=30)
+    )
+    with (
+        patch("src.rainrag.api.config", cfg),
+        patch("src.rainrag.api.notify_worker", worker),
+    ):
+        posted = client.post("/ingest/notify", json={"video_hash": HASH})
+        status = client.get(f"/ingest/notify/{HASH}")
+    assert posted.status_code == 503
+    assert posted.headers.get("retry-after") == "30"
+    assert status.status_code == 503
+
+
+def test_stop_hands_the_queue_to_the_next_process(test_config, tmp_path):
+    """After stop() the owner lock is free, so a waiting process can claim the queue."""
+    config = _worker_config(test_config, tmp_path)
+    fakes, clock = _Fakes(), _Clock()
+    worker = _make_worker(config, fakes, clock)
+    worker.start()
+    worker.notify(HASH)
+    worker.stop(timeout=5.0)
+    assert not worker.is_running()
+    successor = NotifyQueue(worker.queue.path)
+    assert successor.owned
+    assert successor.get(HASH) is not None
+    successor.release()

@@ -140,6 +140,10 @@ ingestion:
     # the queue must survive a pod restart, and the incremental sweep must
     # take the same lock file. The queue is a plain file with an in-process
     # lock, so the chart refuses notify with api.replicas above 1.
+    # On a multi-node cluster, back the data volume with a PVC
+    # (ingestion.volumes.data.persistentVolumeClaim): with the default hostPath
+    # a pod rescheduled to another node does not see the queue and the manifest
+    # it left on the first node.
     notify:
       enabled: false
       queue_path: "/data/rainrag/notify-queue.json"
@@ -239,6 +243,8 @@ ingress:
 # it with envFrom, so the keys never sit in values.yaml. The default embedding
 # provider (mistral) needs MISTRAL_API_KEY. Create it with, for example:
 #   kubectl create secret generic rainrag-providers --from-literal=MISTRAL_API_KEY=...
+# The pods read the keys at start: after a change to this Secret, restart the
+# API Deployment (kubectl rollout restart) before you revoke the old keys.
 providerSecret: ""
 
 # Global settings

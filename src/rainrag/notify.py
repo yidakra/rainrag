@@ -192,6 +192,7 @@ class NotifyQueue:
     def update(self, video_hash: str, now: float, **fields: Any) -> dict[str, Any]:
         """Merge ``fields`` into the entry, stamp ``updated_at`` and persist."""
         with self._lock:
+            self._require_owner()
             entry = self._entries[video_hash]
             previous = entry.get("state")
             entry.update(fields)
@@ -227,8 +228,9 @@ class NotifyQueue:
         return min(pending) if pending else None
 
     def __len__(self) -> int:
-        """Number of entries, terminal ones included."""
+        """Number of entries, terminal ones included (QueueNotOwnedError in standby)."""
         with self._lock:
+            self._require_owner()
             return len(self._entries)
 
 
@@ -336,7 +338,10 @@ class NotifyWorker:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="notify-worker", daemon=True)
         self._thread.start()
-        logger.info(f"notify worker started ({len(self.queue)} entries in {self.queue.path})")
+        if self.queue.owned:
+            logger.info(f"notify worker started ({len(self.queue)} entries in {self.queue.path})")
+        else:
+            logger.info(f"notify worker started in standby: {self.queue.path} has another owner")
 
     def stop(self, timeout: float = 10.0) -> None:
         """Ask the thread to finish its current step and wait for it."""
@@ -344,6 +349,12 @@ class NotifyWorker:
         self._wake.set()
         if self._thread is not None:
             self._thread.join(timeout)
+            if self._thread.is_alive():
+                # The thread still finishes its step; it releases the lock on exit.
+                logger.warning(
+                    "notify worker still busy after stop(); it releases the queue on exit"
+                )
+                return
         self.queue.release()
         logger.info("notify worker stopped")
 
@@ -363,6 +374,16 @@ class NotifyWorker:
 
     def _run(self) -> None:
         """Thread body: process due hashes; otherwise sleep until the next one or a notify."""
+        try:
+            self._loop()
+        finally:
+            # On stop the thread drops the owner lock itself, so a stop() that
+            # timed out never pulls the queue away from a running step.
+            if self._stop.is_set():
+                self.queue.release()
+
+    def _loop(self) -> None:
+        """The worker loop: claim the queue, then process due hashes until stopped."""
         waiting_logged = False
         while not self._stop.is_set():
             if not self.queue.owned and not self.queue.claim():
