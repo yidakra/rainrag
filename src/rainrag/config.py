@@ -7,7 +7,7 @@ from typing import Any, Literal, cast
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 _logger = logging.getLogger(__name__)
@@ -659,6 +659,18 @@ class NotifyConfig(BaseModel):
             "events; it is valid nowhere else. Unset means only the API token works."
         ),
     )
+
+    @field_validator("token_env")
+    @classmethod
+    def _token_env_is_not_the_api_token(cls, value: str) -> str:
+        """Reject RAINRAG_AUTH_TOKEN: the webhook token would then be the API token
+        and open every route, which the dedicated token exists to prevent."""
+        if value.strip() == "RAINRAG_AUTH_TOKEN":
+            raise ValueError(
+                "notify.token_env must not be RAINRAG_AUTH_TOKEN: the webhook token "
+                "would be the API token and open every route"
+            )
+        return value
 
 
 class WebMetadataConfig(BaseModel):

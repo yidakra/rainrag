@@ -65,14 +65,68 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
 
 
+class QueueNotOwnedError(RuntimeError):
+    """Another process owns the queue file; this one must neither read nor write it."""
+
+
 class NotifyQueue:
-    """Persistent, thread-safe per-hash state, written via tmp+rename."""
+    """Persistent, thread-safe per-hash state, written via tmp+rename.
+
+    One process at a time owns the queue file: it holds an exclusive flock on
+    ``<queue>.owner`` until it exits. The lock is what makes the file safe when
+    a second API process starts while the first still runs (a Kubernetes pod
+    replaced before the old one stopped, or a duplicate systemd start). A queue
+    that does not own the file stays in standby: it raises QueueNotOwnedError on
+    every read and write, and ``claim()`` takes over (and reloads the file)
+    once the owner is gone.
+    """
 
     def __init__(self, path: str | Path) -> None:
-        """Load the queue file at ``path`` (an unreadable file starts empty, with a warning)."""
+        """Claim the queue file at ``path`` and load it (an unreadable file starts empty)."""
         self.path = Path(path)
+        self.owner_path = self.path.with_name(self.path.name + ".owner")
         self._lock = threading.Lock()
-        self._entries: dict[str, dict[str, Any]] = self._load()
+        self._owner_fd: int | None = None
+        self._entries: dict[str, dict[str, Any]] = {}
+        self.claim()
+
+    @property
+    def owned(self) -> bool:
+        """True while this process holds the owner lock."""
+        return self._owner_fd is not None
+
+    def claim(self) -> bool:
+        """Take the owner lock without blocking; on success load the file. True when owned."""
+        with self._lock:
+            if self._owner_fd is not None:
+                return True
+            self.owner_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.owner_path, os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                os.close(fd)
+                return False
+            self._owner_fd = fd
+            self._entries = self._load()
+            return True
+
+    def release(self) -> None:
+        """Drop the owner lock (process exit drops it too)."""
+        with self._lock:
+            if self._owner_fd is None:
+                return
+            try:
+                fcntl.flock(self._owner_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self._owner_fd)
+                self._owner_fd = None
+                self._entries = {}
+
+    def _require_owner(self) -> None:
+        """Raise QueueNotOwnedError unless this process owns the file; the caller holds ``self._lock``."""
+        if self._owner_fd is None:
+            raise QueueNotOwnedError(f"another process owns the notify queue {self.path}")
 
     def _load(self) -> dict[str, dict[str, Any]]:
         """Read the queue file; a missing or broken file is an empty queue."""
@@ -90,6 +144,7 @@ class NotifyQueue:
 
     def _save_locked(self) -> None:
         """Write the queue atomically; the caller holds ``self._lock``."""
+        self._require_owner()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(self.path.name + ".tmp")
         tmp.write_text(json.dumps(self._entries, indent=2, sort_keys=True), encoding="utf-8")
@@ -130,12 +185,14 @@ class NotifyQueue:
     def get(self, video_hash: str) -> dict[str, Any] | None:
         """A copy of the entry for ``video_hash``, or None when the hash is unknown."""
         with self._lock:
+            self._require_owner()
             entry = self._entries.get(video_hash)
             return dict(entry) if entry is not None else None
 
     def update(self, video_hash: str, now: float, **fields: Any) -> dict[str, Any]:
         """Merge ``fields`` into the entry, stamp ``updated_at`` and persist."""
         with self._lock:
+            self._require_owner()
             entry = self._entries[video_hash]
             previous = entry.get("state")
             entry.update(fields)
@@ -148,6 +205,7 @@ class NotifyQueue:
     def next_due(self, now: float) -> str | None:
         """The oldest non-terminal hash whose next attempt is due, or None."""
         with self._lock:
+            self._require_owner()
             due = [
                 e
                 for e in self._entries.values()
@@ -161,6 +219,7 @@ class NotifyQueue:
     def next_wakeup(self) -> float | None:
         """The earliest ``next_attempt_ts`` among non-terminal entries, or None when idle."""
         with self._lock:
+            self._require_owner()
             pending = [
                 float(e.get("next_attempt_ts", 0))
                 for e in self._entries.values()
@@ -169,8 +228,9 @@ class NotifyQueue:
         return min(pending) if pending else None
 
     def __len__(self) -> int:
-        """Number of entries, terminal ones included."""
+        """Number of entries, terminal ones included (QueueNotOwnedError in standby)."""
         with self._lock:
+            self._require_owner()
             return len(self._entries)
 
 
@@ -278,7 +338,10 @@ class NotifyWorker:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="notify-worker", daemon=True)
         self._thread.start()
-        logger.info(f"notify worker started ({len(self.queue)} entries in {self.queue.path})")
+        if self.queue.owned:
+            logger.info(f"notify worker started ({len(self.queue)} entries in {self.queue.path})")
+        else:
+            logger.info(f"notify worker started in standby: {self.queue.path} has another owner")
 
     def stop(self, timeout: float = 10.0) -> None:
         """Ask the thread to finish its current step and wait for it."""
@@ -286,6 +349,13 @@ class NotifyWorker:
         self._wake.set()
         if self._thread is not None:
             self._thread.join(timeout)
+            if self._thread.is_alive():
+                # The thread still finishes its step; it releases the lock on exit.
+                logger.warning(
+                    "notify worker still busy after stop(); it releases the queue on exit"
+                )
+                return
+        self.queue.release()
         logger.info("notify worker stopped")
 
     def is_running(self) -> bool:
@@ -304,7 +374,31 @@ class NotifyWorker:
 
     def _run(self) -> None:
         """Thread body: process due hashes; otherwise sleep until the next one or a notify."""
+        try:
+            self._loop()
+        finally:
+            # On stop the thread drops the owner lock itself, so a stop() that
+            # timed out never pulls the queue away from a running step.
+            if self._stop.is_set():
+                self.queue.release()
+
+    def _loop(self) -> None:
+        """The worker loop: claim the queue, then process due hashes until stopped."""
+        waiting_logged = False
         while not self._stop.is_set():
+            if not self.queue.owned and not self.queue.claim():
+                if not waiting_logged:
+                    logger.warning(
+                        f"notify queue {self.queue.path} is owned by another process; "
+                        "standing by until it exits"
+                    )
+                    waiting_logged = True
+                self._wake.wait(self.config.notify.poll_seconds)
+                self._wake.clear()
+                continue
+            if waiting_logged:
+                logger.info(f"notify queue {self.queue.path} claimed ({len(self.queue)} entries)")
+                waiting_logged = False
             try:
                 busy = self.run_once()
             except Exception:  # noqa: BLE001

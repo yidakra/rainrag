@@ -67,7 +67,8 @@ ingestion:
   volumes:
     # Archive directory containing .vtt files
     archive:
-      # Use hostPath for local development
+      # Use hostPath for local development. When persistentVolumeClaim is set
+      # it wins over hostPath in every workload, so hostPath can stay.
       hostPath: /data/archive
       # Or use PVC
       # persistentVolumeClaim: archive-pvc
@@ -110,6 +111,9 @@ ingestion:
       distance: "Cosine"
       recreate_collection: false
 
+    llm:
+      provider: "mistral"  # LLMConfig.provider; the API needs an llm section
+
     mistral:
       api_key: ""  # Set via environment variable MISTRAL_API_KEY
       model_name: "mistral-small-latest"
@@ -121,6 +125,35 @@ ingestion:
       num_workers: 4
       max_file_size: 10485760
       min_text_length: 50
+
+    # The file manifest records which VTT files docs.jsonl already holds. A
+    # full ingestion writes it, and the notify worker reads and updates it, so
+    # it must sit on the shared data volume (the default ./data/manifest.json
+    # is inside each container and is lost on restart).
+    incremental:
+      manifest_path: "/data/rainrag/manifest.json"
+
+    # Event-driven indexing (POST /ingest/notify). Off by default, as in
+    # NotifyConfig. With enabled: true the API pod also mounts the archive
+    # volume read-only, because the worker reads {hash}.<lang>.vtt from
+    # paths.archive_root. Keep queue_path and lock_path on the data volume:
+    # the queue must survive a pod restart, and the incremental sweep must
+    # take the same lock file. The queue is a plain file with an in-process
+    # lock, so the chart refuses notify with api.replicas above 1.
+    # On a multi-node cluster, back the data volume with a PVC
+    # (ingestion.volumes.data.persistentVolumeClaim): with the default hostPath
+    # a pod rescheduled to another node does not see the queue and the manifest
+    # it left on the first node.
+    notify:
+      enabled: false
+      queue_path: "/data/rainrag/notify-queue.json"
+      max_wait_hours: 24
+      poll_seconds: 30
+      partial_after_seconds: 600
+      vtt_languages: ["ru", "en"]
+      lock_path: "/data/rainrag/rainrag-incremental.lock"
+      lock_timeout_seconds: 5
+      token_env: "RAINRAG_NOTIFY_TOKEN"
 
     logging:
       level: "INFO"
@@ -152,6 +185,10 @@ api:
 
   # Optional authentication token
   authToken: ""  # Set to enable token-based authentication
+
+  # Optional webhook-only token for the /ingest/notify routes. Give it to the
+  # transcoder instead of authToken. Generate with: openssl rand -hex 32
+  notifyToken: ""
 
   resources:
     requests:
@@ -187,6 +224,28 @@ streamlit:
     limits:
       memory: "1Gi"
       cpu: "1000m"
+
+# Ingress for the Streamlit UI. templates/ingress.yaml reads these keys, so
+# they must exist even when the ingress is off.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: rainrag.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Name of an existing Secret with the provider keys (MISTRAL_API_KEY and, if
+# used, OPENAI_API_KEY, COHERE_API_KEY, ...). The API and the ingestion job load
+# it with envFrom, so the keys never sit in values.yaml. The default embedding
+# provider (mistral) needs MISTRAL_API_KEY. Create it with, for example:
+#   kubectl create secret generic rainrag-providers --from-literal=MISTRAL_API_KEY=...
+# The pods read the keys at start: after a change to this Secret, restart the
+# API Deployment (kubectl rollout restart) before you revoke the old keys.
+providerSecret: ""
 
 # Global settings
 nameOverride: ""

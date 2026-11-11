@@ -28,6 +28,14 @@ data:
       distance: {{ .Values.ingestion.config.qdrant.distance | quote }}
       recreate_collection: {{ .Values.ingestion.config.qdrant.recreate_collection }}
 
+    # Required by the config model. Every llm key has a default; the OpenAI key
+    # comes from OPENAI_API_KEY when it is set, which overrides this value.
+    llm:
+      provider: {{ .Values.ingestion.config.llm.provider | quote }}
+
+    openai:
+      api_key: ""
+
     mistral:
       api_key: ""  # Set via MISTRAL_API_KEY environment variable
       model_name: {{ .Values.ingestion.config.mistral.model_name | quote }}
@@ -39,6 +47,24 @@ data:
       num_workers: {{ .Values.ingestion.config.processing.num_workers }}
       max_file_size: {{ .Values.ingestion.config.processing.max_file_size }}
       min_text_length: {{ .Values.ingestion.config.processing.min_text_length }}
+
+    {{- with .Values.ingestion.config.incremental }}
+    incremental:
+      manifest_path: {{ .manifest_path | quote }}
+    {{- end }}
+
+    {{- with .Values.ingestion.config.notify }}
+    notify:
+      enabled: {{ .enabled }}
+      queue_path: {{ .queue_path | quote }}
+      max_wait_hours: {{ .max_wait_hours }}
+      poll_seconds: {{ .poll_seconds }}
+      partial_after_seconds: {{ .partial_after_seconds }}
+      vtt_languages: {{ .vtt_languages | toJson }}
+      lock_path: {{ .lock_path | quote }}
+      lock_timeout_seconds: {{ .lock_timeout_seconds }}
+      token_env: {{ include "rainrag.notifyTokenEnv" $ | quote }}
+    {{- end }}
 
     logging:
       level: {{ .Values.ingestion.config.logging.level | quote }}

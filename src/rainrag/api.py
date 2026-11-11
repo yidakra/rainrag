@@ -336,7 +336,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
 from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS, WebMetadataLoader
-from rainrag.notify import NotifyWorker, build_worker
+from rainrag.notify import NotifyWorker, QueueNotOwnedError, build_worker
 from rainrag.query import RAGQueryEngine
 from rainrag.subtitles import vtt_to_srt
 from rainrag.video_session import VideoSessionManager
@@ -3014,7 +3014,21 @@ def _notify_worker_or_503() -> NotifyWorker:
         raise HTTPException(status_code=503, detail="Event-driven indexing is disabled")
     if notify_worker is None or not notify_worker.is_running():
         raise HTTPException(status_code=503, detail="The notify worker is not running")
+    if not notify_worker.queue.owned:
+        # A second API process (a replacement pod while the old one stops) waits
+        # for the queue's owner lock; the sender retries.
+        raise _queue_not_owned_503()
     return notify_worker
+
+
+def _queue_not_owned_503() -> HTTPException:
+    """The 503 a standby process answers; the sender retries after poll_seconds."""
+    retry = int(config.notify.poll_seconds) if config is not None else 30
+    return HTTPException(
+        status_code=503,
+        detail="Another API process owns the notify queue; retry shortly",
+        headers={"Retry-After": str(retry)},
+    )
 
 
 def _notify_hash_or_400(video_hash: str) -> str:
@@ -3031,6 +3045,10 @@ def _verify_notify_caller(authorization: str | None) -> None:
     The sender of the events (the transcoder) holds only this token, which
     opens nothing but /ingest/notify. The API token keeps working here too,
     so the status route can be read with it.
+
+    A configured webhook token closes these routes even when the API token is
+    unset: an operator who set a webhook token wants the webhook protected, so
+    the "no API token, allow all" fallback does not apply here.
     """
     env_name = getattr(getattr(config, "notify", None), "token_env", "") or ""
     webhook_token = os.getenv(env_name) if env_name else None
@@ -3042,6 +3060,8 @@ def _verify_notify_caller(authorization: str | None) -> None:
             and hmac.compare_digest(parts[1], webhook_token)
         ):
             return
+    if webhook_token and not os.getenv("RAINRAG_AUTH_TOKEN"):
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
     verify_auth_token(authorization=authorization)
 
 
@@ -3054,7 +3074,11 @@ async def ingest_notify(
     _verify_notify_caller(authorization)
     video_hash = _notify_hash_or_400(body.video_hash)
     worker = _notify_worker_or_503()
-    entry = worker.notify(video_hash, body.path)
+    try:
+        entry = worker.notify(video_hash, body.path)
+    except QueueNotOwnedError:
+        # Ownership can drop between the check and the call (shutdown).
+        raise _queue_not_owned_503() from None
     return IngestNotifyResponse(video_hash=video_hash, state=entry["state"])
 
 
@@ -3067,7 +3091,10 @@ async def ingest_notify_status(
     _verify_notify_caller(authorization)
     candidate = _notify_hash_or_400(video_hash)
     worker = _notify_worker_or_503()
-    entry = worker.status(candidate)
+    try:
+        entry = worker.status(candidate)
+    except QueueNotOwnedError:
+        raise _queue_not_owned_503() from None
     if entry is None:
         raise HTTPException(status_code=404, detail="Unknown video_hash")
     return {key: entry.get(key) for key in _NOTIFY_STATUS_FIELDS}

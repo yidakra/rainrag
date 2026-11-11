@@ -31,6 +31,7 @@ from src.rainrag.notify import (  # noqa: E402
     STATE_WAITING_FOR_VTT,
     NotifyQueue,
     NotifyWorker,
+    QueueNotOwnedError,
     SweepLock,
     build_worker,
 )
@@ -53,6 +54,7 @@ class _FakeWorker:
         self.running = running
         self.entries: dict[str, dict] = {}
         self.calls: list[tuple[str, str | None]] = []
+        self.queue = SimpleNamespace(owned=True)
 
     def is_running(self) -> bool:
         """Report the configured liveness."""
@@ -173,6 +175,49 @@ def test_without_a_webhook_token_only_the_api_token_opens_the_notify_routes(clie
     assert wrong.status_code == 401
 
 
+def test_webhook_token_closes_the_notify_routes_without_an_api_token(client, monkeypatch):
+    """With only the webhook token set, the notify routes still need it: the API's
+    "no API token, allow all" fallback does not open them."""
+    monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("RAINRAG_NOTIFY_TOKEN", "hook-only")
+    worker = _FakeWorker()
+    cfg = SimpleNamespace(notify=SimpleNamespace(enabled=True, token_env="RAINRAG_NOTIFY_TOKEN"))
+    with (
+        patch("src.rainrag.api.config", cfg),
+        patch("src.rainrag.api.notify_worker", worker),
+    ):
+        anonymous = client.post("/ingest/notify", json={"video_hash": HASH})
+        wrong = client.post(
+            "/ingest/notify",
+            json={"video_hash": HASH},
+            headers={"Authorization": "Bearer guess"},
+        )
+        status_anonymous = client.get(f"/ingest/notify/{HASH}")
+        hook = client.post(
+            "/ingest/notify",
+            json={"video_hash": HASH},
+            headers={"Authorization": "Bearer hook-only"},
+        )
+    assert anonymous.status_code == 401
+    assert wrong.status_code == 401
+    assert status_anonymous.status_code == 401
+    assert hook.status_code == 202
+
+
+def test_without_any_token_the_notify_routes_stay_open(client, monkeypatch):
+    """With neither token set, the notify routes follow the rest of the API (open)."""
+    monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("RAINRAG_NOTIFY_TOKEN", raising=False)
+    worker = _FakeWorker()
+    cfg = SimpleNamespace(notify=SimpleNamespace(enabled=True, token_env="RAINRAG_NOTIFY_TOKEN"))
+    with (
+        patch("src.rainrag.api.config", cfg),
+        patch("src.rainrag.api.notify_worker", worker),
+    ):
+        anonymous = client.post("/ingest/notify", json={"video_hash": HASH})
+    assert anonymous.status_code == 202
+
+
 def test_notify_route_is_503_when_disabled_or_without_a_worker(client):
     """notify.enabled false, no worker, or a dead worker thread all answer 503."""
     with (
@@ -247,6 +292,7 @@ def test_queue_state_survives_a_new_instance(tmp_path):
     queue = NotifyQueue(path)
     queue.enqueue(HASH, "/folder", now=1000.0)
     queue.update(HASH, 1030.0, state=STATE_WAITING_FOR_VTT, next_attempt_ts=1060.0)
+    queue.release()  # the old process exits, which drops its owner lock
 
     reloaded = NotifyQueue(path)
     entry = reloaded.get(HASH)
@@ -520,6 +566,7 @@ def test_files_pending_survives_a_restart(test_config, tmp_path, sample_vtt_ru):
 
     fakes.locked = False
     clock.advance(30.0)
+    worker.queue.release()  # the old process exits, which drops its owner lock
     restarted = _make_worker(config, fakes, clock)  # fresh in-memory cache, same queue file
     assert restarted.run_once() is True
     assert restarted.status(HASH)["state"] == STATE_INDEXED
@@ -825,3 +872,111 @@ def test_an_unreadable_manifest_fails_the_attempt_and_writes_nothing(
     assert "cannot read the manifest" in entry["error"]
     assert manifest_path.read_text(encoding="utf-8") == "{not json"
     assert not docs_path.exists() or docs_path.read_text(encoding="utf-8") == ""
+
+
+def test_notify_token_env_must_not_be_the_api_token():
+    """token_env RAINRAG_AUTH_TOKEN would make the webhook token the API token."""
+    from src.rainrag.config import NotifyConfig
+
+    with pytest.raises(ValueError, match="must not be RAINRAG_AUTH_TOKEN"):
+        NotifyConfig(token_env="RAINRAG_AUTH_TOKEN")
+    assert NotifyConfig(token_env="RAINRAG_NOTIFY_TOKEN").token_env == "RAINRAG_NOTIFY_TOKEN"
+    assert NotifyConfig().token_env == "RAINRAG_NOTIFY_TOKEN"
+
+
+def test_a_second_queue_on_the_same_file_stands_by_until_the_owner_exits(tmp_path):
+    """Two processes on one queue file (a replacement pod while the old one stops):
+    only the owner reads or writes; the other takes over, with the owner's entries."""
+    path = tmp_path / "notify-queue.json"
+    owner = NotifyQueue(path)
+    owner.enqueue(HASH, None, 1000.0)
+    standby = NotifyQueue(path)
+    assert owner.owned
+    assert not standby.owned
+    with pytest.raises(QueueNotOwnedError):
+        standby.enqueue(HASH, None, 1001.0)
+    with pytest.raises(QueueNotOwnedError):
+        standby.get(HASH)
+    assert not standby.claim()
+
+    owner.release()
+    assert standby.claim()
+    assert standby.get(HASH)["state"] == STATE_QUEUED
+    standby.release()
+
+
+def test_notify_routes_are_503_with_retry_after_while_the_queue_is_owned_elsewhere(
+    client, monkeypatch
+):
+    """A standby process answers 503 and asks the sender to retry."""
+    monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("RAINRAG_NOTIFY_TOKEN", raising=False)
+    worker = _FakeWorker()
+    worker.queue = SimpleNamespace(owned=False)
+    cfg = SimpleNamespace(
+        notify=SimpleNamespace(enabled=True, token_env="RAINRAG_NOTIFY_TOKEN", poll_seconds=30)
+    )
+    with (
+        patch("src.rainrag.api.config", cfg),
+        patch("src.rainrag.api.notify_worker", worker),
+    ):
+        posted = client.post("/ingest/notify", json={"video_hash": HASH})
+        status = client.get(f"/ingest/notify/{HASH}")
+    assert posted.status_code == 503
+    assert posted.headers.get("retry-after") == "30"
+    assert status.status_code == 503
+    assert worker.calls == []
+
+
+def test_a_standby_queue_refuses_update_and_len(tmp_path):
+    """Every read and write on a standby queue raises QueueNotOwnedError, not KeyError."""
+    path = tmp_path / "notify-queue.json"
+    owner = NotifyQueue(path)
+    owner.enqueue(HASH, None, 1000.0)
+    standby = NotifyQueue(path)
+    with pytest.raises(QueueNotOwnedError):
+        standby.update(HASH, 1001.0, state=STATE_WAITING_FOR_VTT)
+    with pytest.raises(QueueNotOwnedError):
+        len(standby)
+    owner.release()
+
+
+def test_notify_route_maps_a_lost_queue_to_503(client, monkeypatch):
+    """Ownership dropping between the route's check and the call is 503, not 500."""
+    monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("RAINRAG_NOTIFY_TOKEN", raising=False)
+    worker = _FakeWorker()
+
+    def lost(*_args, **_kwargs):
+        # the class the api module imported (the tests reach notify.py by two paths)
+        raise api_module.QueueNotOwnedError("released during shutdown")
+
+    worker.notify = lost
+    worker.status = lost
+    cfg = SimpleNamespace(
+        notify=SimpleNamespace(enabled=True, token_env="RAINRAG_NOTIFY_TOKEN", poll_seconds=30)
+    )
+    with (
+        patch("src.rainrag.api.config", cfg),
+        patch("src.rainrag.api.notify_worker", worker),
+    ):
+        posted = client.post("/ingest/notify", json={"video_hash": HASH})
+        status = client.get(f"/ingest/notify/{HASH}")
+    assert posted.status_code == 503
+    assert posted.headers.get("retry-after") == "30"
+    assert status.status_code == 503
+
+
+def test_stop_hands_the_queue_to_the_next_process(test_config, tmp_path):
+    """After stop() the owner lock is free, so a waiting process can claim the queue."""
+    config = _worker_config(test_config, tmp_path)
+    fakes, clock = _Fakes(), _Clock()
+    worker = _make_worker(config, fakes, clock)
+    worker.start()
+    worker.notify(HASH)
+    worker.stop(timeout=5.0)
+    assert not worker.is_running()
+    successor = NotifyQueue(worker.queue.path)
+    assert successor.owned
+    assert successor.get(HASH) is not None
+    successor.release()

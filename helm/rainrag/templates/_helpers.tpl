@@ -131,3 +131,12 @@ Streamlit selector labels
 app.kubernetes.io/name: {{ include "rainrag.name" . }}-streamlit
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Env var name that carries the notify webhook token. One definition, so the
+Deployment and the ConfigMap can never disagree (an empty token_env falls back
+to the NotifyConfig default).
+*/}}
+{{- define "rainrag.notifyTokenEnv" -}}
+{{- .Values.ingestion.config.notify.token_env | default "RAINRAG_NOTIFY_TOKEN" -}}
+{{- end }}
