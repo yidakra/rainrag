@@ -1,5 +1,10 @@
 # RainRAG Evaluation Suite
 
+For provider-free evaluation and fitting of outcome-informed formulation selectors from
+judged candidate snapshots, see [Adaptive retrieval](../../docs/ADAPTIVE_RETRIEVAL.md).
+Run it with `PYTHONPATH=src python -m rainrag_eval.selection --help`. The existing
+end-to-end runner now scores saved retrieval order separately from prompt context order.
+
 End-to-end evaluation of every retrieval and generation feature in RainRAG,
 tracked with **MLflow** and measured with **RAGAS** + classical IR metrics.
 
