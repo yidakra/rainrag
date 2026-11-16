@@ -250,6 +250,27 @@ def test_updated_at_survives_a_restart(tmp_path, store):
     assert again.get("100", ALL)["updated_at"] == T0
 
 
+def test_a_failed_state_write_is_retried_without_a_new_change(tmp_path, store, monkeypatch):
+    """A disk error on the state file is retried on the next request (CodeRabbit on #131)."""
+    real_write = Path.write_text
+
+    def failing_write(self, *args, **kwargs):
+        if self.name.startswith("state.json"):
+            raise OSError("disk full")
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", failing_write)
+    store.get("100", ALL)
+    assert not (tmp_path / "state.json").exists()
+    monkeypatch.setattr(Path, "write_text", real_write)
+    store.get("100", ALL)  # sources unchanged: no rebuild, but the write is retried
+    assert (tmp_path / "state.json").exists()
+    clock = _Clock()
+    clock.now = datetime.fromisoformat("2026-12-01T00:00:00+00:00")
+    again = _make_store(tmp_path, store.archive_root, clock)
+    assert again.get("100", ALL)["updated_at"] == T0
+
+
 def test_a_cms_edit_in_the_index_moves_updated_at(tmp_path, store):
     """Programme and presenters ride in the index, so a CMS edit is a change (CodeRabbit on #131)."""
     store.get("100", ALL)

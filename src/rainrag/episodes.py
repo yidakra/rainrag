@@ -213,6 +213,9 @@ class EpisodeStore:
         self._clock = clock
         self._state: dict[str, list[str]] | None = None
         self._last_stamp = ""
+        # A failed state write is retried on the next request, so a recovered
+        # disk gets the stamps before a restart can lose them.
+        self._state_pending = False
         self._lock = threading.Lock()
         self._stamp: tuple[float | None, ...] | None = None
         self._by_id: dict[str, _Episode] = {}
@@ -222,6 +225,8 @@ class EpisodeStore:
         stamp = tuple(_mtime(p) for p in (self.index_path, self.tags_path, self.summaries_path))
         with self._lock:
             if stamp == self._stamp:
+                if self._state_pending:
+                    self._write_state()
                 return
             try:
                 by_id = self._build()
@@ -306,13 +311,23 @@ class EpisodeStore:
         for gone in set(state) - set(by_id):
             del state[gone]
             changed = True
-        if changed and self.state_path is not None:
-            tmp = self.state_path.with_name(self.state_path.name + ".tmp")
-            try:
-                tmp.write_text(json.dumps(state), encoding="utf-8")
-                tmp.replace(self.state_path)
-            except OSError as exc:
-                logger.warning(f"Episode store: cannot write {self.state_path}: {exc}")
+        if changed or self._state_pending:
+            self._write_state()
+
+    def _write_state(self) -> None:
+        """Atomically write the state file; on failure, retry on the next request."""
+        if self.state_path is None or self._state is None:
+            self._state_pending = False
+            return
+        tmp = self.state_path.with_name(self.state_path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(self._state), encoding="utf-8")
+            tmp.replace(self.state_path)
+        except OSError as exc:
+            self._state_pending = True
+            logger.warning(f"Episode store: cannot write {self.state_path}: {exc}")
+        else:
+            self._state_pending = False
 
     def _merge_tags(self, by_id: dict[str, _Episode]) -> None:
         if not self.tags_path.exists():
