@@ -370,3 +370,13 @@ def test_query_openai_no_documents_retrieved(openai_config, mock_openai_client, 
             assert result["answer"] is not None
             assert len(result["retrieved_documents"]) == 0
             assert result["num_documents"] == 0
+
+
+@pytest.mark.parametrize("base_url", [None, "https://api.scaleway.ai/v1"])
+def test_client_uses_the_configured_endpoint(openai_config, mock_qdrant_client, base_url):
+    """An OpenAI-compatible base_url (Scaleway, vLLM) reaches the client; None keeps OpenAI."""
+    openai_config.openai.base_url = base_url
+    with patch("src.rainrag.query.OpenAI") as client_cls:
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
+            RAGQueryEngine(openai_config)
+    client_cls.assert_called_once_with(api_key=openai_config.openai.api_key, base_url=base_url)

@@ -122,6 +122,21 @@ class OpenAIConfig(BaseModel):
     """Configuration for OpenAI API."""
 
     api_key: str = Field(description="OpenAI API key")
+    base_url: str | None = Field(
+        default=None,
+        description=(
+            "OpenAI-compatible endpoint to use instead of api.openai.com, for example "
+            "Scaleway Generative APIs (https://api.scaleway.ai/v1). None means OpenAI. "
+            "Applies to the LLM client only; OpenAI embeddings keep using OpenAI."
+        ),
+    )
+    api_key_env: str = Field(
+        default="OPENAI_API_KEY",
+        description=(
+            "Environment variable that holds the key for this endpoint. Set it with "
+            "base_url, so the OpenAI key is never sent to another provider."
+        ),
+    )
     model_name: str = Field(
         default="gpt-4o-mini",
         description="OpenAI model to use: gpt-4o, gpt-4o-mini, gpt-3.5-turbo, etc.",
@@ -915,6 +930,16 @@ def load_config(config_path: str = "config.yaml") -> Config:
         ("ANTHROPIC_API_KEY", "claude", "api_key"),
         ("GOOGLE_API_KEY", "gemini", "api_key"),
         ("COHERE_API_KEY", "cohere", "api_key"),
+    ]
+
+    # The OpenAI section can point at another OpenAI-compatible provider
+    # (base_url), and then its key lives in that provider's own variable: reading
+    # OPENAI_API_KEY there would send the OpenAI key to a third party.
+    openai_section = config_data.get("openai") or {}
+    openai_key_env = openai_section.get("api_key_env") or "OPENAI_API_KEY"
+    providers = [
+        (openai_key_env if section == "openai" else env_name, section, key)
+        for env_name, section, key in providers
     ]
 
     for env_name, section, key in providers:

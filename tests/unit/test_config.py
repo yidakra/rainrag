@@ -575,3 +575,64 @@ class TestLoadConfig:
                 load_config(config_path)
         finally:
             Path(config_path).unlink()
+
+
+class TestOpenAICompatibleEndpoint:
+    """An OpenAI section pointed at another provider reads that provider's key."""
+
+    def _load(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, openai: dict) -> Config:
+        import rainrag.config
+
+        monkeypatch.setattr(rainrag.config, "load_dotenv", lambda: None)
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            yaml.dump(
+                {
+                    "paths": {"archive_root": "/a", "docs_output": "/d", "embeddings_cache": "/e"},
+                    "embedding": {"provider": "local", "model_name": "m"},
+                    "qdrant": {"host": "h", "collection_name": "c", "vector_size": 8},
+                    "processing": {},
+                    "logging": {},
+                    "llm": {"provider": "openai"},
+                    "mistral": {"api_key": "m"},
+                    "openai": openai,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return load_config(str(path))
+
+    def test_base_url_reads_its_own_key_never_the_openai_one(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-must-not-leak")
+        monkeypatch.setenv("SCALEWAY_API_KEY", "scw-key")
+        config = self._load(
+            monkeypatch,
+            tmp_path,
+            {
+                "api_key": "",
+                "base_url": "https://api.scaleway.ai/v1",
+                "api_key_env": "SCALEWAY_API_KEY",
+            },
+        )
+        assert config.openai.base_url == "https://api.scaleway.ai/v1"
+        assert config.openai.api_key == "scw-key"
+
+    def test_without_its_key_the_openai_key_is_still_not_used(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-must-not-leak")
+        monkeypatch.delenv("SCALEWAY_API_KEY", raising=False)
+        config = self._load(
+            monkeypatch,
+            tmp_path,
+            {
+                "api_key": "",
+                "base_url": "https://api.scaleway.ai/v1",
+                "api_key_env": "SCALEWAY_API_KEY",
+            },
+        )
+        assert config.openai.api_key == ""
+
+    def test_default_keeps_openai(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        config = self._load(monkeypatch, tmp_path, {"api_key": ""})
+        assert config.openai.base_url is None
+        assert config.openai.api_key == "sk-openai"

@@ -252,7 +252,9 @@ class RAGQueryEngine:
 
         # Initialize OpenAI client if needed
         if needs_openai:
-            self.openai_client = OpenAI(api_key=config.openai.api_key)
+            self.openai_client = OpenAI(
+                api_key=config.openai.api_key, base_url=config.openai.base_url
+            )
             logger.info("Initialized OpenAI client")
         else:
             self.openai_client = None
