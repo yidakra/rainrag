@@ -213,9 +213,12 @@ def test_cursor_pages_without_gaps_or_repeats(store):
 
 def _add_summary(tmp_path: Path, content_id: str, text: str) -> None:
     path = tmp_path / "summaries.jsonl"
+    before = path.stat()
     with path.open("a", encoding="utf-8") as fh:
         fh.write("\n" + json.dumps({"content_id": content_id, "summary": text}, ensure_ascii=False))
-    _touch_later(path)
+    # Later than the previous mtime, not than now: two appends can share a
+    # filesystem timestamp tick.
+    os.utime(path, (before.st_atime, before.st_mtime + 5))
 
 
 def test_a_change_during_a_pull_is_returned_by_the_next_pull(tmp_path, store):
@@ -225,7 +228,7 @@ def test_a_change_during_a_pull_is_returned_by_the_next_pull(tmp_path, store):
     store._clock.now = datetime.fromisoformat(T1)
     _add_summary(tmp_path, "300", "Изменено во время выгрузки.")  # already passed by the cursor
     page2, cursor, again = store.page(ALL, limit=1, cursor=cursor)
-    store._clock.now = datetime.fromisoformat("2026-11-17T00:00:00+00:00")
+    store._clock.now = datetime.fromisoformat("2026-11-18T00:00:00+00:00")
     _add_summary(tmp_path, "100", "Изменено позже.")
     page3, last, third = store.page(ALL, limit=1, cursor=cursor)
     assert [i["content_id"] for i in page2 + page3] == ["200", "100"]
