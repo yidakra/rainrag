@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import hashlib
 import json
 import threading
@@ -269,20 +270,35 @@ class EpisodeStore:
         return by_id
 
     def _load_state(self) -> dict[str, list[str]]:
-        if self._state is None:
-            self._state = {}
-            if self.state_path is not None:
+        """The state file, read once; a missing file is no state.
+
+        Any other read or parse error propagates, so the reload stays pending
+        and the last snapshot (or a 503) is served. Treating an unreadable file
+        as empty would restamp every episode and then overwrite the good file.
+        """
+        if self._state is not None:
+            return self._state
+        state: dict[str, list[str]] = {}
+        last = self._last_stamp
+        text = None
+        if self.state_path is not None:
+            with contextlib.suppress(FileNotFoundError):
+                text = self.state_path.read_text(encoding="utf-8")
+        if text is not None:
+            data = json.loads(text)
+            if not isinstance(data, dict):
+                raise ValueError(f"{self.state_path} is not a JSON object")
+            for key, value in data.items():
+                if not (isinstance(value, list) and len(value) == 2):
+                    continue
                 try:
-                    data = json.loads(self.state_path.read_text(encoding="utf-8"))
-                    if isinstance(data, dict):
-                        for key, value in data.items():
-                            if isinstance(value, list) and len(value) == 2:
-                                stamp = iso_utc(datetime.fromisoformat(value[1]))
-                                self._state[str(key)] = [value[0], stamp]
-                                self._last_stamp = max(self._last_stamp, stamp)
-                except (OSError, ValueError, TypeError):
-                    pass
-        return self._state
+                    stamp = iso_utc(datetime.fromisoformat(value[1]))
+                except (TypeError, ValueError):
+                    continue  # one bad entry restamps that episode, not all
+                state[str(key)] = [value[0], stamp]
+                last = max(last, stamp)
+        self._state, self._last_stamp = state, last
+        return state
 
     def _next_stamp(self) -> str:
         """Now, but always later than any stamp already issued.

@@ -297,6 +297,29 @@ def test_a_failed_state_write_is_retried_without_a_new_change(tmp_path, store, m
     assert again.get("100", ALL)["updated_at"] == T0
 
 
+def test_an_unreadable_state_file_is_not_restamped_or_overwritten(tmp_path, store, monkeypatch):
+    """A state file that exists but cannot be read stops the load (CodeRabbit on #131)."""
+    store.get("100", ALL)
+    state_path = tmp_path / "state.json"
+    saved = state_path.read_text(encoding="utf-8")
+    real_read = Path.read_text
+
+    def failing_read(self, *args, **kwargs):
+        if self.name == "state.json":
+            raise PermissionError("denied")
+        return real_read(self, *args, **kwargs)
+
+    clock = _Clock()
+    clock.now = datetime.fromisoformat("2026-12-01T00:00:00+00:00")
+    again = _make_store(tmp_path, store.archive_root, clock)
+    monkeypatch.setattr(Path, "read_text", failing_read)
+    with pytest.raises(EpisodeStoreUnavailableError):
+        again.get("100", ALL)
+    monkeypatch.setattr(Path, "read_text", real_read)
+    assert state_path.read_text(encoding="utf-8") == saved
+    assert again.get("100", ALL)["updated_at"] == T0  # the load was retried, not restamped
+
+
 def test_a_cms_edit_in_the_index_moves_updated_at(tmp_path, store):
     """Programme and presenters ride in the index, so a CMS edit is a change (CodeRabbit on #131)."""
     store.get("100", ALL)
