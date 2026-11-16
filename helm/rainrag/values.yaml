@@ -157,7 +157,8 @@ ingestion:
 
     # Episode feed (GET /episodes) for other TV Rain services. Off in the chart:
     # it reads the index that scripts/youtube_map.py builds, which the chart does
-    # not run. state_path keeps each episode's updated_at; it must sit on the
+    # not run. With enabled: true the API pod mounts the archive volume
+    # read-only to serve transcripts. state_path keeps each episode's updated_at; it must sit on the
     # data volume so restarts keep it, and only one API replica may write it
     # (two would stamp the same change differently and a `since` pull could
     # miss it), so the chart refuses episodes with api.replicas above 1.
