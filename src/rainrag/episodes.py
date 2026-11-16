@@ -24,7 +24,7 @@ import json
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -138,8 +138,23 @@ def transcript_path(archive_root: Path, video_hash: str) -> Path | None:
     return next(iter(sorted(shard.glob("*.vtt"))), None)
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+class EpisodeStoreUnavailableError(RuntimeError):
+    """The index cannot be read and there is no earlier snapshot to serve."""
+
+
+def iso_utc(moment: datetime) -> str:
+    """The one timestamp format of the feed: ISO 8601, UTC, microseconds.
+
+    A single fixed-width form keeps string comparison equal to time order, and
+    microseconds keep two changes within one second apart.
+    """
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _mtime(path: Path) -> float | None:
@@ -167,25 +182,6 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _cms_people(metadata_dir: Path, video_hash: str) -> tuple[str | None, list[str]]:
-    """(programme, presenters) from the cached CMS article, if there is one."""
-    try:
-        article = json.loads((metadata_dir / f"{video_hash}.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None, []
-    program = (article.get("teleshow") or {}).get("name")
-    presenters = []
-    for person in article.get("presentors") or []:
-        name = (person.get("name") or "").strip() or " ".join(
-            part
-            for key in ("firstname", "lastname")
-            if (part := str(person.get(key) or "").strip())
-        )
-        if name:
-            presenters.append(name)
-    return program, presenters
-
-
 class EpisodeStore:
     """Thread-safe, mtime-reloading index of episodes by content_id."""
 
@@ -195,9 +191,8 @@ class EpisodeStore:
         tags_path: Path,
         summaries_path: Path,
         archive_root: Path,
-        metadata_dir: Path,
         state_path: Path | None = None,
-        clock: Callable[[], str] = _now_iso,
+        clock: Callable[[], datetime] = _now,
     ) -> None:
         """Remember the sources; nothing is read until the first request.
 
@@ -209,10 +204,10 @@ class EpisodeStore:
         self.tags_path = tags_path
         self.summaries_path = summaries_path
         self.archive_root = archive_root
-        self.metadata_dir = metadata_dir
         self.state_path = state_path
         self._clock = clock
         self._state: dict[str, list[str]] | None = None
+        self._last_stamp = ""
         self._lock = threading.Lock()
         self._stamp: tuple[float | None, ...] | None = None
         self._by_id: dict[str, _Episode] = {}
@@ -223,19 +218,24 @@ class EpisodeStore:
         with self._lock:
             if stamp == self._stamp:
                 return
-            self._by_id = self._build()
-            self._ordered = sorted(self._by_id.values(), key=lambda e: e.sort_key, reverse=True)
+            try:
+                by_id = self._build()
+            except (OSError, ValueError) as exc:
+                # Keep serving the last good snapshot and leave the reload
+                # pending: an unreadable index must not become an empty feed.
+                logger.warning(f"Episode store: cannot read {self.index_path}: {exc}")
+                if self._stamp is None:
+                    raise EpisodeStoreUnavailableError(str(exc)) from exc
+                return
+            self._by_id = by_id
+            self._ordered = sorted(by_id.values(), key=lambda e: e.sort_key, reverse=True)
             self._stamp = stamp
-            logger.info(f"Episode store loaded {len(self._by_id)} episodes")
+            logger.info(f"Episode store loaded {len(by_id)} episodes")
 
     def _build(self) -> dict[str, _Episode]:
-        try:
-            index = json.loads(self.index_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            logger.warning(f"Episode store: cannot read {self.index_path}: {exc}")
-            return {}
+        index = json.loads(self.index_path.read_text(encoding="utf-8"))
         if not isinstance(index, dict):
-            return {}
+            raise ValueError("the index is not a JSON object")
         by_id: dict[str, _Episode] = {}
         for content_id, row in index.items():
             if not isinstance(row, dict) or not row.get("video_hash"):
@@ -247,6 +247,8 @@ class EpisodeStore:
                 date=row.get("date"),
                 url=row.get("url"),
                 duration_seconds=row.get("duration_seconds"),
+                program=row.get("program"),
+                presenters=list(row.get("presenters") or []),
             )
         self._merge_tags(by_id)
         self._merge_summaries(by_id)
@@ -260,19 +262,31 @@ class EpisodeStore:
                 try:
                     data = json.loads(self.state_path.read_text(encoding="utf-8"))
                     if isinstance(data, dict):
-                        self._state = {
-                            str(k): v
-                            for k, v in data.items()
-                            if isinstance(v, list) and len(v) == 2
-                        }
-                except (OSError, ValueError):
+                        for key, value in data.items():
+                            if isinstance(value, list) and len(value) == 2:
+                                stamp = iso_utc(datetime.fromisoformat(value[1]))
+                                self._state[str(key)] = [value[0], stamp]
+                                self._last_stamp = max(self._last_stamp, stamp)
+                except (OSError, ValueError, TypeError):
                     pass
         return self._state
+
+    def _next_stamp(self) -> str:
+        """Now, but always later than any stamp already issued.
+
+        Two loads within one tick, or a clock step back, must still give a
+        changed record a later updated_at than the version a caller cached.
+        """
+        stamp = iso_utc(self._clock())
+        if stamp <= self._last_stamp:
+            stamp = iso_utc(datetime.fromisoformat(self._last_stamp) + timedelta(microseconds=1))
+        self._last_stamp = stamp
+        return stamp
 
     def _stamp_changes(self, by_id: dict[str, _Episode]) -> None:
         """Set updated_at from the state file; new or changed records get now."""
         state = self._load_state()
-        now = self._clock()
+        now: str | None = None
         changed = False
         for content_id, episode in by_id.items():
             fingerprint = episode.fingerprint()
@@ -280,6 +294,7 @@ class EpisodeStore:
             if known and known[0] == fingerprint:
                 episode.updated_at = known[1]
             else:
+                now = now or self._next_stamp()
                 episode.updated_at = now
                 state[content_id] = [fingerprint, now]
                 changed = True
@@ -307,8 +322,8 @@ class EpisodeStore:
             # another part or re-ingest that shares its content_id.
             if row.get("error") or episode is None or episode.video_hash != row["video_hash"]:
                 continue
-            episode.program = row.get("program")
-            episode.presenters = list(row.get("presenter_cms") or [])
+            episode.program = episode.program or row.get("program")
+            episode.presenters = episode.presenters or list(row.get("presenter_cms") or [])
             episode.tags = {
                 "subject": list(row.get("subject") or []),
                 "guest": list(row.get("guest") or []),
@@ -345,20 +360,15 @@ class EpisodeStore:
         return {"language": language, "text": text}
 
     def _render(self, episode: _Episode, fields: set[str]) -> dict[str, Any]:
-        program, presenters = episode.program, episode.presenters
-        if {"program", "presenters"} & fields and (program is None or presenters is None):
-            cms_program, cms_presenters = _cms_people(self.metadata_dir, episode.video_hash)
-            program = program or cms_program
-            presenters = presenters if presenters is not None else cms_presenters
         full: dict[str, Any] = {
             "content_id": episode.content_id,
             "video_hash": episode.video_hash,
             "title": episode.title,
-            "program": program,
+            "program": episode.program,
             "date": episode.date,
             "url": episode.url,
             "duration_seconds": episode.duration_seconds,
-            "presenters": presenters or [],
+            "presenters": episode.presenters or [],
             "summary": episode.summary,
             "summary_model": episode.summary_model,
             "summary_prompt_version": episode.summary_prompt_version,

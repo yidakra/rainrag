@@ -19,7 +19,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
@@ -343,7 +343,8 @@ from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
-from rainrag.episodes import EpisodeStore
+from rainrag.episodes import EpisodeStore, EpisodeStoreUnavailableError
+from rainrag.episodes import iso_utc as episode_iso_utc
 from rainrag.episodes import parse_fields as parse_episode_fields
 from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS, WebMetadataLoader
 from rainrag.notify import NotifyWorker, QueueNotOwnedError, build_worker
@@ -3185,7 +3186,6 @@ def _episode_store_or_503() -> EpisodeStore:
                 tags_path=Path(config.episodes.tags_path),
                 summaries_path=Path(config.episodes.summaries_path),
                 archive_root=Path(config.paths.archive_root),
-                metadata_dir=Path(config.web_metadata.path),
                 state_path=Path(config.episodes.state_path),
             )
         return _EPISODE_STORE
@@ -3220,16 +3220,14 @@ def _fields_or_400(raw: str | None) -> set[str]:
 
 
 def _since_or_400(raw: str | None) -> str | None:
-    """Normalise ``since`` to the store's ISO 8601 UTC form (seconds)."""
+    """Normalise ``since`` to the store's timestamp form (ISO 8601 UTC, microseconds)."""
     if not raw:
         return None
     try:
         moment = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="since must be ISO 8601") from exc
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(timezone.utc).isoformat(timespec="seconds")
+    return episode_iso_utc(moment)
 
 
 @app.get(
@@ -3264,6 +3262,8 @@ async def list_episodes(
         items, next_cursor = await asyncio.to_thread(
             store.page, wanted, limit=size, cursor=cursor, since=_since_or_400(since)
         )
+    except EpisodeStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="The episode index is unavailable") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return EpisodePage(items=[Episode(**item) for item in items], next_cursor=next_cursor)
@@ -3289,7 +3289,10 @@ async def get_episode(
     _verify_episodes_caller(authorization)
     store = _episode_store_or_503()
     wanted = _fields_or_400(fields)
-    item = await asyncio.to_thread(store.get, content_id.strip(), wanted)
+    try:
+        item = await asyncio.to_thread(store.get, content_id.strip(), wanted)
+    except EpisodeStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="The episode index is unavailable") from exc
     if item is None:
         raise HTTPException(status_code=404, detail="Unknown content_id")
     return Episode(**item)

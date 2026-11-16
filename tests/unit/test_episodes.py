@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from src.rainrag import api as api_module  # noqa: E402
 from src.rainrag.api import app  # noqa: E402
 from src.rainrag.episodes import (  # noqa: E402
     EpisodeStore,
+    EpisodeStoreUnavailableError,
     decode_cursor,
     encode_cursor,
     parse_fields,
@@ -36,7 +38,14 @@ def _write_vtt(root: Path, video_hash: str, lang: str = "ru") -> None:
 def store(tmp_path: Path) -> EpisodeStore:
     """Three articles in the index; one tagged (plus a second file of it), one summarised."""
     index = {
-        "100": {"title": "Old", "date": "2024-01-01", "url": "u100", "video_hash": H1},
+        "100": {
+            "title": "Old",
+            "date": "2024-01-01",
+            "url": "u100",
+            "video_hash": H1,
+            "program": "Здесь и сейчас",
+            "presenters": ["Анна Монгайт"],
+        },
         "200": {
             "title": "Mid",
             "date": "2025-06-01",
@@ -92,18 +101,11 @@ def store(tmp_path: Path) -> EpisodeStore:
     archive = tmp_path / "archive"
     _write_vtt(archive, H2)
     _write_vtt(archive, H3, lang="en")
-    meta = tmp_path / "meta"
-    meta.mkdir()
-    (meta / f"{H1}.json").write_text(
-        json.dumps(
-            {
-                "teleshow": {"name": "Здесь и сейчас"},
-                "presentors": [{"firstname": "Анна", "lastname": "Монгайт"}],
-            }
-        ),
-        encoding="utf-8",
-    )
-    return _make_store(tmp_path, archive, meta)
+    return _make_store(tmp_path, archive)
+
+
+T0 = "2026-11-16T10:00:00.000000+00:00"
+T1 = "2026-11-17T04:00:00.000000+00:00"
 
 
 class _Clock:
@@ -111,20 +113,19 @@ class _Clock:
 
     def __init__(self) -> None:
         """Start at a fixed time."""
-        self.now = "2026-11-16T10:00:00+00:00"
+        self.now = datetime.fromisoformat(T0)
 
-    def __call__(self) -> str:
+    def __call__(self) -> datetime:
         """The current fake time."""
         return self.now
 
 
-def _make_store(tmp_path: Path, archive: Path, meta: Path, clock=None) -> EpisodeStore:
+def _make_store(tmp_path: Path, archive: Path, clock=None) -> EpisodeStore:
     return EpisodeStore(
         index_path=tmp_path / "index.json",
         tags_path=tmp_path / "tags.jsonl",
         summaries_path=tmp_path / "summaries.jsonl",
         archive_root=archive,
-        metadata_dir=meta,
         state_path=tmp_path / "state.json",
         clock=clock or _Clock(),
     )
@@ -159,8 +160,8 @@ def test_failed_tagging_rows_leave_tags_null(store):
     assert store.get("300", ALL)["tags"] is None
 
 
-def test_untagged_episode_takes_program_and_presenters_from_the_cms_card(store):
-    """Without tags, programme and presenters come from the cached CMS article."""
+def test_untagged_episode_takes_program_and_presenters_from_the_index(store):
+    """Without tags, programme and presenters come from the CMS card via the index."""
     episode = store.get("100", ALL)
     assert episode["program"] == "Здесь и сейчас"
     assert episode["presenters"] == ["Анна Монгайт"]
@@ -213,40 +214,92 @@ def test_cursor_pages_without_gaps_or_repeats(store):
 def test_first_load_stamps_every_episode_once(store):
     """With no state file every episode is new at the first load."""
     items, _ = store.page(parse_fields("updated_at"), limit=10)
-    assert {i["updated_at"] for i in items} == {"2026-11-16T10:00:00+00:00"}
+    assert {i["updated_at"] for i in items} == {T0}
 
 
 def test_rewriting_the_index_unchanged_moves_nothing(tmp_path, store):
     """The daily rebuild of the index must not make every episode look changed."""
     store.get("100", ALL)
-    store._clock.now = "2026-11-17T04:00:00+00:00"
+    store._clock.now = datetime.fromisoformat(T1)
     index = tmp_path / "index.json"
     index.write_text(index.read_text(encoding="utf-8"), encoding="utf-8")
     _touch_later(index)
-    items, _ = store.page(ALL, limit=10, since="2026-11-16T10:00:00+00:00")
+    items, _ = store.page(ALL, limit=10, since=T0)
     assert items == []
 
 
 def test_only_the_changed_episode_moves(tmp_path, store):
     """A new summary moves its episode's updated_at and no other."""
     store.get("100", ALL)
-    store._clock.now = "2026-11-17T04:00:00+00:00"
+    store._clock.now = datetime.fromisoformat(T1)
     path = tmp_path / "summaries.jsonl"
     with path.open("a", encoding="utf-8") as fh:
         fh.write("\n" + json.dumps({"content_id": "100", "summary": "Новое."}, ensure_ascii=False))
     _touch_later(path)
-    items, _ = store.page(ALL, limit=10, since="2026-11-16T10:00:00+00:00")
+    items, _ = store.page(ALL, limit=10, since=T0)
     assert [i["content_id"] for i in items] == ["100"]
-    assert items[0]["updated_at"] == "2026-11-17T04:00:00+00:00"
+    assert items[0]["updated_at"] == T1
 
 
 def test_updated_at_survives_a_restart(tmp_path, store):
     """The state file keeps the times, so a new process does not restamp everything."""
     store.get("100", ALL)
     clock = _Clock()
-    clock.now = "2026-12-01T00:00:00+00:00"
-    again = _make_store(tmp_path, store.archive_root, store.metadata_dir, clock)
-    assert again.get("100", ALL)["updated_at"] == "2026-11-16T10:00:00+00:00"
+    clock.now = datetime.fromisoformat("2026-12-01T00:00:00+00:00")
+    again = _make_store(tmp_path, store.archive_root, clock)
+    assert again.get("100", ALL)["updated_at"] == T0
+
+
+def test_a_cms_edit_in_the_index_moves_updated_at(tmp_path, store):
+    """Programme and presenters ride in the index, so a CMS edit is a change (CodeRabbit on #131)."""
+    store.get("100", ALL)
+    store._clock.now = datetime.fromisoformat(T1)
+    index_path = tmp_path / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["100"]["presenters"] = ["Анна Монгайт", "Тихон Дзядко"]
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+    _touch_later(index_path)
+    items, _ = store.page(ALL, limit=10, since=T0)
+    assert [i["content_id"] for i in items] == ["100"]
+
+
+def test_changes_in_the_same_instant_get_later_stamps(tmp_path, store):
+    """Two loads within one clock tick still give the second change a later updated_at."""
+    first = store.get("100", ALL)["updated_at"]
+    path = tmp_path / "summaries.jsonl"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("\n" + json.dumps({"content_id": "100", "summary": "Новое."}, ensure_ascii=False))
+    _touch_later(path)
+    second = store.get("100", ALL)["updated_at"]
+    assert second > first
+    items, _ = store.page(ALL, limit=10, since=first)
+    assert [i["content_id"] for i in items] == ["100"]
+
+
+def test_an_unreadable_index_keeps_the_last_snapshot(tmp_path, store):
+    """A failed read must not publish an empty feed, and the reload stays pending."""
+    assert store.get("100", ALL) is not None
+    index_path = tmp_path / "index.json"
+    good = index_path.read_text(encoding="utf-8")
+    index_path.write_text("{broken", encoding="utf-8")
+    _touch_later(index_path)
+    assert store.get("100", ALL)["title"] == "Old"
+    data = json.loads(good)
+    data["100"]["title"] = "Fixed"
+    index_path.write_text(json.dumps(data), encoding="utf-8")
+    assert store.get("100", ALL)["title"] == "Fixed"
+
+
+def test_no_snapshot_and_no_index_is_unavailable(tmp_path):
+    """With nothing to serve, the store says so instead of returning an empty feed."""
+    empty = EpisodeStore(
+        index_path=tmp_path / "missing.json",
+        tags_path=tmp_path / "tags.jsonl",
+        summaries_path=tmp_path / "summaries.jsonl",
+        archive_root=tmp_path,
+    )
+    with pytest.raises(EpisodeStoreUnavailableError):
+        empty.page(ALL, limit=10)
 
 
 def test_cursor_round_trip_and_garbage():
@@ -331,6 +384,9 @@ def test_since_accepts_z_suffix(client):
     """since accepts the usual Z form and compares in UTC."""
     before = client.get("/episodes", params={"since": "2026-11-16T09:00:00Z", "fields": "title"})
     after = client.get("/episodes", params={"since": "2026-11-16T10:00:00Z", "fields": "title"})
+    assert (
+        client.get("/episodes", params={"since": "2026-11-16T12:00:00+02:00"}).json()["items"] == []
+    )
     assert len(before.json()["items"]) == 2
     assert after.json()["items"] == []
 
