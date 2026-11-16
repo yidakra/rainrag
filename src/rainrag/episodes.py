@@ -22,7 +22,7 @@ import binascii
 import json
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -127,7 +127,7 @@ def transcript_path(archive_root: Path, video_hash: str) -> Path | None:
 
 
 def _mtime_iso(path: Path) -> str:
-    return datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(timespec="seconds")
+    return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
 
 
 def _mtime(path: Path) -> float | None:

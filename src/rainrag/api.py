@@ -19,7 +19,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
@@ -3227,8 +3227,8 @@ def _since_or_400(raw: str | None) -> str | None:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="since must be ISO 8601") from exc
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
-    return moment.astimezone(UTC).isoformat(timespec="seconds")
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
 @app.get(
