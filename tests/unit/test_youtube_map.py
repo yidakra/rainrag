@@ -166,3 +166,19 @@ def test_card_presenters_joins_first_and_last_names():
 
     card = {"presentors": [{"firstname": "Анна", "lastname": "Монгайт"}, {"name": "Тихон Дзядко"}]}
     assert card_presenters(card) == ["Анна Монгайт", "Тихон Дзядко"]
+
+
+def test_card_helpers_accept_odd_cms_shapes():
+    """String presenters, junk entries and a non-object teleshow must not stop the rebuild."""
+    from youtube_map import card_presenters, card_program
+
+    assert card_presenters(
+        {"presentors": [" Анна Монгайт ", 7, None, {"name": "Тихон Дзядко"}]}
+    ) == [
+        "Анна Монгайт",
+        "Тихон Дзядко",
+    ]
+    assert card_presenters({"presentors": "Анна"}) == []
+    assert card_program({"teleshow": "Нюансы"}) is None
+    assert card_program({"teleshow": {"name": " Нюансы "}}) == "Нюансы"
+    assert card_program({}) is None

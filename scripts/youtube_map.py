@@ -162,17 +162,38 @@ def archive_index(
 
 
 def card_presenters(card: dict[str, Any]) -> list[str]:
-    """Presenter names from a CMS card, in its order."""
+    """Presenter names from a CMS card, in its order.
+
+    Same shapes as ingest's ``_extract_people``: a plain string, or an object
+    with ``name`` or ``firstname``/``lastname``. Anything else is skipped, so one
+    odd card cannot stop the nightly rebuild.
+    """
+    people = card.get("presentors")
+    if not isinstance(people, list):
+        return []
     names = []
-    for person in card.get("presentors") or []:
-        name = (person.get("name") or "").strip() or " ".join(
-            part
-            for key in ("firstname", "lastname")
-            if (part := str(person.get(key) or "").strip())
-        )
+    for person in people:
+        if isinstance(person, str):
+            name = person.strip()
+        elif isinstance(person, dict):
+            name = str(person.get("name") or "").strip() or " ".join(
+                part
+                for key in ("firstname", "lastname")
+                if (part := str(person.get(key) or "").strip())
+            )
+        else:
+            continue
         if name:
             names.append(name)
     return names
+
+
+def card_program(card: dict[str, Any]) -> str | None:
+    """The programme name from a CMS card, or None when teleshow is not an object."""
+    teleshow = card.get("teleshow")
+    if not isinstance(teleshow, dict):
+        return None
+    return str(teleshow.get("name") or "").strip() or None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -306,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
             "archive_video_hash": str(d.get("video_hash") or "") or None,
             # The episode feed serves these; carrying them in the nightly index
             # puts CMS edits into its change tracking without per-request reads.
-            "archive_program": (d.get("teleshow") or {}).get("name"),
+            "archive_program": card_program(d),
             "archive_presenters": card_presenters(d),
         }
     print(f"Archive runtimes known for {len(durations):,} episodes".replace(",", " "))
