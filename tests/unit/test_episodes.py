@@ -103,13 +103,36 @@ def store(tmp_path: Path) -> EpisodeStore:
         ),
         encoding="utf-8",
     )
+    return _make_store(tmp_path, archive, meta)
+
+
+class _Clock:
+    """A settable clock for updated_at."""
+
+    def __init__(self) -> None:
+        """Start at a fixed time."""
+        self.now = "2026-11-16T10:00:00+00:00"
+
+    def __call__(self) -> str:
+        """The current fake time."""
+        return self.now
+
+
+def _make_store(tmp_path: Path, archive: Path, meta: Path, clock=None) -> EpisodeStore:
     return EpisodeStore(
         index_path=tmp_path / "index.json",
         tags_path=tmp_path / "tags.jsonl",
         summaries_path=tmp_path / "summaries.jsonl",
         archive_root=archive,
         metadata_dir=meta,
+        state_path=tmp_path / "state.json",
+        clock=clock or _Clock(),
     )
+
+
+def _touch_later(path: Path) -> None:
+    stat = path.stat()
+    os.utime(path, (stat.st_atime, stat.st_mtime + 5))
 
 
 ALL = parse_fields(None)
@@ -149,7 +172,6 @@ def test_summary_carries_its_model_and_prompt_version(store):
     assert episode["summary"] == "Описание."
     assert episode["summary_model"] == "mistral-medium-3.5-128b"
     assert episode["summary_prompt_version"] == "summary-v1"
-    assert episode["updated_at"] == "2099-01-01T00:00:00+00:00"
     assert store.get("200", ALL)["summary"] is None
 
 
@@ -188,10 +210,43 @@ def test_cursor_pages_without_gaps_or_repeats(store):
     assert last is None
 
 
-def test_since_returns_only_records_changed_later(store):
-    """since= keeps records whose updated_at is later."""
-    items, _ = store.page(ALL, limit=10, since="2098-01-01T00:00:00+00:00")
-    assert [i["content_id"] for i in items] == ["300"]
+def test_first_load_stamps_every_episode_once(store):
+    """With no state file every episode is new at the first load."""
+    items, _ = store.page(parse_fields("updated_at"), limit=10)
+    assert {i["updated_at"] for i in items} == {"2026-11-16T10:00:00+00:00"}
+
+
+def test_rewriting_the_index_unchanged_moves_nothing(tmp_path, store):
+    """The daily rebuild of the index must not make every episode look changed."""
+    store.get("100", ALL)
+    store._clock.now = "2026-11-17T04:00:00+00:00"
+    index = tmp_path / "index.json"
+    index.write_text(index.read_text(encoding="utf-8"), encoding="utf-8")
+    _touch_later(index)
+    items, _ = store.page(ALL, limit=10, since="2026-11-16T10:00:00+00:00")
+    assert items == []
+
+
+def test_only_the_changed_episode_moves(tmp_path, store):
+    """A new summary moves its episode's updated_at and no other."""
+    store.get("100", ALL)
+    store._clock.now = "2026-11-17T04:00:00+00:00"
+    path = tmp_path / "summaries.jsonl"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("\n" + json.dumps({"content_id": "100", "summary": "Новое."}, ensure_ascii=False))
+    _touch_later(path)
+    items, _ = store.page(ALL, limit=10, since="2026-11-16T10:00:00+00:00")
+    assert [i["content_id"] for i in items] == ["100"]
+    assert items[0]["updated_at"] == "2026-11-17T04:00:00+00:00"
+
+
+def test_updated_at_survives_a_restart(tmp_path, store):
+    """The state file keeps the times, so a new process does not restamp everything."""
+    store.get("100", ALL)
+    clock = _Clock()
+    clock.now = "2026-12-01T00:00:00+00:00"
+    again = _make_store(tmp_path, store.archive_root, store.metadata_dir, clock)
+    assert again.get("100", ALL)["updated_at"] == "2026-11-16T10:00:00+00:00"
 
 
 def test_cursor_round_trip_and_garbage():
@@ -207,8 +262,7 @@ def test_store_reloads_when_a_source_file_changes(store, tmp_path):
     path = tmp_path / "summaries.jsonl"
     with path.open("a", encoding="utf-8") as fh:
         fh.write("\n" + json.dumps({"content_id": "200", "summary": "Новое."}, ensure_ascii=False))
-    stat = path.stat()
-    os.utime(path, (stat.st_atime, stat.st_mtime + 5))
+    _touch_later(path)
     assert store.get("200", ALL)["summary"] == "Новое."
 
 
@@ -275,10 +329,10 @@ def test_bad_fields_cursor_and_since_are_400(client):
 
 def test_since_accepts_z_suffix(client):
     """since accepts the usual Z form and compares in UTC."""
-    body = client.get(
-        "/episodes", params={"since": "2098-01-01T00:00:00Z", "fields": "title"}
-    ).json()
-    assert [i["content_id"] for i in body["items"]] == ["300"]
+    before = client.get("/episodes", params={"since": "2026-11-16T09:00:00Z", "fields": "title"})
+    after = client.get("/episodes", params={"since": "2026-11-16T10:00:00Z", "fields": "title"})
+    assert len(before.json()["items"]) == 2
+    assert after.json()["items"] == []
 
 
 def test_episodes_token_opens_only_the_episode_routes(client, monkeypatch):

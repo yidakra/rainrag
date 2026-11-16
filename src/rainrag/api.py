@@ -3186,6 +3186,7 @@ def _episode_store_or_503() -> EpisodeStore:
                 summaries_path=Path(config.episodes.summaries_path),
                 archive_root=Path(config.paths.archive_root),
                 metadata_dir=Path(config.web_metadata.path),
+                state_path=Path(config.episodes.state_path),
             )
         return _EPISODE_STORE
 

@@ -1640,7 +1640,7 @@ curl "https://rag.tvrain.tv/episodes?since=2026-11-16T00:00:00Z" -H "Authorizati
 - **Which episodes.** Every video with a CMS card and an indexed transcript (`archive_by_content_id.json`, rebuilt daily). Videos without a card have no `content_id` and are not in the feed. When several files share one article, the index picks one.
 - **Fields.** `summary` (with `summary_model` and `summary_prompt_version`), `tags` and `program` are null where the episode has not been summarised or tagged yet. `fields=` trims the record; a field left out is absent, not null. Unknown field names are a 400.
 - **Order and paging.** Newest release date first, then `content_id`; `next_cursor` is null on the last page. Page size defaults to `episodes.default_page_size` (20) and is capped at `episodes.max_page_size` (100).
-- **Freshness.** `updated_at` is the latest change to any part of the record. Rebuilding the index or appending tags or summaries moves it for every affected record, so a `since` pull after such a run returns those episodes again.
+- **Freshness.** `updated_at` is when the record's content last changed: index fields, programme, presenters, tags or summary. The API keeps a fingerprint per episode in `episodes.state_path`, so the daily index rebuild moves nothing unless an episode really changed, and a `since` pull returns only those. The first load stamps every episode once. Transcript edits are not tracked.
 - **Token.** The routes accept a read-only token from the variable named by `episodes.token_env` (default `RAINRAG_EPISODES_TOKEN`) as well as the API token. A configured episodes token closes the routes even when the API token is unset.
 
 ## Hybrid Search (Vector + BM25)

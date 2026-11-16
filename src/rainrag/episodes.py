@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,22 +62,32 @@ class _Episode:
     date: str | None
     url: str | None
     duration_seconds: float | None
-    base_updated_at: str
     program: str | None = None
     presenters: list[str] | None = None
     tags: dict[str, list[str]] | None = None
-    tags_updated_at: str | None = None
     summary: str | None = None
     summary_model: str | None = None
     summary_prompt_version: str | None = None
-    summary_updated_at: str | None = None
+    # When this record's content last changed (ISO 8601, UTC), from the state file.
+    updated_at: str = ""
 
-    @property
-    def updated_at(self) -> str:
-        """The latest timestamp among the parts of the record (ISO 8601, UTC)."""
-        return max(
-            t for t in (self.base_updated_at, self.tags_updated_at, self.summary_updated_at) if t
-        )
+    def fingerprint(self) -> str:
+        """A digest of everything the feed serves except the transcript."""
+        content = [
+            self.video_hash,
+            self.title,
+            self.date,
+            self.url,
+            self.duration_seconds,
+            self.program,
+            self.presenters,
+            self.tags,
+            self.summary,
+            self.summary_model,
+            self.summary_prompt_version,
+        ]
+        raw = json.dumps(content, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
     @property
     def sort_key(self) -> tuple[str, str]:
@@ -126,8 +138,8 @@ def transcript_path(archive_root: Path, video_hash: str) -> Path | None:
     return next(iter(sorted(shard.glob("*.vtt"))), None)
 
 
-def _mtime_iso(path: Path) -> str:
-    return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _mtime(path: Path) -> float | None:
@@ -184,13 +196,23 @@ class EpisodeStore:
         summaries_path: Path,
         archive_root: Path,
         metadata_dir: Path,
+        state_path: Path | None = None,
+        clock: Callable[[], str] = _now_iso,
     ) -> None:
-        """Remember the sources; nothing is read until the first request."""
+        """Remember the sources; nothing is read until the first request.
+
+        ``state_path`` keeps each episode's content fingerprint and the time it
+        last changed, so ``updated_at`` survives restarts and moves only when an
+        episode's own record changes, not when the daily index is rewritten.
+        """
         self.index_path = index_path
         self.tags_path = tags_path
         self.summaries_path = summaries_path
         self.archive_root = archive_root
         self.metadata_dir = metadata_dir
+        self.state_path = state_path
+        self._clock = clock
+        self._state: dict[str, list[str]] | None = None
         self._lock = threading.Lock()
         self._stamp: tuple[float | None, ...] | None = None
         self._by_id: dict[str, _Episode] = {}
@@ -214,7 +236,6 @@ class EpisodeStore:
             return {}
         if not isinstance(index, dict):
             return {}
-        base_updated_at = _mtime_iso(self.index_path)
         by_id: dict[str, _Episode] = {}
         for content_id, row in index.items():
             if not isinstance(row, dict) or not row.get("video_hash"):
@@ -226,16 +247,56 @@ class EpisodeStore:
                 date=row.get("date"),
                 url=row.get("url"),
                 duration_seconds=row.get("duration_seconds"),
-                base_updated_at=base_updated_at,
             )
         self._merge_tags(by_id)
         self._merge_summaries(by_id)
+        self._stamp_changes(by_id)
         return by_id
+
+    def _load_state(self) -> dict[str, list[str]]:
+        if self._state is None:
+            self._state = {}
+            if self.state_path is not None:
+                try:
+                    data = json.loads(self.state_path.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        self._state = {
+                            str(k): v
+                            for k, v in data.items()
+                            if isinstance(v, list) and len(v) == 2
+                        }
+                except (OSError, ValueError):
+                    pass
+        return self._state
+
+    def _stamp_changes(self, by_id: dict[str, _Episode]) -> None:
+        """Set updated_at from the state file; new or changed records get now."""
+        state = self._load_state()
+        now = self._clock()
+        changed = False
+        for content_id, episode in by_id.items():
+            fingerprint = episode.fingerprint()
+            known = state.get(content_id)
+            if known and known[0] == fingerprint:
+                episode.updated_at = known[1]
+            else:
+                episode.updated_at = now
+                state[content_id] = [fingerprint, now]
+                changed = True
+        for gone in set(state) - set(by_id):
+            del state[gone]
+            changed = True
+        if changed and self.state_path is not None:
+            tmp = self.state_path.with_name(self.state_path.name + ".tmp")
+            try:
+                tmp.write_text(json.dumps(state), encoding="utf-8")
+                tmp.replace(self.state_path)
+            except OSError as exc:
+                logger.warning(f"Episode store: cannot write {self.state_path}: {exc}")
 
     def _merge_tags(self, by_id: dict[str, _Episode]) -> None:
         if not self.tags_path.exists():
             return
-        updated_at = _mtime_iso(self.tags_path)
         latest: dict[str, dict[str, Any]] = {}
         for row in _read_jsonl(self.tags_path):
             if row.get("video_hash"):
@@ -260,12 +321,10 @@ class EpisodeStore:
                 "organization": list(row.get("organization") or []),
                 "genre": list(row.get("genre") or []),
             }
-            episode.tags_updated_at = updated_at
 
     def _merge_summaries(self, by_id: dict[str, _Episode]) -> None:
         if not self.summaries_path.exists():
             return
-        fallback = _mtime_iso(self.summaries_path)
         for row in _read_jsonl(self.summaries_path):
             episode = by_id.get(str(row.get("content_id") or ""))
             if episode is None or not row.get("summary"):
@@ -273,7 +332,6 @@ class EpisodeStore:
             episode.summary = row["summary"]
             episode.summary_model = row.get("model")
             episode.summary_prompt_version = row.get("prompt_version")
-            episode.summary_updated_at = row.get("generated_at") or fallback
 
     def _transcript(self, episode: _Episode) -> dict[str, str] | None:
         path = transcript_path(self.archive_root, episode.video_hash)

@@ -793,6 +793,13 @@ class EpisodesConfig(BaseModel):
         default="./data/episode_summaries.jsonl",
         description="Summary run output: content_id, summary, model, prompt_version, generated_at",
     )
+    state_path: str = Field(
+        default="./data/episodes_state.json",
+        description=(
+            "Per-episode content fingerprint and last-change time, written by the API, so "
+            "updated_at moves only when an episode's own record changes"
+        ),
+    )
     default_page_size: int = Field(default=20, ge=1, description="Episodes per page by default")
     max_page_size: int = Field(default=100, ge=1, description="Largest page a caller can ask for")
     token_env: str = Field(
