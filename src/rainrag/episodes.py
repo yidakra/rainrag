@@ -165,10 +165,15 @@ def _mtime(path: Path) -> float | None:
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Rows of an optional JSONL source; a missing file is no rows.
+
+    Any other read error propagates, so the store keeps its previous snapshot
+    instead of publishing records stripped of their tags or summaries.
+    """
     rows: list[dict[str, Any]] = []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+    except FileNotFoundError:
         return rows
     for line in lines:
         if not line.strip():

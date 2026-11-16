@@ -417,3 +417,23 @@ def test_disabled_feed_is_503(client):
     """episodes.enabled=false closes the feed."""
     api_module.config.episodes.enabled = False
     assert client.get("/episodes").status_code == 503
+
+
+def test_an_unreadable_summaries_file_keeps_the_last_snapshot(tmp_path, store):
+    """A read error on an existing optional source must not strip metadata (CodeRabbit on #131)."""
+    assert store.get("300", ALL)["summary"] == "Описание."
+    path = tmp_path / "summaries.jsonl"
+    saved = path.read_text(encoding="utf-8")
+    path.unlink()
+    path.mkdir()  # reading a directory raises IsADirectoryError, an OSError
+    assert store.get("300", ALL)["summary"] == "Описание."
+    path.rmdir()
+    path.write_text(saved.replace("Описание.", "Обновлено."), encoding="utf-8")
+    assert store.get("300", ALL)["summary"] == "Обновлено."
+
+
+def test_a_missing_optional_source_is_simply_no_data(tmp_path, store):
+    """Deleting the summaries file is a real change: summaries go, the feed stays."""
+    assert store.get("300", ALL)["summary"] == "Описание."
+    (tmp_path / "summaries.jsonl").unlink()
+    assert store.get("300", ALL)["summary"] is None
