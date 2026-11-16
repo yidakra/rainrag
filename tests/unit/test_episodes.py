@@ -141,7 +141,7 @@ ALL = parse_fields(None)
 
 def test_every_indexed_article_is_an_episode_newest_first(store):
     """The base set is the index, not only tagged episodes, newest first."""
-    items, cursor = store.page(ALL, limit=10)
+    items, cursor, _ = store.page(ALL, limit=10)
     assert [i["content_id"] for i in items] == ["300", "200", "100"]
     assert cursor is None
 
@@ -205,15 +205,41 @@ def test_unknown_fields_are_an_error():
 
 def test_cursor_pages_without_gaps_or_repeats(store):
     """Two pages of two cover all three episodes once."""
-    first, cursor = store.page(ALL, limit=2)
-    second, last = store.page(ALL, limit=2, cursor=cursor)
+    first, cursor, _ = store.page(ALL, limit=2)
+    second, last, _ = store.page(ALL, limit=2, cursor=cursor)
     assert [i["content_id"] for i in first + second] == ["300", "200", "100"]
     assert last is None
 
 
+def _add_summary(tmp_path: Path, content_id: str, text: str) -> None:
+    path = tmp_path / "summaries.jsonl"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("\n" + json.dumps({"content_id": content_id, "summary": text}, ensure_ascii=False))
+    _touch_later(path)
+
+
+def test_a_change_during_a_pull_is_returned_by_the_next_pull(tmp_path, store):
+    """The watermark, not the largest updated_at seen, is the safe `since` (CodeRabbit on #131)."""
+    page1, cursor, watermark = store.page(ALL, limit=1)
+    assert [i["content_id"] for i in page1] == ["300"]
+    store._clock.now = datetime.fromisoformat(T1)
+    _add_summary(tmp_path, "300", "Изменено во время выгрузки.")  # already passed by the cursor
+    page2, cursor, again = store.page(ALL, limit=1, cursor=cursor)
+    store._clock.now = datetime.fromisoformat("2026-11-17T00:00:00+00:00")
+    _add_summary(tmp_path, "100", "Изменено позже.")
+    page3, last, third = store.page(ALL, limit=1, cursor=cursor)
+    assert [i["content_id"] for i in page2 + page3] == ["200", "100"]
+    assert last is None
+    assert watermark == again == third
+    seen = max(i["updated_at"] for i in page1 + page2 + page3)
+    assert store.get("300", ALL)["updated_at"] < seen  # saving `seen` would lose episode 300
+    items, _, _ = store.page(ALL, limit=10, since=watermark)
+    assert [i["content_id"] for i in items] == ["300", "100"]
+
+
 def test_first_load_stamps_every_episode_once(store):
     """With no state file every episode is new at the first load."""
-    items, _ = store.page(parse_fields("updated_at"), limit=10)
+    items, _, _ = store.page(parse_fields("updated_at"), limit=10)
     assert {i["updated_at"] for i in items} == {T0}
 
 
@@ -224,7 +250,7 @@ def test_rewriting_the_index_unchanged_moves_nothing(tmp_path, store):
     index = tmp_path / "index.json"
     index.write_text(index.read_text(encoding="utf-8"), encoding="utf-8")
     _touch_later(index)
-    items, _ = store.page(ALL, limit=10, since=T0)
+    items, _, _ = store.page(ALL, limit=10, since=T0)
     assert items == []
 
 
@@ -236,7 +262,7 @@ def test_only_the_changed_episode_moves(tmp_path, store):
     with path.open("a", encoding="utf-8") as fh:
         fh.write("\n" + json.dumps({"content_id": "100", "summary": "Новое."}, ensure_ascii=False))
     _touch_later(path)
-    items, _ = store.page(ALL, limit=10, since=T0)
+    items, _, _ = store.page(ALL, limit=10, since=T0)
     assert [i["content_id"] for i in items] == ["100"]
     assert items[0]["updated_at"] == T1
 
@@ -280,7 +306,7 @@ def test_a_cms_edit_in_the_index_moves_updated_at(tmp_path, store):
     index["100"]["presenters"] = ["Анна Монгайт", "Тихон Дзядко"]
     index_path.write_text(json.dumps(index), encoding="utf-8")
     _touch_later(index_path)
-    items, _ = store.page(ALL, limit=10, since=T0)
+    items, _, _ = store.page(ALL, limit=10, since=T0)
     assert [i["content_id"] for i in items] == ["100"]
 
 
@@ -293,7 +319,7 @@ def test_changes_in_the_same_instant_get_later_stamps(tmp_path, store):
     _touch_later(path)
     second = store.get("100", ALL)["updated_at"]
     assert second > first
-    items, _ = store.page(ALL, limit=10, since=first)
+    items, _, _ = store.page(ALL, limit=10, since=first)
     assert [i["content_id"] for i in items] == ["100"]
 
 
@@ -325,7 +351,8 @@ def test_no_snapshot_and_no_index_is_unavailable(tmp_path):
 
 def test_cursor_round_trip_and_garbage():
     """Cursors decode back; anything else is a ValueError."""
-    assert decode_cursor(encode_cursor(("2026-01-01", "7"))) == ("2026-01-01", "7")
+    cursor = encode_cursor(("2026-01-01", "7"), T0)
+    assert decode_cursor(cursor) == (("2026-01-01", "7"), T0)
     with pytest.raises(ValueError):
         decode_cursor("not-a-cursor")
 
@@ -378,6 +405,7 @@ def test_list_route_pages_and_omits_trimmed_fields(client):
     rest = rest.json()
     assert [i["content_id"] for i in rest["items"]] == ["100"]
     assert rest.get("next_cursor") is None
+    assert first["sync_watermark"] == rest["sync_watermark"] == T0
 
 
 def test_page_size_is_capped(client):

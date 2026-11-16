@@ -66,6 +66,15 @@ data:
       token_env: {{ include "rainrag.notifyTokenEnv" $ | quote }}
     {{- end }}
 
+    {{- with .Values.ingestion.config.episodes }}
+    episodes:
+      enabled: {{ .enabled }}
+      index_path: {{ .index_path | quote }}
+      tags_path: {{ .tags_path | quote }}
+      summaries_path: {{ .summaries_path | quote }}
+      state_path: {{ .state_path | quote }}
+    {{- end }}
+
     logging:
       level: {{ .Values.ingestion.config.logging.level | quote }}
       format: {{ .Values.ingestion.config.logging.format | quote }}

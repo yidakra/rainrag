@@ -3168,6 +3168,13 @@ class EpisodePage(BaseModel):
     next_cursor: str | None = Field(
         default=None, description="Pass as `cursor` for the next page; null on the last page"
     )
+    sync_watermark: str = Field(
+        description=(
+            "The latest updated_at when this pull began; the same on every page of one pull. "
+            "Save it after the last page and pass it as `since` next time. Do not save the "
+            "largest updated_at you received: a change made during the pull can be earlier."
+        )
+    )
 
 
 _EPISODE_STORE: EpisodeStore | None = None
@@ -3259,14 +3266,18 @@ async def list_episodes(
     wanted = _fields_or_400(fields)
     size = min(limit or config.episodes.default_page_size, config.episodes.max_page_size)
     try:
-        items, next_cursor = await asyncio.to_thread(
+        items, next_cursor, watermark = await asyncio.to_thread(
             store.page, wanted, limit=size, cursor=cursor, since=_since_or_400(since)
         )
     except EpisodeStoreUnavailableError as exc:
         raise HTTPException(status_code=503, detail="The episode index is unavailable") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return EpisodePage(items=[Episode(**item) for item in items], next_cursor=next_cursor)
+    return EpisodePage(
+        items=[Episode(**item) for item in items],
+        next_cursor=next_cursor,
+        sync_watermark=watermark,
+    )
 
 
 @app.get(

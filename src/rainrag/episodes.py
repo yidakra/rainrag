@@ -110,20 +110,20 @@ def parse_fields(raw: str | None) -> set[str]:
     return wanted | {"content_id"}
 
 
-def encode_cursor(key: tuple[str, str]) -> str:
-    """An opaque cursor for the position after ``key``."""
-    return base64.urlsafe_b64encode(json.dumps(list(key)).encode()).decode()
+def encode_cursor(key: tuple[str, str], watermark: str) -> str:
+    """An opaque cursor for the position after ``key`` in a pull that began at ``watermark``."""
+    return base64.urlsafe_b64encode(json.dumps([*key, watermark]).encode()).decode()
 
 
-def decode_cursor(cursor: str) -> tuple[str, str]:
-    """Inverse of encode_cursor; ValueError on anything else."""
+def decode_cursor(cursor: str) -> tuple[tuple[str, str], str]:
+    """Inverse of encode_cursor: (sort key, watermark); ValueError on anything else."""
     try:
-        date, content_id = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+        date, content_id, watermark = json.loads(base64.urlsafe_b64decode(cursor.encode()))
     except (binascii.Error, ValueError, TypeError) as exc:
         raise ValueError("Invalid cursor") from exc
-    if not isinstance(date, str) or not isinstance(content_id, str):
+    if not all(isinstance(v, str) for v in (date, content_id, watermark)):
         raise ValueError("Invalid cursor")
-    return (date, content_id)
+    return (date, content_id), watermark
 
 
 def transcript_path(archive_root: Path, video_hash: str) -> Path | None:
@@ -219,7 +219,9 @@ class EpisodeStore:
         self._lock = threading.Lock()
         self._stamp: tuple[float | None, ...] | None = None
         self._by_id: dict[str, _Episode] = {}
-        self._ordered: list[_Episode] = []
+        # Episodes newest first and the latest updated_at among them, published
+        # as one tuple so a page never pairs an old list with a newer watermark.
+        self._view: tuple[list[_Episode], str] = ([], "")
 
     def _reload_if_changed(self) -> None:
         stamp = tuple(_mtime(p) for p in (self.index_path, self.tags_path, self.summaries_path))
@@ -238,7 +240,8 @@ class EpisodeStore:
                     raise EpisodeStoreUnavailableError(str(exc)) from exc
                 return
             self._by_id = by_id
-            self._ordered = sorted(by_id.values(), key=lambda e: e.sort_key, reverse=True)
+            ordered = sorted(by_id.values(), key=lambda e: e.sort_key, reverse=True)
+            self._view = (ordered, max((e.updated_at for e in ordered), default=""))
             self._stamp = stamp
             logger.info(f"Episode store loaded {len(by_id)} episodes")
 
@@ -413,16 +416,27 @@ class EpisodeStore:
         limit: int,
         cursor: str | None = None,
         since: str | None = None,
-    ) -> tuple[list[dict[str, Any]], str | None]:
-        """A page of episodes, newest first, and the cursor for the next one.
+    ) -> tuple[list[dict[str, Any]], str | None, str]:
+        """A page of episodes, newest first, the next cursor and the sync watermark.
 
         ``since`` keeps episodes whose ``updated_at`` is later than it, for
         incremental sync. The next cursor is None on the last page.
+
+        The watermark is the latest ``updated_at`` when the pull's first page
+        was served, and the cursor carries it, so every page of one pull
+        reports the same value. A change made during the pull gets a later
+        stamp, so the next pull with ``since=watermark`` returns it even if the
+        cursor had already passed that episode. The largest ``updated_at`` a
+        client saw is not safe to save: it can be later than such a change.
         """
         self._reload_if_changed()
-        after = decode_cursor(cursor) if cursor else None
+        ordered, current = self._view
+        after: tuple[str, str] | None = None
+        watermark = current
+        if cursor:
+            after, watermark = decode_cursor(cursor)
         items: list[_Episode] = []
-        for episode in self._ordered:
+        for episode in ordered:
             if after is not None and episode.sort_key >= after:
                 continue
             if since is not None and episode.updated_at <= since:
@@ -432,5 +446,5 @@ class EpisodeStore:
                 break
         has_more = len(items) > limit
         items = items[:limit]
-        next_cursor = encode_cursor(items[-1].sort_key) if has_more and items else None
-        return [self._render(e, fields) for e in items], next_cursor
+        next_cursor = encode_cursor(items[-1].sort_key, watermark) if has_more and items else None
+        return [self._render(e, fields) for e in items], next_cursor, watermark
