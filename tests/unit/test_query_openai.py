@@ -379,4 +379,36 @@ def test_client_uses_the_configured_endpoint(openai_config, mock_qdrant_client, 
     with patch("src.rainrag.query.OpenAI") as client_cls:
         with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
             RAGQueryEngine(openai_config)
-    client_cls.assert_called_once_with(api_key=openai_config.openai.api_key, base_url=base_url)
+    # The first client is the LLM's; embeddings may get their own (see below).
+    assert client_cls.call_args_list[0].kwargs == {
+        "api_key": openai_config.openai.api_key,
+        "base_url": base_url,
+    }
+
+
+def test_query_embeddings_stay_on_openai_when_base_url_is_set(
+    openai_config, mock_qdrant_client, monkeypatch
+):
+    """base_url redirects the LLM only: query vectors must match the OpenAI-built index (CodeRabbit on #130)."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    openai_config.embedding.provider = "openai"
+    openai_config.openai.base_url = "https://api.scaleway.ai/v1"
+    openai_config.openai.api_key = "scw-key"
+    with patch("src.rainrag.query.OpenAI", side_effect=lambda **kw: MagicMock()) as client_cls:
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
+            engine = RAGQueryEngine(openai_config)
+    assert client_cls.call_args_list[0].kwargs == {
+        "api_key": "scw-key",
+        "base_url": "https://api.scaleway.ai/v1",
+    }
+    assert client_cls.call_args_list[1].kwargs == {"api_key": "sk-openai"}
+    assert engine.openai_embedding_client is not engine.openai_client
+
+
+def test_query_embeddings_share_the_client_without_base_url(openai_config, mock_qdrant_client):
+    """Without base_url nothing changes: one client serves both."""
+    openai_config.embedding.provider = "openai"
+    with patch("src.rainrag.query.OpenAI"):
+        with patch("src.rainrag.query.QdrantClient", return_value=mock_qdrant_client):
+            engine = RAGQueryEngine(openai_config)
+    assert engine.openai_embedding_client is engine.openai_client

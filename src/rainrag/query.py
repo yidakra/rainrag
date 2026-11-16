@@ -2,6 +2,7 @@
 
 import importlib
 import math as _math
+import os
 import re
 import threading
 from collections import OrderedDict
@@ -258,6 +259,15 @@ class RAGQueryEngine:
             logger.info("Initialized OpenAI client")
         else:
             self.openai_client = None
+        # Query embeddings must come from the same model as the indexed vectors,
+        # which embed.py always builds on OpenAI with OPENAI_API_KEY. base_url
+        # only redirects the LLM, so with one set, embeddings get their own client.
+        self.openai_embedding_client: OpenAI | None = None
+        if config.embedding.provider == "openai":
+            if config.openai.base_url is None:
+                self.openai_embedding_client = self.openai_client
+            else:
+                self.openai_embedding_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
         # Initialize Claude client if needed
         if needs_claude:
@@ -1475,8 +1485,8 @@ class RAGQueryEngine:
             # Use OpenAI API embeddings
             logger.debug(f"Embedding query using OpenAI API: {query[:100]}...")
             try:
-                assert self.openai_client is not None, "OpenAI client not initialized"
-                openai_response = self.openai_client.embeddings.create(
+                assert self.openai_embedding_client is not None, "OpenAI client not initialized"
+                openai_response = self.openai_embedding_client.embeddings.create(
                     model=self.config.openai.embedding_model, input=query
                 )
                 return openai_response.data[0].embedding
