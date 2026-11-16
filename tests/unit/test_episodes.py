@@ -1,0 +1,309 @@
+"""The episode feed: store behaviour and the /episodes routes."""
+
+import json
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
+
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from src.rainrag import api as api_module  # noqa: E402
+from src.rainrag.api import app  # noqa: E402
+from src.rainrag.episodes import (  # noqa: E402
+    EpisodeStore,
+    decode_cursor,
+    encode_cursor,
+    parse_fields,
+)
+
+
+H1, H2, H3, H_PART = "1" * 40, "2" * 40, "3" * 40, "4" * 40
+VTT = "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nДобрый вечер, это Дождь.\n"
+
+
+def _write_vtt(root: Path, video_hash: str, lang: str = "ru") -> None:
+    shard = root.joinpath(*[video_hash[i : i + 2] for i in range(0, 40, 2)])
+    shard.mkdir(parents=True)
+    (shard / f"{video_hash}.{lang}.vtt").write_text(VTT, encoding="utf-8")
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> EpisodeStore:
+    """Three articles in the index; one tagged (plus a second file of it), one summarised."""
+    index = {
+        "100": {"title": "Old", "date": "2024-01-01", "url": "u100", "video_hash": H1},
+        "200": {
+            "title": "Mid",
+            "date": "2025-06-01",
+            "url": "u200",
+            "video_hash": H2,
+            "duration_seconds": 3000.0,
+        },
+        "300": {"title": "New", "date": "2026-03-01", "url": "u300", "video_hash": H3},
+    }
+    (tmp_path / "index.json").write_text(json.dumps(index), encoding="utf-8")
+    tags = [
+        {
+            "video_hash": H2,
+            "content_id": "200",
+            "program": "Нюансы",
+            "presenter_cms": ["Таратута"],
+            "subject": ["выборы"],
+            "guest": ["Шульман"],
+            "mentioned_cms": ["Путин"],
+            "mentioned_extra": ["Путин", "Орбан"],
+            "place": ["Венгрия"],
+            "organization": [],
+            "genre": ["интервью"],
+            "error": None,
+        },
+        # Another file of the same article: its tags must not replace the indexed file's.
+        {
+            "video_hash": H_PART,
+            "content_id": "200",
+            "program": "Нюансы",
+            "subject": ["чужое"],
+            "error": None,
+        },
+        {"video_hash": H3, "content_id": "300", "subject": ["сбой"], "error": "parse failed"},
+    ]
+    (tmp_path / "tags.jsonl").write_text(
+        "\n".join(json.dumps(t, ensure_ascii=False) for t in tags) + "\n{broken\n",
+        encoding="utf-8",
+    )
+    summaries = [
+        {
+            "content_id": "300",
+            "summary": "Описание.",
+            "model": "mistral-medium-3.5-128b",
+            "prompt_version": "summary-v1",
+            "generated_at": "2099-01-01T00:00:00+00:00",
+        },
+        {"content_id": "999", "summary": "Не из индекса."},
+    ]
+    (tmp_path / "summaries.jsonl").write_text(
+        "\n".join(json.dumps(s, ensure_ascii=False) for s in summaries), encoding="utf-8"
+    )
+    archive = tmp_path / "archive"
+    _write_vtt(archive, H2)
+    _write_vtt(archive, H3, lang="en")
+    meta = tmp_path / "meta"
+    meta.mkdir()
+    (meta / f"{H1}.json").write_text(
+        json.dumps(
+            {
+                "teleshow": {"name": "Здесь и сейчас"},
+                "presentors": [{"firstname": "Анна", "lastname": "Монгайт"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return EpisodeStore(
+        index_path=tmp_path / "index.json",
+        tags_path=tmp_path / "tags.jsonl",
+        summaries_path=tmp_path / "summaries.jsonl",
+        archive_root=archive,
+        metadata_dir=meta,
+    )
+
+
+ALL = parse_fields(None)
+
+
+def test_every_indexed_article_is_an_episode_newest_first(store):
+    """The base set is the index, not only tagged episodes, newest first."""
+    items, cursor = store.page(ALL, limit=10)
+    assert [i["content_id"] for i in items] == ["300", "200", "100"]
+    assert cursor is None
+
+
+def test_tags_merge_only_from_the_indexed_file(store):
+    """Tags come from the file the index chose; another file of the article is ignored."""
+    episode = store.get("200", ALL)
+    assert episode["tags"]["subject"] == ["выборы"]
+    assert episode["tags"]["mentioned"] == ["Путин", "Орбан"]
+    assert episode["program"] == "Нюансы"
+    assert episode["presenters"] == ["Таратута"]
+
+
+def test_failed_tagging_rows_leave_tags_null(store):
+    """A tagging failure is no tags, not a broken record."""
+    assert store.get("300", ALL)["tags"] is None
+
+
+def test_untagged_episode_takes_program_and_presenters_from_the_cms_card(store):
+    """Without tags, programme and presenters come from the cached CMS article."""
+    episode = store.get("100", ALL)
+    assert episode["program"] == "Здесь и сейчас"
+    assert episode["presenters"] == ["Анна Монгайт"]
+
+
+def test_summary_carries_its_model_and_prompt_version(store):
+    """Summaries say which model and prompt made them; unsummarised is null."""
+    episode = store.get("300", ALL)
+    assert episode["summary"] == "Описание."
+    assert episode["summary_model"] == "mistral-medium-3.5-128b"
+    assert episode["summary_prompt_version"] == "summary-v1"
+    assert episode["updated_at"] == "2099-01-01T00:00:00+00:00"
+    assert store.get("200", ALL)["summary"] is None
+
+
+def test_transcript_is_plain_text_with_its_language(store):
+    """The transcript is VTT text without cues; missing is null."""
+    assert store.get("200", ALL)["transcript"] == {
+        "language": "ru",
+        "text": "Добрый вечер, это Дождь.",
+    }
+    assert store.get("300", ALL)["transcript"]["language"] == "en"
+    assert store.get("100", ALL)["transcript"] is None
+
+
+def test_unknown_content_id_is_none(store):
+    """A content_id outside the index is not an episode."""
+    assert store.get("999", ALL) is None
+
+
+def test_fields_trim_the_record_and_keep_content_id(store):
+    """fields= returns only what was asked, plus content_id."""
+    episode = store.get("200", parse_fields("title,summary"))
+    assert set(episode) == {"content_id", "title", "summary"}
+
+
+def test_unknown_fields_are_an_error():
+    """A typo in fields= is an error, not a silently dropped field."""
+    with pytest.raises(ValueError, match="nope"):
+        parse_fields("title,nope")
+
+
+def test_cursor_pages_without_gaps_or_repeats(store):
+    """Two pages of two cover all three episodes once."""
+    first, cursor = store.page(ALL, limit=2)
+    second, last = store.page(ALL, limit=2, cursor=cursor)
+    assert [i["content_id"] for i in first + second] == ["300", "200", "100"]
+    assert last is None
+
+
+def test_since_returns_only_records_changed_later(store):
+    """since= keeps records whose updated_at is later."""
+    items, _ = store.page(ALL, limit=10, since="2098-01-01T00:00:00+00:00")
+    assert [i["content_id"] for i in items] == ["300"]
+
+
+def test_cursor_round_trip_and_garbage():
+    """Cursors decode back; anything else is a ValueError."""
+    assert decode_cursor(encode_cursor(("2026-01-01", "7"))) == ("2026-01-01", "7")
+    with pytest.raises(ValueError):
+        decode_cursor("not-a-cursor")
+
+
+def test_store_reloads_when_a_source_file_changes(store, tmp_path):
+    """A new summary row shows up without a restart."""
+    assert store.get("200", ALL)["summary"] is None
+    path = tmp_path / "summaries.jsonl"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("\n" + json.dumps({"content_id": "200", "summary": "Новое."}, ensure_ascii=False))
+    stat = path.stat()
+    os.utime(path, (stat.st_atime, stat.st_mtime + 5))
+    assert store.get("200", ALL)["summary"] == "Новое."
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def client(store, monkeypatch):
+    """A TestClient over the app with the fixture store and no tokens set."""
+    monkeypatch.setattr(
+        api_module,
+        "config",
+        SimpleNamespace(
+            episodes=SimpleNamespace(
+                enabled=True,
+                default_page_size=2,
+                max_page_size=2,
+                token_env="RAINRAG_EPISODES_TOKEN",
+            )
+        ),
+    )
+    monkeypatch.setattr(api_module, "_EPISODE_STORE", store)
+    monkeypatch.delenv("RAINRAG_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("RAINRAG_EPISODES_TOKEN", raising=False)
+    with TestClient(app) as c:
+        yield c
+
+
+def test_list_route_pages_and_omits_trimmed_fields(client):
+    """Trimmed fields are absent, not null, and the cursor reaches the last page."""
+    first = client.get("/episodes", params={"fields": "title"}).json()
+    assert first["items"] == [
+        {"content_id": "300", "title": "New"},
+        {"content_id": "200", "title": "Mid"},
+    ]
+    rest = client.get("/episodes", params={"fields": "title", "cursor": first["next_cursor"]})
+    rest = rest.json()
+    assert [i["content_id"] for i in rest["items"]] == ["100"]
+    assert rest.get("next_cursor") is None
+
+
+def test_page_size_is_capped(client):
+    """limit above max_page_size is cut to the cap."""
+    body = client.get("/episodes", params={"limit": 50, "fields": "title"}).json()
+    assert len(body["items"]) == 2
+
+
+def test_single_route_and_404(client):
+    """One episode with everything; an unknown id is 404."""
+    body = client.get("/episodes/200").json()
+    assert body["tags"]["guest"] == ["Шульман"]
+    assert body["transcript"]["text"] == "Добрый вечер, это Дождь."
+    assert client.get("/episodes/999").status_code == 404
+
+
+def test_bad_fields_cursor_and_since_are_400(client):
+    """Malformed parameters are client errors."""
+    assert client.get("/episodes", params={"fields": "nope"}).status_code == 400
+    assert client.get("/episodes", params={"cursor": "garbage"}).status_code == 400
+    assert client.get("/episodes", params={"since": "yesterday"}).status_code == 400
+
+
+def test_since_accepts_z_suffix(client):
+    """since accepts the usual Z form and compares in UTC."""
+    body = client.get(
+        "/episodes", params={"since": "2098-01-01T00:00:00Z", "fields": "title"}
+    ).json()
+    assert [i["content_id"] for i in body["items"]] == ["300"]
+
+
+def test_episodes_token_opens_only_the_episode_routes(client, monkeypatch):
+    """The read-only token opens /episodes and nothing else; the API token still works."""
+    monkeypatch.setenv("RAINRAG_AUTH_TOKEN", "api-secret")
+    monkeypatch.setenv("RAINRAG_EPISODES_TOKEN", "read-only")
+    ok = {"Authorization": "Bearer read-only"}
+    assert client.get("/episodes/200", headers=ok).status_code == 200
+    api = {"Authorization": "Bearer api-secret"}
+    assert client.get("/episodes/200", headers=api).status_code == 200
+    wrong = {"Authorization": "Bearer wrong"}
+    assert client.get("/episodes/200", headers=wrong).status_code == 401
+    assert client.get("/episodes/200").status_code == 401
+    assert client.post("/query", json={"question": "x"}, headers=ok).status_code == 401
+
+
+def test_episodes_token_closes_the_routes_without_an_api_token(client, monkeypatch):
+    """A configured episodes token protects the routes even with no API token."""
+    monkeypatch.setenv("RAINRAG_EPISODES_TOKEN", "read-only")
+    assert client.get("/episodes/200").status_code == 401
+    ok = {"Authorization": "Bearer read-only"}
+    assert client.get("/episodes/200", headers=ok).status_code == 200
+
+
+def test_disabled_feed_is_503(client):
+    """episodes.enabled=false closes the feed."""
+    api_module.config.episodes.enabled = False
+    assert client.get("/episodes").status_code == 503
