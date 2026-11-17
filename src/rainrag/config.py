@@ -793,6 +793,51 @@ class AdaptiveRetrievalConfig(BaseModel):
     capture_candidates: bool = False
 
 
+class EpisodesConfig(BaseModel):
+    """Configuration for the episode feed (GET /episodes) used by other TV Rain services."""
+
+    enabled: bool = Field(default=True, description="Serve GET /episodes and /episodes/{id}")
+    index_path: str = Field(
+        default="./data/archive_by_content_id.json",
+        description="content_id -> video index, rebuilt daily by scripts/youtube_map.py",
+    )
+    tags_path: str = Field(
+        default="./data/library_tags.jsonl", description="Tagging run output (optional)"
+    )
+    summaries_path: str = Field(
+        default="./data/episode_summaries.jsonl",
+        description="Summary run output: content_id, summary, model, prompt_version, generated_at",
+    )
+    state_path: str = Field(
+        default="./data/episodes_state.json",
+        description=(
+            "Per-episode content fingerprint and last-change time, written by the API, so "
+            "updated_at moves only when an episode's own record changes"
+        ),
+    )
+    default_page_size: int = Field(default=20, ge=1, description="Episodes per page by default")
+    max_page_size: int = Field(default=100, ge=1, description="Largest page a caller can ask for")
+    token_env: str = Field(
+        default="RAINRAG_EPISODES_TOKEN",
+        description=(
+            "Environment variable with a read-only token that the /episodes routes accept "
+            "in addition to the API token. Give it to the services that pull episodes; it "
+            "opens nothing else. Unset means only the API token works."
+        ),
+    )
+
+    @field_validator("token_env")
+    @classmethod
+    def _token_env_is_not_the_api_token(cls, value: str) -> str:
+        """Reject RAINRAG_AUTH_TOKEN, which would make the read-only token open every route."""
+        if value.strip() == "RAINRAG_AUTH_TOKEN":
+            raise ValueError(
+                "episodes.token_env must not be RAINRAG_AUTH_TOKEN: the read-only token "
+                "would be the API token and open every route"
+            )
+        return value
+
+
 class Config(BaseModel):
     """Main configuration model."""
 
@@ -818,6 +863,7 @@ class Config(BaseModel):
     web_metadata: WebMetadataConfig = Field(default_factory=WebMetadataConfig)
     incremental: IncrementalConfig = Field(default_factory=IncrementalConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
+    episodes: EpisodesConfig = Field(default_factory=EpisodesConfig)
 
     def get_max_chunk_tokens(self) -> int:
         """

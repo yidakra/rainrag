@@ -140,5 +140,45 @@ def test_the_archive_index_is_keyed_by_content_id_as_stored():
             "url": "u",
             "video_hash": "h",
             "duration_seconds": 60.0,
+            "program": None,
+            "presenters": [],
         }
     }
+
+
+def test_the_archive_index_carries_programme_and_presenters():
+    """The episode feed reads these from the index, so CMS edits reach its change tracking."""
+    info = {
+        "1": {
+            "archive_video_hash": "h",
+            "archive_program": "Нюансы",
+            "archive_presenters": ["Юлия Таратута"],
+        }
+    }
+    entry = archive_index([("1", "Выпуск")], info, {})["1"]
+    assert entry["program"] == "Нюансы"
+    assert entry["presenters"] == ["Юлия Таратута"]
+
+
+def test_card_presenters_joins_first_and_last_names():
+    """A presenter without a name field is first name plus last name."""
+    from youtube_map import card_presenters
+
+    card = {"presentors": [{"firstname": "Анна", "lastname": "Монгайт"}, {"name": "Тихон Дзядко"}]}
+    assert card_presenters(card) == ["Анна Монгайт", "Тихон Дзядко"]
+
+
+def test_card_helpers_accept_odd_cms_shapes():
+    """String presenters, junk entries and a non-object teleshow must not stop the rebuild."""
+    from youtube_map import card_presenters, card_program
+
+    assert card_presenters(
+        {"presentors": [" Анна Монгайт ", 7, None, {"name": "Тихон Дзядко"}]}
+    ) == [
+        "Анна Монгайт",
+        "Тихон Дзядко",
+    ]
+    assert card_presenters({"presentors": "Анна"}) == []
+    assert card_program({"teleshow": "Нюансы"}) is None
+    assert card_program({"teleshow": {"name": " Нюансы "}}) == "Нюансы"
+    assert card_program({}) is None

@@ -155,6 +155,23 @@ ingestion:
       lock_timeout_seconds: 5
       token_env: "RAINRAG_NOTIFY_TOKEN"
 
+    # Episode feed (GET /episodes) for other TV Rain services. Off in the chart:
+    # it reads the index that scripts/youtube_map.py builds, which the chart does
+    # not run. With enabled: true the API pod mounts the archive volume
+    # read-only to serve transcripts. state_path keeps each episode's
+    # updated_at; it must sit on the data volume so restarts keep it, and only
+    # one API replica may write it
+    # (two would stamp the same change differently and a `since` pull could
+    # miss it), so the chart refuses episodes with api.replicas above 1.
+    episodes:
+      enabled: false
+      index_path: "/data/rainrag/archive_by_content_id.json"
+      tags_path: "/data/rainrag/library_tags.jsonl"
+      summaries_path: "/data/rainrag/episode_summaries.jsonl"
+      state_path: "/data/rainrag/episodes_state.json"
+      # Read-only token for the feed; supply the variable via providerSecret.
+      token_env: "RAINRAG_EPISODES_TOKEN"
+
     logging:
       level: "INFO"
       format: "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"

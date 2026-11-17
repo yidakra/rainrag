@@ -146,7 +146,7 @@ def archive_index(
     archive_info: dict[str, dict[str, Any]],
     durations: dict[str, float],
 ) -> dict[str, dict[str, Any]]:
-    """content_id -> title, date, url, hash, runtime for every archive episode."""
+    """content_id -> title, date, url, hash, runtime, programme, presenters per episode."""
     return {
         cid: {
             "title": name,
@@ -154,9 +154,46 @@ def archive_index(
             "url": archive_info.get(cid, {}).get("archive_url"),
             "video_hash": archive_info.get(cid, {}).get("archive_video_hash"),
             "duration_seconds": durations.get(cid),
+            "program": archive_info.get(cid, {}).get("archive_program"),
+            "presenters": archive_info.get(cid, {}).get("archive_presenters") or [],
         }
         for cid, name in archive
     }
+
+
+def card_presenters(card: dict[str, Any]) -> list[str]:
+    """Presenter names from a CMS card, in its order.
+
+    Same shapes as ingest's ``_extract_people``: a plain string, or an object
+    with ``name`` or ``firstname``/``lastname``. Anything else is skipped, so one
+    odd card cannot stop the nightly rebuild.
+    """
+    people = card.get("presentors")
+    if not isinstance(people, list):
+        return []
+    names = []
+    for person in people:
+        if isinstance(person, str):
+            name = person.strip()
+        elif isinstance(person, dict):
+            name = str(person.get("name") or "").strip() or " ".join(
+                part
+                for key in ("firstname", "lastname")
+                if (part := str(person.get(key) or "").strip())
+            )
+        else:
+            continue
+        if name:
+            names.append(name)
+    return names
+
+
+def card_program(card: dict[str, Any]) -> str | None:
+    """The programme name from a CMS card, or None when teleshow is not an object."""
+    teleshow = card.get("teleshow")
+    if not isinstance(teleshow, dict):
+        return None
+    return str(teleshow.get("name") or "").strip() or None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -288,6 +325,10 @@ def main(argv: list[str] | None = None) -> int:
             # lets the UI join programme/presenters from the videos cache for
             # episodes outside the tagged pool (most Library uploads are <30 min)
             "archive_video_hash": str(d.get("video_hash") or "") or None,
+            # The episode feed serves these; carrying them in the nightly index
+            # puts CMS edits into its change tracking without per-request reads.
+            "archive_program": card_program(d),
+            "archive_presenters": card_presenters(d),
         }
     print(f"Archive runtimes known for {len(durations):,} episodes".replace(",", " "))
 

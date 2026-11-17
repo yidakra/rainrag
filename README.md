@@ -1620,6 +1620,33 @@ How the worker fits the sweep:
 
 **Token for the sender.** The two `/ingest/notify` routes also accept a dedicated token from the environment variable named by `notify.token_env` (default `RAINRAG_NOTIFY_TOKEN`). Give that token to the system that sends the events; it opens nothing else. The API token keeps working on these routes, so you can read the status with it.
 
+## Episode feed
+
+`GET /episodes` and `GET /episodes/{content_id}` give other TV Rain services (the recommendation system first) one record per CMS article: metadata, summary, tags and the plain-text transcript. Callers pull each episode once and cache it on their side; nothing is meant to call these per user request.
+
+```bash
+# First page, newest first; light fields only.
+curl "https://rag.tvrain.tv/episodes?fields=content_id,title,date,summary,updated_at&limit=100" \
+  -H "Authorization: Bearer $RAINRAG_EPISODES_TOKEN"
+# {"items": [...], "next_cursor": "WyIyMDI2...", "sync_watermark": "2026-11-16T14:02:11.482913Z"}
+# -> pass next_cursor as ?cursor= for the next page
+
+# One episode with everything, including the transcript.
+curl https://rag.tvrain.tv/episodes/536459 -H "Authorization: Bearer $RAINRAG_EPISODES_TOKEN"
+
+# Incremental sync: only records changed after the last pull. Pass the
+# sync_watermark saved from the previous pull, not the largest updated_at.
+curl "https://rag.tvrain.tv/episodes?since=2026-11-16T14:02:11.482913Z" -H "Authorization: Bearer $RAINRAG_EPISODES_TOKEN"
+```
+
+- **Which episodes.** Every video with a CMS card and an indexed transcript (`archive_by_content_id.json`, rebuilt daily). Videos without a card have no `content_id` and are not in the feed. When several files share one article, the index picks one.
+- **Fields.** `summary` (with `summary_model` and `summary_prompt_version`), `tags` and `program` are null where the episode has not been summarised or tagged yet. `fields=` trims the record; a field left out is absent, not null. Unknown field names are a 400.
+- **Order and paging.** Newest release date first, then `content_id`; `next_cursor` is null on the last page. Page size defaults to `episodes.default_page_size` (20) and is capped at `episodes.max_page_size` (100).
+- **Freshness.** `updated_at` (ISO 8601 UTC with microseconds) is when the record's content last changed: index fields, programme, presenters, tags or summary. Programme and presenters come from the CMS card through the nightly index, so a CMS edit shows up after the next rebuild. The API keeps a fingerprint per episode in `episodes.state_path`, so the rebuild moves nothing unless an episode really changed, and each new stamp is later than any earlier one. The first load stamps every episode once. Transcript edits are not tracked.
+- **Incremental sync.** Every page of one pull (first page plus its cursors) carries the same `sync_watermark`: the latest `updated_at` when the pull began. Save it after the last page and pass it as `since` next time. A record that changes during the pull, after the cursor has passed it, gets a later stamp and comes back in the next pull. The largest `updated_at` you received is not a safe `since`: it can be later than such a change. The state file has one writer, so run the API as a single process or replica (the Helm chart refuses `episodes.enabled` with `api.replicas` above 1).
+- **Failures.** If the index cannot be read, the API keeps serving the last good snapshot and retries on the next request; with no snapshot at all the routes answer 503.
+- **Token.** The routes accept a read-only token from the variable named by `episodes.token_env` (default `RAINRAG_EPISODES_TOKEN`) as well as the API token. A configured episodes token closes the routes even when the API token is unset.
+
 ## Hybrid Search (Vector + BM25)
 
 RainRAG supports **hybrid search** that combines vector similarity with BM25 keyword matching for improved search quality.

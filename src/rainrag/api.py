@@ -19,6 +19,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager, suppress
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
@@ -342,6 +343,9 @@ from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from rainrag.config import Config, load_config
+from rainrag.episodes import EpisodeStore, EpisodeStoreUnavailableError
+from rainrag.episodes import iso_utc as episode_iso_utc
+from rainrag.episodes import parse_fields as parse_episode_fields
 from rainrag.ingest import WEB_METADATA_PAYLOAD_FIELDS, WebMetadataLoader
 from rainrag.notify import NotifyWorker, QueueNotOwnedError, build_worker
 from rainrag.query import RAGQueryEngine
@@ -3105,6 +3109,204 @@ async def ingest_notify_status(
     if entry is None:
         raise HTTPException(status_code=404, detail="Unknown video_hash")
     return {key: entry.get(key) for key in _NOTIFY_STATUS_FIELDS}
+
+
+# ---------------------------------------------------------------------------
+# Episode feed for other TV Rain services (the recommendation system first).
+# One record per CMS content_id with metadata, summary, tags and transcript;
+# callers page through it newest first and cache it on their side.
+# ---------------------------------------------------------------------------
+
+
+class EpisodeTags(BaseModel):
+    """Tags from the transcript tagging run (free-form, Russian)."""
+
+    subject: list[str] = []
+    guest: list[str] = []
+    mentioned: list[str] = []
+    place: list[str] = []
+    organization: list[str] = []
+    genre: list[str] = []
+
+
+class EpisodeTranscript(BaseModel):
+    """Plain-text transcript of the episode."""
+
+    language: str
+    text: str
+
+
+class Episode(BaseModel):
+    """One episode. Fields left out with ``fields=`` are absent, not null.
+
+    ``summary``, ``tags``, ``program`` and ``transcript`` are null when the
+    episode has none yet (not every episode is tagged or summarised).
+    """
+
+    content_id: str
+    video_hash: str | None = None
+    title: str | None = None
+    program: str | None = None
+    date: str | None = Field(default=None, description="Release date, YYYY-MM-DD")
+    url: str | None = None
+    duration_seconds: float | None = None
+    presenters: list[str] | None = None
+    summary: str | None = None
+    summary_model: str | None = None
+    summary_prompt_version: str | None = None
+    tags: EpisodeTags | None = None
+    transcript: EpisodeTranscript | None = None
+    updated_at: str | None = Field(
+        default=None, description="Latest change to this record, ISO 8601 UTC"
+    )
+
+
+class EpisodePage(BaseModel):
+    """A page of episodes, newest first."""
+
+    items: list[Episode]
+    next_cursor: str | None = Field(
+        default=None, description="Pass as `cursor` for the next page; null on the last page"
+    )
+    sync_watermark: str = Field(
+        description=(
+            "The latest updated_at when this pull began; the same on every page of one pull. "
+            "Save it after the last page and pass it as `since` next time. Do not save the "
+            "largest updated_at you received: a change made during the pull can be earlier."
+        )
+    )
+
+
+_EPISODE_STORE: EpisodeStore | None = None
+_EPISODE_STORE_LOCK = threading.Lock()
+
+
+def _episode_store_or_503() -> EpisodeStore:
+    """The episode store, built from the config on first use."""
+    global _EPISODE_STORE
+    if config is None or not config.episodes.enabled:
+        raise HTTPException(status_code=503, detail="The episode feed is disabled")
+    with _EPISODE_STORE_LOCK:
+        if _EPISODE_STORE is None:
+            _EPISODE_STORE = EpisodeStore(
+                index_path=Path(config.episodes.index_path),
+                tags_path=Path(config.episodes.tags_path),
+                summaries_path=Path(config.episodes.summaries_path),
+                archive_root=Path(config.paths.archive_root),
+                state_path=Path(config.episodes.state_path),
+            )
+        return _EPISODE_STORE
+
+
+def _verify_episodes_caller(authorization: str | None) -> None:
+    """Accept the read-only episodes token on the /episodes routes, else the API token.
+
+    Same rules as the notify webhook token: a configured episodes token closes
+    these routes even when the API token is unset.
+    """
+    env_name = getattr(getattr(config, "episodes", None), "token_env", "") or ""
+    episodes_token = os.getenv(env_name) if env_name else None
+    if episodes_token and authorization:
+        parts = authorization.split()
+        if (
+            len(parts) == 2
+            and parts[0].lower() == "bearer"
+            and hmac.compare_digest(parts[1], episodes_token)
+        ):
+            return
+    if episodes_token and not os.getenv("RAINRAG_AUTH_TOKEN"):
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+    verify_auth_token(authorization=authorization)
+
+
+def _fields_or_400(raw: str | None) -> set[str]:
+    try:
+        return parse_episode_fields(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _since_or_400(raw: str | None) -> str | None:
+    """Normalise ``since`` to the store's timestamp form (ISO 8601 UTC, microseconds)."""
+    if not raw:
+        return None
+    try:
+        moment = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="since must be ISO 8601") from exc
+    return episode_iso_utc(moment)
+
+
+@app.get(
+    "/episodes",
+    response_model=EpisodePage,
+    response_model_exclude_unset=True,
+    tags=["episodes"],
+)
+async def list_episodes(
+    authorization: Annotated[str | None, Header()] = None,
+    limit: Annotated[int | None, Query(ge=1, description="Episodes per page")] = None,
+    cursor: Annotated[str | None, Query(description="next_cursor from the previous page")] = None,
+    since: Annotated[
+        str | None,
+        Query(description="Only episodes whose updated_at is later than this ISO 8601 time"),
+    ] = None,
+    fields: Annotated[
+        str | None,
+        Query(
+            description="Comma-separated fields to return, e.g. content_id,title,summary. "
+            "Default: all, including the transcript"
+        ),
+    ] = None,
+):
+    """Page through episodes newest first: one per CMS content_id, for caching on the caller's side."""
+    _verify_episodes_caller(authorization)
+    store = _episode_store_or_503()
+    assert config is not None
+    wanted = _fields_or_400(fields)
+    size = min(limit or config.episodes.default_page_size, config.episodes.max_page_size)
+    try:
+        items, next_cursor, watermark = await asyncio.to_thread(
+            store.page, wanted, limit=size, cursor=cursor, since=_since_or_400(since)
+        )
+    except EpisodeStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="The episode index is unavailable") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return EpisodePage(
+        items=[Episode(**item) for item in items],
+        next_cursor=next_cursor,
+        sync_watermark=watermark,
+    )
+
+
+@app.get(
+    "/episodes/{content_id}",
+    response_model=Episode,
+    response_model_exclude_unset=True,
+    tags=["episodes"],
+)
+async def get_episode(
+    content_id: str,
+    authorization: Annotated[str | None, Header()] = None,
+    fields: Annotated[
+        str | None,
+        Query(
+            description="Comma-separated fields to return. Default: all, including the transcript"
+        ),
+    ] = None,
+):
+    """One episode by CMS content_id; 404 when unknown."""
+    _verify_episodes_caller(authorization)
+    store = _episode_store_or_503()
+    wanted = _fields_or_400(fields)
+    try:
+        item = await asyncio.to_thread(store.get, content_id.strip(), wanted)
+    except EpisodeStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="The episode index is unavailable") from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="Unknown content_id")
+    return Episode(**item)
 
 
 # ---------------------------------------------------------------------------
