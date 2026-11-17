@@ -73,6 +73,7 @@ data:
       tags_path: {{ .tags_path | quote }}
       summaries_path: {{ .summaries_path | quote }}
       state_path: {{ .state_path | quote }}
+      token_env: {{ .token_env | default "RAINRAG_EPISODES_TOKEN" | quote }}
     {{- end }}
 
     logging:

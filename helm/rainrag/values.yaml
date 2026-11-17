@@ -169,6 +169,8 @@ ingestion:
       tags_path: "/data/rainrag/library_tags.jsonl"
       summaries_path: "/data/rainrag/episode_summaries.jsonl"
       state_path: "/data/rainrag/episodes_state.json"
+      # Read-only token for the feed; supply the variable via providerSecret.
+      token_env: "RAINRAG_EPISODES_TOKEN"
 
     logging:
       level: "INFO"

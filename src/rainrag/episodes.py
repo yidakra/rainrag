@@ -361,6 +361,9 @@ class EpisodeStore:
             # another part or re-ingest that shares its content_id.
             if row.get("error") or episode is None or episode.video_hash != row["video_hash"]:
                 continue
+            # The index is the CMS card as of the nightly rebuild; the tag row
+            # holds a copy of the same CMS fields frozen at tagging time. The
+            # fresher index wins, and the tag row fills only what it lacks.
             episode.program = episode.program or row.get("program")
             episode.presenters = episode.presenters or list(row.get("presenter_cms") or [])
             episode.tags = {
