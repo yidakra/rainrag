@@ -1624,7 +1624,7 @@ How the worker fits the sweep:
 
 `GET /episodes` and `GET /episodes/{content_id}` give other TV Rain services (the recommendation system first) one record per CMS article: metadata, summary, tags and the plain-text transcript. Callers pull each episode once and cache it on their side; nothing is meant to call these per user request.
 
-Behind nginx the API lives under `/api/`, so the base URL is `https://rag.tvrain.tv/api` (`/episodes` without the prefix is the Streamlit app). rag.tvrain.tv resolves to an internal address, so callers need the internal network; access from outside goes through the gateway (#88) once it is live.
+On rag.tvrain.tv nginx proxies the API under `/api/` (the generic nginx example above forwards paths unchanged), so the base URL there is `https://rag.tvrain.tv/api` (`/episodes` without the prefix is the Streamlit app). rag.tvrain.tv resolves to an internal address, so callers need the internal network; access from outside goes through the gateway (#88) once it is live.
 
 ```bash
 # First page, newest first; light fields only.
