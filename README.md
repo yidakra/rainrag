@@ -1624,19 +1624,21 @@ How the worker fits the sweep:
 
 `GET /episodes` and `GET /episodes/{content_id}` give other TV Rain services (the recommendation system first) one record per CMS article: metadata, summary, tags and the plain-text transcript. Callers pull each episode once and cache it on their side; nothing is meant to call these per user request.
 
+On rag.tvrain.tv nginx proxies the API under `/api/` (the generic nginx example above forwards paths unchanged), so the base URL there is `https://rag.tvrain.tv/api` (`/episodes` without the prefix is the Streamlit app). rag.tvrain.tv resolves to an internal address, so callers need the internal network; access from outside goes through the gateway (#88) once it is live.
+
 ```bash
 # First page, newest first; light fields only.
-curl "https://rag.tvrain.tv/episodes?fields=content_id,title,date,summary,updated_at&limit=100" \
+curl "https://rag.tvrain.tv/api/episodes?fields=content_id,title,date,summary,updated_at&limit=100" \
   -H "Authorization: Bearer $RAINRAG_EPISODES_TOKEN"
 # {"items": [...], "next_cursor": "WyIyMDI2...", "sync_watermark": "2026-11-16T14:02:11.482913Z"}
 # -> pass next_cursor as ?cursor= for the next page
 
 # One episode with everything, including the transcript.
-curl https://rag.tvrain.tv/episodes/536459 -H "Authorization: Bearer $RAINRAG_EPISODES_TOKEN"
+curl https://rag.tvrain.tv/api/episodes/536459 -H "Authorization: Bearer $RAINRAG_EPISODES_TOKEN"
 
 # Incremental sync: only records changed after the last pull. Pass the
 # sync_watermark saved from the previous pull, not the largest updated_at.
-curl "https://rag.tvrain.tv/episodes?since=2026-11-16T14:02:11.482913Z" -H "Authorization: Bearer $RAINRAG_EPISODES_TOKEN"
+curl "https://rag.tvrain.tv/api/episodes?since=2026-11-16T14:02:11.482913Z" -H "Authorization: Bearer $RAINRAG_EPISODES_TOKEN"
 ```
 
 - **Which episodes.** Every video with a CMS card and an indexed transcript (`archive_by_content_id.json`, rebuilt daily). Videos without a card have no `content_id` and are not in the feed. When several files share one article, the index picks one.
